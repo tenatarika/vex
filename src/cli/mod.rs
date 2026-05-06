@@ -9,7 +9,6 @@ use args::{Cli, Commands, OutputFormat};
 use crate::embed::Embedder;
 use crate::index::pipeline;
 use crate::search::{fusion, semantic, structural};
-use crate::store::inverted::InvertedIndex;
 use crate::store::reader::IndexReader;
 use crate::util::config;
 
@@ -41,7 +40,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     });
                     println!("{}", serde_json::to_string_pretty(&json)?);
                 }
-                OutputFormat::Text => {
+                OutputFormat::Text | OutputFormat::Compact => {
                     println!("Indexed {count} symbols in {elapsed:.2?}");
                     if semantic {
                         println!("Embeddings: enabled");
@@ -67,9 +66,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
 
             let reader = IndexReader::open(&index_path).context("open index")?;
-            let inverted = InvertedIndex::from_reader(&reader);
 
-            let structural_results = structural::search(&reader, &inverted, &query, limit);
+            let structural_results = structural::search(&reader, &query, limit);
 
             let results = if semantic && reader.has_vectors() {
                 let mut embedder = Embedder::new().context("load embedding model")?;
@@ -86,7 +84,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             if results.is_empty() {
                 match format {
                     OutputFormat::Json => println!("[]"),
-                    OutputFormat::Text => println!("No results for \"{query}\""),
+                    OutputFormat::Text | OutputFormat::Compact => {
+                        println!("No results for \"{query}\"")
+                    }
                 }
             } else {
                 output::print_results(&results, format);
@@ -131,7 +131,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         .collect();
                     println!("{}", serde_json::to_string_pretty(&json)?);
                 }
-                OutputFormat::Text => {
+                OutputFormat::Text | OutputFormat::Compact => {
                     if entries.is_empty() {
                         println!("No usages found for \"{name}\"");
 
@@ -172,7 +172,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     });
                     println!("{}", serde_json::to_string_pretty(&json)?);
                 }
-                OutputFormat::Text => {
+                OutputFormat::Text | OutputFormat::Compact => {
                     if changed == 0 && deleted == 0 {
                         println!("Index up to date ({total} symbols)");
                     } else {
@@ -199,7 +199,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     OutputFormat::Json => {
                         println!("{}", serde_json::json!({"error": "no index found"}));
                     }
-                    OutputFormat::Text => {
+                    OutputFormat::Text | OutputFormat::Compact => {
                         println!("No index found for {}", root.display());
                         println!("Run `vex index` to build one.");
                     }
@@ -221,7 +221,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     });
                     println!("{}", serde_json::to_string_pretty(&json)?);
                 }
-                OutputFormat::Text => {
+                OutputFormat::Text | OutputFormat::Compact => {
                     println!("Project:    {}", root.display());
                     println!("Index:      {}", index_path.display());
                     println!("Size:       {:.1} KB", meta.len() as f64 / 1024.0);
@@ -275,7 +275,7 @@ fn cmd_outline(file: &std::path::Path, format: &OutputFormat) -> Result<()> {
                 .collect();
             println!("{}", serde_json::to_string_pretty(&symbols)?);
         }
-        OutputFormat::Text => {
+        OutputFormat::Text | OutputFormat::Compact => {
             if parsed.symbols.is_empty() {
                 println!("No symbols found in {}", file.display());
             } else {

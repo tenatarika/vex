@@ -1,19 +1,37 @@
 use crate::search::{MatchType, SearchResult};
-use crate::store::inverted::InvertedIndex;
 use crate::store::reader::IndexReader;
+use crate::store::symbol_fst::SymbolFstReader;
 
-/// Search by symbol name using the inverted index.
-pub fn search(
+/// Search by symbol name using persistent FST (zero-copy from mmap).
+/// Falls back to in-memory inverted index if FST not available (v2 indexes).
+pub fn search(reader: &IndexReader, query: &str, limit: usize) -> Vec<SearchResult> {
+    let indices = if let Some(fst_reader) = reader.symbol_fst_reader() {
+        fst_reader.search(query, limit)
+    } else {
+        // Fallback for old indexes without symbol FST
+        let inverted = crate::store::inverted::InvertedIndex::from_reader(reader);
+        inverted.search(query, limit)
+    };
+
+    indices_to_results(reader, &indices)
+}
+
+/// Search with an already-loaded FST reader (avoids re-creating per query in MCP).
+#[allow(dead_code)] // for MCP server persistent sessions
+pub fn search_with_fst(
     reader: &IndexReader,
-    inverted: &InvertedIndex,
+    fst_reader: &SymbolFstReader<'_>,
     query: &str,
     limit: usize,
 ) -> Vec<SearchResult> {
-    let indices = inverted.search(query, limit);
+    let indices = fst_reader.search(query, limit);
+    indices_to_results(reader, &indices)
+}
 
+fn indices_to_results(reader: &IndexReader, indices: &[u32]) -> Vec<SearchResult> {
     indices
-        .into_iter()
-        .filter_map(|idx| {
+        .iter()
+        .filter_map(|&idx| {
             let rec = reader.symbol(idx as usize)?;
             let name = reader.read_string(rec.name_offset).to_string();
             let path = reader.read_string(rec.file_offset).to_string();
@@ -32,7 +50,7 @@ pub fn search(
                 path,
                 line: rec.line as usize,
                 signature: sig,
-                score: 1.0, // exact match score
+                score: 1.0,
                 match_type: MatchType::Structural,
             })
         })

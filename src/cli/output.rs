@@ -20,5 +20,39 @@ pub fn print_results(results: &[SearchResult], format: &super::args::OutputForma
                 }
             }
         }
+        super::args::OutputFormat::Compact => {
+            for r in results {
+                let kind = compact_kind(&r.kind);
+                print!(
+                    "{kind} {name} {path}:{line}",
+                    name = r.name,
+                    path = r.path,
+                    line = r.line
+                );
+                if let Some(sig) = &r.signature {
+                    print!(" {sig}");
+                }
+                println!();
+            }
+        }
+    }
+}
+
+/// Single-char kind code for compact output.
+fn compact_kind(kind: &str) -> char {
+    match kind {
+        "function" => 'F',
+        "method" => 'M',
+        "struct" => 'S',
+        "class" => 'C',
+        "interface" => 'I',
+        "trait" => 'T',
+        "enum" => 'E',
+        "type_alias" => 'A',
+        "impl" => 'i',
+        "constant" => 'K',
+        "property" => 'P',
+        "package" => 'G',
+        _ => '?',
     }
 }

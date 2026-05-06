@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{ensure, Result};
 
 use super::format::{Header, SymbolRecord, MAGIC, VECTOR_DIM, VERSION};
-use super::refs_fst;
+use super::{refs_fst, symbol_fst};
 use crate::index::symbols::ParsedFile;
 
 /// String pool that deduplicates strings and returns offsets.
@@ -99,6 +99,20 @@ pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Pa
 
     let (fst_bytes, posting_bytes) = refs_fst::build_refs_fst(&refs_input)?;
 
+    // Build symbol FST: name + CamelCase sub-tokens → symbol indices
+    let sym_entries: Vec<(String, u32)> = {
+        let mut entries = Vec::new();
+        let mut idx: u32 = 0;
+        for file in parsed {
+            for sym in &file.symbols {
+                entries.push((sym.name.clone(), idx));
+                idx += 1;
+            }
+        }
+        entries
+    };
+    let (sym_fst_bytes, sym_posting_bytes) = symbol_fst::build_symbol_fst(&sym_entries)?;
+
     // Calculate section offsets
     let symbols_offset = Header::SIZE as u64;
     let symbols_size = records.len() * SymbolRecord::SIZE;
@@ -114,6 +128,9 @@ pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Pa
     let fst_offset = strings_offset + strings.data.len() as u64;
     let postings_offset = fst_offset + fst_bytes.len() as u64;
     let file_table_offset = postings_offset + posting_bytes.len() as u64;
+    let file_table_size = file_table.len() * 4;
+    let sym_fst_offset = file_table_offset + file_table_size as u64;
+    let sym_postings_offset = sym_fst_offset + sym_fst_bytes.len() as u64;
 
     let header = Header {
         magic: *MAGIC,
@@ -133,6 +150,10 @@ pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Pa
         file_table_offset,
         file_table_count: file_table.len() as u32,
         _padding2: 0,
+        sym_fst_offset,
+        sym_fst_len: sym_fst_bytes.len() as u64,
+        sym_postings_offset,
+        sym_postings_len: sym_posting_bytes.len() as u64,
     };
 
     let file = std::fs::File::create(output)?;
@@ -171,10 +192,14 @@ pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Pa
     w.write_all(&fst_bytes)?;
     w.write_all(&posting_bytes)?;
 
-    // Write file table: array of u32 string offsets, one per file_id
+    // Write file table
     for &str_offset in &file_table {
         w.write_all(&str_offset.to_le_bytes())?;
     }
+
+    // Write symbol FST + postings
+    w.write_all(&sym_fst_bytes)?;
+    w.write_all(&sym_posting_bytes)?;
 
     w.flush()?;
 

@@ -1,18 +1,20 @@
 //! Binary index file format specification.
 //!
-//! Layout (v2):
+//! Layout (v3):
 //! ```text
-//! [Header]            fixed      - magic, version, counts, section offsets
-//! [Symbols Section]   variable   - fixed-size symbol records
-//! [Vectors Section]   variable   - dense f32 arrays (384-dim each)
-//! [Strings Section]   variable   - deduplicated string pool
-//! [FST Section]       variable   - fst::Map bytes (ref name → posting offset)
-//! [Postings Section]  variable   - posting lists (count, [(file_id, line)])
-//! [File Table]        variable   - u32 count + count × u32 string offsets
+//! [Header]             fixed      - magic, version, counts, section offsets
+//! [Symbols Section]    variable   - fixed-size symbol records
+//! [Vectors Section]    variable   - dense f32 arrays (384-dim each)
+//! [Strings Section]    variable   - deduplicated string pool
+//! [Refs FST]           variable   - fst::Map bytes (ref name → posting offset)
+//! [Refs Postings]      variable   - posting lists (count, [(file_id, line)])
+//! [File Table]         variable   - u32 string offsets, one per file_id
+//! [Symbol FST]         variable   - fst::Map bytes (name/token → sym posting offset)
+//! [Symbol Postings]    variable   - posting lists (count, [symbol_idx])
 //! ```
 
 pub const MAGIC: &[u8; 4] = b"VEXI";
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 pub const VECTOR_DIM: u32 = 384;
 
 #[repr(C)]
@@ -28,24 +30,35 @@ pub struct Header {
     pub strings_offset: u64,
     pub inverted_offset: u64,
     pub hnsw_offset: u64,
+    // Refs FST
     pub fst_offset: u64,
     pub fst_len: u64,
     pub postings_offset: u64,
     pub postings_len: u64,
+    // File table
     pub file_table_offset: u64,
     pub file_table_count: u32,
     pub _padding2: u32,
+    // Symbol FST (v3)
+    pub sym_fst_offset: u64,
+    pub sym_fst_len: u64,
+    pub sym_postings_offset: u64,
+    pub sym_postings_len: u64,
 }
 
 impl Header {
     pub const SIZE: usize = std::mem::size_of::<Self>();
 
     pub fn validate(&self) -> bool {
-        self.magic == *MAGIC && self.version == VERSION
+        self.magic == *MAGIC && (self.version == VERSION || self.version == 2)
     }
 
     pub fn has_refs(&self) -> bool {
         self.fst_len > 0
+    }
+
+    pub fn has_symbol_fst(&self) -> bool {
+        self.version >= 3 && self.sym_fst_len > 0
     }
 }
 

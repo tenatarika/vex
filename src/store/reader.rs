@@ -149,6 +149,26 @@ impl IndexReader {
         paths
     }
 
+    /// Create a SymbolFstReader for zero-copy symbol lookup.
+    pub fn symbol_fst_reader(&self) -> Option<super::symbol_fst::SymbolFstReader<'_>> {
+        let h = self.header();
+        if !h.has_symbol_fst() {
+            return None;
+        }
+        let fst_start = h.sym_fst_offset as usize;
+        let fst_end = fst_start + h.sym_fst_len as usize;
+        let post_start = h.sym_postings_offset as usize;
+        let post_end = post_start + h.sym_postings_len as usize;
+
+        if fst_end > self.mmap.len() || post_end > self.mmap.len() {
+            return None;
+        }
+
+        let fst_bytes = &self.mmap[fst_start..fst_end];
+        let posting_bytes = &self.mmap[post_start..post_end];
+        super::symbol_fst::SymbolFstReader::new(fst_bytes, posting_bytes).ok()
+    }
+
     /// Total number of indexed symbols.
     pub fn symbol_count(&self) -> usize {
         self.header().symbol_count as usize

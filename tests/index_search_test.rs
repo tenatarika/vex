@@ -35,7 +35,7 @@ fn index_and_search_roundtrip() {
     let total_symbols: usize = all_parsed.iter().map(|f| f.symbols.len()).sum();
     assert!(total_symbols > 0, "should extract at least one symbol");
 
-    // Write index
+    // Write index (uses write_index which calls write_index_full with symbol FST)
     vex::store::writer::write_index(&all_parsed, &index_path).unwrap();
     assert!(index_path.exists());
 
@@ -43,40 +43,36 @@ fn index_and_search_roundtrip() {
     let reader = vex::store::reader::IndexReader::open(&index_path).unwrap();
     assert_eq!(reader.symbol_count(), total_symbols);
 
-    // Build inverted index and search
-    let inverted = vex::store::inverted::InvertedIndex::from_reader(&reader);
-
-    // Search for Rust fixture symbols
-    let results = vex::search::structural::search(&reader, &inverted, "PaymentService", 10);
+    // Search uses persistent FST now (no InvertedIndex needed)
+    let results = vex::search::structural::search(&reader, "PaymentService", 10);
     assert!(
         !results.is_empty(),
         "should find PaymentService from sample.rs"
     );
     assert_eq!(results[0].name, "PaymentService");
 
-    // Search for Go fixture symbols
-    let results = vex::search::structural::search(&reader, &inverted, "InvoiceService", 10);
+    let results = vex::search::structural::search(&reader, "InvoiceService", 10);
     assert!(
         !results.is_empty(),
         "should find InvoiceService from sample.go"
     );
 
-    // Search for Python fixture symbols
-    let results = vex::search::structural::search(&reader, &inverted, "UserRepository", 10);
+    let results = vex::search::structural::search(&reader, "UserRepository", 10);
     assert!(
         !results.is_empty(),
         "should find UserRepository from sample.py"
     );
 
     // Prefix search: "Payment" should find PaymentService and PaymentGateway
-    let results = vex::search::structural::search(&reader, &inverted, "Payment", 10);
+    let results = vex::search::structural::search(&reader, "Payment", 10);
     assert!(
         results.len() >= 2,
-        "prefix 'Payment' should match multiple symbols"
+        "prefix 'Payment' should match multiple symbols, got {}",
+        results.len()
     );
 
     // CamelCase sub-token search: "invoice" should find InvoiceService/InvoiceRepository
-    let results = vex::search::structural::search(&reader, &inverted, "invoice", 10);
+    let results = vex::search::structural::search(&reader, "invoice", 10);
     assert!(
         !results.is_empty(),
         "sub-token 'invoice' should match via CamelCase split"
@@ -96,8 +92,7 @@ fn search_nonexistent_returns_empty() {
 
     vex::store::writer::write_index(&[parsed], &index_path).unwrap();
     let reader = vex::store::reader::IndexReader::open(&index_path).unwrap();
-    let inverted = vex::store::inverted::InvertedIndex::from_reader(&reader);
 
-    let results = vex::search::structural::search(&reader, &inverted, "NonExistentSymbol", 10);
+    let results = vex::search::structural::search(&reader, "NonExistentSymbol", 10);
     assert!(results.is_empty());
 }

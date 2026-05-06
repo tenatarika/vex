@@ -20,6 +20,8 @@ pub struct Cli {
 pub enum OutputFormat {
     Text,
     Json,
+    /// Compact single-line output, optimized for LLM token efficiency
+    Compact,
 }
 
 #[derive(Subcommand)]
