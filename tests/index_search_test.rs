@@ -2,7 +2,9 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
 }
 
 #[test]
@@ -46,24 +48,39 @@ fn index_and_search_roundtrip() {
 
     // Search for Rust fixture symbols
     let results = vex::search::structural::search(&reader, &inverted, "PaymentService", 10);
-    assert!(!results.is_empty(), "should find PaymentService from sample.rs");
+    assert!(
+        !results.is_empty(),
+        "should find PaymentService from sample.rs"
+    );
     assert_eq!(results[0].name, "PaymentService");
 
     // Search for Go fixture symbols
     let results = vex::search::structural::search(&reader, &inverted, "InvoiceService", 10);
-    assert!(!results.is_empty(), "should find InvoiceService from sample.go");
+    assert!(
+        !results.is_empty(),
+        "should find InvoiceService from sample.go"
+    );
 
     // Search for Python fixture symbols
     let results = vex::search::structural::search(&reader, &inverted, "UserRepository", 10);
-    assert!(!results.is_empty(), "should find UserRepository from sample.py");
+    assert!(
+        !results.is_empty(),
+        "should find UserRepository from sample.py"
+    );
 
     // Prefix search: "Payment" should find PaymentService and PaymentGateway
     let results = vex::search::structural::search(&reader, &inverted, "Payment", 10);
-    assert!(results.len() >= 2, "prefix 'Payment' should match multiple symbols");
+    assert!(
+        results.len() >= 2,
+        "prefix 'Payment' should match multiple symbols"
+    );
 
     // CamelCase sub-token search: "invoice" should find InvoiceService/InvoiceRepository
     let results = vex::search::structural::search(&reader, &inverted, "invoice", 10);
-    assert!(!results.is_empty(), "sub-token 'invoice' should match via CamelCase split");
+    assert!(
+        !results.is_empty(),
+        "sub-token 'invoice' should match via CamelCase split"
+    );
 }
 
 #[test]
@@ -73,7 +90,9 @@ fn search_nonexistent_returns_empty() {
     let index_path = tmp.path().join("index.vex");
 
     let content = std::fs::read_to_string(fixtures.join("sample.rs")).unwrap();
-    let parsed = vex::parse::parse_file("sample.rs", &content, vex::parse::language::Language::Rust).unwrap();
+    let parsed =
+        vex::parse::parse_file("sample.rs", &content, vex::parse::language::Language::Rust)
+            .unwrap();
 
     vex::store::writer::write_index(&[parsed], &index_path).unwrap();
     let reader = vex::store::reader::IndexReader::open(&index_path).unwrap();

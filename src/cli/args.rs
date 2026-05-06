@@ -2,7 +2,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "vex", version, about = "Fast hybrid structural + semantic code search")]
+#[command(
+    name = "vex",
+    version,
+    about = "Fast hybrid structural + semantic code search"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -54,6 +58,12 @@ pub enum Commands {
         /// Generate semantic embeddings for changed files
         #[arg(long, default_value = "false")]
         semantic: bool,
+    },
+
+    /// Show structure of a file (symbols, kinds, lines)
+    Outline {
+        /// File to analyze
+        file: PathBuf,
     },
 
     /// Watch for file changes and re-index incrementally

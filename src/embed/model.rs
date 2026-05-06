@@ -36,12 +36,7 @@ impl Embedder {
 
 /// Build a context string for embedding from symbol metadata.
 /// Richer context = better semantic search quality.
-pub fn build_context(
-    kind: &str,
-    name: &str,
-    file_path: &str,
-    signature: Option<&str>,
-) -> String {
+pub fn build_context(kind: &str, name: &str, file_path: &str, signature: Option<&str>) -> String {
     let mut ctx = format!("{kind} {name}");
 
     // Extract module hint from file path
@@ -67,8 +62,16 @@ mod tests {
 
     #[test]
     fn context_with_all_fields() {
-        let ctx = build_context("struct", "PaymentService", "src/billing/service.rs", Some("pub struct PaymentService"));
-        assert_eq!(ctx, "struct PaymentService in src/billing, pub struct PaymentService");
+        let ctx = build_context(
+            "struct",
+            "PaymentService",
+            "src/billing/service.rs",
+            Some("pub struct PaymentService"),
+        );
+        assert_eq!(
+            ctx,
+            "struct PaymentService in src/billing, pub struct PaymentService"
+        );
     }
 
     #[test]

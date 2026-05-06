@@ -76,6 +76,9 @@ mod tests {
             }
         }
         // With 1% FP rate and 1000 tests, expect ~10 false positives
-        assert!(false_positives < 50, "too many false positives: {false_positives}");
+        assert!(
+            false_positives < 50,
+            "too many false positives: {false_positives}"
+        );
     }
 }

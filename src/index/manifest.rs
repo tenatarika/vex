@@ -17,8 +17,7 @@ impl Manifest {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let data = std::fs::read_to_string(path)
-            .context("read manifest")?;
+        let data = std::fs::read_to_string(path).context("read manifest")?;
         serde_json::from_str(&data).context("parse manifest")
     }
 

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use anyhow::{Result, ensure};
+use anyhow::{ensure, Result};
 
 use super::format::{Header, SymbolRecord, MAGIC, VECTOR_DIM, VERSION};
 use crate::index::symbols::ParsedFile;
@@ -133,7 +133,10 @@ pub fn write_index_with_vectors(
         // SAFETY: vec is a valid &[f32] with known length. f32 has no invalid bit patterns.
         // The resulting byte slice has the same lifetime as `vec`.
         let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(vec.as_ptr() as *const u8, vec.len() * std::mem::size_of::<f32>())
+            std::slice::from_raw_parts(
+                vec.as_ptr() as *const u8,
+                vec.len() * std::mem::size_of::<f32>(),
+            )
         };
         w.write_all(bytes)?;
     }

@@ -6,6 +6,10 @@ pub enum Language {
     TypeScript,
     Python,
     Go,
+    Java,
+    CSharp,
+    Ruby,
+    Swift,
 }
 
 impl Language {
@@ -18,11 +22,15 @@ impl Language {
             "js" | "jsx" => Some(Self::TypeScript),
             "py" => Some(Self::Python),
             "go" => Some(Self::Go),
+            "java" => Some(Self::Java),
+            "cs" => Some(Self::CSharp),
+            "rb" => Some(Self::Ruby),
+            "swift" => Some(Self::Swift),
             _ => None,
         }
     }
 
-    #[allow(dead_code)] // used by future language-specific logic
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Rust => "rust",
@@ -30,6 +38,10 @@ impl Language {
             Self::TypeScript => "typescript",
             Self::Python => "python",
             Self::Go => "go",
+            Self::Java => "java",
+            Self::CSharp => "csharp",
+            Self::Ruby => "ruby",
+            Self::Swift => "swift",
         }
     }
 }

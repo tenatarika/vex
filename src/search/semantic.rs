@@ -14,8 +14,7 @@ pub fn search_with_embedder(
     query: &str,
     top_k: usize,
 ) -> Result<Vec<SearchResult>> {
-    let query_vec = embedder.embed(query)
-        .context("embed query")?;
+    let query_vec = embedder.embed(query).context("embed query")?;
 
     let mut scored: Vec<(usize, f32)> = Vec::new();
 
@@ -39,7 +38,11 @@ pub fn search_with_embedder(
             let path = reader.read_string(rec.file_offset).to_string();
             let sig = {
                 let s = reader.read_string(rec.signature_offset);
-                if s.is_empty() { None } else { Some(s.to_string()) }
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
             };
 
             Some(SearchResult {

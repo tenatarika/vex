@@ -36,7 +36,10 @@ impl InvertedIndex {
         for token in split_camel_case(name) {
             let token_lower = token.to_lowercase();
             if token_lower != name.to_lowercase() {
-                self.entries.entry(token_lower).or_default().push(symbol_idx);
+                self.entries
+                    .entry(token_lower)
+                    .or_default()
+                    .push(symbol_idx);
             }
         }
     }

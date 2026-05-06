@@ -19,7 +19,11 @@ pub fn search(
             let path = reader.read_string(rec.file_offset).to_string();
             let sig = {
                 let s = reader.read_string(rec.signature_offset);
-                if s.is_empty() { None } else { Some(s.to_string()) }
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
             };
 
             Some(SearchResult {

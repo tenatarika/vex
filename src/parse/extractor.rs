@@ -43,17 +43,21 @@ pub fn extract_symbols(content: &str, lang: Language) -> Result<Vec<ParsedSymbol
                 "class.name" => SymbolKind::Class,
                 "interface.name" => SymbolKind::Interface,
                 "type.name" => SymbolKind::TypeAlias,
+                "property.name" => SymbolKind::Property,
+                "const.name" => SymbolKind::Constant,
                 _ => continue,
             };
 
-            let signature = node
-                .parent()
-                .map(|p| {
-                    let start = p.start_byte();
-                    let end = (start + 200).min(content.len());
-                    let slice = &content[start..end];
-                    slice.lines().next().unwrap_or("").to_string()
-                });
+            let signature = node.parent().map(|p| {
+                let start = p.start_byte();
+                let mut end = (start + 200).min(content.len());
+                // Walk back to nearest char boundary to avoid panic on multi-byte UTF-8
+                while end > start && !content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let slice = &content[start..end];
+                slice.lines().next().unwrap_or("").to_string()
+            });
 
             symbols.push(ParsedSymbol {
                 name: name.to_string(),
@@ -88,6 +92,10 @@ fn get_ts_language(lang: Language) -> tree_sitter::Language {
         Language::Rust => tree_sitter_rust::LANGUAGE.into(),
         Language::Python => tree_sitter_python::LANGUAGE.into(),
         Language::Go => tree_sitter_go::LANGUAGE.into(),
+        Language::Java => tree_sitter_java::LANGUAGE.into(),
+        Language::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+        Language::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+        Language::Swift => tree_sitter_swift::LANGUAGE.into(),
         Language::Kotlin | Language::TypeScript => unreachable!("no grammar loaded"),
     }
 }

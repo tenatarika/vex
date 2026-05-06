@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use memmap2::Mmap;
 
 use super::format::{Header, SymbolRecord};

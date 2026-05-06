@@ -18,22 +18,23 @@ pub fn watch(root: &Path, with_embeddings: bool) -> Result<()> {
 
     println!("Building initial index...");
     let count = pipeline::run(&root, with_embeddings)?;
-    println!("Watching {} ({count} symbols). Press Ctrl+C to stop.", root.display());
+    println!(
+        "Watching {} ({count} symbols). Press Ctrl+C to stop.",
+        root.display()
+    );
 
     let (tx, rx) = mpsc::channel();
 
     let mut debouncer = new_debouncer(
         Duration::from_millis(DEBOUNCE_MS),
         None,
-        move |result: std::result::Result<Vec<DebouncedEvent>, Vec<notify::Error>>| {
-            match result {
-                Ok(events) => {
-                    let _ = tx.send(events);
-                }
-                Err(errors) => {
-                    for e in errors {
-                        eprintln!("Watch error: {e}");
-                    }
+        move |result: std::result::Result<Vec<DebouncedEvent>, Vec<notify::Error>>| match result {
+            Ok(events) => {
+                let _ = tx.send(events);
+            }
+            Err(errors) => {
+                for e in errors {
+                    eprintln!("Watch error: {e}");
                 }
             }
         },
