@@ -11,6 +11,13 @@ Cargo.lock
 # Index files
 *.vex
 
+# Claude Code config (local, not shared)
+.claude/
+CLAUDE.md
+
+# Fastembed model cache
+.fastembed_cache/
+
 # IDE
 .idea/
 .vscode/
