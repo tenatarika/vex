@@ -1,0 +1,17 @@
+/target
+Cargo.lock
+*.swp
+*.swo
+.DS_Store
+
+# ONNX models (downloaded at build time or manually)
+/models/*.onnx
+/models/*.bin
+
+# Index files
+*.vex
+
+# IDE
+.idea/
+.vscode/
+*.iml

@@ -1,0 +1,57 @@
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(name = "vex", version, about = "Fast hybrid structural + semantic code search")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+
+    /// Output format
+    #[arg(long, global = true, default_value = "text")]
+    pub format: OutputFormat,
+}
+
+#[derive(Clone, clap::ValueEnum)]
+pub enum OutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Subcommand)]
+pub enum Commands {
+    /// Build index for a project directory
+    Index {
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+    },
+
+    /// Search symbols by name or semantics
+    Search {
+        /// Search query
+        query: String,
+
+        /// Max results to return
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+
+        /// Enable semantic (vector) search
+        #[arg(long, default_value = "false")]
+        semantic: bool,
+    },
+
+    /// Watch for file changes and re-index incrementally
+    Watch {
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+    },
+
+    /// Show index statistics
+    Status {
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+    },
+}
