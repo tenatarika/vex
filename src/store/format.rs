@@ -2,12 +2,13 @@
 //!
 //! Layout (v2):
 //! ```text
-//! [Header]           96 bytes   - magic, version, counts, section offsets
-//! [Symbols Section]  variable   - fixed-size symbol records
-//! [Vectors Section]  variable   - dense f32 arrays (384-dim each)
-//! [Strings Section]  variable   - deduplicated string pool
-//! [FST Section]      variable   - fst::Map bytes (ref name → posting offset)
-//! [Postings Section] variable   - posting lists (count, [(file_id, line)])
+//! [Header]            fixed      - magic, version, counts, section offsets
+//! [Symbols Section]   variable   - fixed-size symbol records
+//! [Vectors Section]   variable   - dense f32 arrays (384-dim each)
+//! [Strings Section]   variable   - deduplicated string pool
+//! [FST Section]       variable   - fst::Map bytes (ref name → posting offset)
+//! [Postings Section]  variable   - posting lists (count, [(file_id, line)])
+//! [File Table]        variable   - u32 count + count × u32 string offsets
 //! ```
 
 pub const MAGIC: &[u8; 4] = b"VEXI";
@@ -27,11 +28,13 @@ pub struct Header {
     pub strings_offset: u64,
     pub inverted_offset: u64,
     pub hnsw_offset: u64,
-    // v2 fields:
     pub fst_offset: u64,
     pub fst_len: u64,
     pub postings_offset: u64,
     pub postings_len: u64,
+    pub file_table_offset: u64,
+    pub file_table_count: u32,
+    pub _padding2: u32,
 }
 
 impl Header {

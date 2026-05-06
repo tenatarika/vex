@@ -21,7 +21,11 @@ impl IndexReader {
         let reader = Self { mmap };
         let header = reader.header();
         if !header.validate() {
-            bail!("invalid index file: bad magic or version");
+            bail!(
+                "index version mismatch (found v{}, expected v{}). Re-run `vex index` to rebuild.",
+                header.version,
+                super::format::VERSION
+            );
         }
 
         Ok(reader)
@@ -125,23 +129,22 @@ impl IndexReader {
         super::refs_fst::RefReader::new(self.fst_bytes(), self.posting_bytes()).ok()
     }
 
-    /// Build a file_id → path mapping from symbol records.
-    /// file_id is assigned sequentially per unique file_offset during indexing.
+    /// Read file_id → path mapping from the file table section.
+    /// The file table stores u32 string offsets, one per file_id, written by the writer.
     pub fn file_paths(&self) -> Vec<String> {
-        let mut seen: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-        let mut paths: Vec<String> = Vec::new();
-        let mut next_id: u32 = 0;
+        let h = self.header();
+        let count = h.file_table_count as usize;
+        let base = h.file_table_offset as usize;
+        let mut paths = Vec::with_capacity(count);
 
-        for i in 0..self.symbol_count() {
-            if let Some(rec) = self.symbol(i) {
-                seen.entry(rec.file_offset).or_insert_with(|| {
-                    let id = next_id;
-                    next_id += 1;
-                    let path = self.read_string(rec.file_offset).to_string();
-                    paths.push(path);
-                    id
-                });
+        for i in 0..count {
+            let offset = base + i * 4;
+            if offset + 4 > self.mmap.len() {
+                break;
             }
+            let str_offset =
+                u32::from_le_bytes(self.mmap[offset..offset + 4].try_into().unwrap_or([0; 4]));
+            paths.push(self.read_string(str_offset).to_string());
         }
         paths
     }

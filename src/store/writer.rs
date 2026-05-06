@@ -46,15 +46,15 @@ pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Pa
     let mut records = Vec::new();
     let mut symbol_idx: u32 = 0;
 
-    // Collect file_id mapping for refs: file path → sequential id
+    // Assign file_id sequentially per unique path. Collect ordered file table.
     let mut file_ids: HashMap<String, u32> = HashMap::new();
-    let mut next_file_id: u32 = 0;
+    let mut file_table: Vec<u32> = Vec::new(); // string offsets ordered by file_id
 
     for file in parsed {
-        let file_offset = strings.intern(&file.path);
-        let _file_id = *file_ids.entry(file.path.clone()).or_insert_with(|| {
-            let id = next_file_id;
-            next_file_id += 1;
+        let str_offset = strings.intern(&file.path);
+        file_ids.entry(file.path.clone()).or_insert_with(|| {
+            let id = file_table.len() as u32;
+            file_table.push(str_offset);
             id
         });
 
@@ -76,7 +76,7 @@ pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Pa
                 name_offset,
                 kind: sym.kind as u8,
                 _pad: [0; 3],
-                file_offset,
+                file_offset: str_offset,
                 line: sym.line as u32,
                 signature_offset: sig_offset,
                 vector_index: vec_idx,
@@ -89,7 +89,10 @@ pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Pa
     let refs_input: Vec<(u32, &[crate::index::symbols::ParsedRef])> = parsed
         .iter()
         .map(|file| {
-            let file_id = file_ids.get(&file.path).copied().unwrap_or(0);
+            let file_id = file_ids
+                .get(&file.path)
+                .copied()
+                .expect("file_id must exist after prior loop");
             (file_id, file.refs.as_slice())
         })
         .collect();
@@ -110,6 +113,7 @@ pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Pa
     let strings_offset = vectors_offset + vectors_size as u64;
     let fst_offset = strings_offset + strings.data.len() as u64;
     let postings_offset = fst_offset + fst_bytes.len() as u64;
+    let file_table_offset = postings_offset + posting_bytes.len() as u64;
 
     let header = Header {
         magic: *MAGIC,
@@ -126,6 +130,9 @@ pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Pa
         fst_len: fst_bytes.len() as u64,
         postings_offset,
         postings_len: posting_bytes.len() as u64,
+        file_table_offset,
+        file_table_count: file_table.len() as u32,
+        _padding2: 0,
     };
 
     let file = std::fs::File::create(output)?;
@@ -136,7 +143,6 @@ pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Pa
         unsafe { std::slice::from_raw_parts(&header as *const Header as *const u8, Header::SIZE) };
     w.write_all(header_bytes)?;
 
-    // Write symbol records
     for rec in &records {
         // SAFETY: SymbolRecord is #[repr(C)] with fixed layout
         let bytes: &[u8] = unsafe {
@@ -145,7 +151,6 @@ pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Pa
         w.write_all(bytes)?;
     }
 
-    // Write vectors
     for (i, vec) in vectors.iter().enumerate() {
         ensure!(
             vec.len() == VECTOR_DIM as usize,
@@ -162,12 +167,14 @@ pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Pa
         w.write_all(bytes)?;
     }
 
-    // Write strings
     w.write_all(&strings.data)?;
-
-    // Write FST + postings
     w.write_all(&fst_bytes)?;
     w.write_all(&posting_bytes)?;
+
+    // Write file table: array of u32 string offsets, one per file_id
+    for &str_offset in &file_table {
+        w.write_all(&str_offset.to_le_bytes())?;
+    }
 
     w.flush()?;
 
@@ -175,7 +182,7 @@ pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Pa
     tracing::info!(
         symbols = records.len(),
         refs = ref_count,
-        vectors = vectors.len(),
+        files = file_table.len(),
         fst_bytes = fst_bytes.len(),
         "index written to {:?}",
         output

@@ -44,7 +44,8 @@ pub fn build_refs_fst(
     }
 
     // Build posting lists: each name gets a contiguous block of (file_id, line) pairs
-    let mut posting_data: Vec<u8> = Vec::new();
+    let capacity: usize = refs_by_name.values().map(|v| 4 + v.len() * 8).sum();
+    let mut posting_data: Vec<u8> = Vec::with_capacity(capacity);
     let mut fst_builder = fst::MapBuilder::memory();
 
     for (name, entries) in &refs_by_name {
@@ -104,7 +105,7 @@ impl<'a> RefReader<'a> {
         let mut results = Vec::new();
 
         while let Some((key, offset)) = stream.next() {
-            let name = String::from_utf8_lossy(key).to_string();
+            let name = std::str::from_utf8(key).unwrap_or("").to_owned();
             let entries = self.read_posting_list(offset);
             results.push((name, entries));
         }
@@ -112,40 +113,67 @@ impl<'a> RefReader<'a> {
         results
     }
 
-    /// Total number of unique ref names in the FST.
-    #[allow(dead_code)] // used by tests and future MCP tools
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
         self.fst_map.len()
     }
 
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
         self.fst_map.is_empty()
     }
 
     fn read_posting_list(&self, offset: u64) -> Vec<RefEntry> {
         let offset = offset as usize;
         if offset + 4 > self.posting_data.len() {
+            tracing::warn!(offset, "posting list offset out of bounds");
             return Vec::new();
         }
 
-        let count =
-            u32::from_le_bytes(self.posting_data[offset..offset + 4].try_into().unwrap()) as usize;
+        let count = u32::from_le_bytes(
+            self.posting_data[offset..offset + 4]
+                .try_into()
+                .unwrap_or([0; 4]),
+        ) as usize;
 
         let entry_size = 8; // file_id(4) + line(4)
         let data_start = offset + 4;
-        let data_end = data_start + count * entry_size;
+
+        // Overflow-safe bounds check
+        let data_end = match count
+            .checked_mul(entry_size)
+            .and_then(|n| data_start.checked_add(n))
+        {
+            Some(end) => end,
+            None => {
+                tracing::warn!(count, "posting list count overflow");
+                return Vec::new();
+            }
+        };
 
         if data_end > self.posting_data.len() {
+            tracing::warn!(
+                count,
+                data_end,
+                len = self.posting_data.len(),
+                "posting list truncated"
+            );
             return Vec::new();
         }
 
         let mut entries = Vec::with_capacity(count);
         for i in 0..count {
             let base = data_start + i * entry_size;
-            let file_id = u32::from_le_bytes(self.posting_data[base..base + 4].try_into().unwrap());
-            let line =
-                u32::from_le_bytes(self.posting_data[base + 4..base + 8].try_into().unwrap());
+            let file_id = u32::from_le_bytes(
+                self.posting_data[base..base + 4]
+                    .try_into()
+                    .unwrap_or([0; 4]),
+            );
+            let line = u32::from_le_bytes(
+                self.posting_data[base + 4..base + 8]
+                    .try_into()
+                    .unwrap_or([0; 4]),
+            );
             entries.push(RefEntry { file_id, line });
         }
 
