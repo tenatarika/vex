@@ -34,6 +34,7 @@ impl StringPool {
 }
 
 /// Write parsed files into the binary index format, optionally with embeddings.
+#[allow(dead_code)] // used by integration tests
 pub fn write_index(parsed: &[ParsedFile], output: &Path) -> Result<()> {
     write_index_with_vectors(parsed, &[], output)
 }

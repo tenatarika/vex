@@ -20,7 +20,10 @@ impl Embedder {
     /// Generate embedding for a single text.
     pub fn embed(&mut self, text: &str) -> Result<Vec<f32>> {
         let results = self.model.embed(vec![text], None)?;
-        Ok(results.into_iter().next().unwrap_or_default())
+        results
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("embedding model returned no vector for input"))
     }
 
     /// Batch embed multiple texts efficiently.

@@ -3,6 +3,7 @@
 /// "PaymentGatewayService" -> ["payment", "gateway", "service"]
 /// "get_user_info"         -> ["get", "user", "info"]
 /// "XMLParser"             -> ["xml", "parser"]
+#[allow(dead_code)] // TODO: integrate into embedding context building
 pub fn tokenize(identifier: &str) -> Vec<String> {
     let mut tokens = Vec::new();
 

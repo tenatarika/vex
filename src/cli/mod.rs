@@ -66,10 +66,21 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Commands::Watch { path } => {
+        Commands::Update { path, semantic } => {
             let root = resolve_root(path)?;
-            println!("Watch mode not yet implemented (Phase 3)");
-            println!("Root: {}", root.display());
+            let start = Instant::now();
+            let (total, changed, deleted) = pipeline::update(&root, semantic)?;
+            let elapsed = start.elapsed();
+            if changed == 0 && deleted == 0 {
+                println!("Index up to date ({total} symbols)");
+            } else {
+                println!("Updated in {elapsed:.2?}: {changed} changed, {deleted} deleted, {total} total symbols");
+            }
+            Ok(())
+        }
+        Commands::Watch { path, semantic } => {
+            let root = resolve_root(path)?;
+            crate::watch::handler::watch(&root, semantic)?;
             Ok(())
         }
         Commands::Status { path } => {

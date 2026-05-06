@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[allow(dead_code)] // TODO: integrate into library error handling
 pub enum VexError {
     #[error("index not found at {path}; run `vex index` first")]
     IndexNotFound { path: String },

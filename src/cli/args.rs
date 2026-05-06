@@ -45,11 +45,26 @@ pub enum Commands {
         semantic: bool,
     },
 
+    /// Incremental update: only re-index changed files
+    Update {
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Generate semantic embeddings for changed files
+        #[arg(long, default_value = "false")]
+        semantic: bool,
+    },
+
     /// Watch for file changes and re-index incrementally
     Watch {
         /// Project root path (defaults to cwd)
         #[arg(short, long)]
         path: Option<PathBuf>,
+
+        /// Generate semantic embeddings
+        #[arg(long, default_value = "false")]
+        semantic: bool,
     },
 
     /// Show index statistics

@@ -58,5 +58,6 @@ pub struct ParsedRef {
 pub struct ParsedFile {
     pub path: String,
     pub symbols: Vec<ParsedSymbol>,
+    #[allow(dead_code)] // TODO: wire refs into search for usages/callers
     pub refs: Vec<ParsedRef>,
 }

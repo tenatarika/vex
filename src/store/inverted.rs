@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 /// In-memory inverted index: maps lowercased name tokens to symbol indices.
+#[derive(Default)]
 pub struct InvertedIndex {
     entries: HashMap<String, Vec<u32>>,
 }

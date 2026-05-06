@@ -1,13 +1,13 @@
-/// Binary index file format specification.
-///
-/// Layout:
-/// ```text
-/// [Header]           64 bytes   - magic, version, counts, section offsets
-/// [Symbols Section]  variable   - fixed-size symbol records
-/// [Vectors Section]  variable   - dense f32 arrays (384-dim each)
-/// [Strings Section]  variable   - deduplicated string pool
-/// [Inverted Index]   variable   - name tokens -> symbol offsets
-/// ```
+//! Binary index file format specification.
+//!
+//! Layout:
+//! ```text
+//! [Header]           64 bytes   - magic, version, counts, section offsets
+//! [Symbols Section]  variable   - fixed-size symbol records
+//! [Vectors Section]  variable   - dense f32 arrays (384-dim each)
+//! [Strings Section]  variable   - deduplicated string pool
+//! [Inverted Index]   variable   - name tokens -> symbol offsets
+//! ```
 
 pub const MAGIC: &[u8; 4] = b"VEXI";
 pub const VERSION: u32 = 1;

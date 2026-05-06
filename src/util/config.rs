@@ -17,6 +17,11 @@ pub fn index_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("index.vex")
 }
 
+/// Full path to the manifest file (tracks file hashes for incremental updates).
+pub fn manifest_path(project_root: &std::path::Path) -> PathBuf {
+    index_dir(project_root).join("manifest.json")
+}
+
 fn dirs_cache_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {

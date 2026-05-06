@@ -22,6 +22,7 @@ impl Language {
         }
     }
 
+    #[allow(dead_code)] // used by future language-specific logic
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Rust => "rust",
