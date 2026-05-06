@@ -1,16 +1,17 @@
 //! Binary index file format specification.
 //!
-//! Layout:
+//! Layout (v2):
 //! ```text
-//! [Header]           64 bytes   - magic, version, counts, section offsets
+//! [Header]           96 bytes   - magic, version, counts, section offsets
 //! [Symbols Section]  variable   - fixed-size symbol records
 //! [Vectors Section]  variable   - dense f32 arrays (384-dim each)
 //! [Strings Section]  variable   - deduplicated string pool
-//! [Inverted Index]   variable   - name tokens -> symbol offsets
+//! [FST Section]      variable   - fst::Map bytes (ref name → posting offset)
+//! [Postings Section] variable   - posting lists (count, [(file_id, line)])
 //! ```
 
 pub const MAGIC: &[u8; 4] = b"VEXI";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const VECTOR_DIM: u32 = 384;
 
 #[repr(C)]
@@ -26,6 +27,11 @@ pub struct Header {
     pub strings_offset: u64,
     pub inverted_offset: u64,
     pub hnsw_offset: u64,
+    // v2 fields:
+    pub fst_offset: u64,
+    pub fst_len: u64,
+    pub postings_offset: u64,
+    pub postings_len: u64,
 }
 
 impl Header {
@@ -33,6 +39,10 @@ impl Header {
 
     pub fn validate(&self) -> bool {
         self.magic == *MAGIC && self.version == VERSION
+    }
+
+    pub fn has_refs(&self) -> bool {
+        self.fst_len > 0
     }
 }
 

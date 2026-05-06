@@ -93,6 +93,69 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Commands::Usages { name, limit } => {
+            let root = resolve_root(None)?.canonicalize()?;
+            let index_path = config::index_path(&root);
+
+            if !index_path.exists() {
+                bail!(
+                    "No index found. Run `vex index` first.\nExpected: {}",
+                    index_path.display()
+                );
+            }
+
+            let reader = IndexReader::open(&index_path).context("open index")?;
+            let ref_reader = reader
+                .ref_reader()
+                .context("no refs in index — re-run `vex index` to rebuild")?;
+            let file_paths = reader.file_paths();
+
+            let entries = ref_reader.find(&name);
+            let total = entries.len();
+            let entries: Vec<_> = entries.into_iter().take(limit).collect();
+
+            match format {
+                OutputFormat::Json => {
+                    let json: Vec<serde_json::Value> = entries
+                        .iter()
+                        .map(|e| {
+                            let path = file_paths
+                                .get(e.file_id as usize)
+                                .map(|s| s.as_str())
+                                .unwrap_or("?");
+                            serde_json::json!({
+                                "path": path,
+                                "line": e.line,
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+                OutputFormat::Text => {
+                    if entries.is_empty() {
+                        println!("No usages found for \"{name}\"");
+
+                        let prefix_results = ref_reader.find_by_prefix(&name);
+                        if !prefix_results.is_empty() {
+                            println!("\nDid you mean:");
+                            for (n, refs) in prefix_results.iter().take(5) {
+                                println!("  {n} ({} usages)", refs.len());
+                            }
+                        }
+                    } else {
+                        println!("{name}: {total} usages (showing {})", entries.len());
+                        for e in &entries {
+                            let path = file_paths
+                                .get(e.file_id as usize)
+                                .map(|s| s.as_str())
+                                .unwrap_or("?");
+                            println!("  {path}:{}", e.line);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
         Commands::Update { path, semantic } => {
             let root = resolve_root(path)?;
             let start = Instant::now();

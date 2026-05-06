@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::{ensure, Result};
 
 use super::format::{Header, SymbolRecord, MAGIC, VECTOR_DIM, VERSION};
+use super::refs_fst;
 use crate::index::symbols::ParsedFile;
 
 /// String pool that deduplicates strings and returns offsets.
@@ -33,26 +34,30 @@ impl StringPool {
     }
 }
 
-/// Write parsed files into the binary index format, optionally with embeddings.
+/// Write parsed files into the binary index format (no vectors, no refs FST).
 #[allow(dead_code)] // used by integration tests
 pub fn write_index(parsed: &[ParsedFile], output: &Path) -> Result<()> {
-    write_index_with_vectors(parsed, &[], output)
+    write_index_full(parsed, &[], output)
 }
 
-/// Write parsed files + embedding vectors into the binary index format.
-/// `vectors` is a flat list of f32[384] vectors, one per symbol (in order).
-/// If empty, the vectors section is skipped.
-pub fn write_index_with_vectors(
-    parsed: &[ParsedFile],
-    vectors: &[Vec<f32>],
-    output: &Path,
-) -> Result<()> {
+/// Write parsed files + embedding vectors + refs FST into the binary index format.
+pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Path) -> Result<()> {
     let mut strings = StringPool::new();
     let mut records = Vec::new();
     let mut symbol_idx: u32 = 0;
 
+    // Collect file_id mapping for refs: file path → sequential id
+    let mut file_ids: HashMap<String, u32> = HashMap::new();
+    let mut next_file_id: u32 = 0;
+
     for file in parsed {
         let file_offset = strings.intern(&file.path);
+        let _file_id = *file_ids.entry(file.path.clone()).or_insert_with(|| {
+            let id = next_file_id;
+            next_file_id += 1;
+            id
+        });
+
         for sym in &file.symbols {
             let name_offset = strings.intern(&sym.name);
             let sig_offset = sym
@@ -80,6 +85,18 @@ pub fn write_index_with_vectors(
         }
     }
 
+    // Build FST + posting lists from refs
+    let refs_input: Vec<(u32, &[crate::index::symbols::ParsedRef])> = parsed
+        .iter()
+        .map(|file| {
+            let file_id = file_ids.get(&file.path).copied().unwrap_or(0);
+            (file_id, file.refs.as_slice())
+        })
+        .collect();
+
+    let (fst_bytes, posting_bytes) = refs_fst::build_refs_fst(&refs_input)?;
+
+    // Calculate section offsets
     let symbols_offset = Header::SIZE as u64;
     let symbols_size = records.len() * SymbolRecord::SIZE;
 
@@ -91,7 +108,8 @@ pub fn write_index_with_vectors(
     };
 
     let strings_offset = vectors_offset + vectors_size as u64;
-    let inverted_offset = strings_offset + strings.data.len() as u64;
+    let fst_offset = strings_offset + strings.data.len() as u64;
+    let postings_offset = fst_offset + fst_bytes.len() as u64;
 
     let header = Header {
         magic: *MAGIC,
@@ -102,8 +120,12 @@ pub fn write_index_with_vectors(
         symbols_offset,
         vectors_offset,
         strings_offset,
-        inverted_offset,
+        inverted_offset: 0,
         hnsw_offset: 0,
+        fst_offset,
+        fst_len: fst_bytes.len() as u64,
+        postings_offset,
+        postings_len: posting_bytes.len() as u64,
     };
 
     let file = std::fs::File::create(output)?;
@@ -123,15 +145,14 @@ pub fn write_index_with_vectors(
         w.write_all(bytes)?;
     }
 
-    // Write vectors (dense f32 arrays, each must be exactly VECTOR_DIM elements)
+    // Write vectors
     for (i, vec) in vectors.iter().enumerate() {
         ensure!(
             vec.len() == VECTOR_DIM as usize,
             "vector {i} has wrong dimension: expected {VECTOR_DIM}, got {}",
             vec.len()
         );
-        // SAFETY: vec is a valid &[f32] with known length. f32 has no invalid bit patterns.
-        // The resulting byte slice has the same lifetime as `vec`.
+        // SAFETY: vec is a valid &[f32] with known length
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(
                 vec.as_ptr() as *const u8,
@@ -144,12 +165,18 @@ pub fn write_index_with_vectors(
     // Write strings
     w.write_all(&strings.data)?;
 
+    // Write FST + postings
+    w.write_all(&fst_bytes)?;
+    w.write_all(&posting_bytes)?;
+
     w.flush()?;
 
+    let ref_count: usize = parsed.iter().map(|f| f.refs.len()).sum();
     tracing::info!(
         symbols = records.len(),
+        refs = ref_count,
         vectors = vectors.len(),
-        strings = strings.lookup.len(),
+        fst_bytes = fst_bytes.len(),
         "index written to {:?}",
         output
     );

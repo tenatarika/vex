@@ -143,7 +143,7 @@ fn write_output(
     let cache_dir = index_path.parent().context("index path has no parent")?;
     std::fs::create_dir_all(cache_dir).context("create cache directory")?;
 
-    store::writer::write_index_with_vectors(parsed, vectors, &index_path).context("write index")?;
+    store::writer::write_index_full(parsed, vectors, &index_path).context("write index")?;
 
     // Save manifest with pre-computed hashes (no extra file reads)
     let manifest_path = config::manifest_path(root);

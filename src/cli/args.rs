@@ -49,6 +49,16 @@ pub enum Commands {
         semantic: bool,
     },
 
+    /// Find all usages/references of a symbol
+    Usages {
+        /// Symbol name to find usages of
+        name: String,
+
+        /// Max results to return
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+    },
+
     /// Incremental update: only re-index changed files
     Update {
         /// Project root path (defaults to cwd)

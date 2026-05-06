@@ -90,6 +90,62 @@ impl IndexReader {
         h.vectors_offset != h.strings_offset
     }
 
+    /// Whether the index contains refs FST.
+    pub fn has_refs(&self) -> bool {
+        self.header().has_refs()
+    }
+
+    /// Get raw FST bytes slice from mmap.
+    pub fn fst_bytes(&self) -> &[u8] {
+        let h = self.header();
+        let start = h.fst_offset as usize;
+        let end = start + h.fst_len as usize;
+        if end > self.mmap.len() {
+            return &[];
+        }
+        &self.mmap[start..end]
+    }
+
+    /// Get raw posting list bytes slice from mmap.
+    pub fn posting_bytes(&self) -> &[u8] {
+        let h = self.header();
+        let start = h.postings_offset as usize;
+        let end = start + h.postings_len as usize;
+        if end > self.mmap.len() {
+            return &[];
+        }
+        &self.mmap[start..end]
+    }
+
+    /// Create a RefReader for zero-copy FST lookup of refs.
+    pub fn ref_reader(&self) -> Option<super::refs_fst::RefReader<'_>> {
+        if !self.has_refs() {
+            return None;
+        }
+        super::refs_fst::RefReader::new(self.fst_bytes(), self.posting_bytes()).ok()
+    }
+
+    /// Build a file_id → path mapping from symbol records.
+    /// file_id is assigned sequentially per unique file_offset during indexing.
+    pub fn file_paths(&self) -> Vec<String> {
+        let mut seen: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let mut paths: Vec<String> = Vec::new();
+        let mut next_id: u32 = 0;
+
+        for i in 0..self.symbol_count() {
+            if let Some(rec) = self.symbol(i) {
+                seen.entry(rec.file_offset).or_insert_with(|| {
+                    let id = next_id;
+                    next_id += 1;
+                    let path = self.read_string(rec.file_offset).to_string();
+                    paths.push(path);
+                    id
+                });
+            }
+        }
+        paths
+    }
+
     /// Total number of indexed symbols.
     pub fn symbol_count(&self) -> usize {
         self.header().symbol_count as usize

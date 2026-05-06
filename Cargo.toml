@@ -40,6 +40,9 @@ fastembed = "5.13"
 # HNSW vector index
 usearch = "2.25"
 
+# FST for refs lookup (zero-copy, prefix/fuzzy search)
+fst = "0.4"
+
 # Memory-mapped IO
 memmap2 = "0.9"
 
