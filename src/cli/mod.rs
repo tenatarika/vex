@@ -156,6 +156,71 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Commands::Pattern {
+            pattern,
+            lang,
+            path,
+            limit,
+        } => {
+            let root = resolve_root(path)?;
+            let language = crate::parse::language::Language::from_extension(&lang)
+                .or(match lang.as_str() {
+                    "rust" => Some(crate::parse::language::Language::Rust),
+                    "python" => Some(crate::parse::language::Language::Python),
+                    "go" => Some(crate::parse::language::Language::Go),
+                    "java" => Some(crate::parse::language::Language::Java),
+                    "csharp" | "cs" => Some(crate::parse::language::Language::CSharp),
+                    "ruby" | "rb" => Some(crate::parse::language::Language::Ruby),
+                    "swift" => Some(crate::parse::language::Language::Swift),
+                    _ => None,
+                })
+                .with_context(|| format!("unknown language: {lang}"))?;
+
+            let start = Instant::now();
+            let matches = crate::pattern::scan(&root, &pattern, language, limit)?;
+            let elapsed = start.elapsed();
+
+            match format {
+                OutputFormat::Json => {
+                    let json: Vec<serde_json::Value> = matches
+                        .iter()
+                        .map(|m| {
+                            let mut obj = serde_json::json!({
+                                "path": m.path,
+                                "line": m.line,
+                                "text": m.matched_text.lines().next().unwrap_or(""),
+                            });
+                            if !m.captures.is_empty() {
+                                obj["captures"] = serde_json::json!(m
+                                    .captures
+                                    .iter()
+                                    .map(|(k, v)| serde_json::json!({k: v}))
+                                    .collect::<Vec<_>>());
+                            }
+                            obj
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+                OutputFormat::Text | OutputFormat::Compact => {
+                    if matches.is_empty() {
+                        println!("No matches for pattern in {elapsed:.2?}");
+                    } else {
+                        println!("{} matches in {elapsed:.2?}\n", matches.len());
+                        for m in &matches {
+                            let first_line = m.matched_text.lines().next().unwrap_or("");
+                            println!("{}:{}", m.path, m.line);
+                            println!("  {first_line}");
+                            for (name, value) in &m.captures {
+                                println!("  ${name} = {value}");
+                            }
+                            println!();
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
         Commands::Update { path, semantic } => {
             let root = resolve_root(path)?;
             let start = Instant::now();

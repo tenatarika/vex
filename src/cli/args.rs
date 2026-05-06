@@ -61,6 +61,24 @@ pub enum Commands {
         limit: usize,
     },
 
+    /// Find code matching a structural AST pattern (like ast-grep)
+    Pattern {
+        /// Code pattern to match (e.g. 'fn $NAME($$$) -> Result')
+        pattern: String,
+
+        /// Language to search in
+        #[arg(short, long)]
+        lang: String,
+
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Max results to return
+        #[arg(long, default_value = "50")]
+        limit: usize,
+    },
+
     /// Incremental update: only re-index changed files
     Update {
         /// Project root path (defaults to cwd)

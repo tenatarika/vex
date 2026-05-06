@@ -5,6 +5,7 @@ mod cli;
 mod embed;
 mod index;
 mod parse;
+mod pattern;
 mod search;
 mod store;
 mod util;
