@@ -1,18 +1,22 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rayon::prelude::*;
 
 use crate::index::symbols::ParsedFile;
 use crate::parse;
 use crate::parse::language::Language;
+use crate::store;
+use crate::util::config;
 
 const CHUNK_SIZE: usize = 500;
 
 /// Index a project directory: discover files, parse in parallel, write to store.
-pub fn run(root: &Path) -> Result<Vec<ParsedFile>> {
-    let files = discover_files(root)?;
+/// Returns the number of symbols indexed.
+pub fn run(root: &Path) -> Result<usize> {
+    let root = root.canonicalize().context("canonicalize root")?;
+    let files = discover_files(&root)?;
     tracing::info!(count = files.len(), "discovered files");
 
     let counter = AtomicUsize::new(0);
@@ -27,7 +31,7 @@ pub fn run(root: &Path) -> Result<Vec<ParsedFile>> {
                 let ext = path.extension()?.to_str()?;
                 let lang = Language::from_extension(ext)?;
                 let content = std::fs::read_to_string(path).ok()?;
-                let rel = path.strip_prefix(root).ok()?.to_string_lossy().to_string();
+                let rel = path.strip_prefix(&root).ok()?.to_string_lossy().to_string();
 
                 let done = counter.fetch_add(1, Ordering::Relaxed);
                 if done % 500 == 0 {
@@ -38,12 +42,19 @@ pub fn run(root: &Path) -> Result<Vec<ParsedFile>> {
             })
             .collect();
 
-        // TODO: write to store here
         all_parsed.extend(parsed);
     }
 
-    tracing::info!(symbols = all_parsed.iter().map(|f| f.symbols.len()).sum::<usize>(), "indexing complete");
-    Ok(all_parsed)
+    let symbol_count: usize = all_parsed.iter().map(|f| f.symbols.len()).sum();
+
+    let index_path = config::index_path(&root);
+    std::fs::create_dir_all(index_path.parent().unwrap())
+        .context("create cache directory")?;
+    store::writer::write_index(&all_parsed, &index_path)
+        .context("write index")?;
+
+    tracing::info!(symbols = symbol_count, path = ?index_path, "indexing complete");
+    Ok(symbol_count)
 }
 
 fn discover_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {

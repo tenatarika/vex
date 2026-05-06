@@ -12,6 +12,20 @@ impl InvertedIndex {
         }
     }
 
+    /// Build an inverted index from an mmap'd IndexReader.
+    pub fn from_reader(reader: &super::reader::IndexReader) -> Self {
+        let mut idx = Self::new();
+        for i in 0..reader.symbol_count() {
+            if let Some(rec) = reader.symbol(i) {
+                let name = reader.read_string(rec.name_offset);
+                if !name.is_empty() {
+                    idx.insert(name, i as u32);
+                }
+            }
+        }
+        idx
+    }
+
     /// Add a symbol name to the index.
     pub fn insert(&mut self, name: &str, symbol_idx: u32) {
         let key = name.to_lowercase();
