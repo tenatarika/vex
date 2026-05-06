@@ -91,33 +91,46 @@ References stored in an FST (Finite State Transducer) — zero-copy lookup from 
 
 Compared against [ast-index](https://github.com/defendend/Claude-ast-index-search) v3.31.0 (SQLite + FTS5).
 
-### Indexing Speed
+### Indexing
 
-| Project | vex | ast-index | Winner |
-|---------|-----|-----------|--------|
-| Small (2K lines Rust) | **16 ms** | 46 ms | **vex 2.9x** |
-| Medium (31K lines Rust) | **39 ms** | 108 ms | **vex 2.8x** |
-| Large (1247 Python files) | **200 ms** | 623 ms | **vex 3.1x** |
+| Project | vex | ast-index | Speedup | vex size | ast-index size |
+|---------|-----|-----------|---------|----------|----------------|
+| Small (2K lines Rust) | **16 ms** | 48 ms | **3.0x** | 43 KB | 490 KB |
+| Medium (31K lines Rust) | **37 ms** | 112 ms | **3.0x** | 314 KB | 3.4 MB |
+| Large (1247 Python files) | **183 ms** | 633 ms | **3.5x** | 1.8 MB | 15.9 MB |
 
-### Index Size
+Index size: **10-11x smaller** than ast-index (mmap binary + FST vs SQLite + FTS5).
 
-| Project | vex | ast-index | Ratio |
-|---------|-----|-----------|-------|
-| Small | **30 KB** | 420 KB | **14x smaller** |
-| Medium | **286 KB** | 3.4 MB | **12x smaller** |
-| Large | **1.6 MB** | 15.9 MB | **10x smaller** |
-
-### Search Speed (avg 10 runs, medium project)
+### Search (avg 10 runs, medium project)
 
 | Query | ast-index | vex | Speedup |
 |-------|-----------|-----|---------|
-| "search" | 8.3 ms | **3.6 ms** | **2.3x** |
-| "SymbolKind" | 8.4 ms | **3.6 ms** | **2.3x** |
-| "IndexReader" | 10.3 ms | **3.5 ms** | **2.9x** |
+| "search" | 8.8 ms | **3.7 ms** | **2.4x** |
+| "SymbolKind" | 8.1 ms | **3.6 ms** | **2.2x** |
+| "parse_file" | 7.6 ms | **3.7 ms** | **2.0x** |
+| "IndexReader" | 9.8 ms | **3.7 ms** | **2.7x** |
 
-### Semantic Search Quality
+Search latency is constant (~3.7 ms) regardless of index size thanks to FST O(query_len) lookup.
 
-Queries where structural search returns 0 results but semantic search finds relevant symbols:
+### Usages (FST vs SQLite)
+
+| Query | ast-index | vex | Speedup |
+|-------|-----------|-----|---------|
+| "SymbolKind" | 4.8 ms | **3.7 ms** | **1.3x** |
+
+### Pattern Matching (vex only)
+
+| Pattern | Time | Matches |
+|---------|------|---------|
+| `fn $NAME($$$) -> Result` | 31 ms | 50 |
+| `pub struct $NAME` | 32 ms | 45 |
+| `fn $NAME($$$)` | 31 ms | 50 |
+
+ast-index does not support AST pattern matching.
+
+### Semantic Search
+
+Queries where structural search returns 0 results but semantic finds relevant symbols:
 
 | Query | Structural | Semantic | Top results |
 |-------|-----------|----------|-------------|
@@ -127,11 +140,9 @@ Queries where structural search returns 0 results but semantic search finds rele
 | "file system directory walker" | 0 | **20** | index_directory, walk_for_kind, find_project_root |
 | "handle errors and exceptions" | 0 | **20** | try_recover_from_error, extract_parents_from_error_text |
 
-### Search Latency
-
 | Mode | Latency |
 |------|---------|
-| Structural only | ~4 ms |
+| Structural only | ~3.7 ms |
 | Hybrid (structural + semantic) | ~55 ms |
 
 ## Supported Languages
