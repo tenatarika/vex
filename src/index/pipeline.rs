@@ -197,11 +197,24 @@ fn discover_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {
         .build()
     {
         let entry = entry?;
-        if entry.file_type().is_some_and(|ft| ft.is_file()) {
-            let path = entry.into_path();
-            if std::fs::metadata(&path).is_ok_and(|m| m.len() <= 1_048_576) {
-                files.push(path);
-            }
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
+        let path = entry.into_path();
+
+        // Filter by supported extension BEFORE reading — avoids I/O on irrelevant files
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(Language::from_extension)
+            .is_none()
+        {
+            continue;
+        }
+
+        // Skip files > 1 MB (likely generated/minified)
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() <= 1_048_576) {
+            files.push(path);
         }
     }
 
