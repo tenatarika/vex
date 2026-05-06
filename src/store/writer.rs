@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 
 use super::format::{Header, SymbolRecord, MAGIC, VECTOR_DIM, VERSION};
 use crate::index::symbols::ParsedFile;
@@ -33,10 +33,22 @@ impl StringPool {
     }
 }
 
-/// Write parsed files into the binary index format.
+/// Write parsed files into the binary index format, optionally with embeddings.
 pub fn write_index(parsed: &[ParsedFile], output: &Path) -> Result<()> {
+    write_index_with_vectors(parsed, &[], output)
+}
+
+/// Write parsed files + embedding vectors into the binary index format.
+/// `vectors` is a flat list of f32[384] vectors, one per symbol (in order).
+/// If empty, the vectors section is skipped.
+pub fn write_index_with_vectors(
+    parsed: &[ParsedFile],
+    vectors: &[Vec<f32>],
+    output: &Path,
+) -> Result<()> {
     let mut strings = StringPool::new();
     let mut records = Vec::new();
+    let mut symbol_idx: u32 = 0;
 
     for file in parsed {
         let file_offset = strings.intern(&file.path);
@@ -48,6 +60,12 @@ pub fn write_index(parsed: &[ParsedFile], output: &Path) -> Result<()> {
                 .map(|s| strings.intern(s))
                 .unwrap_or(u32::MAX);
 
+            let vec_idx = if !vectors.is_empty() && (symbol_idx as usize) < vectors.len() {
+                symbol_idx
+            } else {
+                u32::MAX
+            };
+
             records.push(SymbolRecord {
                 name_offset,
                 kind: sym.kind as u8,
@@ -55,15 +73,23 @@ pub fn write_index(parsed: &[ParsedFile], output: &Path) -> Result<()> {
                 file_offset,
                 line: sym.line as u32,
                 signature_offset: sig_offset,
-                vector_index: u32::MAX, // no embeddings yet
+                vector_index: vec_idx,
             });
+            symbol_idx += 1;
         }
     }
 
     let symbols_offset = Header::SIZE as u64;
     let symbols_size = records.len() * SymbolRecord::SIZE;
+
     let vectors_offset = symbols_offset + symbols_size as u64;
-    let strings_offset = vectors_offset; // no vectors yet
+    let vectors_size = if vectors.is_empty() {
+        0
+    } else {
+        vectors.len() * VECTOR_DIM as usize * std::mem::size_of::<f32>()
+    };
+
+    let strings_offset = vectors_offset + vectors_size as u64;
     let inverted_offset = strings_offset + strings.data.len() as u64;
 
     let header = Header {
@@ -82,15 +108,31 @@ pub fn write_index(parsed: &[ParsedFile], output: &Path) -> Result<()> {
     let file = std::fs::File::create(output)?;
     let mut w = BufWriter::new(file);
 
-    // Write header
+    // SAFETY: Header is #[repr(C)] with fixed layout, no padding issues on same arch
     let header_bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(&header as *const Header as *const u8, Header::SIZE) };
     w.write_all(header_bytes)?;
 
     // Write symbol records
     for rec in &records {
+        // SAFETY: SymbolRecord is #[repr(C)] with fixed layout
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(rec as *const SymbolRecord as *const u8, SymbolRecord::SIZE)
+        };
+        w.write_all(bytes)?;
+    }
+
+    // Write vectors (dense f32 arrays, each must be exactly VECTOR_DIM elements)
+    for (i, vec) in vectors.iter().enumerate() {
+        ensure!(
+            vec.len() == VECTOR_DIM as usize,
+            "vector {i} has wrong dimension: expected {VECTOR_DIM}, got {}",
+            vec.len()
+        );
+        // SAFETY: vec is a valid &[f32] with known length. f32 has no invalid bit patterns.
+        // The resulting byte slice has the same lifetime as `vec`.
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(vec.as_ptr() as *const u8, vec.len() * std::mem::size_of::<f32>())
         };
         w.write_all(bytes)?;
     }
@@ -102,6 +144,7 @@ pub fn write_index(parsed: &[ParsedFile], output: &Path) -> Result<()> {
 
     tracing::info!(
         symbols = records.len(),
+        vectors = vectors.len(),
         strings = strings.lookup.len(),
         "index written to {:?}",
         output

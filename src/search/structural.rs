@@ -35,7 +35,7 @@ pub fn search(
         .collect()
 }
 
-fn symbol_kind_str(kind: u8) -> &'static str {
+pub fn symbol_kind_str(kind: u8) -> &'static str {
     match kind {
         0 => "function",
         1 => "method",

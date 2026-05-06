@@ -30,11 +30,11 @@ tree-sitter-typescript = "0.23"
 tree-sitter-go = "0.23"
 tree-sitter-kotlin = "0.3"
 
-# ONNX inference for local embeddings
-ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
+# Embedding generation (bundled ONNX Runtime + tokenizer + model download)
+fastembed = "5.13"
 
 # HNSW vector index
-usearch = "2.16"
+usearch = "2.25"
 
 # Memory-mapped IO
 memmap2 = "0.9"

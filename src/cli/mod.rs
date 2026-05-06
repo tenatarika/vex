@@ -6,26 +6,36 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use args::{Cli, Commands};
 
+use crate::embed::Embedder;
 use crate::index::pipeline;
-use crate::search::structural;
+use crate::search::{fusion, semantic, structural};
 use crate::store::inverted::InvertedIndex;
 use crate::store::reader::IndexReader;
 use crate::util::config;
 
+fn resolve_root(path: Option<std::path::PathBuf>) -> Result<std::path::PathBuf> {
+    match path {
+        Some(p) => Ok(p),
+        None => std::env::current_dir().context("get working directory"),
+    }
+}
+
 pub fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
-        Commands::Index { path } => {
-            let root = path.unwrap_or_else(|| std::env::current_dir().unwrap());
+        Commands::Index { path, semantic } => {
+            let root = resolve_root(path)?;
             let start = Instant::now();
-            let count = pipeline::run(&root)?;
+            let count = pipeline::run(&root, semantic)?;
             let elapsed = start.elapsed();
             println!("Indexed {count} symbols in {elapsed:.2?}");
+            if semantic {
+                println!("Embeddings: enabled");
+            }
             println!("Index: {}", config::index_path(&root.canonicalize()?).display());
             Ok(())
         }
-        Commands::Search { query, limit, semantic: _ } => {
-            let root = std::env::current_dir()?;
-            let root = root.canonicalize()?;
+        Commands::Search { query, limit, semantic } => {
+            let root = resolve_root(None)?.canonicalize()?;
             let index_path = config::index_path(&root);
 
             if !index_path.exists() {
@@ -36,7 +46,18 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 .context("open index")?;
             let inverted = InvertedIndex::from_reader(&reader);
 
-            let results = structural::search(&reader, &inverted, &query, limit);
+            let structural_results = structural::search(&reader, &inverted, &query, limit);
+
+            let results = if semantic && reader.has_vectors() {
+                let mut embedder = Embedder::new().context("load embedding model")?;
+                let semantic_results = semantic::search_with_embedder(&reader, &mut embedder, &query, limit)?;
+                fusion::fuse(structural_results, semantic_results, limit)
+            } else {
+                if semantic && !reader.has_vectors() {
+                    eprintln!("Warning: no embeddings in index. Run `vex index --semantic` first.");
+                }
+                structural_results
+            };
 
             if results.is_empty() {
                 println!("No results for \"{query}\"");
@@ -46,14 +67,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Watch { path } => {
-            let root = path.unwrap_or_else(|| std::env::current_dir().unwrap());
+            let root = resolve_root(path)?;
             println!("Watch mode not yet implemented (Phase 3)");
             println!("Root: {}", root.display());
             Ok(())
         }
         Commands::Status { path } => {
-            let root = path.unwrap_or_else(|| std::env::current_dir().unwrap());
-            let root = root.canonicalize().context("canonicalize root")?;
+            let root = resolve_root(path)?.canonicalize().context("canonicalize root")?;
             let index_path = config::index_path(&root);
 
             if !index_path.exists() {
@@ -65,10 +85,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let meta = std::fs::metadata(&index_path)?;
             let reader = IndexReader::open(&index_path)?;
 
-            println!("Project:  {}", root.display());
-            println!("Index:    {}", index_path.display());
-            println!("Size:     {:.1} KB", meta.len() as f64 / 1024.0);
-            println!("Symbols:  {}", reader.symbol_count());
+            println!("Project:    {}", root.display());
+            println!("Index:      {}", index_path.display());
+            println!("Size:       {:.1} KB", meta.len() as f64 / 1024.0);
+            println!("Symbols:    {}", reader.symbol_count());
+            println!("Embeddings: {}", if reader.has_vectors() { "yes" } else { "no" });
             Ok(())
         }
     }

@@ -25,6 +25,10 @@ pub enum Commands {
         /// Project root path (defaults to cwd)
         #[arg(short, long)]
         path: Option<PathBuf>,
+
+        /// Generate semantic embeddings (slower but enables semantic search)
+        #[arg(long, default_value = "false")]
+        semantic: bool,
     },
 
     /// Search symbols by name or semantics

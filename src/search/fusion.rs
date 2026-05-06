@@ -13,17 +13,18 @@ pub fn fuse(
 ) -> Vec<SearchResult> {
     const K: f64 = 60.0;
 
-    let mut scores: HashMap<String, (f64, Option<SearchResult>)> = HashMap::new();
+    type Key = (String, String, usize); // (path, name, line)
+    let mut scores: HashMap<Key, (f64, Option<SearchResult>)> = HashMap::new();
 
     for (rank, result) in structural.into_iter().enumerate() {
-        let key = format!("{}:{}:{}", result.path, result.name, result.line);
+        let key = (result.path.clone(), result.name.clone(), result.line);
         let entry = scores.entry(key).or_insert((0.0, None));
         entry.0 += 1.0 / (K + rank as f64);
         entry.1 = Some(result);
     }
 
     for (rank, result) in semantic.into_iter().enumerate() {
-        let key = format!("{}:{}:{}", result.path, result.name, result.line);
+        let key = (result.path.clone(), result.name.clone(), result.line);
         let entry = scores.entry(key).or_insert((0.0, None));
         entry.0 += 1.0 / (K + rank as f64);
         if entry.1.is_none() {
