@@ -30,6 +30,22 @@ impl Language {
         }
     }
 
+    /// Get the tree-sitter Language for this language variant.
+    pub fn ts_language(&self) -> tree_sitter::Language {
+        match self {
+            Self::Rust => tree_sitter_rust::LANGUAGE.into(),
+            Self::Python => tree_sitter_python::LANGUAGE.into(),
+            Self::Go => tree_sitter_go::LANGUAGE.into(),
+            Self::Java => tree_sitter_java::LANGUAGE.into(),
+            Self::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+            Self::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+            Self::Swift => tree_sitter_swift::LANGUAGE.into(),
+            Self::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
+            // TSX grammar is a superset of TypeScript — handles .ts, .tsx, .js, .jsx
+            Self::TypeScript => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {

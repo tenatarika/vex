@@ -31,3 +31,21 @@
 ;; Constants
 (const_item
   name: (identifier) @const.name) @const.def
+
+;; Imports: use path::Name
+(use_declaration
+  (scoped_identifier
+    name: (identifier) @import.name))
+
+;; Imports: use path::{A, B}
+(use_declaration
+  (scoped_use_list
+    (use_list
+      (identifier) @import.name)))
+
+;; Imports: use path::{sub::A}
+(use_declaration
+  (scoped_use_list
+    (use_list
+      (scoped_identifier
+        name: (identifier) @import.name))))

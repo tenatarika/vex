@@ -100,7 +100,7 @@ pub fn parse_pattern(pattern: &str, lang: Language) -> Result<PatternTree> {
 /// Find all AST nodes in `source` whose text matches the pattern.
 pub fn find_matches(source: &str, pattern: &PatternTree, file_path: &str) -> Vec<PatternMatch> {
     let mut parser = Parser::new();
-    let ts_lang = get_ts_language(pattern.lang);
+    let ts_lang = pattern.lang.ts_language();
     if parser.set_language(&ts_lang).is_err() {
         return Vec::new();
     }
@@ -306,19 +306,6 @@ fn safe_node_text<'a>(node: Node, source: &'a str) -> &'a str {
         end -= 1;
     }
     &source[start..end]
-}
-
-fn get_ts_language(lang: Language) -> tree_sitter::Language {
-    match lang {
-        Language::Rust => tree_sitter_rust::LANGUAGE.into(),
-        Language::Python => tree_sitter_python::LANGUAGE.into(),
-        Language::Go => tree_sitter_go::LANGUAGE.into(),
-        Language::Java => tree_sitter_java::LANGUAGE.into(),
-        Language::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
-        Language::Ruby => tree_sitter_ruby::LANGUAGE.into(),
-        Language::Swift => tree_sitter_swift::LANGUAGE.into(),
-        Language::Kotlin | Language::TypeScript => tree_sitter_rust::LANGUAGE.into(),
-    }
 }
 
 #[cfg(test)]

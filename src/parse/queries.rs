@@ -39,6 +39,19 @@ static SWIFT_QUERY: LazyLock<Query> = LazyLock::new(|| {
     Query::new(&tree_sitter_swift::LANGUAGE.into(), src).expect("failed to compile swift query")
 });
 
+static KOTLIN_QUERY: LazyLock<Query> = LazyLock::new(|| {
+    let src = include_str!("../../queries/kotlin.scm");
+    Query::new(&tree_sitter_kotlin_ng::LANGUAGE.into(), src)
+        .expect("failed to compile kotlin query")
+});
+
+static TYPESCRIPT_QUERY: LazyLock<Query> = LazyLock::new(|| {
+    let src = include_str!("../../queries/typescript.scm");
+    // TSX grammar is a superset of TypeScript — handles both .ts and .tsx
+    Query::new(&tree_sitter_typescript::LANGUAGE_TSX.into(), src)
+        .expect("failed to compile typescript query")
+});
+
 /// Get the compiled tree-sitter query for a language.
 pub fn get_query(lang: Language) -> Option<&'static Query> {
     match lang {
@@ -49,6 +62,7 @@ pub fn get_query(lang: Language) -> Option<&'static Query> {
         Language::CSharp => Some(&CSHARP_QUERY),
         Language::Ruby => Some(&RUBY_QUERY),
         Language::Swift => Some(&SWIFT_QUERY),
-        Language::Kotlin | Language::TypeScript => None, // TODO: grammar API differences
+        Language::Kotlin => Some(&KOTLIN_QUERY),
+        Language::TypeScript => Some(&TYPESCRIPT_QUERY),
     }
 }

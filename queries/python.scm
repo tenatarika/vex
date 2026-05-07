@@ -10,3 +10,13 @@
 (decorated_definition
   (function_definition
     name: (identifier) @fn.name)) @fn.def
+
+;; Imports: import os
+(import_statement
+  (dotted_name
+    (identifier) @import.name))
+
+;; Imports: from X import Y
+(import_from_statement
+  (dotted_name
+    (identifier) @import.name))

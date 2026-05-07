@@ -1,20 +1,27 @@
-;; Classes
-(class_declaration
-  (type_identifier) @class.name) @class.def
-
-;; Objects
-(object_declaration
-  (type_identifier) @class.name) @class.def
-
 ;; Functions
 (function_declaration
-  (simple_identifier) @fn.name) @fn.def
+  (identifier) @fn.name)
+
+;; Classes (covers class, data class, enum class)
+(class_declaration
+  "class"
+  (identifier) @class.name)
 
 ;; Interfaces
 (class_declaration
-  (type_identifier) @interface.name) @interface.def
+  "interface"
+  (identifier) @interface.name)
 
-;; Properties
+;; Objects (singleton)
+(object_declaration
+  (identifier) @class.name)
+
+;; Properties (top-level or class-level val/var)
 (property_declaration
   (variable_declaration
-    (simple_identifier) @property.name)) @property.def
+    (identifier) @property.name))
+
+;; Imports: import com.example.Name
+(import
+  (qualified_identifier
+    (identifier) @import.name))

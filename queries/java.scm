@@ -17,3 +17,8 @@
 ;; Constructors
 (constructor_declaration
   name: (identifier) @fn.name) @fn.def
+
+;; Imports: import com.example.Name
+(import_declaration
+  (scoped_identifier
+    name: (identifier) @import.name))

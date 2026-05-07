@@ -17,3 +17,8 @@
   (type_spec
     name: (type_identifier) @interface.name
     type: (interface_type))) @interface.def
+
+;; Imports: import "fmt"
+(import_spec
+  (interpreted_string_literal
+    (interpreted_string_literal_content) @import.name))

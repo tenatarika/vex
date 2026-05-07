@@ -9,8 +9,9 @@ use crate::index::symbols::ParsedFile;
 
 /// Parse a single file and extract symbols + references.
 pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFile> {
-    let symbols = extractor::extract_symbols(content, lang)?;
-    let refs = extractor::extract_references(content, lang);
+    let (symbols, imports) = extractor::extract_symbols_and_imports(content, lang)?;
+    let mut refs = extractor::extract_references(content);
+    refs.extend(imports);
     Ok(ParsedFile {
         path: path.to_string(),
         symbols,
