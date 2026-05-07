@@ -197,6 +197,98 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
             "status".into(),
             vec!["--path".into(), project_root.to_string()],
         )),
+        "show" => {
+            let symbols: Vec<String> = if let Some(arr) = args["symbols"].as_array() {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            } else if let Some(s) = args["symbol"].as_str() {
+                vec![s.to_string()]
+            } else {
+                anyhow::bail!("missing symbol(s)")
+            };
+            let limit = args["limit"].as_u64().unwrap_or(1);
+            let mut extra = symbols;
+            extra.extend(["--limit".into(), limit.to_string()]);
+            Ok(("show".into(), extra))
+        }
+        "usages" => {
+            let name = args["name"].as_str().context("missing name")?;
+            let limit = args["limit"].as_u64().unwrap_or(50);
+            Ok((
+                "usages".into(),
+                vec![name.to_string(), "--limit".into(), limit.to_string()],
+            ))
+        }
+        "grep" => {
+            let pattern = args["pattern"].as_str().context("missing pattern")?;
+            let limit = args["limit"].as_u64().unwrap_or(50);
+            let mut extra = vec![
+                pattern.to_string(),
+                "--limit".into(),
+                limit.to_string(),
+                "--path".into(),
+                project_root.to_string(),
+            ];
+            if let Some(filter) = args["filter"].as_str() {
+                extra.extend(["--filter".into(), filter.to_string()]);
+            }
+            Ok(("grep".into(), extra))
+        }
+        "implementations" => {
+            let name = args["name"].as_str().context("missing name")?;
+            let limit = args["limit"].as_u64().unwrap_or(50);
+            Ok((
+                "implementations".into(),
+                vec![
+                    name.to_string(),
+                    "--path".into(),
+                    project_root.to_string(),
+                    "--limit".into(),
+                    limit.to_string(),
+                ],
+            ))
+        }
+        "callers" => {
+            let name = args["name"].as_str().context("missing name")?;
+            let limit = args["limit"].as_u64().unwrap_or(50);
+            Ok((
+                "callers".into(),
+                vec![
+                    name.to_string(),
+                    "--path".into(),
+                    project_root.to_string(),
+                    "--limit".into(),
+                    limit.to_string(),
+                ],
+            ))
+        }
+        "callees" => {
+            let name = args["name"].as_str().context("missing name")?;
+            let limit = args["limit"].as_u64().unwrap_or(50);
+            Ok((
+                "callees".into(),
+                vec![
+                    name.to_string(),
+                    "--path".into(),
+                    project_root.to_string(),
+                    "--limit".into(),
+                    limit.to_string(),
+                ],
+            ))
+        }
+        "check" => {
+            let names: Vec<String> = args["names"]
+                .as_array()
+                .context("missing names array")?
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+            if names.is_empty() {
+                anyhow::bail!("names array is empty");
+            }
+            Ok(("check".into(), names))
+        }
         _ => anyhow::bail!("unknown tool: {tool}"),
     }
 }
@@ -285,6 +377,97 @@ fn tool_descriptors() -> Value {
                 "properties": {
                     "project_root": { "type": "string", "description": "Project root path" }
                 }
+            }
+        },
+        {
+            "name": "show",
+            "description": "Show the full source body of one or more symbols (function, class, struct, etc.).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbols": { "type": "array", "items": { "type": "string" }, "description": "Symbol names to show" },
+                    "limit": { "type": "integer", "description": "Max results per symbol", "default": 1 },
+                    "project_root": { "type": "string", "description": "Project root path" }
+                },
+                "required": ["symbols"]
+            }
+        },
+        {
+            "name": "usages",
+            "description": "Find all usages/references of a symbol across the codebase.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Symbol name to find usages of" },
+                    "limit": { "type": "integer", "description": "Max results", "default": 50 },
+                    "project_root": { "type": "string", "description": "Project root path" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "grep",
+            "description": "Search file contents by regex pattern (no index needed). Like ripgrep.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Regex pattern" },
+                    "filter": { "type": "string", "description": "Filter by path substring" },
+                    "limit": { "type": "integer", "description": "Max results", "default": 50 },
+                    "project_root": { "type": "string", "description": "Project root path" }
+                },
+                "required": ["pattern"]
+            }
+        },
+        {
+            "name": "implementations",
+            "description": "Find all types that inherit from or implement a base class/trait/interface (no index needed).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Base class/trait/interface name" },
+                    "limit": { "type": "integer", "description": "Max results", "default": 50 },
+                    "project_root": { "type": "string", "description": "Project root path" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "callers",
+            "description": "Find all functions that call a given function (no index needed).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Function name" },
+                    "limit": { "type": "integer", "description": "Max results", "default": 50 },
+                    "project_root": { "type": "string", "description": "Project root path" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "callees",
+            "description": "Find all functions called by a given function (no index needed).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Function name" },
+                    "limit": { "type": "integer", "description": "Max results", "default": 50 },
+                    "project_root": { "type": "string", "description": "Project root path" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "check",
+            "description": "Fast existence check: verify if symbols exist in the index without full search. Use before search to avoid unnecessary queries.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "names": { "type": "array", "items": { "type": "string" }, "description": "Symbol names to check" },
+                    "project_root": { "type": "string", "description": "Project root path" }
+                },
+                "required": ["names"]
             }
         }
     ])

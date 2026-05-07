@@ -204,4 +204,15 @@ pub enum Commands {
         #[arg(short, long, default_value = "50")]
         limit: usize,
     },
+
+    /// Fast existence check: which of the given symbols exist in the index?
+    Check {
+        /// Symbol names to check (case-insensitive exact match)
+        #[arg(required = true, num_args = 1..)]
+        names: Vec<String>,
+
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+    },
 }
