@@ -176,4 +176,32 @@ pub enum Commands {
         #[arg(short, long, default_value = "50")]
         limit: usize,
     },
+
+    /// Find all functions that call a given function (no index needed)
+    Callers {
+        /// Function name to find callers of
+        name: String,
+
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Max results to return
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+    },
+
+    /// Find all functions called by a given function (no index needed)
+    Callees {
+        /// Function name to find callees of
+        name: String,
+
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Max results to return
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+    },
 }

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 
+mod callgraph;
 mod cli;
 mod embed;
 mod grep;

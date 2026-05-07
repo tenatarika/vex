@@ -560,7 +560,59 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Commands::Callers { name, path, limit } => cmd_callgraph(&name, path, limit, true, format),
+        Commands::Callees { name, path, limit } => cmd_callgraph(&name, path, limit, false, format),
     }
+}
+
+fn cmd_callgraph(
+    name: &str,
+    path: Option<std::path::PathBuf>,
+    limit: usize,
+    is_callers: bool,
+    format: &OutputFormat,
+) -> Result<()> {
+    let root = resolve_root(path)?;
+    let label = if is_callers { "callers" } else { "callees" };
+    let start = std::time::Instant::now();
+    let matches = if is_callers {
+        crate::callgraph::find_callers(&root, name, limit)?
+    } else {
+        crate::callgraph::find_callees(&root, name, limit)?
+    };
+    let elapsed = start.elapsed();
+
+    match format {
+        OutputFormat::Json => {
+            let json: Vec<serde_json::Value> = matches
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "name": m.name,
+                        "path": m.path,
+                        "line": m.line,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        }
+        OutputFormat::Text => {
+            if matches.is_empty() {
+                println!("No {label} of \"{name}\" in {elapsed:.2?}");
+            } else {
+                println!("{name}: {} {label} in {elapsed:.2?}\n", matches.len());
+                for m in &matches {
+                    println!("  {:<40} {}:{}", m.name, m.path, m.line);
+                }
+            }
+        }
+        OutputFormat::Compact => {
+            for m in &matches {
+                println!("{} {}:{}", m.name, m.path, m.line);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn cmd_outline(file: &std::path::Path, kind: Option<&str>, format: &OutputFormat) -> Result<()> {

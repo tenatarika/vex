@@ -1,3 +1,4 @@
+pub mod callgraph;
 pub mod cli;
 pub mod embed;
 pub mod grep;
