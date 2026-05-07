@@ -1,8 +1,45 @@
 # Vex
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
+[![Tests](https://img.shields.io/badge/tests-83_passing-brightgreen.svg)]()
+[![Languages](https://img.shields.io/badge/languages-10-blueviolet.svg)]()
+
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
-Parses source code with tree-sitter, stores symbols in a custom mmap'd binary format, and supports both exact name lookup and semantic search via ONNX embeddings. References stored in an FST (Finite State Transducer) for zero-copy lookup.
+```
+$ vex search "TelemetryProcessor"          # 4ms — find symbol definitions
+$ vex show "TelemetryProcessor"            # extract just the class body (not the whole file)
+$ vex search "handle alert" --semantic     # find by meaning, not just name
+$ vex pattern 'fn $NAME($$$) -> Result'    # AST pattern matching (like ast-grep)
+$ vex usages "Config"                      # who references this symbol?
+```
+
+## Why Vex?
+
+- **4ms search** on any size codebase — FST-based O(query_len) lookup, not O(symbols)
+- **14-21x faster than ripgrep** for symbol search on large projects
+- **Semantic search** — "find payment processing" returns `ProcessPayment`, `ChargeCard`, `RefundOrder`
+- **Token-efficient** — compact output uses 6-88x fewer tokens than grep, `vex show` extracts just the symbol body instead of the whole file
+- **10 languages** out of the box — Rust, Python, Go, Java, C#, Ruby, Swift, Kotlin, TypeScript, SQL
+- **Single binary, zero config** — no LSP servers, no databases, no Docker. Just `vex index && vex search`
+
+## How It Compares
+
+|  | **vex** | **ripgrep** | **ast-index** | **ast-grep** | **Serena** |
+|---|---|---|---|---|---|
+| **What it searches** | Symbol definitions | All text | Symbol definitions | AST patterns | Symbols (via LSP) |
+| **Search speed** | **~4ms** (FST) | 75-120ms (disk scan) | 22-60ms (SQLite) | ~30ms (scan) | LSP-dependent |
+| **Semantic search** | HNSW + embeddings | -- | -- | -- | -- |
+| **Pattern matching** | `fn $NAME($$$)` | regex only | -- | `fn $NAME($$$)` | regex only |
+| **Index size** | **5 MB** / 20K syms | no index | 190 MB / 20K syms | no index | no index |
+| **Token efficiency** | **6-88x** fewer than rg | baseline | ~3x fewer than rg | N/A | N/A |
+| **Symbol body extraction** | `vex show` | -- | -- | -- | -- |
+| **Languages** | 10 | any | 10+ | 10+ | 40+ (LSP) |
+| **Refactoring** | -- | -- | -- | -- | rename, move, inline |
+| **Runtime deps** | none | none | none | none | Python + LSP |
+
+**Best for**: fast symbol search in AI agent workflows where token efficiency matters. Not a replacement for LSP-based tools (no refactoring, no go-to-definition in dependencies).
 
 ## Installation
 
