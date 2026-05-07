@@ -18,6 +18,9 @@ CLAUDE.md
 # Fastembed model cache
 .fastembed_cache/
 
+# Benchmark results (local, machine-specific)
+/benches/results/
+
 # IDE
 .idea/
 .vscode/
