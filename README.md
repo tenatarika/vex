@@ -307,6 +307,33 @@ alias vxs="vex index --path . --semantic"
 alias vxw="vex watch"
 ```
 
+### CLAUDE.md Integration
+
+Add this to your project's `CLAUDE.md` to make Claude Code use vex instead of grep:
+
+```markdown
+## Code Search
+
+Use vex for code search instead of grep or manual file reading:
+
+- `vex search "SymbolName"` — find symbol definitions (~4ms)
+- `vex show "SymbolName"` — extract symbol body (use INSTEAD of Read for specific symbols)
+- `vex show "A" "B" "C"` — extract multiple symbols at once
+- `vex usages "SymbolName"` — find all references
+- `vex grep "pattern"` — regex content search (when you need text, not symbols)
+- `vex search "description" --semantic` — search by meaning
+- `vex pattern 'class $NAME(BaseModel):' --lang python` — AST pattern matching
+- `vex outline path/to/file.py` — file structure overview
+
+All commands support `--filter "path/"` to narrow results to a directory.
+
+### Rules
+- **Always prefer `vex show` over `Read`** when you need a specific function or class
+- **Always prefer `vex search` over `Grep`** when looking for symbol definitions
+- **Use `vex grep` instead of `Grep`** for searching inside string literals, comments, or config values
+- **Use `--format compact`** for token-efficient output in automated workflows
+```
+
 ## Architecture
 
 ```
