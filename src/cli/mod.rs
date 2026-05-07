@@ -71,8 +71,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
 
             let results = if semantic && reader.has_vectors() {
                 let mut embedder = Embedder::new().context("load embedding model")?;
-                let semantic_results =
-                    semantic::search_with_embedder(&reader, &mut embedder, &query, limit)?;
+                let hnsw_path = config::hnsw_path(&root);
+                let semantic_results = semantic::search_with_embedder(
+                    &reader,
+                    &mut embedder,
+                    &query,
+                    limit,
+                    &hnsw_path,
+                )?;
                 fusion::fuse(structural_results, semantic_results, limit)
             } else {
                 if semantic && !reader.has_vectors() {

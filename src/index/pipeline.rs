@@ -37,6 +37,16 @@ pub fn run(root: &Path, with_embeddings: bool) -> Result<usize> {
 
     write_output(&root, &all_parsed, &vectors, &file_hashes)?;
 
+    if !vectors.is_empty() {
+        build_hnsw(&root, &vectors)?;
+    } else {
+        // Remove stale HNSW from a previous --semantic run to prevent wrong results
+        let hnsw_path = config::hnsw_path(&root);
+        if hnsw_path.exists() {
+            std::fs::remove_file(&hnsw_path).context("remove stale HNSW index")?;
+        }
+    }
+
     tracing::info!(
         symbols = symbol_count,
         vectors = vectors.len(),
@@ -88,6 +98,15 @@ pub fn update(root: &Path, with_embeddings: bool) -> Result<(usize, usize, usize
     };
 
     write_output(&root, &all_parsed, &vectors, &file_hashes)?;
+
+    if !vectors.is_empty() {
+        build_hnsw(&root, &vectors)?;
+    } else {
+        let hnsw_path = config::hnsw_path(&root);
+        if hnsw_path.exists() {
+            std::fs::remove_file(&hnsw_path).context("remove stale HNSW index")?;
+        }
+    }
 
     Ok((symbol_count, diff.changed.len(), diff.deleted.len()))
 }
@@ -186,6 +205,47 @@ fn generate_embeddings(parsed: &[ParsedFile]) -> Result<Vec<Vec<f32>>> {
 
     tracing::info!(total, elapsed = ?embed_start.elapsed(), "embedding complete");
     Ok(all_vectors)
+}
+
+fn build_hnsw(root: &Path, vectors: &[Vec<f32>]) -> Result<()> {
+    use usearch::{new_index, IndexOptions, MetricKind, ScalarKind};
+
+    let dim = vectors[0].len(); // guaranteed non-empty by caller
+
+    let options = IndexOptions {
+        dimensions: dim,
+        metric: MetricKind::Cos,
+        quantization: ScalarKind::F32,
+        connectivity: 0,     // auto
+        expansion_add: 0,    // auto
+        expansion_search: 0, // auto
+        multi: false,
+    };
+
+    let index = new_index(&options).context("create HNSW index")?;
+    index
+        .reserve(vectors.len())
+        .context("reserve HNSW capacity")?;
+
+    for (i, vec) in vectors.iter().enumerate() {
+        index
+            .add(i as u64, vec)
+            .context("add vector to HNSW index")?;
+    }
+
+    let hnsw_path = config::hnsw_path(root);
+    let path_str = hnsw_path
+        .to_str()
+        .context("HNSW path contains non-UTF-8 characters")?;
+    index.save(path_str).context("save HNSW index")?;
+
+    tracing::info!(
+        vectors = vectors.len(),
+        path = %hnsw_path.display(),
+        "HNSW index built"
+    );
+
+    Ok(())
 }
 
 fn discover_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {

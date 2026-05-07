@@ -17,6 +17,11 @@ pub fn index_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("index.vex")
 }
 
+/// Full path to the HNSW index file (for fast semantic search).
+pub fn hnsw_path(project_root: &std::path::Path) -> PathBuf {
+    index_dir(project_root).join("index.hnsw")
+}
+
 /// Full path to the manifest file (tracks file hashes for incremental updates).
 pub fn manifest_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("manifest.json")

@@ -49,9 +49,11 @@ vex status
 
 | Command | Description |
 |---------|-------------|
-| `vex index [--path .] [--semantic]` | Build full index. `--semantic` generates embeddings. |
+| `vex index [--path .] [--semantic]` | Build full index. `--semantic` generates embeddings + HNSW. |
 | `vex search <query> [--semantic] [--limit N]` | Search symbols. `--semantic` enables hybrid search. |
+| `vex show <symbol> [--limit N] [--context N]` | Extract symbol body from source (saves tokens vs full file read). |
 | `vex usages <name> [--limit N]` | Find all references/usages of a symbol (FST lookup). |
+| `vex pattern '<pat>' --lang <lang>` | AST pattern matching with metavariables ($NAME, $$$). |
 | `vex outline <file>` | Show file structure: symbols, kinds, lines. |
 | `vex update [--path .] [--semantic]` | Incremental update — only re-index changed files. |
 | `vex watch [--path .] [--semantic]` | Watch filesystem, auto re-index on changes. |
@@ -151,10 +153,23 @@ Queries where structural search returns 0 results but semantic finds relevant sy
 | "file system directory walker" | 0 | **20** |
 | "handle errors and exceptions" | 0 | **20** |
 
+### HNSW vs Brute-Force (semantic vector search)
+
+Semantic search embeds the query via ONNX (~55ms) then searches stored vectors. HNSW (usearch) replaces brute-force O(N) scan with O(log N) approximate nearest neighbor search:
+
+| Symbols | Brute-force | HNSW | Speedup |
+|---------|-------------|------|---------|
+| 333 | ~3 ms | ~3 ms | 1x |
+| 11K | ~8 ms | ~3 ms | **2.3x** |
+| 20K | ~11 ms | ~3 ms | **4x** |
+| 100K (projected) | ~55 ms | ~3 ms | **~18x** |
+
+HNSW stays constant ~3ms regardless of index size. Brute-force grows linearly. Total semantic search latency is dominated by ONNX embedding (~55ms), so end-to-end speedup is modest for small codebases but critical at scale.
+
 | Mode | Latency |
 |------|---------|
 | Structural only | ~4 ms |
-| Hybrid (structural + semantic) | ~55 ms |
+| Hybrid (structural + semantic) | ~58 ms (HNSW) / ~66 ms (brute-force) |
 
 ### LLM Token Efficiency
 
@@ -258,16 +273,21 @@ CLI (clap) → Pipeline (rayon) → Tree-sitter → Binary Format (mmap)
                                       ↓
                                ONNX Embeddings (fastembed)
                                       ↓
-Search: Inverted Index + Cosine Similarity → RRF Fusion
-Usages: FST (fst crate) + Posting Lists → zero-copy refs lookup
+                               HNSW Index (usearch)
+                                      ↓
+Search: Symbol FST (structural) + HNSW (semantic) → RRF Fusion
+Usages: Refs FST + Posting Lists → zero-copy refs lookup
+Show:   Tree-sitter node boundaries → symbol body extraction
 ```
 
 - **No SQLite** — custom binary format with zero-copy mmap reads
-- **FST refs** — symbol references stored in Finite State Transducer, O(query_len) lookup
+- **Symbol FST** — persistent inverted index, O(query_len) lookup
+- **Refs FST** — symbol references in Finite State Transducer, prefix search
+- **HNSW** — approximate nearest neighbor via usearch, O(log N) semantic search
 - **Parallel parsing** — rayon with 500-file chunks
 - **Incremental updates** — content hashing via xxh3, only re-parse changed files
 - **Watch mode** — notify crate with 500ms debouncing
-- **Semantic search** — MiniLM-L6-v2 embeddings (384-dim), brute-force cosine similarity
+- **Semantic search** — MiniLM-L6-v2 embeddings (384-dim), HNSW with brute-force fallback
 - **RRF fusion** — merges structural + semantic ranked lists
 
 ## License
