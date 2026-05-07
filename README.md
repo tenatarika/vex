@@ -44,8 +44,12 @@ $ vex usages "Config"                      # who references this symbol?
 ## Installation
 
 ```bash
+# Homebrew (macOS/Linux)
+brew tap tenatarika/tap
+brew install vex
+
 # From source
-git clone <repo-url>
+git clone https://github.com/tenatarika/vex.git
 cd vex
 cargo build --release
 cp target/release/vex ~/.local/bin/
