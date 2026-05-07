@@ -18,8 +18,12 @@ CLAUDE.md
 # Fastembed model cache
 .fastembed_cache/
 
-# Benchmark results (local, machine-specific)
-/benches/results/
+# Benchmarks (local, machine-specific)
+/benches/
+
+# Other tools
+.cocoindex_code/
+.python-version
 
 # IDE
 .idea/
