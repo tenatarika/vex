@@ -19,6 +19,19 @@ fn resolve_root(path: Option<std::path::PathBuf>) -> Result<std::path::PathBuf> 
     }
 }
 
+fn filter_by_path(
+    results: Vec<crate::search::SearchResult>,
+    filter: Option<&str>,
+) -> Vec<crate::search::SearchResult> {
+    match filter {
+        Some(fp) => results
+            .into_iter()
+            .filter(|r| r.path.contains(fp))
+            .collect(),
+        None => results,
+    }
+}
+
 pub fn dispatch(cli: Cli) -> Result<()> {
     let format = &cli.format;
 
@@ -54,6 +67,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             query,
             limit,
             semantic,
+            filter_path,
         } => {
             let root = resolve_root(None)?.canonicalize()?;
             let index_path = config::index_path(&root);
@@ -67,7 +81,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
 
             let reader = IndexReader::open(&index_path).context("open index")?;
 
-            let structural_results = structural::search(&reader, &query, limit);
+            // Fetch more results when filtering, then truncate after filter
+            let fetch_limit = if filter_path.is_some() {
+                reader.symbol_count()
+            } else {
+                limit
+            };
+
+            let structural_results = structural::search(&reader, &query, fetch_limit);
 
             let results = if semantic && reader.has_vectors() {
                 let mut embedder = Embedder::new().context("load embedding model")?;
@@ -76,7 +97,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     &reader,
                     &mut embedder,
                     &query,
-                    limit,
+                    fetch_limit,
                     &hnsw_path,
                 )?;
                 fusion::fuse(structural_results, semantic_results, limit)
@@ -86,6 +107,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 }
                 structural_results
             };
+
+            let results: Vec<_> = filter_by_path(results, filter_path.as_deref())
+                .into_iter()
+                .take(limit)
+                .collect();
 
             if results.is_empty() {
                 match format {
@@ -99,7 +125,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Commands::Usages { name, limit } => {
+        Commands::Usages {
+            name,
+            limit,
+            filter_path,
+        } => {
             let root = resolve_root(None)?.canonicalize()?;
             let index_path = config::index_path(&root);
 
@@ -117,6 +147,18 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let file_paths = reader.file_paths();
 
             let entries = ref_reader.find(&name);
+            let entries: Vec<_> = entries
+                .into_iter()
+                .filter(|e| {
+                    if let Some(ref fp) = filter_path {
+                        file_paths
+                            .get(e.file_id as usize)
+                            .is_some_and(|p| p.contains(fp.as_str()))
+                    } else {
+                        true
+                    }
+                })
+                .collect();
             let total = entries.len();
             let entries: Vec<_> = entries.into_iter().take(limit).collect();
 
@@ -263,6 +305,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             symbol,
             limit,
             context,
+            filter_path,
         } => {
             let root = resolve_root(None)?.canonicalize()?;
             let index_path = config::index_path(&root);
@@ -275,7 +318,16 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
 
             let reader = IndexReader::open(&index_path).context("open index")?;
-            let results = structural::search(&reader, &symbol, limit);
+            let fetch_limit = if filter_path.is_some() {
+                reader.symbol_count()
+            } else {
+                limit
+            };
+            let results = structural::search(&reader, &symbol, fetch_limit);
+            let results: Vec<_> = filter_by_path(results, filter_path.as_deref())
+                .into_iter()
+                .take(limit)
+                .collect();
 
             if results.is_empty() {
                 match format {
@@ -398,6 +450,48 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         "Embeddings: {}",
                         if reader.has_vectors() { "yes" } else { "no" }
                     );
+                }
+            }
+            Ok(())
+        }
+        Commands::Grep {
+            pattern,
+            limit,
+            filter_path,
+            path,
+        } => {
+            let root = resolve_root(path)?;
+            let matches = crate::grep::search(&root, &pattern, filter_path.as_deref(), limit)?;
+
+            match format {
+                OutputFormat::Json => {
+                    let json: Vec<serde_json::Value> = matches
+                        .iter()
+                        .map(|m| {
+                            serde_json::json!({
+                                "path": m.path,
+                                "line": m.line,
+                                "text": m.text,
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+                OutputFormat::Text => {
+                    if matches.is_empty() {
+                        println!("No matches for \"{pattern}\"");
+                    } else {
+                        println!("{} matches\n", matches.len());
+                        for m in &matches {
+                            println!("{}:{}", m.path, m.line);
+                            println!("  {}", m.text);
+                        }
+                    }
+                }
+                OutputFormat::Compact => {
+                    for m in &matches {
+                        println!("{}:{}  {}", m.path, m.line, m.text);
+                    }
                 }
             }
             Ok(())

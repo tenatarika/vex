@@ -3,6 +3,7 @@ use clap::Parser;
 
 mod cli;
 mod embed;
+mod grep;
 mod index;
 mod parse;
 mod pattern;

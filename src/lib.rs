@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod embed;
+pub mod grep;
 pub mod index;
 pub mod parse;
 pub mod pattern;

@@ -21,6 +21,9 @@ path = "src/lib.rs"
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
 
+# Regex for content search
+regex = "1.10"
+
 # Tree-sitter core + language grammars
 tree-sitter = "0.24"
 streaming-iterator = "0.1"

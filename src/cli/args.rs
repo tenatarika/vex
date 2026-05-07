@@ -49,6 +49,10 @@ pub enum Commands {
         /// Enable semantic (vector) search
         #[arg(long, default_value = "false")]
         semantic: bool,
+
+        /// Filter results by path substring (e.g. "src/api/" or "tests/")
+        #[arg(short = 'f', long = "filter")]
+        filter_path: Option<String>,
     },
 
     /// Find all usages/references of a symbol
@@ -59,6 +63,10 @@ pub enum Commands {
         /// Max results to return
         #[arg(short, long, default_value = "50")]
         limit: usize,
+
+        /// Filter results by path substring (e.g. "src/api/" or "tests/")
+        #[arg(short = 'f', long = "filter")]
+        filter_path: Option<String>,
     },
 
     /// Find code matching a structural AST pattern (like ast-grep)
@@ -119,6 +127,28 @@ pub enum Commands {
         /// Context lines before/after symbol body
         #[arg(short, long, default_value = "0")]
         context: usize,
+
+        /// Filter results by path substring (e.g. "src/api/" or "tests/")
+        #[arg(short = 'f', long = "filter")]
+        filter_path: Option<String>,
+    },
+
+    /// Search file contents by regex pattern (no index needed)
+    Grep {
+        /// Regex pattern to search in file contents
+        pattern: String,
+
+        /// Max results to return
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+
+        /// Filter by path substring (e.g. "src/api/" or "tests/")
+        #[arg(short = 'f', long = "filter")]
+        filter_path: Option<String>,
+
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
     },
 
     /// Show index statistics
