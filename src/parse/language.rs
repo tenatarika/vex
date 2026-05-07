@@ -10,6 +10,7 @@ pub enum Language {
     CSharp,
     Ruby,
     Swift,
+    Sql,
 }
 
 impl Language {
@@ -26,6 +27,7 @@ impl Language {
             "cs" => Some(Self::CSharp),
             "rb" => Some(Self::Ruby),
             "swift" => Some(Self::Swift),
+            "sql" => Some(Self::Sql),
             _ => None,
         }
     }
@@ -43,6 +45,7 @@ impl Language {
             Self::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
             // TSX grammar is a superset of TypeScript — handles .ts, .tsx, .js, .jsx
             Self::TypeScript => tree_sitter_typescript::LANGUAGE_TSX.into(),
+            Self::Sql => tree_sitter_sequel::LANGUAGE.into(),
         }
     }
 
@@ -58,6 +61,7 @@ impl Language {
             Self::CSharp => "csharp",
             Self::Ruby => "ruby",
             Self::Swift => "swift",
+            Self::Sql => "sql",
         }
     }
 }

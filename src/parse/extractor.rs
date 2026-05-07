@@ -333,4 +333,94 @@ mod tests {
         assert!(names.contains(&"List".to_string()));
         assert!(names.contains(&"Flow".to_string()));
     }
+
+    // --- SQL symbol tests ---
+
+    #[test]
+    fn sql_extracts_create_table() {
+        let src = "CREATE TABLE users (\n  id SERIAL PRIMARY KEY,\n  name VARCHAR(255)\n);";
+        let syms = symbols(src, Language::Sql);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "users");
+        assert_eq!(syms[0].kind, SymbolKind::Class);
+    }
+
+    #[test]
+    fn sql_extracts_create_view() {
+        let src = "CREATE VIEW active_users AS SELECT * FROM users WHERE active = true;";
+        let syms = symbols(src, Language::Sql);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "active_users");
+        assert_eq!(syms[0].kind, SymbolKind::Class);
+    }
+
+    #[test]
+    fn sql_extracts_create_function() {
+        let src = "CREATE FUNCTION get_user(user_id INT) RETURNS INT AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql;";
+        let syms = symbols(src, Language::Sql);
+        let names: Vec<(&str, SymbolKind)> =
+            syms.iter().map(|s| (s.name.as_str(), s.kind)).collect();
+        assert!(names.contains(&("get_user", SymbolKind::Function)));
+    }
+
+    #[test]
+    fn sql_extracts_create_index() {
+        let src = "CREATE INDEX idx_users_email ON users (email);";
+        let syms = symbols(src, Language::Sql);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "idx_users_email");
+        assert_eq!(syms[0].kind, SymbolKind::Property);
+    }
+
+    #[test]
+    fn sql_extracts_multiple_statements() {
+        let src = "CREATE TABLE orders (id INT);\nCREATE TABLE products (id INT);\nCREATE VIEW order_summary AS SELECT * FROM orders;";
+        let syms = symbols(src, Language::Sql);
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"orders"));
+        assert!(names.contains(&"products"));
+        assert!(names.contains(&"order_summary"));
+    }
+
+    #[test]
+    fn sql_extracts_create_type() {
+        let src = "CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');";
+        let syms = symbols(src, Language::Sql);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "mood");
+        assert_eq!(syms[0].kind, SymbolKind::Enum);
+    }
+
+    #[test]
+    fn sql_extracts_create_schema() {
+        let src = "CREATE SCHEMA analytics;";
+        let syms = symbols(src, Language::Sql);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "analytics");
+        assert_eq!(syms[0].kind, SymbolKind::Class);
+    }
+
+    #[test]
+    fn sql_extracts_materialized_view() {
+        let src = "CREATE MATERIALIZED VIEW monthly_stats AS SELECT * FROM stats;";
+        let syms = symbols(src, Language::Sql);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "monthly_stats");
+        assert_eq!(syms[0].kind, SymbolKind::Class);
+    }
+
+    #[test]
+    fn sql_extracts_sequence_and_extension() {
+        let src = "CREATE SEQUENCE user_id_seq START 1;\nCREATE EXTENSION IF NOT EXISTS pgcrypto;";
+        let syms = symbols(src, Language::Sql);
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"user_id_seq"));
+        assert!(names.contains(&"pgcrypto"));
+    }
+
+    #[test]
+    fn sql_alter_table_as_ref() {
+        let imports = import_names("ALTER TABLE users ADD COLUMN age INT;", Language::Sql);
+        assert!(imports.contains(&"users".to_string()));
+    }
 }
