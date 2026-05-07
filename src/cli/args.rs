@@ -102,6 +102,10 @@ pub enum Commands {
     Outline {
         /// File to analyze
         file: PathBuf,
+
+        /// Filter by symbol kind. Aliases: fn, method, struct, class, interface, trait, enum, type/type_alias, impl, const/constant, prop/property, pkg/package
+        #[arg(short, long)]
+        kind: Option<String>,
     },
 
     /// Watch for file changes and re-index incrementally
@@ -117,10 +121,11 @@ pub enum Commands {
 
     /// Show the full body of a symbol (function, class, struct, etc.)
     Show {
-        /// Symbol name to show
-        symbol: String,
+        /// Symbol names to show (one or more)
+        #[arg(required = true, num_args = 1..)]
+        symbols: Vec<String>,
 
-        /// Max results if multiple matches
+        /// Max results per symbol if multiple matches
         #[arg(short, long, default_value = "1")]
         limit: usize,
 

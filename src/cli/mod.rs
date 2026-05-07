@@ -295,14 +295,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Commands::Outline { file } => cmd_outline(&file, format),
+        Commands::Outline { file, kind } => cmd_outline(&file, kind.as_deref(), format),
         Commands::Watch { path, semantic } => {
             let root = resolve_root(path)?;
             crate::watch::handler::watch(&root, semantic)?;
             Ok(())
         }
         Commands::Show {
-            symbol,
+            symbols,
             limit,
             context,
             filter_path,
@@ -323,87 +323,103 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             } else {
                 limit
             };
-            let results = structural::search(&reader, &symbol, fetch_limit);
-            let results: Vec<_> = filter_by_path(results, filter_path.as_deref())
-                .into_iter()
-                .take(limit)
-                .collect();
-
-            if results.is_empty() {
-                match format {
-                    OutputFormat::Json => println!("[]"),
-                    OutputFormat::Text | OutputFormat::Compact => {
-                        println!("No symbol found: \"{symbol}\"")
-                    }
-                }
-                return Ok(());
-            }
-
             let mut json_items: Vec<serde_json::Value> = Vec::new();
+            let mut printed = 0usize;
 
-            for (i, result) in results.iter().enumerate() {
-                let content = std::fs::read_to_string(&result.path)
-                    .with_context(|| format!("read {}", result.path))?;
+            for symbol in &symbols {
+                let results = structural::search(&reader, symbol, fetch_limit);
+                let results: Vec<_> = filter_by_path(results, filter_path.as_deref())
+                    .into_iter()
+                    .take(limit)
+                    .collect();
 
-                let ext = std::path::Path::new(&result.path)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("");
-
-                let body = if let Some(lang) = crate::parse::language::Language::from_extension(ext)
-                {
-                    crate::parse::body::extract_symbol_body_ts(
-                        &content,
-                        result.line,
-                        lang,
-                        context,
-                    )?
-                } else {
-                    crate::parse::body::extract_symbol_body(&content, result.line, context)?
-                };
-
-                match format {
-                    OutputFormat::Json => {
-                        json_items.push(serde_json::json!({
-                            "name": result.name,
-                            "kind": result.kind,
-                            "path": result.path,
-                            "start_line": body.start_line,
-                            "end_line": body.end_line,
-                            "lines": body.lines,
-                            "body": body.body,
-                        }));
-                    }
-                    OutputFormat::Text => {
-                        if i > 0 {
-                            println!();
-                        }
-                        println!(
-                            "── {} ({}) {}:{}-{}",
-                            result.name, result.kind, result.path, body.start_line, body.end_line
-                        );
-                        for (n, line) in body.body.lines().enumerate() {
-                            println!("{:>4} | {}", body.start_line + n, line);
+                if results.is_empty() {
+                    match format {
+                        OutputFormat::Json => {}
+                        OutputFormat::Text | OutputFormat::Compact => {
+                            if printed > 0 {
+                                println!();
+                            }
+                            println!("No symbol found: \"{symbol}\"");
+                            printed += 1;
                         }
                     }
-                    OutputFormat::Compact => {
-                        if i > 0 {
-                            println!();
+                    continue;
+                }
+
+                for result in &results {
+                    let content = std::fs::read_to_string(&result.path)
+                        .with_context(|| format!("read {}", result.path))?;
+
+                    let ext = std::path::Path::new(&result.path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("");
+
+                    let body =
+                        if let Some(lang) = crate::parse::language::Language::from_extension(ext) {
+                            crate::parse::body::extract_symbol_body_ts(
+                                &content,
+                                result.line,
+                                lang,
+                                context,
+                            )?
+                        } else {
+                            crate::parse::body::extract_symbol_body(&content, result.line, context)?
+                        };
+
+                    match format {
+                        OutputFormat::Json => {
+                            json_items.push(serde_json::json!({
+                                "name": result.name,
+                                "kind": result.kind,
+                                "path": result.path,
+                                "start_line": body.start_line,
+                                "end_line": body.end_line,
+                                "lines": body.lines,
+                                "body": body.body,
+                            }));
                         }
-                        println!(
-                            "# {}:{}-{} ({})",
-                            result.path, body.start_line, body.end_line, result.kind
-                        );
-                        println!("{}", body.body);
+                        OutputFormat::Text => {
+                            if printed > 0 {
+                                println!();
+                            }
+                            println!(
+                                "── {} ({}) {}:{}-{}",
+                                result.name,
+                                result.kind,
+                                result.path,
+                                body.start_line,
+                                body.end_line
+                            );
+                            for (n, line) in body.body.lines().enumerate() {
+                                println!("{:>4} | {}", body.start_line + n, line);
+                            }
+                            printed += 1;
+                        }
+                        OutputFormat::Compact => {
+                            if printed > 0 {
+                                println!();
+                            }
+                            println!(
+                                "# {}:{}-{} ({})",
+                                result.path, body.start_line, body.end_line, result.kind
+                            );
+                            println!("{}", body.body);
+                            printed += 1;
+                        }
                     }
                 }
             }
 
-            if !json_items.is_empty() {
-                if json_items.len() == 1 {
-                    println!("{}", serde_json::to_string_pretty(&json_items[0])?);
-                } else {
+            match format {
+                OutputFormat::Json => {
                     println!("{}", serde_json::to_string_pretty(&json_items)?);
+                }
+                OutputFormat::Text | OutputFormat::Compact => {
+                    if printed == 0 {
+                        println!("No symbols found");
+                    }
                 }
             }
             Ok(())
@@ -499,7 +515,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
     }
 }
 
-fn cmd_outline(file: &std::path::Path, format: &OutputFormat) -> Result<()> {
+fn cmd_outline(file: &std::path::Path, kind: Option<&str>, format: &OutputFormat) -> Result<()> {
+    use crate::index::symbols::SymbolKind;
+
+    let kind_filter = kind.map(|k| k.parse::<SymbolKind>()).transpose()?;
+
     let content =
         std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;
 
@@ -511,7 +531,6 @@ fn cmd_outline(file: &std::path::Path, format: &OutputFormat) -> Result<()> {
     let lang = crate::parse::language::Language::from_extension(ext)
         .with_context(|| format!("unsupported language: .{ext}"))?;
 
-    // Check if we have a tree-sitter query for this language
     if crate::parse::queries::get_query(lang).is_none() {
         bail!(
             "language .{ext} is recognized but has no tree-sitter query yet (Kotlin, TypeScript pending)"
@@ -521,10 +540,25 @@ fn cmd_outline(file: &std::path::Path, format: &OutputFormat) -> Result<()> {
     let rel = file.to_string_lossy().to_string();
     let parsed = crate::parse::parse_file(&rel, &content, lang)?;
 
+    let symbols: Vec<_> = parsed
+        .symbols
+        .iter()
+        .filter(|s| kind_filter.map_or(true, |k| s.kind == k))
+        .collect();
+
+    print_outline(&symbols, file, kind_filter, format);
+    Ok(())
+}
+
+fn print_outline(
+    symbols: &[&crate::index::symbols::ParsedSymbol],
+    file: &std::path::Path,
+    kind_filter: Option<crate::index::symbols::SymbolKind>,
+    format: &OutputFormat,
+) {
     match format {
         OutputFormat::Json => {
-            let symbols: Vec<serde_json::Value> = parsed
-                .symbols
+            let json: Vec<serde_json::Value> = symbols
                 .iter()
                 .map(|s| {
                     serde_json::json!({
@@ -535,14 +569,19 @@ fn cmd_outline(file: &std::path::Path, format: &OutputFormat) -> Result<()> {
                     })
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&symbols)?);
+            // unwrap: serializing simple JSON values cannot fail
+            println!("{}", serde_json::to_string_pretty(&json).unwrap());
         }
         OutputFormat::Text | OutputFormat::Compact => {
-            if parsed.symbols.is_empty() {
-                println!("No symbols found in {}", file.display());
+            if symbols.is_empty() {
+                if let Some(k) = kind_filter {
+                    println!("No {k} symbols found in {}", file.display());
+                } else {
+                    println!("No symbols found in {}", file.display());
+                }
             } else {
                 println!("{}", file.display());
-                for s in &parsed.symbols {
+                for s in symbols {
                     println!("  {:<12} {:<40} line {}", s.kind.as_str(), s.name, s.line);
                     if let Some(sig) = &s.signature {
                         println!("               {sig}");
@@ -551,5 +590,4 @@ fn cmd_outline(file: &std::path::Path, format: &OutputFormat) -> Result<()> {
             }
         }
     }
-    Ok(())
 }
