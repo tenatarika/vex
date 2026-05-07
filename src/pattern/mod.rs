@@ -2,7 +2,7 @@ pub mod matcher;
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use rayon::prelude::*;
 
 use crate::parse::language::Language;
@@ -19,11 +19,6 @@ pub struct PatternMatch {
 /// Scan files in a directory for code matching a structural pattern.
 pub fn scan(root: &Path, pattern: &str, lang: Language, limit: usize) -> Result<Vec<PatternMatch>> {
     let root = root.canonicalize().context("canonicalize root")?;
-
-    // Reject unsupported languages early
-    if matches!(lang, Language::Kotlin | Language::TypeScript) {
-        bail!("pattern matching not supported for {} yet", lang.as_str());
-    }
 
     let pattern_tree = matcher::parse_pattern(pattern, lang).context("parse pattern")?;
 

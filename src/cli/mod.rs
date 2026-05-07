@@ -220,6 +220,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     "csharp" | "cs" => Some(crate::parse::language::Language::CSharp),
                     "ruby" | "rb" => Some(crate::parse::language::Language::Ruby),
                     "swift" => Some(crate::parse::language::Language::Swift),
+                    "kotlin" | "kt" => Some(crate::parse::language::Language::Kotlin),
+                    "typescript" | "ts" | "tsx" => {
+                        Some(crate::parse::language::Language::TypeScript)
+                    }
+                    "sql" => Some(crate::parse::language::Language::Sql),
                     _ => None,
                 })
                 .with_context(|| format!("unknown language: {lang}"))?;
