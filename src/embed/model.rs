@@ -35,25 +35,60 @@ impl Embedder {
 }
 
 /// Build a context string for embedding from symbol metadata.
-/// Richer context = better semantic search quality.
-pub fn build_context(kind: &str, name: &str, file_path: &str, signature: Option<&str>) -> String {
+/// Includes tokenized name, path-derived domain keywords, signature, and docstring.
+pub fn build_context(
+    kind: &str,
+    name: &str,
+    file_path: &str,
+    signature: Option<&str>,
+    doc: Option<&str>,
+) -> String {
     let mut ctx = format!("{kind} {name}");
 
-    // Extract module hint from file path
-    if let Some(module) = extract_module(file_path) {
-        ctx.push_str(&format!(" in {module}"));
+    // Add tokenized name for better semantic matching
+    // e.g. "MissingDataRuleEvaluator" → "missing data rule evaluator"
+    let tokens = super::tokenizer::tokenize(name);
+    if tokens.len() > 1 {
+        ctx.push_str(&format!(" ({})", tokens.join(" ")));
+    }
+
+    // Add path-derived domain keywords
+    // e.g. "src/stream_processors/temperature.rs" → "stream processors temperature"
+    let path_words = extract_path_keywords(file_path);
+    if !path_words.is_empty() {
+        ctx.push_str(&format!(" in {path_words}"));
     }
 
     if let Some(sig) = signature {
         ctx.push_str(&format!(", {sig}"));
     }
 
+    if let Some(d) = doc {
+        if !d.is_empty() {
+            ctx.push_str(&format!(". {d}"));
+        }
+    }
+
     ctx
 }
 
-fn extract_module(path: &str) -> Option<&str> {
+/// Extract meaningful keywords from a file path.
+/// "src/stream_processors/temperature.rs" → "stream processors temperature"
+fn extract_path_keywords(path: &str) -> String {
     let without_ext = path.rsplit_once('.').map(|(p, _)| p).unwrap_or(path);
-    without_ext.rsplit_once('/').map(|(dir, _)| dir)
+
+    without_ext
+        .split('/')
+        .filter(|seg| {
+            !matches!(
+                *seg,
+                "src" | "lib" | "main" | "mod" | "index" | "test" | "tests"
+            )
+        })
+        .flat_map(|seg| seg.split('_'))
+        .filter(|w| w.len() > 1)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -67,22 +102,51 @@ mod tests {
             "PaymentService",
             "src/billing/service.rs",
             Some("pub struct PaymentService"),
+            None,
         );
         assert_eq!(
             ctx,
-            "struct PaymentService in src/billing, pub struct PaymentService"
+            "struct PaymentService (payment service) in billing service, pub struct PaymentService"
         );
     }
 
     #[test]
     fn context_without_signature() {
-        let ctx = build_context("function", "main", "src/main.rs", None);
-        assert_eq!(ctx, "function main in src");
+        let ctx = build_context("function", "main", "src/main.rs", None, None);
+        // "main" is a single token, so no tokenized expansion
+        assert_eq!(ctx, "function main");
     }
 
     #[test]
     fn context_root_file() {
-        let ctx = build_context("function", "main", "main.rs", None);
+        let ctx = build_context("function", "main", "main.rs", None, None);
         assert_eq!(ctx, "function main");
+    }
+
+    #[test]
+    fn context_with_docstring() {
+        let ctx = build_context(
+            "function",
+            "process_batch",
+            "src/stream_processors/temperature.rs",
+            Some("fn process_batch(&self, data: &[f32])"),
+            Some("Process a batch of temperature readings from IoT sensors"),
+        );
+        assert!(ctx.contains("process batch"));
+        assert!(ctx.contains("stream processors temperature"));
+        assert!(ctx.contains("Process a batch of temperature readings"));
+    }
+
+    #[test]
+    fn path_keywords_filters_noise() {
+        let kw = extract_path_keywords("src/lib/search/mod.rs");
+        // "src", "lib", "mod" filtered out; "search" kept
+        assert_eq!(kw, "search");
+    }
+
+    #[test]
+    fn path_keywords_splits_underscores() {
+        let kw = extract_path_keywords("src/stream_processors/alert_rules.rs");
+        assert_eq!(kw, "stream processors alert rules");
     }
 }

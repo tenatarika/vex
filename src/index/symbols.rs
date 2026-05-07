@@ -78,6 +78,9 @@ pub struct ParsedSymbol {
     pub kind: SymbolKind,
     pub line: usize,
     pub signature: Option<String>,
+    /// Docstring/comment extracted from lines above the symbol (used for embedding context only).
+    #[serde(skip)]
+    pub doc: Option<String>,
 }
 
 /// A reference (usage) of a symbol found in source code.

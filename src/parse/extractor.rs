@@ -75,16 +75,78 @@ pub fn extract_symbols_and_imports(
                 slice.lines().next().unwrap_or("").to_string()
             });
 
+            let doc = extract_doc_above(content, line);
+
             symbols.push(ParsedSymbol {
                 name: name.to_string(),
                 kind,
                 line,
                 signature,
+                doc,
             });
         }
     }
 
     Ok((symbols, imports))
+}
+
+/// Extract doc comment or docstring from lines immediately above a symbol.
+/// Returns up to ~200 chars of cleaned comment text, or None.
+fn extract_doc_above(content: &str, symbol_line: usize) -> Option<String> {
+    if symbol_line <= 1 {
+        return None;
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    let mut doc_lines: Vec<&str> = Vec::new();
+    let mut idx = symbol_line - 2; // 0-indexed line above symbol
+
+    loop {
+        if idx >= lines.len() {
+            break;
+        }
+        let trimmed = lines[idx].trim();
+
+        if trimmed.starts_with("///")
+            || trimmed.starts_with("//!")
+            || trimmed.starts_with("//")
+            || trimmed.starts_with('#')
+            || trimmed.starts_with("/**")
+            || trimmed.starts_with('*')
+            || trimmed.starts_with("\"\"\"")
+            || trimmed.starts_with("'''")
+        {
+            let cleaned = trimmed
+                .trim_start_matches("///")
+                .trim_start_matches("//!")
+                .trim_start_matches("//")
+                .trim_start_matches("/**")
+                .trim_start_matches("*/")
+                .trim_start_matches('*')
+                .trim_start_matches('#')
+                .trim();
+            if !cleaned.is_empty() {
+                doc_lines.push(cleaned);
+            }
+        } else if trimmed.is_empty() {
+            // skip blank lines between comment and symbol
+        } else {
+            break;
+        }
+
+        if idx == 0 {
+            break;
+        }
+        idx -= 1;
+    }
+
+    if doc_lines.is_empty() {
+        return None;
+    }
+
+    doc_lines.reverse();
+    let mut doc = doc_lines.join(" ");
+    doc.truncate(200);
+    Some(doc)
 }
 
 /// Extract references (symbol usages) via simple identifier scanning.
@@ -422,5 +484,34 @@ mod tests {
     fn sql_alter_table_as_ref() {
         let imports = import_names("ALTER TABLE users ADD COLUMN age INT;", Language::Sql);
         assert!(imports.contains(&"users".to_string()));
+    }
+
+    // --- Doc extraction tests ---
+
+    #[test]
+    fn rust_doc_comment_extracted() {
+        let src = "/// Process a batch of sensor readings.\n/// Returns the average value.\nfn process_batch() {}";
+        let syms = symbols(src, Language::Rust);
+        assert_eq!(syms.len(), 1);
+        let doc = syms[0].doc.as_deref().unwrap();
+        assert!(doc.contains("Process a batch of sensor readings"));
+        assert!(doc.contains("Returns the average value"));
+    }
+
+    #[test]
+    fn python_comment_extracted() {
+        let src = "# Calculate the total price including tax\ndef calculate_total():\n    pass";
+        let syms = symbols(src, Language::Python);
+        assert_eq!(syms.len(), 1);
+        let doc = syms[0].doc.as_deref().unwrap();
+        assert!(doc.contains("Calculate the total price"));
+    }
+
+    #[test]
+    fn no_doc_when_no_comment() {
+        let src = "fn main() {}";
+        let syms = symbols(src, Language::Rust);
+        assert_eq!(syms.len(), 1);
+        assert!(syms[0].doc.is_none());
     }
 }

@@ -188,6 +188,7 @@ fn generate_embeddings(parsed: &[ParsedFile]) -> Result<Vec<Vec<f32>>> {
                 &sym.name,
                 &file.path,
                 sym.signature.as_deref(),
+                sym.doc.as_deref(),
             );
             contexts.push(ctx);
         }
