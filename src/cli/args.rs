@@ -162,4 +162,18 @@ pub enum Commands {
         #[arg(short, long)]
         path: Option<PathBuf>,
     },
+
+    /// Find all types that inherit from / implement a base class, trait, or interface (no index needed)
+    Implementations {
+        /// Base class, trait, or interface name to search for
+        name: String,
+
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Max results to return
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+    },
 }

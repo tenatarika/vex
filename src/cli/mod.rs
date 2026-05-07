@@ -512,6 +512,49 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Commands::Implementations { name, path, limit } => {
+            let root = resolve_root(path)?;
+            let start = Instant::now();
+            let matches = crate::hierarchy::find_implementations(&root, &name, limit)?;
+            let elapsed = start.elapsed();
+
+            match format {
+                OutputFormat::Json => {
+                    let json: Vec<serde_json::Value> = matches
+                        .iter()
+                        .map(|m| {
+                            serde_json::json!({
+                                "name": m.name,
+                                "base": m.base,
+                                "relation": m.relation,
+                                "path": m.path,
+                                "line": m.line,
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+                OutputFormat::Text => {
+                    if matches.is_empty() {
+                        println!("No implementations of \"{name}\" in {elapsed:.2?}");
+                    } else {
+                        println!(
+                            "{name}: {} implementations in {elapsed:.2?}\n",
+                            matches.len()
+                        );
+                        for m in &matches {
+                            println!("  {:<40} ({})  {}:{}", m.name, m.relation, m.path, m.line);
+                        }
+                    }
+                }
+                OutputFormat::Compact => {
+                    for m in &matches {
+                        println!("{} {} {} {}:{}", m.relation, m.base, m.name, m.path, m.line);
+                    }
+                }
+            }
+            Ok(())
+        }
     }
 }
 

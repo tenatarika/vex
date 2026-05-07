@@ -4,6 +4,7 @@ use clap::Parser;
 mod cli;
 mod embed;
 mod grep;
+mod hierarchy;
 mod index;
 mod parse;
 mod pattern;
