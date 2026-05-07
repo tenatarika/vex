@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "vex",
-    version,
+    version = env!("VEX_VERSION"),
     about = "Fast hybrid structural + semantic code search"
 )]
 pub struct Cli {
