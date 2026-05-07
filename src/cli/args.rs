@@ -107,6 +107,20 @@ pub enum Commands {
         semantic: bool,
     },
 
+    /// Show the full body of a symbol (function, class, struct, etc.)
+    Show {
+        /// Symbol name to show
+        symbol: String,
+
+        /// Max results if multiple matches
+        #[arg(short, long, default_value = "1")]
+        limit: usize,
+
+        /// Context lines before/after symbol body
+        #[arg(short, long, default_value = "0")]
+        context: usize,
+    },
+
     /// Show index statistics
     Status {
         /// Project root path (defaults to cwd)

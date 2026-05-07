@@ -253,6 +253,103 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             crate::watch::handler::watch(&root, semantic)?;
             Ok(())
         }
+        Commands::Show {
+            symbol,
+            limit,
+            context,
+        } => {
+            let root = resolve_root(None)?.canonicalize()?;
+            let index_path = config::index_path(&root);
+
+            if !index_path.exists() {
+                bail!(
+                    "No index found. Run `vex index` first.\nExpected: {}",
+                    index_path.display()
+                );
+            }
+
+            let reader = IndexReader::open(&index_path).context("open index")?;
+            let results = structural::search(&reader, &symbol, limit);
+
+            if results.is_empty() {
+                match format {
+                    OutputFormat::Json => println!("[]"),
+                    OutputFormat::Text | OutputFormat::Compact => {
+                        println!("No symbol found: \"{symbol}\"")
+                    }
+                }
+                return Ok(());
+            }
+
+            let mut json_items: Vec<serde_json::Value> = Vec::new();
+
+            for (i, result) in results.iter().enumerate() {
+                let content = std::fs::read_to_string(&result.path)
+                    .with_context(|| format!("read {}", result.path))?;
+
+                let ext = std::path::Path::new(&result.path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+
+                let body = if let Some(lang) = crate::parse::language::Language::from_extension(ext)
+                {
+                    crate::parse::body::extract_symbol_body_ts(
+                        &content,
+                        result.line,
+                        lang,
+                        context,
+                    )?
+                } else {
+                    crate::parse::body::extract_symbol_body(&content, result.line, context)?
+                };
+
+                match format {
+                    OutputFormat::Json => {
+                        json_items.push(serde_json::json!({
+                            "name": result.name,
+                            "kind": result.kind,
+                            "path": result.path,
+                            "start_line": body.start_line,
+                            "end_line": body.end_line,
+                            "lines": body.lines,
+                            "body": body.body,
+                        }));
+                    }
+                    OutputFormat::Text => {
+                        if i > 0 {
+                            println!();
+                        }
+                        println!(
+                            "── {} ({}) {}:{}-{}",
+                            result.name, result.kind, result.path, body.start_line, body.end_line
+                        );
+                        for (n, line) in body.body.lines().enumerate() {
+                            println!("{:>4} | {}", body.start_line + n, line);
+                        }
+                    }
+                    OutputFormat::Compact => {
+                        if i > 0 {
+                            println!();
+                        }
+                        println!(
+                            "# {}:{}-{} ({})",
+                            result.path, body.start_line, body.end_line, result.kind
+                        );
+                        println!("{}", body.body);
+                    }
+                }
+            }
+
+            if !json_items.is_empty() {
+                if json_items.len() == 1 {
+                    println!("{}", serde_json::to_string_pretty(&json_items[0])?);
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&json_items)?);
+                }
+            }
+            Ok(())
+        }
         Commands::Status { path } => {
             let root = resolve_root(path)?
                 .canonicalize()

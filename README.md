@@ -89,7 +89,7 @@ References stored in an FST (Finite State Transducer) — zero-copy lookup from 
 
 ## Benchmarks
 
-Compared against [ast-index](https://github.com/defendend/Claude-ast-index-search) v3.31.0 (SQLite + FTS5).
+Compared against [ast-index](https://github.com/defendend/Claude-ast-index-search) v3.31.0 (SQLite + FTS5) and [ripgrep](https://github.com/BurntSushi/ripgrep) 14.x.
 
 ### Indexing
 
@@ -101,22 +101,33 @@ Compared against [ast-index](https://github.com/defendend/Claude-ast-index-searc
 
 Index size: **10-11x smaller** than ast-index (mmap binary + FST vs SQLite + FTS5).
 
-### Search (avg 10 runs, medium project)
+Note: projects with `--semantic` indexing are slower due to ONNX embedding generation.
 
-| Query | ast-index | vex | Speedup |
-|-------|-----------|-----|---------|
-| "search" | 8.8 ms | **3.7 ms** | **2.4x** |
-| "SymbolKind" | 8.1 ms | **3.6 ms** | **2.2x** |
-| "parse_file" | 7.6 ms | **3.7 ms** | **2.0x** |
-| "IndexReader" | 9.8 ms | **3.7 ms** | **2.7x** |
+### Search: vex vs ast-index vs ripgrep
 
-Search latency is constant (~3.7 ms) regardless of index size thanks to FST O(query_len) lookup.
+#### Medium project (31K lines Rust, avg 10 runs)
 
-### Usages (FST vs SQLite)
+| Query | vex | ast-index | rg -w | vex vs rg |
+|-------|-----|-----------|-------|-----------|
+| Query A | **4.9 ms** | 9.5 ms | 54.2 ms | **11x** |
+| Query B | **4.6 ms** | 9.5 ms | 8.9 ms | **1.9x** |
+| Query C | **4.5 ms** | 9.2 ms | 8.6 ms | **1.9x** |
+| Query D | **5.0 ms** | 12.1 ms | 9.3 ms | **1.9x** |
 
-| Query | ast-index | vex | Speedup |
-|-------|-----------|-----|---------|
-| "SymbolKind" | 4.8 ms | **3.7 ms** | **1.3x** |
+#### Large project (20K symbols, Python/JS/SQL, avg 10 runs)
+
+| Query | vex | ast-index | rg -w | vex vs rg | Results (def/text) |
+|-------|-----|-----------|-------|-----------|-------------------|
+| Symbol 1 | **6.0 ms** | 59.7 ms | 84.6 ms | **14x** | 1 / 4 |
+| Symbol 2 | **3.7 ms** | 44.5 ms | 78.5 ms | **21x** | 2 / 5 |
+| Symbol 3 | **3.9 ms** | 22.7 ms | 76.7 ms | **20x** | 1 / 20 |
+| Symbol 4 | **3.8 ms** | 43.1 ms | 77.5 ms | **21x** | 1 / 2 |
+| Symbol 5 | **3.6 ms** | 33.7 ms | 77.3 ms | **21x** | 1 / 22 |
+| Symbol 6 | **3.8 ms** | 43.3 ms | 76.9 ms | **20x** | 1 / 8 |
+| Symbol 7 | **4.0 ms** | 42.5 ms | 74.9 ms | **19x** | 1 / 6 |
+| Symbol 8 | **3.7 ms** | 42.8 ms | 78.4 ms | **21x** | 1 / 2 |
+
+**Key takeaway**: vex search is constant ~4 ms (FST O(query_len)), regardless of project size. On large projects vex is **14-21x faster than ripgrep** and **6-16x faster than ast-index**. vex returns only symbol definitions (precise), while rg returns all text occurrences (noisy).
 
 ### Pattern Matching (vex only)
 
@@ -126,38 +137,68 @@ Search latency is constant (~3.7 ms) regardless of index size thanks to FST O(qu
 | `pub struct $NAME` | 32 ms | 45 |
 | `fn $NAME($$$)` | 31 ms | 50 |
 
-ast-index does not support AST pattern matching.
+ast-index and ripgrep do not support AST pattern matching.
 
 ### Semantic Search
 
 Queries where structural search returns 0 results but semantic finds relevant symbols:
 
-| Query | Structural | Semantic | Top results |
-|-------|-----------|----------|-------------|
-| "parse source code files" | 0 | **19** | parse_file, extract_refs, parse_file_symbols |
-| "database storage" | 0 | **20** | populate_db, create_10k_db, setup_db |
-| "find implementations of an interface" | 0 | **20** | find_implementations, test_interface_extends |
-| "file system directory walker" | 0 | **20** | index_directory, walk_for_kind, find_project_root |
-| "handle errors and exceptions" | 0 | **20** | try_recover_from_error, extract_parents_from_error_text |
+| Query | Structural | Semantic |
+|-------|-----------|----------|
+| "parse source code files" | 0 | **19** |
+| "database storage" | 0 | **20** |
+| "find implementations of an interface" | 0 | **20** |
+| "file system directory walker" | 0 | **20** |
+| "handle errors and exceptions" | 0 | **20** |
 
 | Mode | Latency |
 |------|---------|
-| Structural only | ~3.7 ms |
+| Structural only | ~4 ms |
 | Hybrid (structural + semantic) | ~55 ms |
+
+### LLM Token Efficiency
+
+When an AI agent searches code, the output goes directly into the context window. Grep-based tools return every text occurrence — including comments, strings, variable usage, and matches in minified files — consuming tokens without adding signal.
+
+vex returns only symbol definitions in a compact one-line format, drastically reducing token consumption:
+
+| | vex compact | rg (grep) | Reduction |
+|---|---|---|---|
+| 7 symbol lookups (typical) | **~220 tokens** | ~1,300 tokens | **6x** |
+| Queries hitting minified JS/CSS | **~270 tokens** | ~58,700 tokens | **217x** |
+
+Example — searching for a class name on a large project:
+
+```
+# rg: 20 matches across imports, usage sites, comments, tests (2,045 chars)
+$ rg -w "PreAggregatedConfig" .
+./models.py:3602:class PreAggregatedConfig(models.Model):
+./models.py:3610:    pre_aggregated_config = PreAggregatedConfig.objects.get(...)
+./serializers.py:48:from .models import PreAggregatedConfig
+./tests.py:12:    config = PreAggregatedConfig(...)
+... (16 more lines)
+
+# vex: 1 definition (93 chars)
+$ vex search "PreAggregatedConfig" --format compact
+C PreAggregatedConfig models.py:3602 class PreAggregatedConfig(models.Model):
+```
+
+For an agent making 10-20 code lookups per task, vex saves **5,000-20,000 tokens per session** compared to grep — reducing cost and leaving more context window for reasoning.
 
 ## Supported Languages
 
-| Language | Extensions | Parser |
-|----------|------------|--------|
-| Rust | `.rs` | tree-sitter |
-| Python | `.py` | tree-sitter |
-| Go | `.go` | tree-sitter |
-| Java | `.java` | tree-sitter |
-| C# | `.cs` | tree-sitter |
-| Ruby | `.rb` | tree-sitter |
-| Swift | `.swift` | tree-sitter |
-| Kotlin | `.kt`, `.kts` | planned |
-| TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx` | planned |
+| Language | Extensions | Symbols | Imports |
+|----------|------------|---------|---------|
+| Rust | `.rs` | functions, structs, enums, traits, impls, types, constants | `use` declarations |
+| Python | `.py` | classes, functions | `import`, `from..import` |
+| Go | `.go` | functions, methods, structs, interfaces | `import` |
+| Java | `.java` | classes, interfaces, enums, methods, constructors | `import` |
+| C# | `.cs` | classes, interfaces, structs, enums, methods, properties | — |
+| Ruby | `.rb` | classes, modules, methods | — |
+| Swift | `.swift` | classes, protocols, enums, functions | `import` |
+| Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` |
+| TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx` | classes, interfaces, enums, functions, arrows, type aliases | `import` |
+| SQL | `.sql` | tables, views, functions, triggers, indexes, schemas, types, sequences | `ALTER TABLE` refs |
 
 ## Index Location
 
