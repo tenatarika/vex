@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, QueryCursor};
@@ -65,7 +67,8 @@ pub fn extract_symbols_and_imports(
                 _ => continue,
             };
 
-            let signature = node.parent().map(|p| {
+            let parent = node.parent();
+            let signature = parent.map(|p| {
                 let start = p.start_byte();
                 let mut end = (start + 200).min(content.len());
                 while end > start && !content.is_char_boundary(end) {
@@ -76,6 +79,7 @@ pub fn extract_symbols_and_imports(
             });
 
             let doc = extract_doc_above(content, line);
+            let body_tokens = parent.and_then(|def| extract_body_tokens(def, content));
 
             symbols.push(ParsedSymbol {
                 name: name.to_string(),
@@ -83,6 +87,7 @@ pub fn extract_symbols_and_imports(
                 line,
                 signature,
                 doc,
+                body_tokens,
             });
         }
     }
@@ -147,6 +152,147 @@ fn extract_doc_above(content: &str, symbol_line: usize) -> Option<String> {
     let mut doc = doc_lines.join(" ");
     doc.truncate(200);
     Some(doc)
+}
+
+/// Common language keywords to exclude from body token extraction.
+fn is_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "self"
+            | "Self"
+            | "return"
+            | "if"
+            | "else"
+            | "while"
+            | "for"
+            | "in"
+            | "let"
+            | "mut"
+            | "fn"
+            | "pub"
+            | "const"
+            | "static"
+            | "impl"
+            | "struct"
+            | "enum"
+            | "trait"
+            | "use"
+            | "mod"
+            | "crate"
+            | "super"
+            | "true"
+            | "false"
+            | "None"
+            | "Some"
+            | "Ok"
+            | "Err"
+            | "match"
+            | "def"
+            | "class"
+            | "import"
+            | "from"
+            | "pass"
+            | "with"
+            | "as"
+            | "var"
+            | "val"
+            | "func"
+            | "nil"
+            | "null"
+            | "void"
+            | "new"
+            | "try"
+            | "catch"
+            | "throw"
+            | "throws"
+            | "this"
+            | "async"
+            | "await"
+            | "yield"
+            | "break"
+            | "continue"
+            | "where"
+            | "type"
+            | "interface"
+            | "extends"
+            | "implements"
+            | "override"
+            | "private"
+            | "public"
+            | "protected"
+            | "internal"
+            | "open"
+            | "final"
+            | "abstract"
+            | "default"
+            | "package"
+            | "object"
+    )
+}
+
+/// Extract meaningful identifiers from a symbol's AST definition node.
+/// Walks the subtree, collects identifier and string literal text,
+/// filters keywords and short names. Returns space-separated tokens.
+fn extract_body_tokens(def_node: tree_sitter::Node, content: &str) -> Option<String> {
+    let mut seen = HashSet::new();
+    let mut tokens = Vec::new(); // preserves first-occurrence order
+    let mut stack = vec![def_node];
+    let mut nodes_visited = 0usize;
+    const MAX_NODES: usize = 2000;
+
+    while let Some(node) = stack.pop() {
+        nodes_visited += 1;
+        if nodes_visited > MAX_NODES {
+            break;
+        }
+
+        match node.kind() {
+            "identifier"
+            | "type_identifier"
+            | "field_identifier"
+            | "property_identifier"
+            | "attribute"
+            | "shorthand_field_identifier" => {
+                // content is guaranteed UTF-8 by read_to_string
+                let text = node.utf8_text(content.as_bytes()).unwrap_or_default();
+                if text.len() > 1 && !is_keyword(text) && seen.insert(text.to_string()) {
+                    tokens.push(text.to_string());
+                }
+            }
+            "string_content" | "string_fragment" => {
+                let text = node.utf8_text(content.as_bytes()).unwrap_or_default();
+                for word in text.split_whitespace() {
+                    let clean: String = word
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if clean.len() > 2 && seen.insert(clean.to_lowercase()) {
+                        tokens.push(clean.to_lowercase());
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let mut joined = tokens.join(" ");
+    if joined.len() > 400 {
+        if let Some(pos) = joined[..400].rfind(' ') {
+            joined.truncate(pos);
+        } else {
+            joined.truncate(400);
+        }
+    }
+    Some(joined)
 }
 
 /// Extract references (symbol usages) via simple identifier scanning.

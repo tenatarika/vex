@@ -34,14 +34,19 @@ impl Embedder {
     }
 }
 
+/// Character budget for MiniLM-L6-v2 (256 wordpiece tokens, ~4.5 chars/token).
+const EMBEDDING_CHAR_BUDGET: usize = 1100;
+
 /// Build a context string for embedding from symbol metadata.
-/// Includes tokenized name, path-derived domain keywords, signature, and docstring.
+/// Includes tokenized name, path-derived domain keywords, signature, docstring,
+/// and meaningful identifiers from the symbol body.
 pub fn build_context(
     kind: &str,
     name: &str,
     file_path: &str,
     signature: Option<&str>,
     doc: Option<&str>,
+    body_tokens: Option<&str>,
 ) -> String {
     let mut ctx = format!("{kind} {name}");
 
@@ -66,6 +71,31 @@ pub fn build_context(
     if let Some(d) = doc {
         if !d.is_empty() {
             ctx.push_str(&format!(". {d}"));
+        }
+    }
+
+    // Append body tokens with budget — MiniLM-L6-v2 has ~256 wordpiece token limit
+    // (~4.5 chars per token → ~1100 chars total budget)
+    if let Some(bt) = body_tokens {
+        if !bt.is_empty() {
+            let remaining = EMBEDDING_CHAR_BUDGET.saturating_sub(ctx.len());
+            if remaining > 20 {
+                let trimmed = if bt.len() > remaining {
+                    bt[..remaining]
+                        .rfind(' ')
+                        .map_or(&bt[..remaining], |p| &bt[..p])
+                } else {
+                    bt
+                };
+                // Tokenize CamelCase/snake_case identifiers for better embedding
+                let expanded: Vec<String> = trimmed
+                    .split_whitespace()
+                    .flat_map(super::tokenizer::tokenize)
+                    .collect();
+                if !expanded.is_empty() {
+                    ctx.push_str(&format!(". body: {}", expanded.join(" ")));
+                }
+            }
         }
     }
 
@@ -103,6 +133,7 @@ mod tests {
             "src/billing/service.rs",
             Some("pub struct PaymentService"),
             None,
+            None,
         );
         assert_eq!(
             ctx,
@@ -112,14 +143,14 @@ mod tests {
 
     #[test]
     fn context_without_signature() {
-        let ctx = build_context("function", "main", "src/main.rs", None, None);
+        let ctx = build_context("function", "main", "src/main.rs", None, None, None);
         // "main" is a single token, so no tokenized expansion
         assert_eq!(ctx, "function main");
     }
 
     #[test]
     fn context_root_file() {
-        let ctx = build_context("function", "main", "main.rs", None, None);
+        let ctx = build_context("function", "main", "main.rs", None, None, None);
         assert_eq!(ctx, "function main");
     }
 
@@ -131,10 +162,28 @@ mod tests {
             "src/stream_processors/temperature.rs",
             Some("fn process_batch(&self, data: &[f32])"),
             Some("Process a batch of temperature readings from IoT sensors"),
+            None,
         );
         assert!(ctx.contains("process batch"));
         assert!(ctx.contains("stream processors temperature"));
         assert!(ctx.contains("Process a batch of temperature readings"));
+    }
+
+    #[test]
+    fn context_with_body_tokens() {
+        let ctx = build_context(
+            "class",
+            "MissingDataRuleEvaluator",
+            "src/rules/staleness.rs",
+            Some("pub struct MissingDataRuleEvaluator"),
+            None,
+            Some("offline_threshold sensor_status staleness_guard check_interval"),
+        );
+        assert!(ctx.contains("missing data rule evaluator"));
+        assert!(ctx.contains("body:"));
+        assert!(ctx.contains("offline"));
+        assert!(ctx.contains("sensor"));
+        assert!(ctx.contains("staleness"));
     }
 
     #[test]

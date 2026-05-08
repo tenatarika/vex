@@ -81,6 +81,9 @@ pub struct ParsedSymbol {
     /// Docstring/comment extracted from lines above the symbol (used for embedding context only).
     #[serde(skip)]
     pub doc: Option<String>,
+    /// Meaningful identifiers extracted from the symbol body (used for embedding context only).
+    #[serde(skip)]
+    pub body_tokens: Option<String>,
 }
 
 /// A reference (usage) of a symbol found in source code.
