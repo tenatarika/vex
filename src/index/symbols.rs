@@ -69,6 +69,29 @@ impl FromStr for SymbolKind {
     }
 }
 
+impl TryFrom<u8> for SymbolKind {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Function),
+            1 => Ok(Self::Method),
+            2 => Ok(Self::Struct),
+            3 => Ok(Self::Class),
+            4 => Ok(Self::Interface),
+            5 => Ok(Self::Trait),
+            6 => Ok(Self::Enum),
+            7 => Ok(Self::TypeAlias),
+            8 => Ok(Self::Impl),
+            9 => Ok(Self::Constant),
+            10 => Ok(Self::Property),
+            11 => Ok(Self::Package),
+            12 => Ok(Self::Heading),
+            other => Err(other),
+        }
+    }
+}
+
 impl fmt::Display for SymbolKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -180,6 +203,36 @@ mod tests {
     fn display_matches_as_str() {
         assert_eq!(SymbolKind::Function.to_string(), "function");
         assert_eq!(SymbolKind::TypeAlias.to_string(), "type_alias");
+    }
+
+    #[test]
+    fn try_from_u8_roundtrip() {
+        let all = [
+            SymbolKind::Function,
+            SymbolKind::Method,
+            SymbolKind::Struct,
+            SymbolKind::Class,
+            SymbolKind::Interface,
+            SymbolKind::Trait,
+            SymbolKind::Enum,
+            SymbolKind::TypeAlias,
+            SymbolKind::Impl,
+            SymbolKind::Constant,
+            SymbolKind::Property,
+            SymbolKind::Package,
+            SymbolKind::Heading,
+        ];
+        for kind in all {
+            let val = kind as u8;
+            let back = SymbolKind::try_from(val).unwrap();
+            assert_eq!(back, kind);
+        }
+    }
+
+    #[test]
+    fn try_from_u8_invalid_returns_err() {
+        assert_eq!(SymbolKind::try_from(99), Err(99));
+        assert_eq!(SymbolKind::try_from(13), Err(13));
     }
 }
 

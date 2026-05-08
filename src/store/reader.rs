@@ -45,10 +45,16 @@ impl IndexReader {
     }
 
     pub fn header(&self) -> &Header {
+        let ptr = self.mmap.as_ptr();
+        debug_assert!(
+            ptr.align_offset(std::mem::align_of::<Header>()) == 0,
+            "mmap pointer is not aligned to Header (align={})",
+            std::mem::align_of::<Header>()
+        );
         // SAFETY: mmap is page-aligned (>= 4096 bytes, satisfies align_of::<Header>() == 8).
         // Header is #[repr(C)] with fixed layout. The mmap lives as long as &self.
         // File was validated in open() before external callers can use this.
-        unsafe { &*(self.mmap.as_ptr() as *const Header) }
+        unsafe { &*(ptr as *const Header) }
     }
 
     /// Get symbol record by index.
@@ -58,10 +64,16 @@ impl IndexReader {
             return None;
         }
         let offset = header.symbols_offset as usize + idx * SymbolRecord::SIZE;
+        let ptr = unsafe { self.mmap.as_ptr().add(offset) };
+        debug_assert!(
+            ptr.align_offset(std::mem::align_of::<SymbolRecord>()) == 0,
+            "SymbolRecord pointer at offset {offset} is not aligned (align={})",
+            std::mem::align_of::<SymbolRecord>()
+        );
         // SAFETY: bounds checked above. SymbolRecord is #[repr(C)] with 4-byte alignment.
         // symbols_offset is Header::SIZE (divisible by 4), SymbolRecord::SIZE is divisible by 4.
         // The mmap lives as long as &self.
-        Some(unsafe { &*(self.mmap.as_ptr().add(offset) as *const SymbolRecord) })
+        Some(unsafe { &*(ptr as *const SymbolRecord) })
     }
 
     /// Read a null-terminated string from the strings section.
@@ -95,12 +107,17 @@ impl IndexReader {
             return None;
         }
 
+        let ptr = unsafe { self.mmap.as_ptr().add(byte_offset) };
+        debug_assert!(
+            ptr.align_offset(std::mem::align_of::<f32>()) == 0,
+            "vector pointer at byte_offset {byte_offset} is not aligned to f32 (align={})",
+            std::mem::align_of::<f32>()
+        );
         // SAFETY: ptr is 4-byte aligned (mmap is page-aligned, Header::SIZE % 4 == 0,
         // SymbolRecord::SIZE % 4 == 0, so vectors_offset is always divisible by 4).
         // Data was written by writer as valid f32 arrays. Bounds checked above.
         // The mmap lives as long as &self; no mutable references exist.
-        let ptr = unsafe { self.mmap.as_ptr().add(byte_offset) as *const f32 };
-        Some(unsafe { std::slice::from_raw_parts(ptr, dim) })
+        Some(unsafe { std::slice::from_raw_parts(ptr as *const f32, dim) })
     }
 
     /// Whether the index contains embedding vectors.

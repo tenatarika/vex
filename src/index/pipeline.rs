@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use crate::embed;
 use crate::index::hasher;
 use crate::index::manifest::{self, Manifest};
-use crate::index::symbols::ParsedFile;
+use crate::index::symbols::{ParsedFile, ParsedSymbol, SymbolKind};
 use crate::parse;
 use crate::parse::language::Language;
 use crate::store;
@@ -55,9 +55,8 @@ pub fn run(root: &Path, with_embeddings: bool, excludes: &[String]) -> Result<us
     Ok(symbol_count)
 }
 
-/// Incremental update: detect changed files via content hashes, then rebuild index.
-/// Currently detects changes but does a full rebuild (partial writes planned for future).
-/// Returns (total_symbols, changed_count, deleted_count).
+/// Incremental update: detect changed files, re-parse only those, merge with unchanged
+/// symbols from the existing index. Returns (total_symbols, changed_count, deleted_count).
 pub fn update(
     root: &Path,
     with_embeddings: bool,
@@ -92,19 +91,60 @@ pub fn update(
         "incremental update"
     );
 
-    let all_parsed = parse_files(&root, &files)?;
-    let symbol_count: usize = all_parsed.iter().map(|f| f.symbols.len()).sum();
+    let changed_set: HashSet<&str> = diff.changed.iter().map(|s| s.as_str()).collect();
+    let deleted_set: HashSet<&str> = diff.deleted.iter().map(|s| s.as_str()).collect();
 
-    let vectors = if with_embeddings && symbol_count > 0 {
-        generate_embeddings(&all_parsed)?
+    // Reconstruct unchanged symbols (+ vectors) from existing index
+    let index_path = config::index_path(&root);
+    let (unchanged_parsed, unchanged_vectors) = if index_path.exists() {
+        let reader = crate::store::reader::IndexReader::open(&index_path)
+            .context("open existing index for incremental merge")?;
+        reconstruct_unchanged(&reader, &changed_set, &deleted_set)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    let unchanged_sym_count: usize = unchanged_parsed.iter().map(|f| f.symbols.len()).sum();
+    tracing::info!(
+        unchanged_symbols = unchanged_sym_count,
+        unchanged_vectors = unchanged_vectors.len(),
+        "reconstructed unchanged from index"
+    );
+
+    // Parse only changed/new files
+    let changed_paths: Vec<std::path::PathBuf> = files
+        .iter()
+        .filter(|p| {
+            p.strip_prefix(&root)
+                .ok()
+                .and_then(|r| r.to_str())
+                .is_some_and(|r| changed_set.contains(r))
+        })
+        .cloned()
+        .collect();
+
+    let newly_parsed = parse_files(&root, &changed_paths)?;
+    let new_sym_count: usize = newly_parsed.iter().map(|f| f.symbols.len()).sum();
+
+    // Generate embeddings only for new/changed symbols
+    let new_vectors = if with_embeddings && new_sym_count > 0 {
+        generate_embeddings(&newly_parsed)?
     } else {
         Vec::new()
     };
 
-    write_output(&root, &all_parsed, &vectors, &file_hashes)?;
+    // Merge: unchanged first (vectors align with symbol order)
+    let mut all_parsed = unchanged_parsed;
+    all_parsed.extend(newly_parsed);
+    let symbol_count: usize = all_parsed.iter().map(|f| f.symbols.len()).sum();
 
-    if !vectors.is_empty() {
-        build_hnsw(&root, &vectors)?;
+    let mut all_vectors = unchanged_vectors;
+    all_vectors.extend(new_vectors);
+
+    write_output(&root, &all_parsed, &all_vectors, &file_hashes)?;
+
+    if !all_vectors.is_empty() {
+        build_hnsw(&root, &all_vectors)?;
     } else {
         let hnsw_path = config::hnsw_path(&root);
         if hnsw_path.exists() {
@@ -112,7 +152,89 @@ pub fn update(
         }
     }
 
+    tracing::info!(
+        total = symbol_count,
+        reused = unchanged_sym_count,
+        reparsed = new_sym_count,
+        "incremental update complete"
+    );
+
     Ok((symbol_count, diff.changed.len(), diff.deleted.len()))
+}
+
+/// Reconstruct ParsedFile + vectors for unchanged files from the existing index.
+/// Symbols are in index order (file-contiguous), vectors align 1:1 with symbols.
+/// Refs are not recoverable per-file from the FST and are set to empty.
+fn reconstruct_unchanged(
+    reader: &crate::store::reader::IndexReader,
+    changed: &HashSet<&str>,
+    deleted: &HashSet<&str>,
+) -> (Vec<ParsedFile>, Vec<Vec<f32>>) {
+    let has_vectors = reader.has_vectors();
+    let mut vectors: Vec<Vec<f32>> = Vec::new();
+    let mut parsed_files: Vec<ParsedFile> = Vec::new();
+    let mut current_path = String::new();
+    let mut current_symbols: Vec<ParsedSymbol> = Vec::new();
+
+    for i in 0..reader.symbol_count() {
+        let rec = match reader.symbol(i) {
+            Some(r) => r,
+            None => continue,
+        };
+        let path = reader.read_string(rec.file_offset).to_string();
+
+        // Skip changed/deleted files — they'll be re-parsed
+        if changed.contains(path.as_str()) || deleted.contains(path.as_str()) {
+            continue;
+        }
+
+        // Flush previous file group when path changes
+        if path != current_path && !current_path.is_empty() {
+            parsed_files.push(ParsedFile {
+                path: std::mem::take(&mut current_path),
+                symbols: std::mem::take(&mut current_symbols),
+                refs: Vec::new(),
+            });
+        }
+        current_path = path;
+
+        let name = reader.read_string(rec.name_offset).to_string();
+        let kind = SymbolKind::try_from(rec.kind).unwrap_or(SymbolKind::Function);
+        let sig = {
+            let s = reader.read_string(rec.signature_offset);
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
+        };
+
+        current_symbols.push(ParsedSymbol {
+            name,
+            kind,
+            line: rec.line as usize,
+            signature: sig,
+            doc: None,
+            body_tokens: None,
+        });
+
+        if has_vectors {
+            if let Some(vec) = reader.vector(rec.vector_index) {
+                vectors.push(vec.to_vec());
+            }
+        }
+    }
+
+    // Flush last file group
+    if !current_path.is_empty() {
+        parsed_files.push(ParsedFile {
+            path: current_path,
+            symbols: current_symbols,
+            refs: Vec::new(),
+        });
+    }
+
+    (parsed_files, vectors)
 }
 
 fn hash_files(root: &Path, files: &[std::path::PathBuf]) -> Vec<(String, u64)> {
@@ -295,7 +417,11 @@ fn build_hnsw(root: &Path, vectors: &[Vec<f32>]) -> Result<()> {
 /// or extremely long lines (>10KB, typical of minified JS/CSS).
 fn looks_binary(content: &str) -> bool {
     // Check first 8KB for control characters (excluding common whitespace)
-    let sample = &content[..content.len().min(8192)];
+    let mut end = content.len().min(8192);
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    let sample = &content[..end];
     let control_count = sample
         .bytes()
         .filter(|&b| b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')

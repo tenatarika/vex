@@ -24,7 +24,10 @@ pub fn find_callers(
     excludes: &[String],
 ) -> Result<Vec<CallMatch>> {
     let root = root.canonicalize().context("canonicalize root")?;
-    let files = discover_all_files(&root, excludes)?;
+    let files: Vec<_> = crate::util::walk::discover_source_files(&root, excludes)?
+        .into_iter()
+        .filter(|(_, lang)| callgraph_query(*lang).is_some())
+        .collect();
 
     let matches: Vec<CallMatch> = files
         .par_iter()
@@ -54,7 +57,10 @@ pub fn find_callees(
     excludes: &[String],
 ) -> Result<Vec<CallMatch>> {
     let root = root.canonicalize().context("canonicalize root")?;
-    let files = discover_all_files(&root, excludes)?;
+    let files: Vec<_> = crate::util::walk::discover_source_files(&root, excludes)?
+        .into_iter()
+        .filter(|(_, lang)| callgraph_query(*lang).is_some())
+        .collect();
 
     let matches: Vec<CallMatch> = files
         .par_iter()
@@ -311,32 +317,6 @@ fn callgraph_query(lang: Language) -> Option<&'static str> {
         ),
         _ => None,
     }
-}
-
-fn discover_all_files(
-    root: &Path,
-    excludes: &[String],
-) -> Result<Vec<(std::path::PathBuf, Language)>> {
-    let mut files = Vec::new();
-
-    for entry in crate::util::walk::walk_builder(root, excludes)?.build() {
-        let entry = entry?;
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            continue;
-        }
-        let path = entry.into_path();
-        if let Some(lang) = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .and_then(Language::from_extension)
-        {
-            if callgraph_query(lang).is_some() {
-                files.push((path, lang));
-            }
-        }
-    }
-
-    Ok(files)
 }
 
 #[cfg(test)]

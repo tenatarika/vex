@@ -2,9 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-115_passing-brightgreen.svg)]()
 [![Commands](https://img.shields.io/badge/commands-16-blue.svg)]()
-[![Languages](https://img.shields.io/badge/languages-11-blueviolet.svg)]()
+[![Languages](https://img.shields.io/badge/languages-12-blueviolet.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
@@ -21,11 +20,10 @@ $ vex check "Foo" "Bar" "Baz"             # fast existence check
 
 ## Why Vex?
 
-- **4ms search** on any size codebase — FST-based O(query_len) lookup, not O(symbols)
-- **14-21x faster than ripgrep** for symbol search on large projects
+- **~4ms search** after indexing — FST-based O(query_len) lookup, not O(symbols). Requires a pre-built index (indexing takes 20ms-600ms+ depending on project size)
 - **Semantic search** — "find payment processing" returns `ProcessPayment`, `ChargeCard`, `RefundOrder`
 - **Token-efficient** — compact output uses 6-88x fewer tokens than grep, `vex show` extracts just the symbol body instead of the whole file
-- **11 languages** out of the box — Rust, Python, Go, Java, C#, Ruby, Swift, Kotlin, TypeScript, SQL, Markdown
+- **12 languages** out of the box — Rust, Python, Go, Java, C/C++, C#, Ruby, Swift, Kotlin, TypeScript, SQL, Markdown
 - **Single binary, zero config** — no LSP servers, no databases, no Docker. Just `vex index && vex search`
 
 ## How It Compares
@@ -33,15 +31,18 @@ $ vex check "Foo" "Bar" "Baz"             # fast existence check
 |  | **vex** | **ripgrep** | **ast-index** | **ast-grep** | **Serena** |
 |---|---|---|---|---|---|
 | **What it searches** | Symbol definitions | All text | Symbol definitions | AST patterns | Symbols (via LSP) |
-| **Search speed** | **~4ms** (FST) | 75-120ms (disk scan) | 22-60ms (SQLite) | ~30ms (scan) | LSP-dependent |
+| **Requires indexing?** | Yes (20ms-600ms+) | No | Yes | No | No |
+| **Search speed** | **~4ms** (pre-built FST) | 75-120ms (disk scan) | 22-60ms (SQLite) | ~30ms (scan) | LSP-dependent |
 | **Semantic search** | HNSW + embeddings | -- | -- | -- | -- |
 | **Pattern matching** | `fn $NAME($$$)` | regex only | -- | `fn $NAME($$$)` | regex only |
 | **Index size** | **5 MB** / 20K syms | no index | 190 MB / 20K syms | no index | no index |
 | **Token efficiency** | **6-88x** fewer than rg | baseline | ~3x fewer than rg | N/A | N/A |
 | **Symbol body extraction** | `vex show` | -- | -- | -- | -- |
-| **Languages** | 11 | any | 10+ | 10+ | 40+ (LSP) |
+| **Languages** | 12 | any | 10+ | 10+ | 40+ (LSP) |
 | **Refactoring** | -- | -- | -- | -- | rename, move, inline |
 | **Runtime deps** | none | none | none | none | Python + LSP |
+
+**Note**: vex search speed assumes a pre-built index. Ripgrep and ast-grep require no upfront indexing and work immediately on any directory. The tradeoff is amortized: if you search the same codebase many times (typical in agent workflows), the one-time indexing cost pays for itself.
 
 **Best for**: fast symbol search in AI agent workflows where token efficiency matters. Not a replacement for LSP-based tools (no refactoring, no go-to-definition in dependencies).
 
@@ -90,7 +91,7 @@ vex callees "process_event"
 # Fast existence check
 vex check "Foo" "Bar" "Baz"
 
-# Incremental update (only changed files)
+# Incremental update (re-parses only changed files, reuses unchanged from index)
 vex update
 
 # Watch mode (re-indexes on file changes)
@@ -224,7 +225,7 @@ Note: projects with `--semantic` indexing are slower due to ONNX embedding gener
 | Symbol 7 | **4.0 ms** | 42.5 ms | 74.9 ms | **19x** | 1 / 6 |
 | Symbol 8 | **3.7 ms** | 42.8 ms | 78.4 ms | **21x** | 1 / 2 |
 
-**Key takeaway**: vex search is constant ~4 ms (FST O(query_len)), regardless of project size. On large projects vex is **14-21x faster than ripgrep** and **6-16x faster than ast-index**. vex returns only symbol definitions (precise), while rg returns all text occurrences (noisy).
+**Key takeaway**: vex search is constant ~4 ms (FST O(query_len)), regardless of project size — but this assumes a pre-built index. The comparison with ripgrep is not apples-to-apples: rg scans raw text with no indexing, while vex looks up a pre-built index. The real advantage is amortized: vex returns only symbol definitions (precise, token-efficient), while rg returns all text occurrences (noisy, expensive in LLM contexts).
 
 ### Pattern Matching (vex only)
 
@@ -309,6 +310,7 @@ For an agent making 10-20 code lookups per task, vex saves **5,000-20,000 tokens
 | Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` |
 | TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx` | classes, interfaces, enums, functions, arrows, type aliases | `import` |
 | SQL | `.sql` | tables, views, functions, triggers, indexes, schemas, types, sequences | `ALTER TABLE` refs |
+| C/C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | classes, structs, functions, methods, templates, enums | `#include` |
 | Markdown | `.md`, `.markdown` | headings (section structure) | — |
 
 ## Index Location
@@ -423,7 +425,7 @@ Show:   Tree-sitter node boundaries → symbol body extraction
 - **Refs FST** — symbol references in Finite State Transducer, prefix search
 - **HNSW** — approximate nearest neighbor via usearch, O(log N) semantic search
 - **Parallel parsing** — rayon with 500-file chunks
-- **Incremental updates** — content hashing via xxh3, only re-parse changed files
+- **Incremental updates** — content hashing via xxh3, only re-parse changed files (unchanged symbols reconstructed from existing index)
 - **Watch mode** — notify crate with 500ms debouncing
 - **Semantic search** — MiniLM-L6-v2 embeddings (384-dim), HNSW with brute-force fallback
 - **RRF fusion** — merges structural + semantic ranked lists

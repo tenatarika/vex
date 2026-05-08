@@ -3,6 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::embed::Embedder;
+use crate::index::symbols::SymbolKind;
 use crate::search::{MatchType, SearchResult};
 use crate::store::reader::IndexReader;
 
@@ -36,7 +37,9 @@ pub fn search_with_embedder(
 
             Some(SearchResult {
                 name,
-                kind: super::structural::symbol_kind_str(rec.kind).to_string(),
+                kind: SymbolKind::try_from(rec.kind)
+                    .map_or("unknown", |k| k.as_str())
+                    .to_string(),
                 path,
                 line: rec.line as usize,
                 signature: sig,
