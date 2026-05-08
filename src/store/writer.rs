@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 
 use super::format::{Header, SymbolRecord, MAGIC, VECTOR_DIM, VERSION};
 use super::{refs_fst, symbol_fst};
@@ -41,7 +41,22 @@ pub fn write_index(parsed: &[ParsedFile], output: &Path) -> Result<()> {
 }
 
 /// Write parsed files + embedding vectors + refs FST into the binary index format.
+/// Uses atomic write: writes to a temp file first, then renames on success.
 pub fn write_index_full(parsed: &[ParsedFile], vectors: &[Vec<f32>], output: &Path) -> Result<()> {
+    let mut tmp_os = output.as_os_str().to_owned();
+    tmp_os.push(".tmp");
+    let tmp_path = PathBuf::from(tmp_os);
+
+    if let Err(e) = write_index_to(&tmp_path, parsed, vectors) {
+        let _ = std::fs::remove_file(&tmp_path); // best-effort cleanup
+        return Err(e);
+    }
+    std::fs::rename(&tmp_path, output)
+        .with_context(|| format!("rename {} → {}", tmp_path.display(), output.display()))?;
+    Ok(())
+}
+
+fn write_index_to(output: &Path, parsed: &[ParsedFile], vectors: &[Vec<f32>]) -> Result<()> {
     let mut strings = StringPool::new();
     let mut records = Vec::new();
     let mut symbol_idx: u32 = 0;

@@ -19,8 +19,21 @@ impl IndexReader {
         let mmap = unsafe { Mmap::map(&file) }.context("mmap index file")?;
 
         let reader = Self { mmap };
+
+        if reader.mmap.len() < Header::SIZE {
+            bail!(
+                "index file is too small ({} bytes, need at least {}). Re-run `vex index` to rebuild.",
+                reader.mmap.len(),
+                Header::SIZE
+            );
+        }
+
         let header = reader.header();
-        if !header.validate() {
+        if &header.magic != super::format::MAGIC {
+            bail!("index file is corrupted (bad magic). Re-run `vex index` to rebuild.");
+        }
+        // Accept v2 indexes written by vex ≤0.1.x (no symbol FST); has_symbol_fst() gates that section.
+        if header.version != super::format::VERSION && header.version != 2 {
             bail!(
                 "index version mismatch (found v{}, expected v{}). Re-run `vex index` to rebuild.",
                 header.version,
@@ -58,6 +71,9 @@ impl IndexReader {
         }
         let header = self.header();
         let base = header.strings_offset as usize + offset as usize;
+        if base >= self.mmap.len() {
+            return "";
+        }
         let data = &self.mmap[base..];
         let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
         std::str::from_utf8(&data[..end]).unwrap_or("")

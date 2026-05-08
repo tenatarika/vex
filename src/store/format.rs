@@ -49,10 +49,6 @@ pub struct Header {
 impl Header {
     pub const SIZE: usize = std::mem::size_of::<Self>();
 
-    pub fn validate(&self) -> bool {
-        self.magic == *MAGIC && (self.version == VERSION || self.version == 2)
-    }
-
     pub fn has_refs(&self) -> bool {
         self.fst_len > 0
     }

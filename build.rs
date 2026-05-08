@@ -6,7 +6,11 @@ fn main() {
         .ok()
         .and_then(|o| {
             let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() { None } else { Some(s) }
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
         })
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
 

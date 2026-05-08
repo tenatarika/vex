@@ -135,6 +135,12 @@ fn parse_files(root: &Path, files: &[std::path::PathBuf]) -> Result<Vec<ParsedFi
                 let ext = path.extension()?.to_str()?;
                 let lang = Language::from_extension(ext)?;
                 let content = std::fs::read_to_string(path).ok()?;
+
+                // Skip likely binary/minified files (high ratio of non-ASCII or very long lines)
+                if looks_binary(&content) {
+                    return None;
+                }
+
                 let rel = path.strip_prefix(root).ok()?.to_string_lossy().to_string();
 
                 let done = counter.fetch_add(1, Ordering::Relaxed);
@@ -142,7 +148,22 @@ fn parse_files(root: &Path, files: &[std::path::PathBuf]) -> Result<Vec<ParsedFi
                     tracing::info!("{done}/{total} files parsed");
                 }
 
-                parse::parse_file(&rel, &content, lang).ok()
+                // SAFETY: parse_file borrows &rel and &content read-only.
+                // A panic from tree-sitter does not leave any shared mutable state
+                // partially modified, so unwinding is safe to catch.
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    parse::parse_file(&rel, &content, lang)
+                })) {
+                    Ok(Ok(parsed)) => Some(parsed),
+                    Ok(Err(e)) => {
+                        tracing::warn!(path = %rel, error = %e, "parse failed, skipping");
+                        None
+                    }
+                    Err(_) => {
+                        tracing::warn!(path = %rel, "parse panicked, skipping");
+                        None
+                    }
+                }
             })
             .collect();
 
@@ -162,16 +183,32 @@ fn write_output(
     let cache_dir = index_path.parent().context("index path has no parent")?;
     std::fs::create_dir_all(cache_dir).context("create cache directory")?;
 
-    store::writer::write_index_full(parsed, vectors, &index_path).context("write index")?;
+    // Advisory lock to prevent concurrent index writes
+    let lock_path = index_path.with_extension("lock");
+    let lock_file = std::fs::File::create(&lock_path).context("create lock file")?;
+    fs2::FileExt::lock_exclusive(&lock_file)
+        .context("acquire index lock (another vex instance may be indexing)")?;
 
-    // Save manifest with pre-computed hashes (no extra file reads)
-    let manifest_path = config::manifest_path(root);
-    let manifest = Manifest {
-        files: file_hashes.iter().cloned().collect::<HashMap<_, _>>(),
-    };
-    manifest.save(&manifest_path)?;
+    let result = (|| -> Result<()> {
+        store::writer::write_index_full(parsed, vectors, &index_path).context("write index")?;
 
-    Ok(())
+        let manifest_path = config::manifest_path(root);
+        let manifest = Manifest {
+            files: file_hashes.iter().cloned().collect::<HashMap<_, _>>(),
+        };
+        manifest.save(&manifest_path)?;
+        Ok(())
+    })();
+
+    // Unlock (also happens on drop, but be explicit)
+    if let Err(e) = fs2::FileExt::unlock(&lock_file) {
+        tracing::warn!(error = %e, "failed to explicitly unlock index lock");
+    }
+    if let Err(e) = std::fs::remove_file(&lock_path) {
+        tracing::warn!(error = %e, "failed to remove lock file");
+    }
+
+    result
 }
 
 fn generate_embeddings(parsed: &[ParsedFile]) -> Result<Vec<Vec<f32>>> {
@@ -247,6 +284,28 @@ fn build_hnsw(root: &Path, vectors: &[Vec<f32>]) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Heuristic: file is likely binary or minified if it has many non-UTF8/control chars
+/// or extremely long lines (>10KB, typical of minified JS/CSS).
+fn looks_binary(content: &str) -> bool {
+    // Check first 8KB for control characters (excluding common whitespace)
+    let sample = &content[..content.len().min(8192)];
+    let control_count = sample
+        .bytes()
+        .filter(|&b| b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')
+        .count();
+    if control_count * 20 > sample.len() {
+        return true; // ≥5% control chars
+    }
+
+    // Check for very long lines (minified code) — scan first 100 lines
+    // because the first line may be a normal comment/header
+    if content.lines().take(100).any(|l| l.len() > 10_000) {
+        return true;
+    }
+
+    false
 }
 
 fn discover_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {
