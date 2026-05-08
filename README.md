@@ -120,7 +120,7 @@ vex completions zsh > ~/.zfunc/_vex
 | `vex callees <name>` | Find all functions called by a given function. |
 | `vex check <name> [name...]` | Fast existence check — which symbols exist in the index? |
 | `vex grep <pattern> [--filter path/]` | Regex content search (no index needed). |
-| `vex update [--path .] [--semantic]` | Incremental update — only re-index changed files. |
+| `vex update [--path .] [--semantic]` | Incremental update — re-parse only changed files, reuse unchanged symbols from existing index. |
 | `vex watch [--path .] [--semantic]` | Watch filesystem, auto re-index on changes. |
 | `vex status [--path .]` | Show index stats: symbol count, size, embeddings. |
 | `vex completions <shell>` | Generate shell completions (bash, zsh, fish). |
@@ -406,6 +406,51 @@ All commands support `--filter "path/"` to narrow results to a directory.
 - **Use `vex grep` instead of `Grep`** for searching inside string literals, comments, or config values
 - **Use `--format compact`** for token-efficient output in automated workflows
 ```
+
+## Testing
+
+### Unit & Integration Tests
+
+```bash
+cargo test                    # 172 tests — unit, integration, multi-language parsing
+cargo clippy -- -D warnings   # zero warnings policy
+```
+
+Test coverage includes:
+- **Binary format**: roundtrip (write → read → verify all fields), corrupted/truncated/wrong-version index rejection, out-of-bounds symbol access, string pool deduplication, empty index
+- **Vectors**: write/read roundtrip for 384-dim f32 embeddings
+- **FST**: refs FST roundtrip, prefix search, symbol FST exact/prefix/fuzzy search
+- **Search**: structural, fuzzy (Levenshtein), RRF fusion, reranking heuristics
+- **Incremental update**: unchanged symbol reuse, deleted file removal, no-op on unchanged project
+- **Multi-language parsing**: Rust, Python, Go, Kotlin, TypeScript fixtures
+- **Callgraph**: callers/callees for Rust, Python, Go, TypeScript, Java
+
+### Fuzz Testing
+
+Fuzz tests exercise the binary format reader with arbitrary/corrupted data using [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) (libFuzzer + AddressSanitizer):
+
+```bash
+# Install (once)
+cargo install cargo-fuzz
+
+# Generate seed corpus from local vex cache
+bash fuzz/generate_seeds.sh
+
+# Run (requires nightly)
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_index_reader -- -max_total_time=120
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_refs_fst -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_symbol_fst -- -max_total_time=60
+```
+
+Three fuzz targets cover all `unsafe` code paths in the reader:
+
+| Target | What it fuzzes | Unsafe paths exercised |
+|--------|---------------|----------------------|
+| `fuzz_index_reader` | Arbitrary bytes as `.vex` file | `header()`, `symbol()`, `vector()`, `read_string()`, `file_paths()` |
+| `fuzz_refs_fst` | Arbitrary FST + posting bytes | `RefReader::find()`, `find_by_prefix()` |
+| `fuzz_symbol_fst` | Arbitrary FST + posting bytes | `SymbolFstReader::find()`, `find_fuzzy()`, `search_with_fallback()` |
+
+Fuzzing found and fixed 3 bugs: out-of-bounds read on crafted `symbol_count`, misaligned pointer dereference on odd `symbols_offset`, and unchecked section offsets exceeding file size.
 
 ## Architecture
 
