@@ -158,6 +158,19 @@ fn inheritance_query(lang: Language) -> Option<&'static str> {
             "#,
         ),
         // Go has implicit interfaces, Ruby has mixins — skip for now
+        Language::Cpp => Some(
+            r#"
+            (class_specifier
+              name: (type_identifier) @child
+              (base_class_clause
+                (type_identifier) @base)) @def
+
+            (struct_specifier
+              name: (type_identifier) @child
+              (base_class_clause
+                (type_identifier) @base)) @def
+            "#,
+        ),
         Language::Go | Language::Ruby | Language::Sql | Language::Markdown => None,
     }
 }

@@ -12,6 +12,7 @@ pub enum Language {
     Swift,
     Sql,
     Markdown,
+    Cpp,
 }
 
 impl Language {
@@ -30,6 +31,7 @@ impl Language {
             "swift" => Some(Self::Swift),
             "sql" => Some(Self::Sql),
             "md" | "markdown" => Some(Self::Markdown),
+            "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "h" => Some(Self::Cpp),
             _ => None,
         }
     }
@@ -49,6 +51,7 @@ impl Language {
             Self::TypeScript => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Self::Sql => tree_sitter_sequel::LANGUAGE.into(),
             Self::Markdown => tree_sitter_md::LANGUAGE.into(),
+            Self::Cpp => tree_sitter_cpp::LANGUAGE.into(),
         }
     }
 
@@ -66,6 +69,7 @@ impl Language {
             Self::Swift => "swift",
             Self::Sql => "sql",
             Self::Markdown => "markdown",
+            Self::Cpp => "cpp",
         }
     }
 }

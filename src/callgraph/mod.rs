@@ -286,6 +286,29 @@ fn callgraph_query(lang: Language) -> Option<&'static str> {
                 field: (field_identifier) @call.name))
             "#,
         ),
+        Language::Cpp => Some(
+            r#"
+            (function_definition
+              declarator: (function_declarator
+                declarator: (identifier) @fn.name)) @fn.decl
+
+            (function_definition
+              declarator: (function_declarator
+                declarator: (qualified_identifier
+                  name: (identifier) @fn.name))) @fn.decl
+
+            (call_expression
+              function: (identifier) @call.name)
+
+            (call_expression
+              function: (qualified_identifier
+                name: (identifier) @call.name))
+
+            (call_expression
+              function: (field_expression
+                field: (field_identifier) @call.name))
+            "#,
+        ),
         _ => None,
     }
 }

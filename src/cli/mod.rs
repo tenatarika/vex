@@ -295,6 +295,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     }
                     "sql" => Some(crate::parse::language::Language::Sql),
                     "markdown" | "md" => Some(crate::parse::language::Language::Markdown),
+                    "cpp" | "c++" | "cxx" | "c" => Some(crate::parse::language::Language::Cpp),
                     _ => None,
                 })
                 .with_context(|| format!("unknown language: {lang}"))?;
