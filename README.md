@@ -8,6 +8,8 @@
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
+[Why Vex?](#why-vex) · [How It Compares](#how-it-compares) · [Installation](#installation) · [Quick Start](#quick-start) · [Commands](#commands) · [Configuration](#configuration) · [How Search Works](#how-search-works) · [Benchmarks](#benchmarks) · [Supported Languages](#supported-languages) · [Integration](#integration) · [Testing](#testing) · [Architecture](#architecture)
+
 ```
 $ vex search "TelemetryProcessor"          # 4ms — find symbol definitions
 $ vex show "TelemetryProcessor"            # extract just the class body (not the whole file)
