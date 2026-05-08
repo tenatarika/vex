@@ -1,5 +1,6 @@
 pub mod bloom;
 pub mod fusion;
+pub mod rerank;
 pub mod semantic;
 pub mod structural;
 

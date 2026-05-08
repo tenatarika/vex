@@ -165,6 +165,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 structural_results
             };
 
+            let results = crate::search::rerank::rerank(&query, results);
             let results: Vec<_> = filter_by_path(results, filter_path.as_deref())
                 .into_iter()
                 .take(limit)
@@ -412,6 +413,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
 
             for symbol in &symbols {
                 let results = structural::search_with_fuzzy(&reader, symbol, fetch_limit);
+                let results = crate::search::rerank::rerank(symbol, results);
                 let results: Vec<_> = filter_by_path(results, filter_path.as_deref())
                     .into_iter()
                     .take(limit)
