@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -214,5 +215,11 @@ pub enum Commands {
         /// Project root path (defaults to cwd)
         #[arg(short, long)]
         path: Option<PathBuf>,
+    },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: Shell,
     },
 }

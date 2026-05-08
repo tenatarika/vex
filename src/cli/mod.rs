@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use args::{Cli, Commands, OutputFormat};
+use clap::CommandFactory;
 
 use crate::embed::Embedder;
 use crate::index::pipeline;
@@ -624,6 +625,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     }
                 }
             }
+            Ok(())
+        }
+
+        Commands::Completions { shell } => {
+            let mut cmd = Cli::command();
+            let name = cmd.get_name().to_owned();
+            clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
             Ok(())
         }
     }
