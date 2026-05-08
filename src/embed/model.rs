@@ -81,9 +81,12 @@ pub fn build_context(
             let remaining = EMBEDDING_CHAR_BUDGET.saturating_sub(ctx.len());
             if remaining > 20 {
                 let trimmed = if bt.len() > remaining {
-                    bt[..remaining]
-                        .rfind(' ')
-                        .map_or(&bt[..remaining], |p| &bt[..p])
+                    // Find a char boundary at or before the budget limit
+                    let mut cut = remaining;
+                    while cut > 0 && !bt.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    bt[..cut].rfind(' ').map_or(&bt[..cut], |p| &bt[..p])
                 } else {
                     bt
                 };

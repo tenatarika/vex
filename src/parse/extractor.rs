@@ -156,7 +156,13 @@ fn extract_doc_above(content: &str, symbol_line: usize) -> Option<String> {
 
     doc_lines.reverse();
     let mut doc = doc_lines.join(" ");
-    doc.truncate(200);
+    if doc.len() > 200 {
+        let mut cut = 200;
+        while cut > 0 && !doc.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        doc.truncate(cut);
+    }
     Some(doc)
 }
 
@@ -292,10 +298,15 @@ fn extract_body_tokens(def_node: tree_sitter::Node, content: &str) -> Option<Str
 
     let mut joined = tokens.join(" ");
     if joined.len() > 400 {
-        if let Some(pos) = joined[..400].rfind(' ') {
+        // Find a char boundary at or before 400 bytes
+        let mut cut = 400;
+        while cut > 0 && !joined.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        if let Some(pos) = joined[..cut].rfind(' ') {
             joined.truncate(pos);
         } else {
-            joined.truncate(400);
+            joined.truncate(cut);
         }
     }
     Some(joined)
