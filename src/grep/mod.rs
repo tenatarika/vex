@@ -18,9 +18,10 @@ pub fn search(
     pattern: &str,
     filter_path: Option<&str>,
     limit: usize,
+    excludes: &[String],
 ) -> Result<Vec<GrepMatch>> {
     let re = Regex::new(pattern).context("invalid regex pattern")?;
-    let files = discover_files(root, filter_path)?;
+    let files = discover_files(root, filter_path, excludes)?;
 
     let matches: Vec<GrepMatch> = files
         .par_iter()
@@ -53,14 +54,14 @@ pub fn search(
     Ok(matches.into_iter().take(limit).collect())
 }
 
-fn discover_files(root: &Path, filter_path: Option<&str>) -> Result<Vec<PathBuf>> {
+fn discover_files(
+    root: &Path,
+    filter_path: Option<&str>,
+    excludes: &[String],
+) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
-    for entry in ignore::WalkBuilder::new(root)
-        .hidden(true)
-        .max_depth(Some(50))
-        .build()
-    {
+    for entry in crate::util::walk::walk_builder(root, excludes)?.build() {
         let entry = entry?;
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
@@ -114,7 +115,7 @@ mod tests {
     #[test]
     fn grep_finds_string_in_content() {
         let dir = setup_test_dir();
-        let matches = search(dir.path(), "40 MINUTE", None, 50).unwrap();
+        let matches = search(dir.path(), "40 MINUTE", None, 50, &[]).unwrap();
         assert_eq!(matches.len(), 1);
         assert!(matches[0].path.contains("config.py"));
         assert_eq!(matches[0].line, 1);
@@ -123,14 +124,14 @@ mod tests {
     #[test]
     fn grep_regex_pattern() {
         let dir = setup_test_dir();
-        let matches = search(dir.path(), r"def \w+\(\)", None, 50).unwrap();
+        let matches = search(dir.path(), r"def \w+\(\)", None, 50, &[]).unwrap();
         assert_eq!(matches.len(), 2); // hello() and get_user()
     }
 
     #[test]
     fn grep_with_path_filter() {
         let dir = setup_test_dir();
-        let matches = search(dir.path(), "def", Some("api"), 50).unwrap();
+        let matches = search(dir.path(), "def", Some("api"), 50, &[]).unwrap();
         assert_eq!(matches.len(), 1);
         assert!(matches[0].path.contains("api/"));
     }
@@ -138,13 +139,13 @@ mod tests {
     #[test]
     fn grep_respects_limit() {
         let dir = setup_test_dir();
-        let matches = search(dir.path(), ".", None, 2).unwrap();
+        let matches = search(dir.path(), ".", None, 2, &[]).unwrap();
         assert_eq!(matches.len(), 2);
     }
 
     #[test]
     fn grep_invalid_regex_returns_error() {
         let dir = setup_test_dir();
-        assert!(search(dir.path(), "[invalid", None, 50).is_err());
+        assert!(search(dir.path(), "[invalid", None, 50, &[]).is_err());
     }
 }

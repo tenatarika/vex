@@ -17,13 +17,19 @@ pub struct PatternMatch {
 }
 
 /// Scan files in a directory for code matching a structural pattern.
-pub fn scan(root: &Path, pattern: &str, lang: Language, limit: usize) -> Result<Vec<PatternMatch>> {
+pub fn scan(
+    root: &Path,
+    pattern: &str,
+    lang: Language,
+    limit: usize,
+    excludes: &[String],
+) -> Result<Vec<PatternMatch>> {
     let root = root.canonicalize().context("canonicalize root")?;
 
     let pattern_tree = matcher::parse_pattern(pattern, lang).context("parse pattern")?;
 
     // Discover files
-    let files: Vec<_> = discover_lang_files(&root, lang)?;
+    let files: Vec<_> = discover_lang_files(&root, lang, excludes)?;
 
     // Scan files in parallel
     let matches: Vec<PatternMatch> = files
@@ -46,14 +52,14 @@ pub fn scan(root: &Path, pattern: &str, lang: Language, limit: usize) -> Result<
     Ok(matches.into_iter().take(limit).collect())
 }
 
-fn discover_lang_files(root: &Path, lang: Language) -> Result<Vec<std::path::PathBuf>> {
+fn discover_lang_files(
+    root: &Path,
+    lang: Language,
+    excludes: &[String],
+) -> Result<Vec<std::path::PathBuf>> {
     let mut files = Vec::new();
 
-    for entry in ignore::WalkBuilder::new(root)
-        .hidden(true)
-        .max_depth(Some(50))
-        .build()
-    {
+    for entry in crate::util::walk::walk_builder(root, excludes)?.build() {
         let entry = entry?;
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;

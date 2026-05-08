@@ -13,11 +13,11 @@ const DEBOUNCE_MS: u64 = 500;
 
 /// Watch a project directory for changes and trigger incremental re-indexing.
 /// Blocks until SIGINT (Ctrl+C).
-pub fn watch(root: &Path, with_embeddings: bool) -> Result<()> {
+pub fn watch(root: &Path, with_embeddings: bool, excludes: &[String]) -> Result<()> {
     let root = root.canonicalize().context("canonicalize root")?;
 
     println!("Building initial index...");
-    let count = pipeline::run(&root, with_embeddings)?;
+    let count = pipeline::run(&root, with_embeddings, excludes)?;
     println!(
         "Watching {} ({count} symbols). Press Ctrl+C to stop.",
         root.display()
@@ -57,7 +57,7 @@ pub fn watch(root: &Path, with_embeddings: bool) -> Result<()> {
 
         if relevant {
             let start = std::time::Instant::now();
-            match pipeline::update(&root, with_embeddings) {
+            match pipeline::update(&root, with_embeddings, excludes) {
                 Ok((total, changed, deleted)) => {
                     if changed > 0 || deleted > 0 {
                         println!(

@@ -1,6 +1,64 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result};
+use serde::Deserialize;
 use xxhash_rust::xxh3::xxh3_64;
+
+/// On-disk representation of `.vex.toml`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VexConfig {
+    /// Glob patterns to exclude (gitignore syntax, applied on top of .gitignore)
+    #[serde(default)]
+    pub exclude: Vec<String>,
+
+    /// Default output format: "text", "json", or "compact"
+    pub format: Option<String>,
+
+    /// Enable semantic embeddings by default
+    pub semantic: Option<bool>,
+}
+
+/// Search for `.vex.toml` starting from `start_dir`, walking up to filesystem root.
+/// Returns the parsed config, or a default if no file is found.
+pub fn load_config(start_dir: &Path) -> Result<VexConfig> {
+    let mut dir = start_dir.to_path_buf();
+    loop {
+        let candidate = dir.join(".vex.toml");
+        if candidate.is_file() {
+            let content = std::fs::read_to_string(&candidate)
+                .with_context(|| format!("read {}", candidate.display()))?;
+            let config: VexConfig = toml::from_str(&content)
+                .with_context(|| format!("parse {}", candidate.display()))?;
+            tracing::debug!(path = %candidate.display(), "loaded config");
+            return Ok(config);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    Ok(VexConfig::default())
+}
+
+/// Default .vex.toml content with comments explaining each option.
+pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/tenatarika/vex
+#
+# Place this file in your project root as .vex.toml
+
+# Glob patterns to exclude from indexing (gitignore syntax, on top of .gitignore)
+# exclude = [
+#     "vendor/**",
+#     "node_modules/**",
+#     "*.generated.go",
+#     "dist/**",
+# ]
+
+# Default output format: "text", "json", or "compact"
+# format = "text"
+
+# Enable semantic embeddings by default (slower indexing, enables meaning-based search)
+# semantic = false
+"#;
 
 /// Get the cache directory for vex indexes.
 ///

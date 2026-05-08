@@ -19,9 +19,9 @@ const CHUNK_SIZE: usize = 500;
 const EMBED_BATCH_SIZE: usize = 256;
 
 /// Full rebuild: index all files from scratch.
-pub fn run(root: &Path, with_embeddings: bool) -> Result<usize> {
+pub fn run(root: &Path, with_embeddings: bool, excludes: &[String]) -> Result<usize> {
     let root = root.canonicalize().context("canonicalize root")?;
-    let files = discover_files(&root)?;
+    let files = discover_files(&root, excludes)?;
     tracing::info!(count = files.len(), "discovered files");
 
     // Hash and parse in one pass to avoid reading files twice
@@ -58,12 +58,16 @@ pub fn run(root: &Path, with_embeddings: bool) -> Result<usize> {
 /// Incremental update: detect changed files via content hashes, then rebuild index.
 /// Currently detects changes but does a full rebuild (partial writes planned for future).
 /// Returns (total_symbols, changed_count, deleted_count).
-pub fn update(root: &Path, with_embeddings: bool) -> Result<(usize, usize, usize)> {
+pub fn update(
+    root: &Path,
+    with_embeddings: bool,
+    excludes: &[String],
+) -> Result<(usize, usize, usize)> {
     let root = root.canonicalize().context("canonicalize root")?;
     let manifest_path = config::manifest_path(&root);
     let old_manifest = Manifest::load(&manifest_path)?;
 
-    let files = discover_files(&root)?;
+    let files = discover_files(&root, excludes)?;
     let file_hashes = hash_files(&root, &files);
 
     let diff = manifest::diff_files(&file_hashes, &old_manifest);
@@ -309,14 +313,10 @@ fn looks_binary(content: &str) -> bool {
     false
 }
 
-fn discover_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {
+fn discover_files(root: &Path, excludes: &[String]) -> Result<Vec<std::path::PathBuf>> {
     let mut files = Vec::new();
 
-    for entry in ignore::WalkBuilder::new(root)
-        .hidden(true)
-        .max_depth(Some(50))
-        .build()
-    {
+    for entry in crate::util::walk::walk_builder(root, excludes)?.build() {
         let entry = entry?;
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;

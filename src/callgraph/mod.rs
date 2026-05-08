@@ -17,9 +17,14 @@ pub struct CallMatch {
 }
 
 /// Find all functions that call `target_name`.
-pub fn find_callers(root: &Path, target_name: &str, limit: usize) -> Result<Vec<CallMatch>> {
+pub fn find_callers(
+    root: &Path,
+    target_name: &str,
+    limit: usize,
+    excludes: &[String],
+) -> Result<Vec<CallMatch>> {
     let root = root.canonicalize().context("canonicalize root")?;
-    let files = discover_all_files(&root)?;
+    let files = discover_all_files(&root, excludes)?;
 
     let matches: Vec<CallMatch> = files
         .par_iter()
@@ -42,9 +47,14 @@ pub fn find_callers(root: &Path, target_name: &str, limit: usize) -> Result<Vec<
 }
 
 /// Find all functions called by `target_name`.
-pub fn find_callees(root: &Path, target_name: &str, limit: usize) -> Result<Vec<CallMatch>> {
+pub fn find_callees(
+    root: &Path,
+    target_name: &str,
+    limit: usize,
+    excludes: &[String],
+) -> Result<Vec<CallMatch>> {
     let root = root.canonicalize().context("canonicalize root")?;
-    let files = discover_all_files(&root)?;
+    let files = discover_all_files(&root, excludes)?;
 
     let matches: Vec<CallMatch> = files
         .par_iter()
@@ -280,14 +290,13 @@ fn callgraph_query(lang: Language) -> Option<&'static str> {
     }
 }
 
-fn discover_all_files(root: &Path) -> Result<Vec<(std::path::PathBuf, Language)>> {
+fn discover_all_files(
+    root: &Path,
+    excludes: &[String],
+) -> Result<Vec<(std::path::PathBuf, Language)>> {
     let mut files = Vec::new();
 
-    for entry in ignore::WalkBuilder::new(root)
-        .hidden(true)
-        .max_depth(Some(50))
-        .build()
-    {
+    for entry in crate::util::walk::walk_builder(root, excludes)?.build() {
         let entry = entry?;
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;

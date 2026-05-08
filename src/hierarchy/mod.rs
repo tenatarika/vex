@@ -18,9 +18,14 @@ pub struct ImplMatch {
 }
 
 /// Find all types that inherit from / implement `base_name` across all supported languages.
-pub fn find_implementations(root: &Path, base_name: &str, limit: usize) -> Result<Vec<ImplMatch>> {
+pub fn find_implementations(
+    root: &Path,
+    base_name: &str,
+    limit: usize,
+    excludes: &[String],
+) -> Result<Vec<ImplMatch>> {
     let root = root.canonicalize().context("canonicalize root")?;
-    let files = discover_all_files(&root)?;
+    let files = discover_all_files(&root, excludes)?;
 
     let matches: Vec<ImplMatch> = files
         .par_iter()
@@ -43,14 +48,13 @@ pub fn find_implementations(root: &Path, base_name: &str, limit: usize) -> Resul
 }
 
 /// Discover all source files with their detected language.
-fn discover_all_files(root: &Path) -> Result<Vec<(std::path::PathBuf, Language)>> {
+fn discover_all_files(
+    root: &Path,
+    excludes: &[String],
+) -> Result<Vec<(std::path::PathBuf, Language)>> {
     let mut files = Vec::new();
 
-    for entry in ignore::WalkBuilder::new(root)
-        .hidden(true)
-        .max_depth(Some(50))
-        .build()
-    {
+    for entry in crate::util::walk::walk_builder(root, excludes)?.build() {
         let entry = entry?;
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;

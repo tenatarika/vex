@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 [![Tests](https://img.shields.io/badge/tests-115_passing-brightgreen.svg)]()
-[![Commands](https://img.shields.io/badge/commands-15-blue.svg)]()
+[![Commands](https://img.shields.io/badge/commands-16-blue.svg)]()
 [![Languages](https://img.shields.io/badge/languages-10-blueviolet.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
@@ -122,6 +122,34 @@ vex completions zsh > ~/.zfunc/_vex
 | `vex watch [--path .] [--semantic]` | Watch filesystem, auto re-index on changes. |
 | `vex status [--path .]` | Show index stats: symbol count, size, embeddings. |
 | `vex completions <shell>` | Generate shell completions (bash, zsh, fish). |
+| `vex init` | Create a default `.vex.toml` config file in the project root. |
+
+## Configuration
+
+Create a `.vex.toml` in your project root to customize vex behavior:
+
+```bash
+vex init  # generates .vex.toml with commented defaults
+```
+
+```toml
+# .vex.toml
+
+# Glob patterns to exclude from indexing (gitignore syntax, on top of .gitignore)
+exclude = [
+    "vendor/**",
+    "node_modules/**",
+    "*.generated.go",
+]
+
+# Default output format: "text", "json", or "compact"
+format = "compact"
+
+# Enable semantic embeddings by default
+semantic = true
+```
+
+CLI flags always override config values. Use `--no-semantic` to explicitly disable semantic mode when the config enables it.
 
 ## Output Formats
 

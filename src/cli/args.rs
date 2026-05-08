@@ -12,9 +12,9 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
-    /// Output format
-    #[arg(long, global = true, default_value = "text")]
-    pub format: OutputFormat,
+    /// Output format (overrides .vex.toml)
+    #[arg(long, global = true)]
+    pub format: Option<OutputFormat>,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -34,8 +34,12 @@ pub enum Commands {
         path: Option<PathBuf>,
 
         /// Generate semantic embeddings (slower but enables semantic search)
-        #[arg(long, default_value = "false")]
+        #[arg(long)]
         semantic: bool,
+
+        /// Disable semantic embeddings (overrides .vex.toml)
+        #[arg(long, conflicts_with = "semantic")]
+        no_semantic: bool,
     },
 
     /// Search symbols by name or semantics
@@ -48,8 +52,12 @@ pub enum Commands {
         limit: usize,
 
         /// Enable semantic (vector) search
-        #[arg(long, default_value = "false")]
+        #[arg(long)]
         semantic: bool,
+
+        /// Disable semantic search (overrides .vex.toml)
+        #[arg(long, conflicts_with = "semantic")]
+        no_semantic: bool,
 
         /// Filter results by path substring (e.g. "src/api/" or "tests/")
         #[arg(short = 'f', long = "filter")]
@@ -95,8 +103,12 @@ pub enum Commands {
         path: Option<PathBuf>,
 
         /// Generate semantic embeddings for changed files
-        #[arg(long, default_value = "false")]
+        #[arg(long)]
         semantic: bool,
+
+        /// Disable semantic embeddings (overrides .vex.toml)
+        #[arg(long, conflicts_with = "semantic")]
+        no_semantic: bool,
     },
 
     /// Show structure of a file (symbols, kinds, lines)
@@ -116,8 +128,12 @@ pub enum Commands {
         path: Option<PathBuf>,
 
         /// Generate semantic embeddings
-        #[arg(long, default_value = "false")]
+        #[arg(long)]
         semantic: bool,
+
+        /// Disable semantic embeddings (overrides .vex.toml)
+        #[arg(long, conflicts_with = "semantic")]
+        no_semantic: bool,
     },
 
     /// Show the full body of a symbol (function, class, struct, etc.)
@@ -222,4 +238,7 @@ pub enum Commands {
         /// Shell to generate completions for
         shell: Shell,
     },
+
+    /// Create a default .vex.toml config file in the current directory
+    Init,
 }

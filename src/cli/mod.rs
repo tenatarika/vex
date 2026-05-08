@@ -20,6 +20,50 @@ fn resolve_root(path: Option<std::path::PathBuf>) -> Result<std::path::PathBuf> 
     }
 }
 
+/// Extract the --path hint from a subcommand for config loading.
+fn extract_path_hint(cmd: &Commands) -> Option<std::path::PathBuf> {
+    match cmd {
+        Commands::Index { path, .. }
+        | Commands::Update { path, .. }
+        | Commands::Watch { path, .. }
+        | Commands::Grep { path, .. }
+        | Commands::Status { path, .. }
+        | Commands::Implementations { path, .. }
+        | Commands::Callers { path, .. }
+        | Commands::Callees { path, .. }
+        | Commands::Check { path, .. }
+        | Commands::Pattern { path, .. } => path.clone(),
+        _ => None,
+    }
+}
+
+/// Resolve semantic flag: --semantic wins, --no-semantic wins, else config, else false.
+fn resolve_semantic(cli_semantic: bool, cli_no_semantic: bool, cfg: &config::VexConfig) -> bool {
+    if cli_semantic {
+        true
+    } else if cli_no_semantic {
+        false
+    } else {
+        cfg.semantic.unwrap_or(false)
+    }
+}
+
+/// Resolve output format: CLI flag wins, else config, else Text.
+fn resolve_format(cli: Option<OutputFormat>, cfg: &config::VexConfig) -> OutputFormat {
+    if let Some(f) = cli {
+        return f;
+    }
+    match cfg.format.as_deref() {
+        Some("json") => OutputFormat::Json,
+        Some("compact") => OutputFormat::Compact,
+        Some("text") | None => OutputFormat::Text,
+        Some(other) => {
+            eprintln!("warning: unknown format \"{other}\" in .vex.toml, using \"text\"");
+            OutputFormat::Text
+        }
+    }
+}
+
 fn filter_by_path(
     results: Vec<crate::search::SearchResult>,
     filter: Option<&str>,
@@ -34,29 +78,39 @@ fn filter_by_path(
 }
 
 pub fn dispatch(cli: Cli) -> Result<()> {
-    let format = &cli.format;
+    // Load project config from .vex.toml — anchored to project root, not cwd
+    let root_hint = extract_path_hint(&cli.command);
+    let config_root = resolve_root(root_hint)?;
+    let cfg = config::load_config(&config_root)?;
+    let format = resolve_format(cli.format, &cfg);
+    let excludes = &cfg.exclude;
 
     match cli.command {
-        Commands::Index { path, semantic } => {
+        Commands::Index {
+            path,
+            semantic,
+            no_semantic,
+        } => {
             let root = resolve_root(path)?;
             let start = Instant::now();
-            let count = pipeline::run(&root, semantic)?;
+            let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
+            let count = pipeline::run(&root, with_semantic, excludes)?;
             let elapsed = start.elapsed();
             let index_path = config::index_path(&root.canonicalize()?);
 
-            match format {
+            match &format {
                 OutputFormat::Json => {
                     let json = serde_json::json!({
                         "symbols": count,
                         "elapsed_ms": elapsed.as_millis(),
-                        "embeddings": semantic,
+                        "embeddings": with_semantic,
                         "index": index_path.to_string_lossy(),
                     });
                     println!("{}", serde_json::to_string_pretty(&json)?);
                 }
                 OutputFormat::Text | OutputFormat::Compact => {
                     println!("Indexed {count} symbols in {elapsed:.2?}");
-                    if semantic {
+                    if with_semantic {
                         println!("Embeddings: enabled");
                     }
                     println!("Index: {}", index_path.display());
@@ -68,8 +122,10 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             query,
             limit,
             semantic,
+            no_semantic,
             filter_path,
         } => {
+            let semantic = resolve_semantic(semantic, no_semantic, &cfg);
             let root = resolve_root(None)?.canonicalize()?;
             let index_path = config::index_path(&root);
 
@@ -115,14 +171,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 .collect();
 
             if results.is_empty() {
-                match format {
+                match &format {
                     OutputFormat::Json => println!("[]"),
                     OutputFormat::Text | OutputFormat::Compact => {
                         println!("No results for \"{query}\"")
                     }
                 }
             } else {
-                output::print_results(&results, format);
+                output::print_results(&results, &format);
             }
             Ok(())
         }
@@ -163,7 +219,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let total = entries.len();
             let entries: Vec<_> = entries.into_iter().take(limit).collect();
 
-            match format {
+            match &format {
                 OutputFormat::Json => {
                     let json: Vec<serde_json::Value> = entries
                         .iter()
@@ -231,10 +287,10 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 .with_context(|| format!("unknown language: {lang}"))?;
 
             let start = Instant::now();
-            let matches = crate::pattern::scan(&root, &pattern, language, limit)?;
+            let matches = crate::pattern::scan(&root, &pattern, language, limit, excludes)?;
             let elapsed = start.elapsed();
 
-            match format {
+            match &format {
                 OutputFormat::Json => {
                     let json: Vec<serde_json::Value> = matches
                         .iter()
@@ -275,13 +331,18 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Commands::Update { path, semantic } => {
+        Commands::Update {
+            path,
+            semantic,
+            no_semantic,
+        } => {
             let root = resolve_root(path)?;
             let start = Instant::now();
-            let (total, changed, deleted) = pipeline::update(&root, semantic)?;
+            let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
+            let (total, changed, deleted) = pipeline::update(&root, with_semantic, excludes)?;
             let elapsed = start.elapsed();
 
-            match format {
+            match &format {
                 OutputFormat::Json => {
                     let json = serde_json::json!({
                         "symbols": total,
@@ -301,10 +362,15 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Commands::Outline { file, kind } => cmd_outline(&file, kind.as_deref(), format),
-        Commands::Watch { path, semantic } => {
+        Commands::Outline { file, kind } => cmd_outline(&file, kind.as_deref(), &format),
+        Commands::Watch {
+            path,
+            semantic,
+            no_semantic,
+        } => {
             let root = resolve_root(path)?;
-            crate::watch::handler::watch(&root, semantic)?;
+            let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
+            crate::watch::handler::watch(&root, with_semantic, excludes)?;
             Ok(())
         }
         Commands::Show {
@@ -340,7 +406,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     .collect();
 
                 if results.is_empty() {
-                    match format {
+                    match &format {
                         OutputFormat::Json => {}
                         OutputFormat::Text | OutputFormat::Compact => {
                             if printed > 0 {
@@ -374,7 +440,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                             crate::parse::body::extract_symbol_body(&content, result.line, context)?
                         };
 
-                    match format {
+                    match &format {
                         OutputFormat::Json => {
                             json_items.push(serde_json::json!({
                                 "name": result.name,
@@ -418,7 +484,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 }
             }
 
-            match format {
+            match &format {
                 OutputFormat::Json => {
                     println!("{}", serde_json::to_string_pretty(&json_items)?);
                 }
@@ -437,7 +503,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let index_path = config::index_path(&root);
 
             if !index_path.exists() {
-                match format {
+                match &format {
                     OutputFormat::Json => {
                         println!("{}", serde_json::json!({"error": "no index found"}));
                     }
@@ -452,7 +518,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let meta = std::fs::metadata(&index_path)?;
             let reader = IndexReader::open(&index_path)?;
 
-            match format {
+            match &format {
                 OutputFormat::Json => {
                     let json = serde_json::json!({
                         "project": root.to_string_lossy(),
@@ -483,9 +549,10 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             path,
         } => {
             let root = resolve_root(path)?;
-            let matches = crate::grep::search(&root, &pattern, filter_path.as_deref(), limit)?;
+            let matches =
+                crate::grep::search(&root, &pattern, filter_path.as_deref(), limit, excludes)?;
 
-            match format {
+            match &format {
                 OutputFormat::Json => {
                     let json: Vec<serde_json::Value> = matches
                         .iter()
@@ -521,10 +588,10 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         Commands::Implementations { name, path, limit } => {
             let root = resolve_root(path)?;
             let start = Instant::now();
-            let matches = crate::hierarchy::find_implementations(&root, &name, limit)?;
+            let matches = crate::hierarchy::find_implementations(&root, &name, limit, excludes)?;
             let elapsed = start.elapsed();
 
-            match format {
+            match &format {
                 OutputFormat::Json => {
                     let json: Vec<serde_json::Value> = matches
                         .iter()
@@ -561,8 +628,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Commands::Callers { name, path, limit } => cmd_callgraph(&name, path, limit, true, format),
-        Commands::Callees { name, path, limit } => cmd_callgraph(&name, path, limit, false, format),
+        Commands::Callers { name, path, limit } => {
+            cmd_callgraph(&name, path, limit, true, &format, excludes)
+        }
+        Commands::Callees { name, path, limit } => {
+            cmd_callgraph(&name, path, limit, false, &format, excludes)
+        }
         Commands::Check { names, path } => {
             let root = resolve_root(path)?.canonicalize()?;
             let index_path = config::index_path(&root);
@@ -610,7 +681,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     .collect()
             };
 
-            match format {
+            match &format {
                 OutputFormat::Json => {
                     let json: serde_json::Value = results
                         .iter()
@@ -634,6 +705,19 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
             Ok(())
         }
+
+        Commands::Init => {
+            let path = std::env::current_dir()
+                .context("get working directory")?
+                .join(".vex.toml");
+            if path.exists() {
+                bail!(".vex.toml already exists at {}", path.display());
+            }
+            std::fs::write(&path, config::DEFAULT_CONFIG)
+                .with_context(|| format!("write {}", path.display()))?;
+            println!("Created {}", path.display());
+            Ok(())
+        }
     }
 }
 
@@ -643,18 +727,19 @@ fn cmd_callgraph(
     limit: usize,
     is_callers: bool,
     format: &OutputFormat,
+    excludes: &[String],
 ) -> Result<()> {
     let root = resolve_root(path)?;
     let label = if is_callers { "callers" } else { "callees" };
     let start = std::time::Instant::now();
     let matches = if is_callers {
-        crate::callgraph::find_callers(&root, name, limit)?
+        crate::callgraph::find_callers(&root, name, limit, excludes)?
     } else {
-        crate::callgraph::find_callees(&root, name, limit)?
+        crate::callgraph::find_callees(&root, name, limit, excludes)?
     };
     let elapsed = start.elapsed();
 
-    match format {
+    match &format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = matches
                 .iter()
@@ -728,7 +813,7 @@ fn print_outline(
     kind_filter: Option<crate::index::symbols::SymbolKind>,
     format: &OutputFormat,
 ) {
-    match format {
+    match &format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = symbols
                 .iter()
