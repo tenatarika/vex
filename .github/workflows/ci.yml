@@ -19,22 +19,4 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
 
-      - name: Run tests
-        run: |
-          cargo test 2>&1 | tee test_output.txt
-          # Extract unique test count (lib tests run in both lib and bin targets, count once)
-          TOTAL=$(grep '^test result:' test_output.txt | awk '{sum += $4} END {print sum}')
-          UNIQUE=$(grep '^test result:' test_output.txt | awk '{print $4}' | sort -rn | head -1)
-          echo "Total test runs: $TOTAL (unique: ~$UNIQUE per target)"
-          echo "TEST_COUNT=$TOTAL" >> $GITHUB_ENV
-
-      - name: Update test badge
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: schneegans/dynamic-badges-action@v1.7.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: ${{ vars.BADGE_GIST_ID }}
-          filename: vex-tests.json
-          label: tests
-          message: ${{ env.TEST_COUNT }} passing
-          color: brightgreen
+      - run: cargo test
