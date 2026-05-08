@@ -22,4 +22,5 @@ pub enum MatchType {
     Structural,
     Semantic,
     Hybrid,
+    Fuzzy,
 }

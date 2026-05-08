@@ -145,7 +145,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 limit
             };
 
-            let structural_results = structural::search(&reader, &query, fetch_limit);
+            let structural_results = structural::search_with_fuzzy(&reader, &query, fetch_limit);
 
             let results = if semantic && reader.has_vectors() {
                 let mut embedder = Embedder::new().context("load embedding model")?;
@@ -178,6 +178,17 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     }
                 }
             } else {
+                let is_fuzzy = results
+                    .iter()
+                    .any(|r| matches!(r.match_type, crate::search::MatchType::Fuzzy));
+                if is_fuzzy {
+                    match &format {
+                        OutputFormat::Text | OutputFormat::Compact => {
+                            eprintln!("(fuzzy match — no exact results for \"{query}\")\n");
+                        }
+                        _ => {}
+                    }
+                }
                 output::print_results(&results, &format);
             }
             Ok(())
@@ -399,7 +410,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let mut printed = 0usize;
 
             for symbol in &symbols {
-                let results = structural::search(&reader, symbol, fetch_limit);
+                let results = structural::search_with_fuzzy(&reader, symbol, fetch_limit);
                 let results: Vec<_> = filter_by_path(results, filter_path.as_deref())
                     .into_iter()
                     .take(limit)

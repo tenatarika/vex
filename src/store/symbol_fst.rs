@@ -100,31 +100,84 @@ impl<'a> SymbolFstReader<'a> {
         results
     }
 
-    /// Search: exact match first, then prefix fallback. Returns deduplicated symbol indices.
-    pub fn search(&self, query: &str, limit: usize) -> Vec<u32> {
+    /// Fuzzy search: find keys within Levenshtein edit distance of the query.
+    /// Uses the FST's built-in Levenshtein automaton for efficient traversal.
+    pub fn find_fuzzy(
+        &self,
+        query: &str,
+        max_distance: u32,
+        limit: usize,
+    ) -> Vec<(String, Vec<u32>)> {
+        use fst::automaton::Levenshtein;
+        use fst::{IntoStreamer, Streamer};
+
+        let key = query.to_lowercase();
+        let lev = match Levenshtein::new(&key, max_distance) {
+            Ok(l) => l,
+            Err(_) => return Vec::new(), // query too long for this distance
+        };
+
+        let mut stream = self.fst_map.search(lev).into_stream();
+        let mut results = Vec::new();
+        let mut total = 0usize;
+
+        while let Some((k, offset)) = stream.next() {
+            let name = std::str::from_utf8(k).unwrap_or("").to_owned();
+            let indices = self.read_posting_list(offset);
+            total += indices.len();
+            results.push((name, indices));
+            if total >= limit {
+                break;
+            }
+        }
+
+        results
+    }
+
+    /// Search with fuzzy fallback: exact → prefix → Levenshtein.
+    /// Returns (indices, was_fuzzy).
+    pub fn search_with_fallback(&self, query: &str, limit: usize) -> (Vec<u32>, bool) {
         // Exact match
         let exact = self.find(query);
         if !exact.is_empty() {
-            return exact.into_iter().take(limit).collect();
+            return (exact.into_iter().take(limit).collect(), false);
         }
 
-        // Prefix match — collect and deduplicate
+        // Prefix match
         let prefix_results = self.find_by_prefix(query);
         let mut all: Vec<u32> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-
         for (_name, indices) in prefix_results {
             for idx in indices {
                 if seen.insert(idx) {
                     all.push(idx);
                     if all.len() >= limit {
-                        return all;
+                        return (all, false);
                     }
                 }
             }
         }
+        if !all.is_empty() {
+            return (all, false);
+        }
 
-        all
+        // Fuzzy fallback (adaptive distance)
+        let distance = fuzzy_distance(query);
+        let fuzzy_results = self.find_fuzzy(query, distance, limit);
+        let mut fuzzy_all: Vec<u32> = Vec::new();
+        seen.clear();
+        for (_name, indices) in fuzzy_results {
+            for idx in indices {
+                if seen.insert(idx) {
+                    fuzzy_all.push(idx);
+                    if fuzzy_all.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+        let was_fuzzy = !fuzzy_all.is_empty();
+        (fuzzy_all, was_fuzzy)
     }
 
     fn read_posting_list(&self, offset: u64) -> Vec<u32> {
@@ -171,6 +224,15 @@ impl<'a> SymbolFstReader<'a> {
         }
 
         indices
+    }
+}
+
+/// Adaptive Levenshtein distance: short queries get distance 1, longer get 2.
+fn fuzzy_distance(query: &str) -> u32 {
+    if query.chars().count() <= 4 {
+        1
+    } else {
+        2
     }
 }
 
@@ -290,6 +352,51 @@ mod tests {
     }
 
     #[test]
+    fn fuzzy_single_typo() {
+        let symbols = vec![
+            ("PaymentService".to_string(), 0),
+            ("UserService".to_string(), 1),
+        ];
+        let (fst, postings) = build_symbol_fst(&symbols).unwrap();
+        let reader = SymbolFstReader::new(&fst, &postings).unwrap();
+
+        // "paymentservce" (missing 'i') → finds "paymentservice" at distance 1
+        let results = reader.find_fuzzy("paymentservce", 1, 10);
+        let names: Vec<&str> = results.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.contains(&"paymentservice"),
+            "should fuzzy-find PaymentService"
+        );
+    }
+
+    #[test]
+    fn fuzzy_no_match_on_exact() {
+        let symbols = vec![("FooBar".to_string(), 0)];
+        let (fst, postings) = build_symbol_fst(&symbols).unwrap();
+        let reader = SymbolFstReader::new(&fst, &postings).unwrap();
+
+        // Exact match → search_with_fallback returns (indices, false)
+        let (indices, was_fuzzy) = reader.search_with_fallback("foobar", 10);
+        assert!(!indices.is_empty());
+        assert!(!was_fuzzy);
+    }
+
+    #[test]
+    fn fuzzy_fallback_triggers() {
+        let symbols = vec![
+            ("PaymentService".to_string(), 0),
+            ("UserService".to_string(), 1),
+        ];
+        let (fst, postings) = build_symbol_fst(&symbols).unwrap();
+        let reader = SymbolFstReader::new(&fst, &postings).unwrap();
+
+        // "pymntservice" doesn't match exact or prefix, triggers fuzzy
+        let (indices, was_fuzzy) = reader.search_with_fallback("paymentservce", 10);
+        assert!(!indices.is_empty(), "fuzzy should find results");
+        assert!(was_fuzzy);
+    }
+
+    #[test]
     fn search_exact_then_prefix() {
         let symbols = vec![
             ("FooBar".to_string(), 0),
@@ -300,11 +407,14 @@ mod tests {
         let reader = SymbolFstReader::new(&fst, &postings).unwrap();
 
         // Exact match
-        assert_eq!(reader.search("foobar", 10), vec![0]);
+        let (indices, was_fuzzy) = reader.search_with_fallback("foobar", 10);
+        assert_eq!(indices, vec![0]);
+        assert!(!was_fuzzy);
 
         // Prefix — "foo" matches sub-token
-        let results = reader.search("foo", 10);
+        let (results, was_fuzzy) = reader.search_with_fallback("foo", 10);
         assert!(results.contains(&0));
         assert!(results.contains(&1));
+        assert!(!was_fuzzy);
     }
 }

@@ -44,27 +44,27 @@ fn index_and_search_roundtrip() {
     assert_eq!(reader.symbol_count(), total_symbols);
 
     // Search uses persistent FST now (no InvertedIndex needed)
-    let results = vex::search::structural::search(&reader, "PaymentService", 10);
+    let results = vex::search::structural::search_with_fuzzy(&reader, "PaymentService", 10);
     assert!(
         !results.is_empty(),
         "should find PaymentService from sample.rs"
     );
     assert_eq!(results[0].name, "PaymentService");
 
-    let results = vex::search::structural::search(&reader, "InvoiceService", 10);
+    let results = vex::search::structural::search_with_fuzzy(&reader, "InvoiceService", 10);
     assert!(
         !results.is_empty(),
         "should find InvoiceService from sample.go"
     );
 
-    let results = vex::search::structural::search(&reader, "UserRepository", 10);
+    let results = vex::search::structural::search_with_fuzzy(&reader, "UserRepository", 10);
     assert!(
         !results.is_empty(),
         "should find UserRepository from sample.py"
     );
 
     // Prefix search: "Payment" should find PaymentService and PaymentGateway
-    let results = vex::search::structural::search(&reader, "Payment", 10);
+    let results = vex::search::structural::search_with_fuzzy(&reader, "Payment", 10);
     assert!(
         results.len() >= 2,
         "prefix 'Payment' should match multiple symbols, got {}",
@@ -72,7 +72,7 @@ fn index_and_search_roundtrip() {
     );
 
     // CamelCase sub-token search: "invoice" should find InvoiceService/InvoiceRepository
-    let results = vex::search::structural::search(&reader, "invoice", 10);
+    let results = vex::search::structural::search_with_fuzzy(&reader, "invoice", 10);
     assert!(
         !results.is_empty(),
         "sub-token 'invoice' should match via CamelCase split"
@@ -93,6 +93,6 @@ fn search_nonexistent_returns_empty() {
     vex::store::writer::write_index(&[parsed], &index_path).unwrap();
     let reader = vex::store::reader::IndexReader::open(&index_path).unwrap();
 
-    let results = vex::search::structural::search(&reader, "NonExistentSymbol", 10);
+    let results = vex::search::structural::search_with_fuzzy(&reader, "NonExistentSymbol", 10);
     assert!(results.is_empty());
 }

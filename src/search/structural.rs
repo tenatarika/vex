@@ -1,31 +1,55 @@
 use crate::search::{MatchType, SearchResult};
 use crate::store::reader::IndexReader;
-use crate::store::symbol_fst::SymbolFstReader;
 
-/// Search by symbol name using persistent FST (zero-copy from mmap).
-/// Falls back to in-memory inverted index if FST not available (v2 indexes).
-pub fn search(reader: &IndexReader, query: &str, limit: usize) -> Vec<SearchResult> {
-    let indices = if let Some(fst_reader) = reader.symbol_fst_reader() {
-        fst_reader.search(query, limit)
+/// Search with fuzzy fallback: exact → prefix → Levenshtein.
+/// Returns results tagged with MatchType::Fuzzy when fuzzy matching was used.
+pub fn search_with_fuzzy(reader: &IndexReader, query: &str, limit: usize) -> Vec<SearchResult> {
+    if let Some(fst_reader) = reader.symbol_fst_reader() {
+        let (indices, was_fuzzy) = fst_reader.search_with_fallback(query, limit);
+        let match_type = if was_fuzzy {
+            MatchType::Fuzzy
+        } else {
+            MatchType::Structural
+        };
+        indices_to_results_typed(reader, &indices, match_type)
     } else {
-        // Fallback for old indexes without symbol FST
         let inverted = crate::store::inverted::InvertedIndex::from_reader(reader);
-        inverted.search(query, limit)
-    };
-
-    indices_to_results(reader, &indices)
+        let indices = inverted.search(query, limit);
+        indices_to_results(reader, &indices)
+    }
 }
 
-/// Search with an already-loaded FST reader (avoids re-creating per query in MCP).
-#[allow(dead_code)] // for MCP server persistent sessions
-pub fn search_with_fst(
+fn indices_to_results_typed(
     reader: &IndexReader,
-    fst_reader: &SymbolFstReader<'_>,
-    query: &str,
-    limit: usize,
+    indices: &[u32],
+    match_type: MatchType,
 ) -> Vec<SearchResult> {
-    let indices = fst_reader.search(query, limit);
-    indices_to_results(reader, &indices)
+    indices
+        .iter()
+        .filter_map(|&idx| {
+            let rec = reader.symbol(idx as usize)?;
+            let name = reader.read_string(rec.name_offset).to_string();
+            let path = reader.read_string(rec.file_offset).to_string();
+            let sig = {
+                let s = reader.read_string(rec.signature_offset);
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
+            };
+
+            Some(SearchResult {
+                name,
+                kind: symbol_kind_str(rec.kind).to_string(),
+                path,
+                line: rec.line as usize,
+                signature: sig,
+                score: 1.0,
+                match_type: match_type.clone(),
+            })
+        })
+        .collect()
 }
 
 fn indices_to_results(reader: &IndexReader, indices: &[u32]) -> Vec<SearchResult> {
