@@ -4,7 +4,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 [![Tests](https://img.shields.io/badge/tests-115_passing-brightgreen.svg)]()
 [![Commands](https://img.shields.io/badge/commands-16-blue.svg)]()
-[![Languages](https://img.shields.io/badge/languages-10-blueviolet.svg)]()
+[![Languages](https://img.shields.io/badge/languages-11-blueviolet.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
@@ -25,7 +25,7 @@ $ vex check "Foo" "Bar" "Baz"             # fast existence check
 - **14-21x faster than ripgrep** for symbol search on large projects
 - **Semantic search** — "find payment processing" returns `ProcessPayment`, `ChargeCard`, `RefundOrder`
 - **Token-efficient** — compact output uses 6-88x fewer tokens than grep, `vex show` extracts just the symbol body instead of the whole file
-- **10 languages** out of the box — Rust, Python, Go, Java, C#, Ruby, Swift, Kotlin, TypeScript, SQL
+- **11 languages** out of the box — Rust, Python, Go, Java, C#, Ruby, Swift, Kotlin, TypeScript, SQL, Markdown
 - **Single binary, zero config** — no LSP servers, no databases, no Docker. Just `vex index && vex search`
 
 ## How It Compares
@@ -39,7 +39,7 @@ $ vex check "Foo" "Bar" "Baz"             # fast existence check
 | **Index size** | **5 MB** / 20K syms | no index | 190 MB / 20K syms | no index | no index |
 | **Token efficiency** | **6-88x** fewer than rg | baseline | ~3x fewer than rg | N/A | N/A |
 | **Symbol body extraction** | `vex show` | -- | -- | -- | -- |
-| **Languages** | 10 | any | 10+ | 10+ | 40+ (LSP) |
+| **Languages** | 11 | any | 10+ | 10+ | 40+ (LSP) |
 | **Refactoring** | -- | -- | -- | -- | rename, move, inline |
 | **Runtime deps** | none | none | none | none | Python + LSP |
 
@@ -309,6 +309,7 @@ For an agent making 10-20 code lookups per task, vex saves **5,000-20,000 tokens
 | Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` |
 | TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx` | classes, interfaces, enums, functions, arrows, type aliases | `import` |
 | SQL | `.sql` | tables, views, functions, triggers, indexes, schemas, types, sequences | `ALTER TABLE` refs |
+| Markdown | `.md`, `.markdown` | headings (section structure) | — |
 
 ## Index Location
 

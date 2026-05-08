@@ -11,6 +11,7 @@ pub enum Language {
     Ruby,
     Swift,
     Sql,
+    Markdown,
 }
 
 impl Language {
@@ -28,6 +29,7 @@ impl Language {
             "rb" => Some(Self::Ruby),
             "swift" => Some(Self::Swift),
             "sql" => Some(Self::Sql),
+            "md" | "markdown" => Some(Self::Markdown),
             _ => None,
         }
     }
@@ -46,6 +48,7 @@ impl Language {
             // TSX grammar is a superset of TypeScript — handles .ts, .tsx, .js, .jsx
             Self::TypeScript => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Self::Sql => tree_sitter_sequel::LANGUAGE.into(),
+            Self::Markdown => tree_sitter_md::LANGUAGE.into(),
         }
     }
 
@@ -62,6 +65,7 @@ impl Language {
             Self::Ruby => "ruby",
             Self::Swift => "swift",
             Self::Sql => "sql",
+            Self::Markdown => "markdown",
         }
     }
 }

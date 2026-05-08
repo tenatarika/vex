@@ -93,6 +93,69 @@ pub struct SymbolBody {
     pub lines: usize,
 }
 
+/// Extract a markdown section body: from heading line to next heading of same or higher level.
+pub fn extract_heading_body(
+    content: &str,
+    heading_line: usize,
+    context_lines: usize,
+) -> Result<SymbolBody> {
+    if heading_line == 0 {
+        anyhow::bail!("heading_line must be >= 1");
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    let target_row = heading_line - 1;
+
+    if target_row >= lines.len() {
+        anyhow::bail!(
+            "line {heading_line} out of range (file has {} lines)",
+            lines.len()
+        );
+    }
+
+    // Determine heading level (count leading '#' characters)
+    let heading_level = lines[target_row].chars().take_while(|&c| c == '#').count();
+    if heading_level == 0 {
+        anyhow::bail!("line {heading_line} is not a heading (no leading '#')");
+    }
+
+    // Scan forward until next heading of same or higher level (fewer or equal '#').
+    // Skip '#' lines inside fenced code blocks (``` or ~~~).
+    // Note: only single-level fence tracking (no nested fences).
+    let mut end = target_row + 1;
+    let mut in_fence = false;
+    for (i, line) in lines.iter().enumerate().skip(target_row + 1) {
+        let trimmed = line.trim_start();
+        let is_fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
+        if is_fence {
+            in_fence = !in_fence;
+        }
+        if !in_fence && !is_fence && trimmed.starts_with('#') {
+            let level = trimmed.chars().take_while(|&c| c == '#').count();
+            if level <= heading_level {
+                break;
+            }
+        }
+        end = i + 1;
+    }
+
+    // Trim trailing blank lines
+    while end > target_row + 1 && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+
+    let ctx_start = target_row.saturating_sub(context_lines);
+    let ctx_end = (end + context_lines).min(lines.len());
+
+    let body: String = lines[ctx_start..ctx_end].join("\n");
+
+    Ok(SymbolBody {
+        body,
+        start_line: ctx_start + 1,
+        end_line: ctx_end,
+        lines: ctx_end - ctx_start,
+    })
+}
+
 /// Find the best definition node starting at target_row.
 /// Prefers the **largest** multi-line node starting exactly at target_row,
 /// which corresponds to the outermost definition (function_item, class_declaration, etc.)
@@ -235,5 +298,44 @@ mod tests {
         let body = extract_symbol_body_ts(src, 1, Language::Rust, 0).unwrap();
         assert!(body.body.contains("real_code"));
         assert!(!body.body.contains("other"));
+    }
+
+    #[test]
+    fn heading_body_basic() {
+        let src = "# Title\n\nIntro.\n\n## Section A\n\nContent A.\n\n## Section B\n\nContent B.\n";
+        let body = extract_heading_body(src, 5, 0).unwrap();
+        assert!(body.body.contains("Content A"));
+        assert!(!body.body.contains("Content B"));
+    }
+
+    #[test]
+    fn heading_body_to_eof() {
+        let src = "# Title\n\n## Last Section\n\nFinal content.\n";
+        let body = extract_heading_body(src, 3, 0).unwrap();
+        assert!(body.body.contains("Final content"));
+    }
+
+    #[test]
+    fn heading_body_skips_fenced_hash() {
+        let src = "## Setup\n\n```bash\n# this is a comment\necho hello\n```\n\n## Next\n";
+        let body = extract_heading_body(src, 1, 0).unwrap();
+        assert!(body.body.contains("# this is a comment"));
+        assert!(!body.body.contains("Next"));
+    }
+
+    #[test]
+    fn heading_body_non_heading_line_errors() {
+        let src = "Just some text\n## Heading\n";
+        let result = extract_heading_body(src, 1, 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn heading_body_includes_subheadings() {
+        let src = "## Parent\n\nText.\n\n### Child\n\nChild text.\n\n## Sibling\n";
+        let body = extract_heading_body(src, 1, 0).unwrap();
+        assert!(body.body.contains("Child"));
+        assert!(body.body.contains("Child text"));
+        assert!(!body.body.contains("Sibling"));
     }
 }

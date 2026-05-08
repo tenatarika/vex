@@ -6,8 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-05-08
+
 ### Added
 - Body-aware semantic search — embeddings now include identifiers and string literals extracted from symbol bodies, not just names/signatures/docstrings
+- `.vex.toml` config file — exclude patterns, default format, semantic on/off
+- `vex init` — generates default config with commented examples
+- `--no-semantic` flag to override config-enabled semantic mode
+- Fuzzy search — automatic Levenshtein fallback when exact + prefix returns nothing ("IndxReader" finds "IndexReader")
+- Markdown support (11th language) — headings indexed as symbols, `vex outline README.md` shows document structure, `vex show "Installation"` extracts full section
+
+### Changed
+- `SymbolKind` now uses `#[repr(u8)]` with explicit discriminants for binary format stability
+- File walking centralized via `util::walk` module with configurable exclude patterns
+- Config loaded from project root (resolved `--path`), not cwd
 
 ## [1.1.0] - 2026-05-08
 
@@ -71,7 +83,9 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/tenatarika/vex/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/tenatarika/vex/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/tenatarika/vex/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/tenatarika/vex/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/tenatarika/vex/compare/v0.2.0...v1.0.0

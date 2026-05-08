@@ -57,6 +57,11 @@ static SQL_QUERY: LazyLock<Query> = LazyLock::new(|| {
     Query::new(&tree_sitter_sequel::LANGUAGE.into(), src).expect("failed to compile sql query")
 });
 
+static MARKDOWN_QUERY: LazyLock<Query> = LazyLock::new(|| {
+    let src = include_str!("../../queries/markdown.scm");
+    Query::new(&tree_sitter_md::LANGUAGE.into(), src).expect("failed to compile markdown query")
+});
+
 /// Get the compiled tree-sitter query for a language.
 pub fn get_query(lang: Language) -> Option<&'static Query> {
     match lang {
@@ -70,5 +75,6 @@ pub fn get_query(lang: Language) -> Option<&'static Query> {
         Language::Kotlin => Some(&KOTLIN_QUERY),
         Language::TypeScript => Some(&TYPESCRIPT_QUERY),
         Language::Sql => Some(&SQL_QUERY),
+        Language::Markdown => Some(&MARKDOWN_QUERY),
     }
 }

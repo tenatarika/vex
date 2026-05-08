@@ -293,6 +293,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         Some(crate::parse::language::Language::TypeScript)
                     }
                     "sql" => Some(crate::parse::language::Language::Sql),
+                    "markdown" | "md" => Some(crate::parse::language::Language::Markdown),
                     _ => None,
                 })
                 .with_context(|| format!("unknown language: {lang}"))?;
@@ -439,17 +440,19 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         .and_then(|e| e.to_str())
                         .unwrap_or("");
 
-                    let body =
-                        if let Some(lang) = crate::parse::language::Language::from_extension(ext) {
-                            crate::parse::body::extract_symbol_body_ts(
-                                &content,
-                                result.line,
-                                lang,
-                                context,
-                            )?
-                        } else {
-                            crate::parse::body::extract_symbol_body(&content, result.line, context)?
-                        };
+                    let body = if result.kind == "heading" {
+                        crate::parse::body::extract_heading_body(&content, result.line, context)?
+                    } else if let Some(lang) = crate::parse::language::Language::from_extension(ext)
+                    {
+                        crate::parse::body::extract_symbol_body_ts(
+                            &content,
+                            result.line,
+                            lang,
+                            context,
+                        )?
+                    } else {
+                        crate::parse::body::extract_symbol_body(&content, result.line, context)?
+                    };
 
                     match &format {
                         OutputFormat::Json => {

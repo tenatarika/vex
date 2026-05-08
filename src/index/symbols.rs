@@ -5,19 +5,21 @@ use serde::{Deserialize, Serialize};
 
 /// Kind of code symbol extracted from AST.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
 pub enum SymbolKind {
-    Function,
-    Method,
-    Struct,
-    Class,
-    Interface,
-    Trait,
-    Enum,
-    TypeAlias,
-    Impl,
-    Constant,
-    Property,
-    Package,
+    Function = 0,
+    Method = 1,
+    Struct = 2,
+    Class = 3,
+    Interface = 4,
+    Trait = 5,
+    Enum = 6,
+    TypeAlias = 7,
+    Impl = 8,
+    Constant = 9,
+    Property = 10,
+    Package = 11,
+    Heading = 12,
 }
 
 impl SymbolKind {
@@ -35,12 +37,13 @@ impl SymbolKind {
             Self::Constant => "constant",
             Self::Property => "property",
             Self::Package => "package",
+            Self::Heading => "heading",
         }
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("unknown symbol kind: \"{0}\". Valid: function (fn), method, struct, class, interface, trait, enum, type_alias (type), impl, constant (const), property (prop), package (pkg)")]
+#[error("unknown symbol kind: \"{0}\". Valid: function (fn), method, struct, class, interface, trait, enum, type_alias (type), impl, constant (const), property (prop), package (pkg), heading (h)")]
 pub struct ParseSymbolKindError(String);
 
 impl FromStr for SymbolKind {
@@ -60,6 +63,7 @@ impl FromStr for SymbolKind {
             "constant" | "const" => Ok(Self::Constant),
             "property" | "prop" => Ok(Self::Property),
             "package" | "pkg" => Ok(Self::Package),
+            "heading" | "h" => Ok(Self::Heading),
             _ => Err(ParseSymbolKindError(s.to_owned())),
         }
     }
@@ -139,6 +143,7 @@ mod tests {
         assert_eq!("const".parse::<SymbolKind>().unwrap(), SymbolKind::Constant);
         assert_eq!("prop".parse::<SymbolKind>().unwrap(), SymbolKind::Property);
         assert_eq!("pkg".parse::<SymbolKind>().unwrap(), SymbolKind::Package);
+        assert_eq!("h".parse::<SymbolKind>().unwrap(), SymbolKind::Heading);
     }
 
     #[test]
@@ -163,6 +168,7 @@ mod tests {
             SymbolKind::Constant,
             SymbolKind::Property,
             SymbolKind::Package,
+            SymbolKind::Heading,
         ];
         for kind in all {
             let parsed: SymbolKind = kind.as_str().parse().unwrap();

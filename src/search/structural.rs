@@ -95,6 +95,7 @@ pub fn symbol_kind_str(kind: u8) -> &'static str {
         9 => "constant",
         10 => "property",
         11 => "package",
+        12 => "heading",
         _ => "unknown",
     }
 }

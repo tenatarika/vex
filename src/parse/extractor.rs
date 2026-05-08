@@ -64,6 +64,7 @@ pub fn extract_symbols_and_imports(
                 "type.name" => SymbolKind::TypeAlias,
                 "property.name" => SymbolKind::Property,
                 "const.name" => SymbolKind::Constant,
+                "heading.name" => SymbolKind::Heading,
                 _ => continue,
             };
 
@@ -78,7 +79,12 @@ pub fn extract_symbols_and_imports(
                 slice.lines().next().unwrap_or("").to_string()
             });
 
-            let doc = extract_doc_above(content, line);
+            // Headings have no doc comments; extract_doc_above would misidentify parent headings
+            let doc = if kind == SymbolKind::Heading {
+                None
+            } else {
+                extract_doc_above(content, line)
+            };
             let body_tokens = parent.and_then(|def| extract_body_tokens(def, content));
 
             symbols.push(ParsedSymbol {
