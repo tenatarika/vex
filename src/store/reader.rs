@@ -41,6 +41,38 @@ impl IndexReader {
             );
         }
 
+        // Validate that claimed sections fit within the file
+        let mmap_len = reader.mmap.len() as u64;
+        let sym_end = header
+            .symbols_offset
+            .saturating_add(header.symbol_count.saturating_mul(SymbolRecord::SIZE as u64));
+        if sym_end > mmap_len {
+            bail!(
+                "index file is truncated (claims {} symbols but file too small). Re-run `vex index` to rebuild.",
+                header.symbol_count
+            );
+        }
+
+        // Validate that all section offsets are within bounds
+        let file_table_end = header
+            .file_table_offset
+            .saturating_add((header.file_table_count as u64).saturating_mul(4));
+        let fst_end = header.fst_offset.saturating_add(header.fst_len);
+        let postings_end = header.postings_offset.saturating_add(header.postings_len);
+        let sym_fst_end = header.sym_fst_offset.saturating_add(header.sym_fst_len);
+        let sym_post_end = header
+            .sym_postings_offset
+            .saturating_add(header.sym_postings_len);
+
+        if file_table_end > mmap_len
+            || fst_end > mmap_len
+            || postings_end > mmap_len
+            || sym_fst_end > mmap_len
+            || sym_post_end > mmap_len
+        {
+            bail!("index file is corrupted (section offsets exceed file size). Re-run `vex index` to rebuild.");
+        }
+
         Ok(reader)
     }
 
@@ -63,15 +95,19 @@ impl IndexReader {
         if idx >= header.symbol_count as usize {
             return None;
         }
-        let offset = header.symbols_offset as usize + idx * SymbolRecord::SIZE;
+        let offset = header
+            .symbols_offset
+            .checked_add((idx * SymbolRecord::SIZE) as u64)? as usize;
+        if offset + SymbolRecord::SIZE > self.mmap.len() {
+            return None;
+        }
         let ptr = unsafe { self.mmap.as_ptr().add(offset) };
-        debug_assert!(
-            ptr.align_offset(std::mem::align_of::<SymbolRecord>()) == 0,
-            "SymbolRecord pointer at offset {offset} is not aligned (align={})",
-            std::mem::align_of::<SymbolRecord>()
-        );
-        // SAFETY: bounds checked above. SymbolRecord is #[repr(C)] with 4-byte alignment.
-        // symbols_offset is Header::SIZE (divisible by 4), SymbolRecord::SIZE is divisible by 4.
+        // Alignment check — required for safe pointer cast, not just a debug hint
+        if ptr.align_offset(std::mem::align_of::<SymbolRecord>()) != 0 {
+            return None;
+        }
+        // SAFETY: bounds and alignment checked above.
+        // SymbolRecord is #[repr(C)] with fixed layout.
         // The mmap lives as long as &self.
         Some(unsafe { &*(ptr as *const SymbolRecord) })
     }
@@ -82,7 +118,10 @@ impl IndexReader {
             return "";
         }
         let header = self.header();
-        let base = header.strings_offset as usize + offset as usize;
+        let base = match (header.strings_offset as usize).checked_add(offset as usize) {
+            Some(b) => b,
+            None => return "",
+        };
         if base >= self.mmap.len() {
             return "";
         }
@@ -99,23 +138,22 @@ impl IndexReader {
         }
         let header = self.header();
         let dim = header.vector_dim as usize;
-        let byte_offset = header.vectors_offset as usize
-            + vector_index as usize * dim * std::mem::size_of::<f32>();
-
-        let end = byte_offset + dim * std::mem::size_of::<f32>();
+        let vec_byte_size = dim.checked_mul(std::mem::size_of::<f32>())?;
+        let byte_offset = (vector_index as usize)
+            .checked_mul(vec_byte_size)?
+            .checked_add(header.vectors_offset as usize)?;
+        let end = byte_offset.checked_add(vec_byte_size)?;
         if end > self.mmap.len() {
             return None;
         }
 
         let ptr = unsafe { self.mmap.as_ptr().add(byte_offset) };
-        debug_assert!(
-            ptr.align_offset(std::mem::align_of::<f32>()) == 0,
-            "vector pointer at byte_offset {byte_offset} is not aligned to f32 (align={})",
-            std::mem::align_of::<f32>()
-        );
-        // SAFETY: ptr is 4-byte aligned (mmap is page-aligned, Header::SIZE % 4 == 0,
-        // SymbolRecord::SIZE % 4 == 0, so vectors_offset is always divisible by 4).
-        // Data was written by writer as valid f32 arrays. Bounds checked above.
+        // Alignment check — required for safe pointer cast
+        if ptr.align_offset(std::mem::align_of::<f32>()) != 0 {
+            return None;
+        }
+        // SAFETY: bounds and alignment checked above.
+        // Data was written by writer as valid f32 arrays.
         // The mmap lives as long as &self; no mutable references exist.
         Some(unsafe { std::slice::from_raw_parts(ptr as *const f32, dim) })
     }
@@ -166,8 +204,10 @@ impl IndexReader {
     /// The file table stores u32 string offsets, one per file_id, written by the writer.
     pub fn file_paths(&self) -> Vec<String> {
         let h = self.header();
-        let count = h.file_table_count as usize;
         let base = h.file_table_offset as usize;
+        // Cap count to what actually fits in the mmap to avoid OOM on crafted headers
+        let max_entries = self.mmap.len().saturating_sub(base) / 4;
+        let count = (h.file_table_count as usize).min(max_entries);
         let mut paths = Vec::with_capacity(count);
 
         for i in 0..count {

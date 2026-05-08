@@ -1,0 +1,34 @@
+[package]
+name = "vex-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+tempfile = "3"
+
+[dependencies.vex]
+path = ".."
+
+[[bin]]
+name = "fuzz_index_reader"
+path = "fuzz_targets/fuzz_index_reader.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_refs_fst"
+path = "fuzz_targets/fuzz_refs_fst.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_symbol_fst"
+path = "fuzz_targets/fuzz_symbol_fst.rs"
+doc = false
+
+[workspace]
+members = ["."]
