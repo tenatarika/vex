@@ -6,6 +6,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-05-08
+
+### Added
+- C/C++ support (12th language) — classes, structs, functions, methods, templates, enums, `#include` refs
+- Heuristic search result reranking — PascalCase → type boost, snake_case → function boost, exact name match boost, test path demotion
+- Fuzz testing suite — 3 targets (index reader, refs FST, symbol FST) covering all `unsafe` code paths in the binary format reader
+- 21 new integration tests — binary format roundtrip, corrupted index handling, vector roundtrip, fuzzy search, refs FST, incremental update, multi-language parsing, RRF fusion
+- CI test gate on release — `cargo fmt` + `cargo clippy` + `cargo test` must pass before build
+- Live CI badge in README (GitHub Actions)
+
+### Fixed
+- **3 bugs found by fuzzing**: out-of-bounds read on crafted `symbol_count`, misaligned pointer dereference on odd `symbols_offset`, unchecked section offsets exceeding file size
+- `IndexReader::open()` now validates all section offsets against actual file size — rejects corrupted/truncated index files instead of crashing
+- `symbol()` and `vector()` use runtime alignment checks (not just `debug_assert`) — returns `None` on misaligned data instead of UB
+- Overflow-safe arithmetic in `symbol()`, `vector()`, `read_string()`
+- `file_paths()` caps allocation to what fits in mmap — prevents OOM on crafted headers
+- Unicode-safe string truncation in body token extraction and doc comments
+- Real incremental update — `vex update` now only re-parses changed files and reconstructs unchanged symbols from the existing index (previously did a full rebuild despite detecting changes)
+
+### Changed
+- `SymbolKind`: added `TryFrom<u8>` — replaces hardcoded `symbol_kind_str()` magic numbers in search modules
+- Eliminated code duplication: merged `indices_to_results` / `indices_to_results_typed`, extracted shared `discover_source_files()` from callgraph and hierarchy modules
+- README: removed fake test count badge, added honest comparison notes (pre-built index vs full scan tradeoff), added Testing section with fuzz test documentation
+- Release workflow now requires tests to pass before building binaries
+
 ## [1.3.0] - 2026-05-08
 
 ### Added
@@ -83,7 +108,8 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/tenatarika/vex/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/tenatarika/vex/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/tenatarika/vex/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/tenatarika/vex/compare/v1.0.1...v1.1.0
