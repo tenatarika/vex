@@ -38,11 +38,11 @@ echo "Releasing $TAG..."
 # Update Cargo.toml
 sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
 
-# Update Cargo.lock
+# Verify it compiles
 cargo check --quiet 2>/dev/null
 
 # Commit and tag
-git add Cargo.toml Cargo.lock
+git add Cargo.toml
 git commit -m "chore: bump version to $VERSION"
 git tag "$TAG"
 
