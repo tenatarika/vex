@@ -53,5 +53,22 @@ header += b'\x00' * (192 - len(header))
 sys.stdout.buffer.write(header)
 " > "$CORPUS/seed_v2"
 
+# Seed 6+: copy real index files from local vex cache (if available)
+VEX_CACHE="${HOME}/Library/Caches/vex"
+if [ -d "$VEX_CACHE" ]; then
+    count=0
+    for idx in "$VEX_CACHE"/*/index.vex; do
+        [ -f "$idx" ] || continue
+        size=$(wc -c < "$idx")
+        # Skip tiny (< 1KB) and huge (> 20MB) indexes
+        if [ "$size" -gt 1024 ] && [ "$size" -lt 20971520 ]; then
+            hash=$(basename "$(dirname "$idx")")
+            cp "$idx" "$CORPUS/seed_cache_${hash}"
+            count=$((count + 1))
+        fi
+    done
+    [ "$count" -gt 0 ] && echo "Copied $count real indexes from vex cache"
+fi
+
 echo "Generated $(ls "$CORPUS" | wc -l | tr -d ' ') seeds in $CORPUS"
-ls -la "$CORPUS"
+ls -lh "$CORPUS"

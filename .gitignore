@@ -29,3 +29,5 @@ CLAUDE.md
 .idea/
 .vscode/
 *.iml
+fuzz/artifacts/
+fuzz/corpus/
