@@ -2,7 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-83_passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-115_passing-brightgreen.svg)]()
+[![Commands](https://img.shields.io/badge/commands-15-blue.svg)]()
 [![Languages](https://img.shields.io/badge/languages-10-blueviolet.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
@@ -13,6 +14,9 @@ $ vex show "TelemetryProcessor"            # extract just the class body (not th
 $ vex search "handle alert" --semantic     # find by meaning, not just name
 $ vex pattern 'fn $NAME($$$) -> Result'    # AST pattern matching (like ast-grep)
 $ vex usages "Config"                      # who references this symbol?
+$ vex implementations "BaseService"        # who extends/implements this?
+$ vex callers "process_event"              # who calls this function?
+$ vex check "Foo" "Bar" "Baz"             # fast existence check
 ```
 
 ## Why Vex?
@@ -76,6 +80,16 @@ vex usages "IndexReader"
 # File structure outline
 vex outline src/main.rs
 
+# Find implementations of a trait/interface
+vex implementations "Iterator"
+
+# Callgraph: who calls / is called by a function
+vex callers "process_event"
+vex callees "process_event"
+
+# Fast existence check
+vex check "Foo" "Bar" "Baz"
+
 # Incremental update (only changed files)
 vex update
 
@@ -84,6 +98,9 @@ vex watch
 
 # Show index stats
 vex status
+
+# Shell completions
+vex completions zsh > ~/.zfunc/_vex
 ```
 
 ## Commands
@@ -95,10 +112,16 @@ vex status
 | `vex show <symbol> [--limit N] [--context N]` | Extract symbol body from source (saves tokens vs full file read). |
 | `vex usages <name> [--limit N]` | Find all references/usages of a symbol (FST lookup). |
 | `vex pattern '<pat>' --lang <lang>` | AST pattern matching with metavariables ($NAME, $$$). |
-| `vex outline <file>` | Show file structure: symbols, kinds, lines. |
+| `vex outline <file> [--kind fn]` | Show file structure, optionally filter by symbol kind. |
+| `vex implementations <name>` | Find types that extend/implement a base class, trait, or interface. |
+| `vex callers <name>` | Find all functions that call a given function. |
+| `vex callees <name>` | Find all functions called by a given function. |
+| `vex check <name> [name...]` | Fast existence check — which symbols exist in the index? |
+| `vex grep <pattern> [--filter path/]` | Regex content search (no index needed). |
 | `vex update [--path .] [--semantic]` | Incremental update — only re-index changed files. |
 | `vex watch [--path .] [--semantic]` | Watch filesystem, auto re-index on changes. |
 | `vex status [--path .]` | Show index stats: symbol count, size, embeddings. |
+| `vex completions <shell>` | Generate shell completions (bash, zsh, fish). |
 
 ## Output Formats
 
@@ -108,6 +131,9 @@ vex search "Foo"
 
 # JSON (for MCP/tool integration)
 vex search "Foo" --format json
+
+# Compact (token-efficient, optimized for LLM context)
+vex search "Foo" --format compact
 ```
 
 ## How Search Works
@@ -288,18 +314,29 @@ cargo build --release -p vex-mcp
 }
 ```
 
-**MCP Tools:**
+**MCP Tools (15):**
 - `search` — hybrid structural + semantic search
 - `find_symbol` — exact name lookup
 - `find_similar` — semantic search by description
+- `show` — extract symbol body from source
 - `outline` — file structure
+- `usages` — find all references to a symbol
+- `grep` — regex content search
+- `implementations` — find types extending a base class/trait
+- `callers` / `callees` — callgraph navigation
+- `check` — fast symbol existence check
 - `index` / `update` — build/rebuild index
 - `status` — index statistics
 
 ### Shell Integration
 
 ```bash
-# Add to .zshrc / .bashrc
+# Shell completions (tab-completion for commands and flags)
+vex completions bash > ~/.bash_completion.d/vex   # Bash
+vex completions zsh > ~/.zfunc/_vex               # Zsh (add ~/.zfunc to fpath)
+vex completions fish > ~/.config/fish/completions/vex.fish  # Fish
+
+# Aliases — add to .zshrc / .bashrc
 alias vx="vex search"
 alias vxu="vex usages"
 alias vxi="vex index --path ."
@@ -324,6 +361,10 @@ Use vex for code search instead of grep or manual file reading:
 - `vex search "description" --semantic` — search by meaning
 - `vex pattern 'class $NAME(BaseModel):' --lang python` — AST pattern matching
 - `vex outline path/to/file.py` — file structure overview
+- `vex implementations "BaseService"` — find types extending a base class/trait
+- `vex callers "process_event"` — find functions that call this
+- `vex callees "process_event"` — find functions called by this
+- `vex check "Foo" "Bar"` — fast symbol existence check
 
 All commands support `--filter "path/"` to narrow results to a directory.
 
