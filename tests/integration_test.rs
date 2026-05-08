@@ -106,10 +106,7 @@ fn binary_format_rejects_truncated_file() {
 
     match vex::store::reader::IndexReader::open(&index_path) {
         Ok(_) => panic!("should fail with truncated file"),
-        Err(e) => assert!(
-            e.to_string().contains("too small"),
-            "unexpected error: {e}"
-        ),
+        Err(e) => assert!(e.to_string().contains("too small"), "unexpected error: {e}"),
     }
 }
 
@@ -321,11 +318,31 @@ fn file_table_roundtrip() {
 fn parse_all_fixture_languages() {
     let fixtures = fixtures_dir();
     let expected = vec![
-        ("sample.rs", vex::parse::language::Language::Rust, vec!["PaymentService", "PaymentGateway"]),
-        ("sample.py", vex::parse::language::Language::Python, vec!["UserRepository"]),
-        ("sample.go", vex::parse::language::Language::Go, vec!["InvoiceService"]),
-        ("sample.kt", vex::parse::language::Language::Kotlin, vec!["PaymentProcessor"]),
-        ("sample.ts", vex::parse::language::Language::TypeScript, vec!["UserService"]),
+        (
+            "sample.rs",
+            vex::parse::language::Language::Rust,
+            vec!["PaymentService", "PaymentGateway"],
+        ),
+        (
+            "sample.py",
+            vex::parse::language::Language::Python,
+            vec!["UserRepository"],
+        ),
+        (
+            "sample.go",
+            vex::parse::language::Language::Go,
+            vec!["InvoiceService"],
+        ),
+        (
+            "sample.kt",
+            vex::parse::language::Language::Kotlin,
+            vec!["PaymentProcessor"],
+        ),
+        (
+            "sample.ts",
+            vex::parse::language::Language::TypeScript,
+            vec!["UserService"],
+        ),
     ];
 
     for (filename, lang, expected_symbols) in expected {
@@ -485,10 +502,7 @@ fn symbol_kind_all_variants_have_distinct_u8() {
     let mut seen = std::collections::HashSet::new();
     for kind in all {
         let val = kind as u8;
-        assert!(
-            seen.insert(val),
-            "duplicate u8 value {val} for {kind:?}"
-        );
+        assert!(seen.insert(val), "duplicate u8 value {val} for {kind:?}");
         // Roundtrip
         assert_eq!(SymbolKind::try_from(val).unwrap(), kind);
     }
@@ -508,11 +522,7 @@ fn incremental_update_reuses_unchanged_symbols() {
         "pub fn stable_func() {}\npub struct StableStruct {}",
     )
     .unwrap();
-    std::fs::write(
-        project_dir.join("src/changing.rs"),
-        "pub fn old_func() {}",
-    )
-    .unwrap();
+    std::fs::write(project_dir.join("src/changing.rs"), "pub fn old_func() {}").unwrap();
 
     // Full index
     let count = vex::index::pipeline::run(&project_dir, false, &[]).unwrap();
@@ -521,8 +531,7 @@ fn incremental_update_reuses_unchanged_symbols() {
     // Verify initial search
     let index_path = vex::util::config::index_path(&project_dir.canonicalize().unwrap());
     let reader = vex::store::reader::IndexReader::open(&index_path).unwrap();
-    let results =
-        vex::search::structural::search_with_fuzzy(&reader, "stable_func", 10);
+    let results = vex::search::structural::search_with_fuzzy(&reader, "stable_func", 10);
     assert!(!results.is_empty(), "stable_func should be found");
     let results = vex::search::structural::search_with_fuzzy(&reader, "old_func", 10);
     assert!(!results.is_empty(), "old_func should be found");
@@ -535,8 +544,7 @@ fn incremental_update_reuses_unchanged_symbols() {
     .unwrap();
 
     // Incremental update
-    let (total, changed, deleted) =
-        vex::index::pipeline::update(&project_dir, false, &[]).unwrap();
+    let (total, changed, deleted) = vex::index::pipeline::update(&project_dir, false, &[]).unwrap();
     assert_eq!(changed, 1, "only one file changed");
     assert_eq!(deleted, 0);
     assert!(total >= 4, "expected at least 4 symbols, got {total}");
@@ -544,12 +552,13 @@ fn incremental_update_reuses_unchanged_symbols() {
     // Verify: stable symbols still found, old_func gone, new symbols present
     let reader = vex::store::reader::IndexReader::open(&index_path).unwrap();
 
-    let results =
-        vex::search::structural::search_with_fuzzy(&reader, "stable_func", 10);
-    assert!(!results.is_empty(), "stable_func should survive incremental update");
+    let results = vex::search::structural::search_with_fuzzy(&reader, "stable_func", 10);
+    assert!(
+        !results.is_empty(),
+        "stable_func should survive incremental update"
+    );
 
-    let results =
-        vex::search::structural::search_with_fuzzy(&reader, "StableStruct", 10);
+    let results = vex::search::structural::search_with_fuzzy(&reader, "StableStruct", 10);
     assert!(
         !results.is_empty(),
         "StableStruct should survive incremental update"
@@ -559,10 +568,7 @@ fn incremental_update_reuses_unchanged_symbols() {
     assert!(!results.is_empty(), "new_func should appear after update");
 
     let results = vex::search::structural::search_with_fuzzy(&reader, "old_func", 10);
-    assert!(
-        results.is_empty(),
-        "old_func should be gone after update"
-    );
+    assert!(results.is_empty(), "old_func should be gone after update");
 }
 
 #[test]
@@ -571,16 +577,8 @@ fn incremental_update_handles_deleted_files() {
     let project_dir = tmp.path().join("project");
     std::fs::create_dir_all(project_dir.join("src")).unwrap();
 
-    std::fs::write(
-        project_dir.join("src/keep.rs"),
-        "pub fn keep_me() {}",
-    )
-    .unwrap();
-    std::fs::write(
-        project_dir.join("src/remove.rs"),
-        "pub fn remove_me() {}",
-    )
-    .unwrap();
+    std::fs::write(project_dir.join("src/keep.rs"), "pub fn keep_me() {}").unwrap();
+    std::fs::write(project_dir.join("src/remove.rs"), "pub fn remove_me() {}").unwrap();
 
     vex::index::pipeline::run(&project_dir, false, &[]).unwrap();
 
@@ -612,8 +610,7 @@ fn incremental_update_noop_when_nothing_changed() {
 
     let count = vex::index::pipeline::run(&project_dir, false, &[]).unwrap();
 
-    let (total, changed, deleted) =
-        vex::index::pipeline::update(&project_dir, false, &[]).unwrap();
+    let (total, changed, deleted) = vex::index::pipeline::update(&project_dir, false, &[]).unwrap();
     assert_eq!(changed, 0);
     assert_eq!(deleted, 0);
     assert_eq!(total, count);

@@ -43,9 +43,11 @@ impl IndexReader {
 
         // Validate that claimed sections fit within the file
         let mmap_len = reader.mmap.len() as u64;
-        let sym_end = header
-            .symbols_offset
-            .saturating_add(header.symbol_count.saturating_mul(SymbolRecord::SIZE as u64));
+        let sym_end = header.symbols_offset.saturating_add(
+            header
+                .symbol_count
+                .saturating_mul(SymbolRecord::SIZE as u64),
+        );
         if sym_end > mmap_len {
             bail!(
                 "index file is truncated (claims {} symbols but file too small). Re-run `vex index` to rebuild.",

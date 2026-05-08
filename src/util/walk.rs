@@ -29,10 +29,7 @@ pub fn walk_builder(root: &Path, excludes: &[String]) -> Result<WalkBuilder> {
 
 /// Discover all source files with their detected language.
 /// Used by callgraph, hierarchy, and other live-scan commands.
-pub fn discover_source_files(
-    root: &Path,
-    excludes: &[String],
-) -> Result<Vec<(PathBuf, Language)>> {
+pub fn discover_source_files(root: &Path, excludes: &[String]) -> Result<Vec<(PathBuf, Language)>> {
     let mut files = Vec::new();
 
     for entry in walk_builder(root, excludes)?.build() {

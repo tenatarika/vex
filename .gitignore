@@ -31,3 +31,4 @@ CLAUDE.md
 *.iml
 fuzz/artifacts/
 fuzz/corpus/
+fuzz/target/
