@@ -112,8 +112,8 @@ vex completions zsh > ~/.zfunc/_vex
 | Command | Description |
 |---------|-------------|
 | `vex index [--path .] [--semantic]` | Build full index. `--semantic` generates embeddings + HNSW. |
-| `vex search <query> [--semantic] [--limit N]` | Search symbols. `--semantic` enables hybrid search. |
-| `vex show <symbol> [--limit N] [--context N]` | Extract symbol body from source (saves tokens vs full file read). |
+| `vex search <query> [--semantic] [--limit N] [--kind fn] [--context-path p]` | Search symbols. `--kind` boosts matching type, `--context-path` boosts nearby files. |
+| `vex show <symbol> [--limit N] [--context N] [--kind fn]` | Extract symbol body from source (saves tokens vs full file read). |
 | `vex usages <name> [--limit N]` | Find all references/usages of a symbol (FST lookup). |
 | `vex pattern '<pat>' --lang <lang>` | AST pattern matching with metavariables ($NAME, $$$). |
 | `vex outline <file> [--kind fn]` | Show file structure, optionally filter by symbol kind. |
@@ -151,9 +151,36 @@ format = "compact"
 
 # Enable semantic embeddings by default
 semantic = true
+
+# Automatically update index before search if stale
+# auto_update = false
 ```
 
 CLI flags always override config values. Use `--no-semantic` to explicitly disable semantic mode when the config enables it.
+
+### Staleness Detection
+
+Vex detects when the index is stale and warns before search:
+
+```
+$ vex search "Config"
+Warning: index may be stale (HEAD changed). Run `vex update`.
+```
+
+**How it works**: on every search, vex compares the git HEAD stored at index time with the current HEAD (~0.1ms, single `git rev-parse`). If HEAD changed → stale. For non-git repos, falls back to mtime comparison.
+
+**Auto-update**: skip the warning and update inline:
+
+```bash
+# Per-command
+vex search "Config" --auto-update
+
+# Always (in .vex.toml)
+auto_update = true
+
+# Disable staleness check entirely
+vex search "Config" --no-stale-check
+```
 
 ## Output Formats
 
@@ -327,9 +354,33 @@ Each project gets its own index based on a hash of the project root path.
 
 ## Integration
 
+### Claude Code (CLI Integration)
+
+The recommended way to integrate vex with Claude Code is via `CLAUDE.md` rules (see below). Vex runs as a CLI tool — Claude Code calls it directly via Bash, no MCP server needed.
+
+**Setup:**
+
+```bash
+# Install vex
+brew tap tenatarika/tap && brew install vex
+
+# In your project
+cd /path/to/project
+vex init              # create .vex.toml
+vex index             # build index (add --semantic for meaning-based search)
+```
+
+Then add `.vex.toml` config for auto-update so Claude always searches a fresh index:
+
+```toml
+# .vex.toml
+auto_update = true
+format = "compact"
+```
+
 ### Claude Code (MCP Server)
 
-Vex includes an MCP server (`vex-mcp`) for integration with Claude Code and other AI agents:
+Alternatively, vex includes an MCP server (`vex-mcp`) that exposes all commands as MCP tools:
 
 ```bash
 # Build MCP server
@@ -386,6 +437,7 @@ Add this to your project's `CLAUDE.md` to make Claude Code use vex instead of gr
 ## Code Search
 
 Before first use in a project, run `vex init` to generate `.vex.toml`, then `vex index` to build the index.
+Set `auto_update = true` in `.vex.toml` so the index stays fresh automatically.
 
 Use vex for code search instead of grep or manual file reading:
 
@@ -397,10 +449,10 @@ Use vex for code search instead of grep or manual file reading:
 - `vex search "description" --semantic` — search by meaning
 - `vex pattern 'class $NAME(BaseModel):' --lang python` — AST pattern matching
 - `vex outline path/to/file.py` — file structure overview
-- `vex implementations "BaseService"` — find types extending a base class/trait
-- `vex callers "process_event"` — find functions that call this
-- `vex callees "process_event"` — find functions called by this
-- `vex check "Foo" "Bar"` — fast symbol existence check
+- `vex implementations "BaseService"` — find types extending a class/interface
+- `vex callers "function_name"` — find all callers
+- `vex callees "function_name"` — find all callees
+- `vex check "A" "B" "C"` — fast symbol existence check
 
 All commands support `--filter "path/"` to narrow results to a directory.
 
@@ -409,6 +461,14 @@ All commands support `--filter "path/"` to narrow results to a directory.
 - **Always prefer `vex search` over `Grep`** when looking for symbol definitions
 - **Use `vex grep` instead of `Grep`** for searching inside string literals, comments, or config values
 - **Use `--format compact`** for token-efficient output in automated workflows
+- **Use `--kind fn`** to boost results matching a specific symbol kind (fn, struct, trait, class, etc.)
+- **Use `--context-path`** with the path of the file you are currently editing to boost nearby results
+- **Run `vex update` after modifying source files** if `auto_update` is not enabled in `.vex.toml`
+
+### Indexing
+- `vex index` — full structural index (fast)
+- `vex index --semantic` — with embeddings (slower, enables semantic search)
+- `vex update` — incremental update (only changed files)
 ```
 
 ## Testing
@@ -416,18 +476,25 @@ All commands support `--filter "path/"` to narrow results to a directory.
 ### Unit & Integration Tests
 
 ```bash
-cargo test                    # 172 tests — unit, integration, multi-language parsing
+cargo test                    # 243 tests — unit, integration, property-based, adversarial
 cargo clippy -- -D warnings   # zero warnings policy
 ```
 
 Test coverage includes:
-- **Binary format**: roundtrip (write → read → verify all fields), corrupted/truncated/wrong-version index rejection, out-of-bounds symbol access, string pool deduplication, empty index
+- **Binary format**: roundtrip, corrupted/truncated/wrong-version rejection, out-of-bounds access, string pool dedup, empty index
+- **Adversarial format**: 20 crafted index tests — overflow offsets, bad magic/version, alignment attacks, truncated records
 - **Vectors**: write/read roundtrip for 384-dim f32 embeddings
 - **FST**: refs FST roundtrip, prefix search, symbol FST exact/prefix/fuzzy search
-- **Search**: structural, fuzzy (Levenshtein), RRF fusion, reranking heuristics
-- **Incremental update**: unchanged symbol reuse, deleted file removal, no-op on unchanged project
-- **Multi-language parsing**: Rust, Python, Go, Kotlin, TypeScript fixtures
+- **Search**: structural, fuzzy (Levenshtein), RRF fusion, reranking with kind/path/proximity boosts
+- **Reranking stress**: NaN/Infinity/zero scores, 10K results, edge context paths
+- **Property-based** (proptest): rerank preserves length, sorted output, no NaN/negative scores, fusion commutativity
+- **Incremental update**: unchanged reuse, deleted removal, file rename, symbol move between files, empty file
+- **Concurrency**: parallel index/update (lock serialization), concurrent readers, read during reindex
+- **Multi-language**: Rust, Python, Go, Kotlin, TypeScript, C++, cross-language same-name, wrong extension, 1K-symbol file, deep nesting, error recovery
+- **Unicode**: BOM, mixed CRLF, unicode identifiers, null bytes, empty/whitespace files
+- **Path edges**: spaces in paths, deep nesting (20 levels), symlinks, absolute vs relative, Windows backslashes
 - **Callgraph**: callers/callees for Rust, Python, Go, TypeScript, Java
+- **Staleness**: git HEAD comparison, dirty file detection, mtime fallback
 
 ### Fuzz Testing
 

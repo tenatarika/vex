@@ -309,6 +309,13 @@ fn write_output(
     let cache_dir = index_path.parent().context("index path has no parent")?;
     std::fs::create_dir_all(cache_dir).context("create cache directory")?;
 
+    // Capture git HEAD before acquiring lock to minimize lock hold time
+    let git_head = super::staleness::read_git_head(root);
+    let indexed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
     // Advisory lock to prevent concurrent index writes
     let lock_path = index_path.with_extension("lock");
     let lock_file = std::fs::File::create(&lock_path).context("create lock file")?;
@@ -321,6 +328,8 @@ fn write_output(
         let manifest_path = config::manifest_path(root);
         let manifest = Manifest {
             files: file_hashes.iter().cloned().collect::<HashMap<_, _>>(),
+            git_head,
+            indexed_at: Some(indexed_at),
         };
         manifest.save(&manifest_path)?;
         Ok(())

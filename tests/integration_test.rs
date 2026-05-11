@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 use vex::index::symbols::{ParsedFile, ParsedRef, ParsedSymbol, SymbolKind};
+use vex::search::rerank::RerankContext;
+use vex::search::{fusion, MatchType, SearchResult};
 use vex::store::format::{Header, MAGIC};
 
 fn fixtures_dir() -> PathBuf {
@@ -364,8 +366,6 @@ fn parse_all_fixture_languages() {
 
 #[test]
 fn rerank_exact_match_beats_partial() {
-    use vex::search::{MatchType, SearchResult};
-
     let results = vec![
         SearchResult {
             name: "ConfigManager".to_string(),
@@ -387,14 +387,13 @@ fn rerank_exact_match_beats_partial() {
         },
     ];
 
-    let ranked = vex::search::rerank::rerank("Config", results);
+    let ctx = vex::search::rerank::RerankContext::default();
+    let ranked = vex::search::rerank::rerank("Config", &ctx, results);
     assert_eq!(ranked[0].name, "Config", "exact match should rank first");
 }
 
 #[test]
 fn rerank_preserves_all_results() {
-    use vex::search::{MatchType, SearchResult};
-
     let results: Vec<SearchResult> = (0..20)
         .map(|i| SearchResult {
             name: format!("Symbol{i}"),
@@ -407,16 +406,313 @@ fn rerank_preserves_all_results() {
         })
         .collect();
 
-    let ranked = vex::search::rerank::rerank("Symbol5", results);
+    let ctx = vex::search::rerank::RerankContext::default();
+    let ranked = vex::search::rerank::rerank("Symbol5", &ctx, results);
     assert_eq!(ranked.len(), 20, "rerank should not drop results");
+}
+
+#[test]
+fn rerank_kind_hint_and_context_path() {
+    let results = vec![
+        SearchResult {
+            name: "Config".to_string(),
+            kind: "class".to_string(),
+            path: "src/auth/config.rs".to_string(),
+            line: 1,
+            signature: None,
+            score: 1.0,
+            match_type: MatchType::Structural,
+        },
+        SearchResult {
+            name: "Config".to_string(),
+            kind: "struct".to_string(),
+            path: "src/billing/config.rs".to_string(),
+            line: 10,
+            signature: None,
+            score: 1.0,
+            match_type: MatchType::Structural,
+        },
+    ];
+
+    let ctx = vex::search::rerank::RerankContext {
+        kind_hint: Some(vex::index::symbols::SymbolKind::Struct),
+        context_path: Some("src/billing/gateway.rs"),
+    };
+    let ranked = vex::search::rerank::rerank("Config", &ctx, results);
+    assert_eq!(
+        ranked[0].path, "src/billing/config.rs",
+        "struct in same dir as context should rank first"
+    );
+}
+
+// --- Reranking stress ---
+
+#[test]
+fn rerank_single_nan_result_sanitized() {
+    let results = vec![SearchResult {
+        name: "Foo".to_string(),
+        kind: "function".to_string(),
+        path: "src/a.rs".to_string(),
+        line: 1,
+        signature: None,
+        score: f64::NAN,
+        match_type: MatchType::Structural,
+    }];
+    let ctx = RerankContext::default();
+    let ranked = vex::search::rerank::rerank("Foo", &ctx, results);
+    assert_eq!(ranked.len(), 1);
+    assert!(
+        !ranked[0].score.is_nan(),
+        "single-result NaN must be sanitized"
+    );
+}
+
+#[test]
+fn rerank_score_zero_no_panic() {
+    let results = vec![
+        SearchResult {
+            name: "Alpha".to_string(),
+            kind: "function".to_string(),
+            path: "src/a.rs".to_string(),
+            line: 1,
+            signature: None,
+            score: 0.0,
+            match_type: MatchType::Structural,
+        },
+        SearchResult {
+            name: "Beta".to_string(),
+            kind: "function".to_string(),
+            path: "src/b.rs".to_string(),
+            line: 2,
+            signature: None,
+            score: 0.0,
+            match_type: MatchType::Structural,
+        },
+    ];
+
+    let ctx = RerankContext::default();
+    let ranked = vex::search::rerank::rerank("Alpha", &ctx, results);
+
+    assert_eq!(ranked.len(), 2, "rerank should not drop zero-score results");
+    for r in &ranked {
+        assert!(
+            r.score >= 0.0,
+            "zero-score result should not produce negative score after rerank, got {}",
+            r.score
+        );
+    }
+}
+
+#[test]
+fn rerank_score_nan_no_propagation() {
+    // One result has NaN score — rerank must not panic, and ideally sanitises it.
+    // If this assertion fails it documents a bug: NaN propagates through score *= boost.
+    let results = vec![
+        SearchResult {
+            name: "Good".to_string(),
+            kind: "function".to_string(),
+            path: "src/a.rs".to_string(),
+            line: 1,
+            signature: None,
+            score: 1.0,
+            match_type: MatchType::Structural,
+        },
+        SearchResult {
+            name: "Bad".to_string(),
+            kind: "function".to_string(),
+            path: "src/b.rs".to_string(),
+            line: 2,
+            signature: None,
+            score: f64::NAN,
+            match_type: MatchType::Structural,
+        },
+    ];
+
+    let ctx = RerankContext::default();
+    // Must not panic regardless of NaN
+    let ranked = vex::search::rerank::rerank("Good", &ctx, results);
+
+    assert_eq!(ranked.len(), 2, "rerank should not drop NaN-score results");
+    for r in &ranked {
+        assert!(
+            !r.score.is_nan(),
+            "NaN score should not propagate after rerank for result '{}' — this is a bug",
+            r.name
+        );
+    }
+}
+
+#[test]
+fn rerank_score_max_no_infinity() {
+    // f64::MAX * any boost factor > 1.0 overflows to infinity.
+    // Rerank should not produce infinite scores (or at least not panic).
+    let results = vec![
+        SearchResult {
+            name: "Overflow".to_string(),
+            kind: "function".to_string(),
+            path: "src/a.rs".to_string(),
+            line: 1,
+            signature: None,
+            score: f64::MAX,
+            match_type: MatchType::Structural,
+        },
+        SearchResult {
+            name: "Normal".to_string(),
+            kind: "function".to_string(),
+            path: "src/b.rs".to_string(),
+            line: 2,
+            signature: None,
+            score: 1.0,
+            match_type: MatchType::Structural,
+        },
+    ];
+
+    // Full context to exercise all boost paths
+    let ctx = RerankContext {
+        kind_hint: Some(SymbolKind::Function),
+        context_path: Some("src/a.rs"),
+    };
+    let ranked = vex::search::rerank::rerank("Overflow", &ctx, results);
+
+    assert_eq!(ranked.len(), 2, "rerank should not drop max-score results");
+    for r in &ranked {
+        assert!(
+            !r.score.is_infinite(),
+            "score should not overflow to infinity for result '{}', got {}",
+            r.name,
+            r.score
+        );
+    }
+}
+
+#[test]
+fn rerank_large_result_set() {
+    let results: Vec<SearchResult> = (0..10_000)
+        .map(|i| SearchResult {
+            name: format!("Symbol{i}"),
+            kind: "function".to_string(),
+            path: format!("src/mod{}/file{i}.rs", i % 100),
+            line: 1,
+            signature: None,
+            score: 1.0,
+            match_type: MatchType::Structural,
+        })
+        .collect();
+
+    let ctx = RerankContext::default();
+    let ranked = vex::search::rerank::rerank("Symbol5000", &ctx, results);
+
+    assert_eq!(ranked.len(), 10_000, "rerank must not drop any results");
+    assert_eq!(
+        ranked[0].name, "Symbol5000",
+        "exact name match should rank first in 10k result set"
+    );
+}
+
+#[test]
+fn rerank_empty_context_path() {
+    let results = vec![
+        SearchResult {
+            name: "Foo".to_string(),
+            kind: "function".to_string(),
+            path: "src/a.rs".to_string(),
+            line: 1,
+            signature: None,
+            score: 1.0,
+            match_type: MatchType::Structural,
+        },
+        SearchResult {
+            name: "Bar".to_string(),
+            kind: "function".to_string(),
+            path: "src/b.rs".to_string(),
+            line: 2,
+            signature: None,
+            score: 1.0,
+            match_type: MatchType::Structural,
+        },
+    ];
+
+    // context_path: Some("") — dir_of("") returns "" — should not panic
+    let ctx = RerankContext {
+        kind_hint: None,
+        context_path: Some(""),
+    };
+    let ranked = vex::search::rerank::rerank("Foo", &ctx, results);
+    assert_eq!(ranked.len(), 2, "empty context_path must not drop results");
+}
+
+#[test]
+fn rerank_root_context_path() {
+    let results = vec![
+        SearchResult {
+            name: "Foo".to_string(),
+            kind: "function".to_string(),
+            path: "src/a.rs".to_string(),
+            line: 1,
+            signature: None,
+            score: 1.0,
+            match_type: MatchType::Structural,
+        },
+        SearchResult {
+            name: "Bar".to_string(),
+            kind: "function".to_string(),
+            path: "src/b.rs".to_string(),
+            line: 2,
+            signature: None,
+            score: 1.0,
+            match_type: MatchType::Structural,
+        },
+    ];
+
+    // context_path: Some("/") — splits to ["", ""] — should not panic
+    let ctx = RerankContext {
+        kind_hint: None,
+        context_path: Some("/"),
+    };
+    let ranked = vex::search::rerank::rerank("Foo", &ctx, results);
+    assert_eq!(ranked.len(), 2, "root context_path must not drop results");
+}
+
+#[test]
+fn rerank_single_component_path() {
+    let results = vec![
+        SearchResult {
+            name: "Foo".to_string(),
+            kind: "function".to_string(),
+            path: "src/a.rs".to_string(),
+            line: 1,
+            signature: None,
+            score: 1.0,
+            match_type: MatchType::Structural,
+        },
+        SearchResult {
+            name: "Bar".to_string(),
+            kind: "function".to_string(),
+            path: "src/b.rs".to_string(),
+            line: 2,
+            signature: None,
+            score: 1.0,
+            match_type: MatchType::Structural,
+        },
+    ];
+
+    // context_path: Some("file.rs") — no directory separator — dir_of returns "" — no crash
+    let ctx = RerankContext {
+        kind_hint: None,
+        context_path: Some("file.rs"),
+    };
+    let ranked = vex::search::rerank::rerank("Foo", &ctx, results);
+    assert_eq!(
+        ranked.len(),
+        2,
+        "single-component context_path must not drop results"
+    );
 }
 
 // --- RRF Fusion ---
 
 #[test]
 fn fusion_marks_hybrid_correctly() {
-    use vex::search::{fusion, MatchType, SearchResult};
-
     let structural = vec![SearchResult {
         name: "process".to_string(),
         kind: "function".to_string(),
@@ -443,8 +739,6 @@ fn fusion_marks_hybrid_correctly() {
 
 #[test]
 fn fusion_deduplicates_by_path_name_line() {
-    use vex::search::{fusion, MatchType, SearchResult};
-
     let structural = vec![
         SearchResult {
             name: "foo".to_string(),

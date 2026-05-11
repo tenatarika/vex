@@ -64,6 +64,53 @@ fn resolve_format(cli: Option<OutputFormat>, cfg: &config::VexConfig) -> OutputF
     }
 }
 
+/// Check index staleness and optionally auto-update.
+///
+/// Uses a cheap HEAD-only check by default (1 subprocess). Only runs the
+/// expensive dirty-tree check when auto-update is enabled.
+fn handle_staleness(
+    root: &std::path::Path,
+    auto_update_flag: bool,
+    no_stale_check: bool,
+    cfg: &config::VexConfig,
+) -> Result<()> {
+    if no_stale_check {
+        return Ok(());
+    }
+    let manifest_path = config::manifest_path(root);
+    let manifest = crate::index::manifest::Manifest::load(&manifest_path)?;
+    let should_auto = auto_update_flag || cfg.auto_update.unwrap_or(false);
+    // Deep check (dirty files) only when auto-update is on — avoids 2 extra subprocesses
+    let freshness = crate::index::staleness::check(root, &manifest, should_auto);
+
+    match freshness {
+        crate::index::staleness::Freshness::Fresh => Ok(()),
+        crate::index::staleness::Freshness::Unknown => {
+            tracing::debug!(
+                "cannot determine index freshness (no git_head/indexed_at in manifest)"
+            );
+            Ok(())
+        }
+        crate::index::staleness::Freshness::Stale { changed_count } => {
+            if should_auto {
+                let semantic = cfg.semantic.unwrap_or(false);
+                eprintln!("Index stale, auto-updating...");
+                let (total, changed, deleted) = pipeline::update(root, semantic, &cfg.exclude)?;
+                if changed > 0 || deleted > 0 {
+                    eprintln!(
+                        "Updated: {changed} changed, {deleted} deleted, {total} total symbols"
+                    );
+                }
+            } else if let Some(n) = changed_count {
+                eprintln!("Warning: ~{n} file(s) changed since last index. Run `vex update`.");
+            } else {
+                eprintln!("Warning: index may be stale (HEAD changed). Run `vex update`.");
+            }
+            Ok(())
+        }
+    }
+}
+
 fn filter_by_path(
     results: Vec<crate::search::SearchResult>,
     filter: Option<&str>,
@@ -124,6 +171,10 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             semantic,
             no_semantic,
             filter_path,
+            kind,
+            context_path,
+            auto_update,
+            no_stale_check,
         } => {
             let semantic = resolve_semantic(semantic, no_semantic, &cfg);
             let root = resolve_root(None)?.canonicalize()?;
@@ -135,6 +186,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     index_path.display()
                 );
             }
+
+            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
 
@@ -165,7 +218,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 structural_results
             };
 
-            let results = crate::search::rerank::rerank(&query, results);
+            let rerank_ctx = crate::search::rerank::RerankContext {
+                kind_hint: kind.as_deref().map(|k| k.parse()).transpose()?,
+                context_path: context_path.as_deref(),
+            };
+            let results = crate::search::rerank::rerank(&query, &rerank_ctx, results);
             let results: Vec<_> = filter_by_path(results, filter_path.as_deref())
                 .into_iter()
                 .take(limit)
@@ -198,6 +255,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             name,
             limit,
             filter_path,
+            auto_update,
+            no_stale_check,
         } => {
             let root = resolve_root(None)?.canonicalize()?;
             let index_path = config::index_path(&root);
@@ -208,6 +267,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     index_path.display()
                 );
             }
+
+            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
             let ref_reader = reader
@@ -392,6 +453,10 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             limit,
             context,
             filter_path,
+            kind,
+            context_path,
+            auto_update,
+            no_stale_check,
         } => {
             let root = resolve_root(None)?.canonicalize()?;
             let index_path = config::index_path(&root);
@@ -403,6 +468,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 );
             }
 
+            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
+
             let reader = IndexReader::open(&index_path).context("open index")?;
             let fetch_limit = if filter_path.is_some() {
                 reader.symbol_count()
@@ -412,9 +479,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let mut json_items: Vec<serde_json::Value> = Vec::new();
             let mut printed = 0usize;
 
+            let rerank_ctx = crate::search::rerank::RerankContext {
+                kind_hint: kind.as_deref().map(|k| k.parse()).transpose()?,
+                context_path: context_path.as_deref(),
+            };
+
             for symbol in &symbols {
                 let results = structural::search_with_fuzzy(&reader, symbol, fetch_limit);
-                let results = crate::search::rerank::rerank(symbol, results);
+                let results = crate::search::rerank::rerank(symbol, &rerank_ctx, results);
                 let results: Vec<_> = filter_by_path(results, filter_path.as_deref())
                     .into_iter()
                     .take(limit)
@@ -651,7 +723,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         Commands::Callees { name, path, limit } => {
             cmd_callgraph(&name, path, limit, false, &format, excludes)
         }
-        Commands::Check { names, path } => {
+        Commands::Check {
+            names,
+            path,
+            auto_update,
+            no_stale_check,
+        } => {
             let root = resolve_root(path)?.canonicalize()?;
             let index_path = config::index_path(&root);
 
@@ -661,6 +738,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     index_path.display()
                 );
             }
+
+            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
 

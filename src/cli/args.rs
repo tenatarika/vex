@@ -62,6 +62,22 @@ pub enum Commands {
         /// Filter results by path substring (e.g. "src/api/" or "tests/")
         #[arg(short = 'f', long = "filter")]
         filter_path: Option<String>,
+
+        /// Boost results matching this symbol kind (e.g. fn, struct, trait)
+        #[arg(short = 'k', long)]
+        kind: Option<String>,
+
+        /// Boost results near this file path (e.g. your current editor file)
+        #[arg(long = "context-path")]
+        context_path: Option<String>,
+
+        /// Auto-update index if stale before searching
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
     },
 
     /// Find all usages/references of a symbol
@@ -76,6 +92,14 @@ pub enum Commands {
         /// Filter results by path substring (e.g. "src/api/" or "tests/")
         #[arg(short = 'f', long = "filter")]
         filter_path: Option<String>,
+
+        /// Auto-update index if stale
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
     },
 
     /// Find code matching a structural AST pattern (like ast-grep)
@@ -153,6 +177,22 @@ pub enum Commands {
         /// Filter results by path substring (e.g. "src/api/" or "tests/")
         #[arg(short = 'f', long = "filter")]
         filter_path: Option<String>,
+
+        /// Boost results matching this symbol kind (e.g. fn, struct, trait)
+        #[arg(short = 'k', long)]
+        kind: Option<String>,
+
+        /// Boost results near this file path (e.g. your current editor file)
+        #[arg(long = "context-path")]
+        context_path: Option<String>,
+
+        /// Auto-update index if stale before showing
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
     },
 
     /// Search file contents by regex pattern (no index needed)
@@ -231,6 +271,14 @@ pub enum Commands {
         /// Project root path (defaults to cwd)
         #[arg(short, long)]
         path: Option<PathBuf>,
+
+        /// Auto-update index if stale
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
     },
 
     /// Generate shell completions

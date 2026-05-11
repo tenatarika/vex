@@ -6,6 +6,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-05-11
+
+### Added
+- **Staleness detection** — `vex search` warns when the index is stale (git HEAD changed or files modified since last index); uses a single `git rev-parse` call (~0.1ms) with mtime fallback for non-git repos
+- `--auto-update` flag for search/show/usages/check — runs `vex update` inline before search when stale
+- `--no-stale-check` flag — skip staleness check entirely
+- `auto_update` option in `.vex.toml` — enable auto-update by default
+- **Context-aware reranking** — `--kind fn` boosts results matching a specific symbol kind, `--context-path src/file.rs` boosts results near the file you are editing (path overlap + module proximity)
+- **90 new tests** (172 → 243):
+  - Property-based (proptest): rerank preserves length, sorted output, no NaN/negative, fusion commutativity
+  - Reranking stress: NaN/Infinity/zero scores, 10K results, edge context paths
+  - Adversarial binary format: 20 crafted index tests — overflow offsets, alignment attacks, truncated records
+  - Unicode/encoding: BOM, mixed CRLF, unicode identifiers, null bytes, empty files
+  - Incremental update: file rename, symbol move between files, empty file, new file added
+  - Concurrency: parallel index (lock serialization), concurrent readers, read during reindex
+  - Cross-language: same name across 3 languages, wrong extension, 1K-symbol file, deep nesting, error recovery
+  - Path edges: spaces, 20-level nesting, symlinks, absolute vs relative, Windows backslashes
+- `proptest` added to dev-dependencies
+
+### Fixed
+- **NaN propagation in reranker** — `NaN * boost = NaN` silently corrupted scores; now sanitized to 0.0
+- **Infinity overflow in reranker** — `f64::MAX * boost = +inf`; now clamped to `f64::MAX / 2.0`
+- **Single-result NaN bypass** — `rerank()` early-returned for len ≤ 1, skipping sanitization
+- Kind hint mismatch was too aggressive (0.7x demotion) — changed to neutral 1.0 (boost-only, no penalty)
+- Path overlap double-counted filename as shared component — now compares directory components only
+- Module proximity boost no longer overlaps with path overlap for same-directory results
+- `read_git_head()` moved outside advisory lock in `write_output` to reduce lock hold time
+
+### Changed
+- `Freshness` enum is `#[must_use]`; `changed_count` is `Option<usize>` (None = count not computed)
+- `RerankContext` struct with `kind_hint: Option<SymbolKind>` and `context_path: Option<&str>`
+- `rerank()` signature extended: `rerank(query, &RerankContext, results)`
+- Manifest extended with `git_head` and `indexed_at` fields (backward-compatible via `serde(default)`)
+- README: updated commands table, test count (243), added Staleness Detection section, updated CLAUDE.md integration rules
+
 ## [1.4.0] - 2026-05-08
 
 ### Added
@@ -108,7 +143,8 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/tenatarika/vex/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/tenatarika/vex/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/tenatarika/vex/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/tenatarika/vex/compare/v1.1.0...v1.2.0

@@ -10,6 +10,14 @@ use serde::{Deserialize, Serialize};
 pub struct Manifest {
     /// Map of relative file path → content hash
     pub files: HashMap<String, u64>,
+
+    /// Git HEAD commit hash at index time (None for non-git repos)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_head: Option<String>,
+
+    /// Unix timestamp (seconds since epoch) when the index was written
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexed_at: Option<u64>,
 }
 
 impl Manifest {

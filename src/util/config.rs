@@ -17,6 +17,9 @@ pub struct VexConfig {
 
     /// Enable semantic embeddings by default
     pub semantic: Option<bool>,
+
+    /// Automatically update the index before search if stale
+    pub auto_update: Option<bool>,
 }
 
 /// Search for `.vex.toml` starting from `start_dir`, walking up to filesystem root.
@@ -58,6 +61,9 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 
 # Enable semantic embeddings by default (slower indexing, enables meaning-based search)
 # semantic = false
+
+# Automatically run `vex update` before search if the index is stale
+# auto_update = false
 "#;
 
 /// Get the cache directory for vex indexes.
