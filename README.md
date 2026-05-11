@@ -385,6 +385,8 @@ Add this to your project's `CLAUDE.md` to make Claude Code use vex instead of gr
 ```markdown
 ## Code Search
 
+Before first use in a project, run `vex init` to generate `.vex.toml`, then `vex index` to build the index.
+
 Use vex for code search instead of grep or manual file reading:
 
 - `vex search "SymbolName"` — find symbol definitions (~4ms)
