@@ -884,10 +884,8 @@ fn cmd_outline(file: &std::path::Path, kind: Option<&str>, format: &OutputFormat
     let lang = crate::parse::language::Language::from_extension(ext)
         .with_context(|| format!("unsupported language: .{ext}"))?;
 
-    if crate::parse::queries::get_query(lang).is_none() {
-        bail!(
-            "language .{ext} is recognized but has no tree-sitter query yet (Kotlin, TypeScript pending)"
-        );
+    if let Err(e) = crate::parse::queries::try_get_query(lang) {
+        bail!("failed to load grammar for .{ext}: {e}");
     }
 
     let rel = file.to_string_lossy().to_string();

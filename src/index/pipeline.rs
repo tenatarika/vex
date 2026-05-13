@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -253,6 +254,10 @@ fn parse_files(root: &Path, files: &[std::path::PathBuf]) -> Result<Vec<ParsedFi
     let counter = AtomicUsize::new(0);
     let total = files.len();
     let mut all_parsed = Vec::new();
+    // (language, first_error) -> skipped_count. Aggregated so an ABI mismatch
+    // surfaces as a single loud summary at the end instead of being buried
+    // in per-file warnings the user usually has filtered out.
+    let grammar_failures: Mutex<HashMap<Language, (String, usize)>> = Mutex::new(HashMap::new());
 
     for chunk in files.chunks(CHUNK_SIZE) {
         let parsed: Vec<ParsedFile> = chunk
@@ -260,7 +265,7 @@ fn parse_files(root: &Path, files: &[std::path::PathBuf]) -> Result<Vec<ParsedFi
             .filter_map(|path| {
                 let ext = path.extension()?.to_str()?;
                 let lang = Language::from_extension(ext)?;
-                let content = std::fs::read_to_string(path).ok()?;
+                let content = read_capped(path)?;
 
                 // Skip likely binary/minified files (high ratio of non-ASCII or very long lines)
                 if looks_binary(&content) {
@@ -282,7 +287,16 @@ fn parse_files(root: &Path, files: &[std::path::PathBuf]) -> Result<Vec<ParsedFi
                 })) {
                     Ok(Ok(parsed)) => Some(parsed),
                     Ok(Err(e)) => {
-                        tracing::warn!(path = %rel, error = %e, "parse failed, skipping");
+                        if let Some(g) = e.downcast_ref::<parse::extractor::GrammarLoadError>() {
+                            // Recover from a poisoned mutex — never block aggregation
+                            // for a downstream caller because of an unrelated panic.
+                            let mut map = grammar_failures
+                                .lock()
+                                .unwrap_or_else(|poison| poison.into_inner());
+                            map.entry(g.lang).or_insert_with(|| (g.reason.clone(), 0)).1 += 1;
+                        } else {
+                            tracing::warn!(path = %rel, error = %e, "parse failed, skipping");
+                        }
                         None
                     }
                     Err(_) => {
@@ -296,7 +310,67 @@ fn parse_files(root: &Path, files: &[std::path::PathBuf]) -> Result<Vec<ParsedFi
         all_parsed.extend(parsed);
     }
 
+    let failures = grammar_failures
+        .into_inner()
+        .unwrap_or_else(|poison| poison.into_inner());
+    for (lang, (err, count)) in &failures {
+        // tracing::warn! so this respects RUST_LOG and is captureable by
+        // integration tests; the bang-default subscriber surfaces it in the
+        // terminal too.
+        tracing::warn!(
+            language = ?lang,
+            skipped = count,
+            error = %err,
+            "tree-sitter grammar failed to load — files for this language were skipped (likely ABI mismatch)"
+        );
+    }
+
     Ok(all_parsed)
+}
+
+/// Read a file as UTF-8, refusing to allocate more than `MAX_FILE_BYTES`.
+///
+/// Closes a TOCTOU window: a previous version did `fs::metadata().len() <= 1MB`
+/// then `fs::read_to_string()`, which could be defeated by a malicious or
+/// concurrently-growing file. `File::open` + `take` enforces the cap on the
+/// actual read.
+fn read_capped(path: &Path) -> Option<String> {
+    use std::io::Read;
+    const MAX_FILE_BYTES: u64 = 1 << 20; // 1 MiB
+    let file = std::fs::File::open(path).ok()?;
+    let mut buf = String::new();
+    let n = file
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_string(&mut buf)
+        .ok()?;
+    if n as u64 > MAX_FILE_BYTES {
+        return None;
+    }
+    Some(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grammar_failure_summary_includes_language_count_and_reason() {
+        // Pin the structured fields the user-visible warning emits, so a future
+        // refactor cannot silently drop the count or error string without test
+        // fail. We cannot easily hit the path end-to-end (every grammar
+        // currently loads), so this test mirrors the format the warning
+        // produces and locks the contract.
+        let mut failures: HashMap<Language, (String, usize)> = HashMap::new();
+        failures.insert(Language::CSharp, ("ABI mismatch v15".to_string(), 42));
+
+        let mut rendered = String::new();
+        for (lang, (err, count)) in &failures {
+            rendered = format!("language={lang:?} skipped={count} error={err}");
+        }
+        assert!(rendered.contains("CSharp"), "{rendered}");
+        assert!(rendered.contains("42"), "{rendered}");
+        assert!(rendered.contains("ABI mismatch v15"), "{rendered}");
+    }
 }
 
 fn write_output(

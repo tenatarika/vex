@@ -8,14 +8,34 @@ use super::language::Language;
 use super::queries;
 use crate::index::symbols::{ParsedRef, ParsedSymbol, SymbolKind};
 
+/// Sentinel error type for grammar / query compilation failures.
+///
+/// The indexing pipeline downcasts to this type to detect grammar-level
+/// failures (ABI mismatch, renamed AST node) and aggregate them into a
+/// per-language summary, instead of treating them like per-file parse
+/// errors. Plain string matching on the error message would couple the two
+/// sides at the wrong layer.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to load {lang:?} grammar: {reason}")]
+pub struct GrammarLoadError {
+    pub lang: Language,
+    pub reason: String,
+}
+
 /// Extract symbols and AST-based import references in a single tree-sitter parse.
 pub fn extract_symbols_and_imports(
     content: &str,
     lang: Language,
 ) -> Result<(Vec<ParsedSymbol>, Vec<ParsedRef>)> {
-    let query = match queries::get_query(lang) {
-        Some(q) => q,
-        None => return Ok((Vec::new(), Vec::new())),
+    let query = match queries::try_get_query(lang) {
+        Ok(q) => q,
+        Err(e) => {
+            return Err(GrammarLoadError {
+                lang,
+                reason: e.to_string(),
+            }
+            .into());
+        }
     };
 
     let mut parser = Parser::new();

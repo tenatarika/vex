@@ -331,17 +331,21 @@ For an agent making 10-20 code lookups per task, vex saves **5,000-20,000 tokens
 | Language | Extensions | Symbols | Imports |
 |----------|------------|---------|---------|
 | Rust | `.rs` | functions, structs, enums, traits, impls, types, constants | `use` declarations |
-| Python | `.py` | classes, functions | `import`, `from..import` |
+| Python | `.py` | classes, functions (incl. async, decorated) | `import`, `from..import` |
 | Go | `.go` | functions, methods, structs, interfaces | `import` |
 | Java | `.java` | classes, interfaces, enums, methods, constructors | `import` |
 | C# | `.cs` | classes, interfaces, structs, enums, methods, properties | — |
 | Ruby | `.rb` | classes, modules, methods | — |
-| Swift | `.swift` | classes, protocols, enums, functions | `import` |
+| Swift | `.swift` | classes, structs, enums, actors, protocols, functions | `import` |
 | Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` |
 | TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx` | classes, interfaces, enums, functions, arrows, type aliases | `import` |
 | SQL | `.sql` | tables, views, functions, triggers, indexes, schemas, types, sequences | `ALTER TABLE` refs |
 | C/C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | classes, structs, functions, methods, templates, enums | `#include` |
 | Markdown | `.md`, `.markdown` | headings (section structure) | — |
+
+See [docs/SUPPORTED_LANGUAGES.md](docs/SUPPORTED_LANGUAGES.md) for grammar
+versions, ABI level, and the runbook for adding a language or upgrading a
+grammar.
 
 ## Index Location
 
@@ -476,11 +480,12 @@ All commands support `--filter "path/"` to narrow results to a directory.
 ### Unit & Integration Tests
 
 ```bash
-cargo test                    # 243 tests — unit, integration, property-based, adversarial
+cargo test                    # 451 tests — unit, integration, property-based, adversarial
 cargo clippy -- -D warnings   # zero warnings policy
 ```
 
 Test coverage includes:
+- **Per-language grammar regression** (NEW): `tests/<lang>_query_test.rs` for all 12 supported languages — catches ABI mismatches and AST node renames when a tree-sitter grammar crate is upgraded
 - **Binary format**: roundtrip, corrupted/truncated/wrong-version rejection, out-of-bounds access, string pool dedup, empty index
 - **Adversarial format**: 20 crafted index tests — overflow offsets, bad magic/version, alignment attacks, truncated records
 - **Vectors**: write/read roundtrip for 384-dim f32 embeddings

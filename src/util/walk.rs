@@ -9,7 +9,10 @@ use crate::parse::language::Language;
 /// Build a configured file walker with exclude patterns applied.
 pub fn walk_builder(root: &Path, excludes: &[String]) -> Result<WalkBuilder> {
     let mut builder = WalkBuilder::new(root);
-    builder.hidden(true).max_depth(Some(50));
+    // `follow_links(false)` is the WalkBuilder default, but state it
+    // explicitly: a malicious repo cannot smuggle in `../../.ssh/id_rsa` via
+    // a symlink and have us index it.
+    builder.hidden(true).max_depth(Some(50)).follow_links(false);
 
     if !excludes.is_empty() {
         let mut ov = OverrideBuilder::new(root);
