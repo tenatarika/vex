@@ -118,6 +118,62 @@ static CPP_QUERY: LazyLock<Result<Query, String>> = LazyLock::new(|| {
     )
 });
 
+static PHP_QUERY: LazyLock<Result<Query, String>> = LazyLock::new(|| {
+    compile(
+        "php",
+        tree_sitter_php::LANGUAGE_PHP.into(),
+        include_str!("../../queries/php.scm"),
+    )
+});
+
+static BASH_QUERY: LazyLock<Result<Query, String>> = LazyLock::new(|| {
+    compile(
+        "bash",
+        tree_sitter_bash::LANGUAGE.into(),
+        include_str!("../../queries/bash.scm"),
+    )
+});
+
+static LUA_QUERY: LazyLock<Result<Query, String>> = LazyLock::new(|| {
+    compile(
+        "lua",
+        tree_sitter_lua::LANGUAGE.into(),
+        include_str!("../../queries/lua.scm"),
+    )
+});
+
+static CSS_QUERY: LazyLock<Result<Query, String>> = LazyLock::new(|| {
+    compile(
+        "css",
+        tree_sitter_css::LANGUAGE.into(),
+        include_str!("../../queries/css.scm"),
+    )
+});
+
+static HTML_QUERY: LazyLock<Result<Query, String>> = LazyLock::new(|| {
+    compile(
+        "html",
+        tree_sitter_html::LANGUAGE.into(),
+        include_str!("../../queries/html.scm"),
+    )
+});
+
+static YAML_QUERY: LazyLock<Result<Query, String>> = LazyLock::new(|| {
+    compile(
+        "yaml",
+        tree_sitter_yaml::LANGUAGE.into(),
+        include_str!("../../queries/yaml.scm"),
+    )
+});
+
+static TOML_QUERY: LazyLock<Result<Query, String>> = LazyLock::new(|| {
+    compile(
+        "toml",
+        tree_sitter_toml_ng::LANGUAGE.into(),
+        include_str!("../../queries/toml.scm"),
+    )
+});
+
 fn lookup(lang: Language) -> &'static Result<Query, String> {
     match lang {
         Language::Rust => &RUST_QUERY,
@@ -132,6 +188,13 @@ fn lookup(lang: Language) -> &'static Result<Query, String> {
         Language::Sql => &SQL_QUERY,
         Language::Markdown => &MARKDOWN_QUERY,
         Language::Cpp => &CPP_QUERY,
+        Language::Php => &PHP_QUERY,
+        Language::Bash => &BASH_QUERY,
+        Language::Lua => &LUA_QUERY,
+        Language::Css => &CSS_QUERY,
+        Language::Html => &HTML_QUERY,
+        Language::Yaml => &YAML_QUERY,
+        Language::Toml => &TOML_QUERY,
     }
 }
 

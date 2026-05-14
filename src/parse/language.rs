@@ -13,6 +13,13 @@ pub enum Language {
     Sql,
     Markdown,
     Cpp,
+    Php,
+    Bash,
+    Lua,
+    Css,
+    Html,
+    Yaml,
+    Toml,
 }
 
 impl Language {
@@ -32,6 +39,13 @@ impl Language {
             "sql" => Some(Self::Sql),
             "md" | "markdown" => Some(Self::Markdown),
             "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "h" => Some(Self::Cpp),
+            "php" | "phtml" => Some(Self::Php),
+            "sh" | "bash" => Some(Self::Bash),
+            "lua" => Some(Self::Lua),
+            "css" => Some(Self::Css),
+            "html" | "htm" => Some(Self::Html),
+            "yaml" | "yml" => Some(Self::Yaml),
+            "toml" => Some(Self::Toml),
             _ => None,
         }
     }
@@ -52,6 +66,16 @@ impl Language {
             Self::Sql => tree_sitter_sequel::LANGUAGE.into(),
             Self::Markdown => tree_sitter_md::LANGUAGE.into(),
             Self::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+            // PHP exposes two grammars: LANGUAGE_PHP (with <?php tags) and
+            // LANGUAGE_PHP_ONLY (raw PHP without tags). We accept either via
+            // the .php / .phtml extensions, so the tag-aware grammar wins.
+            Self::Php => tree_sitter_php::LANGUAGE_PHP.into(),
+            Self::Bash => tree_sitter_bash::LANGUAGE.into(),
+            Self::Lua => tree_sitter_lua::LANGUAGE.into(),
+            Self::Css => tree_sitter_css::LANGUAGE.into(),
+            Self::Html => tree_sitter_html::LANGUAGE.into(),
+            Self::Yaml => tree_sitter_yaml::LANGUAGE.into(),
+            Self::Toml => tree_sitter_toml_ng::LANGUAGE.into(),
         }
     }
 
@@ -70,6 +94,13 @@ impl Language {
             Self::Sql => "sql",
             Self::Markdown => "markdown",
             Self::Cpp => "cpp",
+            Self::Php => "php",
+            Self::Bash => "bash",
+            Self::Lua => "lua",
+            Self::Css => "css",
+            Self::Html => "html",
+            Self::Yaml => "yaml",
+            Self::Toml => "toml",
         }
     }
 }

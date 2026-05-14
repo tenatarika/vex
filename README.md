@@ -26,7 +26,7 @@ $ vex check "Foo" "Bar" "Baz"             # fast existence check
 - **~4ms search** after indexing — FST-based O(query_len) lookup, not O(symbols). Requires a pre-built index (indexing takes 20ms-600ms+ depending on project size)
 - **Semantic search** — "find payment processing" returns `ProcessPayment`, `ChargeCard`, `RefundOrder`
 - **Token-efficient** — compact output uses 6-88x fewer tokens than grep, `vex show` extracts just the symbol body instead of the whole file
-- **12 languages** out of the box — Rust, Python, Go, Java, C/C++, C#, Ruby, Swift, Kotlin, TypeScript, SQL, Markdown
+- **19 languages** out of the box — Rust, Python, Go, Java, C/C++, C#, Ruby, Swift, Kotlin, TypeScript, SQL, Markdown, PHP, Bash, Lua, CSS, HTML, YAML, TOML
 - **Single binary, zero config** — no LSP servers, no databases, no Docker. Just `vex index && vex search`
 
 ## How It Compares
@@ -485,7 +485,7 @@ cargo clippy -- -D warnings   # zero warnings policy
 ```
 
 Test coverage includes:
-- **Per-language grammar regression** (NEW): `tests/<lang>_query_test.rs` for all 12 supported languages — catches ABI mismatches and AST node renames when a tree-sitter grammar crate is upgraded
+- **Per-language grammar regression** (NEW): `tests/<lang>_query_test.rs` for all 19 supported languages — catches ABI mismatches and AST node renames when a tree-sitter grammar crate is upgraded
 - **Binary format**: roundtrip, corrupted/truncated/wrong-version rejection, out-of-bounds access, string pool dedup, empty index
 - **Adversarial format**: 20 crafted index tests — overflow offsets, bad magic/version, alignment attacks, truncated records
 - **Vectors**: write/read roundtrip for 384-dim f32 embeddings

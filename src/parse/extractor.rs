@@ -65,7 +65,7 @@ pub fn extract_symbols_and_imports(
             if *capture_name == "import.name" {
                 let context = content.lines().nth(line - 1).map(|l| l.trim().to_string());
                 imports.push(ParsedRef {
-                    name: name.to_string(),
+                    name: strip_import_quotes(name).to_string(),
                     line,
                     context,
                 });
@@ -119,6 +119,34 @@ pub fn extract_symbols_and_imports(
     }
 
     Ok((symbols, imports))
+}
+
+/// Strip a single layer of matching surrounding quote-pair delimiters from
+/// an import name captured by a tree-sitter query.
+///
+/// Some grammars expose string literals only as a single `(string)` node
+/// (Lua tree-sitter-lua 0.5 when there are no escape sequences) or as a
+/// `(string_literal)` containing the quotes verbatim (C/C++ `#include`).
+/// Stripping the wrapping delimiters here means `vex usages util` matches
+/// a Lua `require("util")` rather than failing because the stored name
+/// is `"util"` (quotes included).
+///
+/// Handled pairs: `"..."`, `'...'`, `<...>` (C/C++ system includes), and
+/// `[[...]]` (Lua long-bracket strings). Mismatched or empty inputs are
+/// returned unchanged.
+fn strip_import_quotes(name: &str) -> &str {
+    let bytes = name.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if matches!((first, last), (b'"', b'"') | (b'\'', b'\'') | (b'<', b'>')) {
+            return &name[1..name.len() - 1];
+        }
+    }
+    if bytes.len() >= 4 && name.starts_with("[[") && name.ends_with("]]") {
+        return &name[2..name.len() - 2];
+    }
+    name
 }
 
 /// Extract doc comment or docstring from lines immediately above a symbol.

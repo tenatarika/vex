@@ -357,6 +357,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     "sql" => Some(crate::parse::language::Language::Sql),
                     "markdown" | "md" => Some(crate::parse::language::Language::Markdown),
                     "cpp" | "c++" | "cxx" | "c" => Some(crate::parse::language::Language::Cpp),
+                    "php" | "phtml" => Some(crate::parse::language::Language::Php),
+                    "bash" | "sh" | "shell" => Some(crate::parse::language::Language::Bash),
+                    "lua" => Some(crate::parse::language::Language::Lua),
+                    "css" => Some(crate::parse::language::Language::Css),
+                    "html" | "htm" => Some(crate::parse::language::Language::Html),
+                    "yaml" | "yml" => Some(crate::parse::language::Language::Yaml),
+                    "toml" => Some(crate::parse::language::Language::Toml),
                     _ => None,
                 })
                 .with_context(|| format!("unknown language: {lang}"))?;

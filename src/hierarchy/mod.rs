@@ -147,7 +147,23 @@ fn inheritance_query(lang: Language) -> Option<&'static str> {
                 (type_identifier) @base)) @def
             "#,
         ),
-        Language::Go | Language::Ruby | Language::Sql | Language::Markdown => None,
+        // Inheritance/implements queries are not meaningful for these
+        // languages — Go uses structural typing (no explicit base list),
+        // Ruby uses mixins via module include rather than a declared base,
+        // SQL/Markdown/config formats have no class hierarchy at all,
+        // and Bash/Lua are not OO. PHP could be added later (extends/
+        // implements clauses); leaving it as future work.
+        Language::Go
+        | Language::Ruby
+        | Language::Sql
+        | Language::Markdown
+        | Language::Php
+        | Language::Bash
+        | Language::Lua
+        | Language::Css
+        | Language::Html
+        | Language::Yaml
+        | Language::Toml => None,
     }
 }
 

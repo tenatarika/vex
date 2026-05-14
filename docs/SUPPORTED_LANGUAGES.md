@@ -9,7 +9,7 @@ which grammar version each release ships against.
 
 ## Version matrix
 
-Last verified: **2026-05-13** (vex 1.4.x line).
+Last verified: **2026-05-14** (vex 1.4.x line).
 
 | Language | Extensions | Grammar crate | Grammar version | Symbol kinds extracted |
 |---|---|---|---|---|
@@ -25,6 +25,13 @@ Last verified: **2026-05-13** (vex 1.4.x line).
 | C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | `tree-sitter-cpp`     | 0.23 | function, class, struct, enum (incl. enum class), type alias (using/typedef), include |
 | SQL (PostgreSQL flavour) | `.sql`                    | `tree-sitter-sequel`      | 0.3  | table, view, materialized view, schema, type (enum), function, trigger, index, sequence, extension |
 | Markdown   | `.md`, `.markdown`                      | `tree-sitter-md`          | 0.5  | ATX headings (`#` through `######`) |
+| PHP        | `.php`, `.phtml`                        | `tree-sitter-php`         | 0.24 | class, interface, trait, enum, function, method, class constant, `use` import |
+| Bash       | `.sh`, `.bash`                          | `tree-sitter-bash`        | 0.25 | function, `source` / `.` imports |
+| Lua        | `.lua`                                  | `tree-sitter-lua`         | 0.5  | function (top-level, local, `Mod.fn`, `Class:method`), `require` imports |
+| CSS        | `.css`                                  | `tree-sitter-css`         | 0.25 | class selectors, id selectors (as constants), `@keyframes` names, custom properties (`--var`) |
+| HTML       | `.html`, `.htm`                         | `tree-sitter-html`        | 0.23 | `id` attribute values (as constants), custom-element tag names (hyphenated) |
+| YAML       | `.yaml`, `.yml`                         | `tree-sitter-yaml`        | 0.7  | document-root mapping keys (top-level only) |
+| TOML       | `.toml`                                 | `tree-sitter-toml-ng`     | 0.7  | table headers (`[name]`, `[[name]]`), key/value pairs |
 
 Tree-sitter core itself is currently pinned at `0.26`. The grammar version
 column lists the crate's caret range from `Cargo.toml`; the locked patch
@@ -68,17 +75,22 @@ lives in `src/parse/queries.rs::try_get_query` and the aggregation in
 
 1. Add the grammar crate to `Cargo.toml`.
 2. Add a `Language::<Name>` variant in `src/parse/language.rs`, including
-   `from_extension` and `ts_language`.
+   `from_extension`, `ts_language`, and `as_str`.
 3. Add a `<lang>_QUERY` static in `src/parse/queries.rs` and add the match
    arm to `lookup`.
-4. Author `queries/<lang>.scm` with the capture names listed in
+4. Add the new variant to the `inheritance_query` match in
+   `src/hierarchy/mod.rs` (return `None` unless the language has
+   class-hierarchy semantics to support `vex implementations`).
+5. Add the canonical CLI name(s) to the `Commands::Pattern` arm in
+   `src/cli/mod.rs` so `vex pattern --lang <name>` works for spellings
+   that aren't file extensions (e.g. `--lang shell` for Bash).
+6. Author `queries/<lang>.scm` with the capture names listed in
    `src/parse/extractor.rs` (`fn.name`, `class.name`, etc).
-5. Add `tests/<lang>_query_test.rs` covering at minimum: grammar loads on
+7. Add `tests/<lang>_query_test.rs` covering at minimum: grammar loads on
    empty input + one canonical example per symbol kind.
-6. Update this file.
+8. Update this file's version matrix and trim the Roadmap candidates.
 
 ## Roadmap
 
-Phase 4 candidates (none committed yet): PHP, Scala, Haskell, Bash, Lua,
-HTML/CSS, YAML/TOML. File an issue with a use case if you want one
-prioritised.
+Remaining Phase 4 candidates: Scala, Haskell. File an issue with a use
+case if you want one prioritised.
