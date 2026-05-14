@@ -9,29 +9,29 @@ which grammar version each release ships against.
 
 ## Version matrix
 
-Last verified: **2026-05-14** (vex 1.4.x line).
+Last verified: **2026-05-14** (vex 1.4.3).
 
-| Language | Extensions | Grammar crate | Grammar version | Symbol kinds extracted |
-|---|---|---|---|---|
-| Rust       | `.rs`                                   | `tree-sitter-rust`        | 0.24 | function, struct, enum, trait, impl, method, constant |
-| Python     | `.py`                                   | `tree-sitter-python`      | 0.25 | class, function (incl. decorated), import |
-| TypeScript / TSX / JavaScript / JSX | `.ts`, `.tsx`, `.js`, `.jsx` | `tree-sitter-typescript`  | 0.23 | class, interface, enum, function, arrow function (const), type alias, import |
-| Go         | `.go`                                   | `tree-sitter-go`          | 0.25 | function, method, struct, interface, type alias, import |
-| Kotlin     | `.kt`, `.kts`                           | `tree-sitter-kotlin-ng`   | 1.1  | function, class, interface, object, data class, property, import |
-| Java       | `.java`                                 | `tree-sitter-java`        | 0.23 | class, interface, enum, method, constructor, import |
-| C#         | `.cs`                                   | `tree-sitter-c-sharp`     | 0.23 | class, interface, struct, enum, method, property |
-| Ruby       | `.rb`                                   | `tree-sitter-ruby`        | 0.23 | class, module (as class), method, singleton method |
-| Swift      | `.swift`                                | `tree-sitter-swift`       | 0.7  | class, struct, enum, actor (mapped to class), protocol (as interface), function, import |
-| C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | `tree-sitter-cpp`     | 0.23 | function, class, struct, enum (incl. enum class), type alias (using/typedef), include |
-| SQL (PostgreSQL flavour) | `.sql`                    | `tree-sitter-sequel`      | 0.3  | table, view, materialized view, schema, type (enum), function, trigger, index, sequence, extension |
-| Markdown   | `.md`, `.markdown`                      | `tree-sitter-md`          | 0.5  | ATX headings (`#` through `######`) |
-| PHP        | `.php`, `.phtml`                        | `tree-sitter-php`         | 0.24 | class, interface, trait, enum, function, method, class constant, `use` import |
-| Bash       | `.sh`, `.bash`                          | `tree-sitter-bash`        | 0.25 | function, `source` / `.` imports |
-| Lua        | `.lua`                                  | `tree-sitter-lua`         | 0.5  | function (top-level, local, `Mod.fn`, `Class:method`), `require` imports |
-| CSS        | `.css`                                  | `tree-sitter-css`         | 0.25 | class selectors, id selectors (as constants), `@keyframes` names, custom properties (`--var`) |
-| HTML       | `.html`, `.htm`                         | `tree-sitter-html`        | 0.23 | `id` attribute values (as constants), custom-element tag names (hyphenated) |
-| YAML       | `.yaml`, `.yml`                         | `tree-sitter-yaml`        | 0.7  | document-root mapping keys (top-level only) |
-| TOML       | `.toml`                                 | `tree-sitter-toml-ng`     | 0.7  | table headers (`[name]`, `[[name]]`), key/value pairs |
+| Language | Extensions | Grammar crate | Grammar version | Symbol kinds extracted | `implementations` |
+|---|---|---|---|---|---|
+| Rust       | `.rs`                                   | `tree-sitter-rust`        | 0.24 | function, struct, enum, trait, impl, method, constant | ✅ `impl Trait for Type` |
+| Python     | `.py`                                   | `tree-sitter-python`      | 0.25 | class, function (incl. decorated), import | ✅ `class Sub(Base)` |
+| TypeScript / TSX / JavaScript / JSX | `.ts`, `.tsx`, `.js`, `.jsx` | `tree-sitter-typescript`  | 0.23 | class, interface, enum, function, arrow function (const), type alias, import | ✅ `extends` + `implements` |
+| Go         | `.go`                                   | `tree-sitter-go`          | 0.25 | function, method, struct, interface, type alias, import | — (structural typing) |
+| Kotlin     | `.kt`, `.kts`                           | `tree-sitter-kotlin-ng`   | 1.1  | function, class, interface, object, data class, property, import | ✅ delegation specifier |
+| Java       | `.java`                                 | `tree-sitter-java`        | 0.23 | class, interface, enum, method, constructor, import | ✅ `extends` + `implements` |
+| C#         | `.cs`                                   | `tree-sitter-c-sharp`     | 0.23 | class, interface, struct, enum, method, property | ✅ base list |
+| Ruby       | `.rb`                                   | `tree-sitter-ruby`        | 0.23 | class, module (as class), method, singleton method | ✅ `class < Bar` + `include`/`extend`/`prepend` |
+| Swift      | `.swift`                                | `tree-sitter-swift`       | 0.7  | class, struct, enum, actor (mapped to class), protocol (as interface), function, import | ✅ inheritance specifier |
+| C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | `tree-sitter-cpp`     | 0.23 | function, class, struct, enum (incl. enum class), type alias (using/typedef), include | ✅ base class clause |
+| SQL (PostgreSQL flavour) | `.sql`                    | `tree-sitter-sequel`      | 0.3  | table, view, materialized view, schema, type (enum), function, trigger, index, sequence, extension | — (no hierarchy) |
+| Markdown   | `.md`, `.markdown`                      | `tree-sitter-md`          | 0.5  | ATX headings (`#` through `######`) | — |
+| PHP        | `.php`, `.phtml`                        | `tree-sitter-php`         | 0.24 | class, interface, trait, enum, function, method, class constant, `use` import | ✅ `extends` + `implements` (incl. enum 8.1+) + trait `use` |
+| Bash       | `.sh`, `.bash`                          | `tree-sitter-bash`        | 0.25 | function, `source` / `.` imports | — (not OO) |
+| Lua        | `.lua`                                  | `tree-sitter-lua`         | 0.5  | function (top-level, local, `Mod.fn`, `Class:method`), `require` imports | — (not OO) |
+| CSS        | `.css`                                  | `tree-sitter-css`         | 0.25 | class selectors, id selectors (as constants), `@keyframes` names, custom properties (`--var`) | — |
+| HTML       | `.html`, `.htm`                         | `tree-sitter-html`        | 0.23 | `id` attribute values (as constants), custom-element tag names (hyphenated) | — |
+| YAML       | `.yaml`, `.yml`                         | `tree-sitter-yaml`        | 0.7  | document-root mapping keys (top-level only) | — |
+| TOML       | `.toml`                                 | `tree-sitter-toml-ng`     | 0.7  | table headers (`[name]`, `[[name]]`), key/value pairs | — |
 
 Tree-sitter core itself is currently pinned at `0.26`. The grammar version
 column lists the crate's caret range from `Cargo.toml`; the locked patch

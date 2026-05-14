@@ -3,8 +3,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/tenatarika/vex/actions/workflows/ci.yml/badge.svg)](https://github.com/tenatarika/vex/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
-[![Commands](https://img.shields.io/badge/commands-16-blue.svg)]()
-[![Languages](https://img.shields.io/badge/languages-12-blueviolet.svg)]()
+[![Commands](https://img.shields.io/badge/commands-17-blue.svg)]()
+[![Languages](https://img.shields.io/badge/languages-19-blueviolet.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
@@ -41,7 +41,7 @@ $ vex check "Foo" "Bar" "Baz"             # fast existence check
 | **Index size** | **5 MB** / 20K syms | no index | 190 MB / 20K syms | no index | no index |
 | **Token efficiency** | **6-88x** fewer than rg | baseline | ~3x fewer than rg | N/A | N/A |
 | **Symbol body extraction** | `vex show` | -- | -- | -- | -- |
-| **Languages** | 12 | any | 10+ | 10+ | 40+ (LSP) |
+| **Languages** | 19 | any | 10+ | 10+ | 40+ (LSP) |
 | **Refactoring** | -- | -- | -- | -- | rename, move, inline |
 | **Runtime deps** | none | none | none | none | Python + LSP |
 
@@ -480,7 +480,7 @@ All commands support `--filter "path/"` to narrow results to a directory.
 ### Unit & Integration Tests
 
 ```bash
-cargo test                    # 451 tests — unit, integration, property-based, adversarial
+cargo test                    # 541 tests — unit, integration, property-based, adversarial
 cargo clippy -- -D warnings   # zero warnings policy
 ```
 
