@@ -384,7 +384,7 @@ fn extract_body_tokens(def_node: tree_sitter::Node, content: &str) -> Option<Str
 pub fn extract_references(content: &str) -> Vec<ParsedRef> {
     let mut refs = Vec::new();
     for (line_num, line) in content.lines().enumerate() {
-        for cap in regex_lite_camel_case(line) {
+        for cap in scan_identifiers(line) {
             refs.push(ParsedRef {
                 name: cap.to_string(),
                 line: line_num + 1,
@@ -395,21 +395,34 @@ pub fn extract_references(content: &str) -> Vec<ParsedRef> {
     refs
 }
 
-/// Simple CamelCase identifier extractor (no regex crate dependency).
-fn regex_lite_camel_case(line: &str) -> Vec<&str> {
+/// Scan a single line for identifier tokens that look like deliberate
+/// symbol names rather than incidental words.
+///
+/// Accepts: PascalCase (`PaymentGateway`), camelCase (`processOrder`),
+/// snake_case (`process_order`), and SCREAMING_SNAKE_CASE (`MAX_RETRIES`).
+///
+/// Rejects: plain lowercase words (`total`, `amount` — too noisy across
+/// natural language and trivial locals), single-letter and very short
+/// identifiers (length < 3), and language keywords (see [`is_keyword`]).
+///
+/// The shape filter — "contains `_` OR has mixed case" — is what keeps
+/// the refs FST from exploding on prose-heavy comments while still
+/// catching every Python/Rust/Go function name the user might want
+/// `vex usages` to find.
+fn scan_identifiers(line: &str) -> Vec<&str> {
     let mut results = Vec::new();
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i].is_ascii_uppercase() {
+        let b = bytes[i];
+        if b.is_ascii_alphabetic() || b == b'_' {
             let start = i;
             i += 1;
             while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                 i += 1;
             }
             let word = &line[start..i];
-            // Must have at least one lowercase letter (not ALL_CAPS constant)
-            if word.len() > 1 && word.bytes().any(|b| b.is_ascii_lowercase()) {
+            if is_meaningful_identifier(word) {
                 results.push(word);
             }
         } else {
@@ -417,6 +430,30 @@ fn regex_lite_camel_case(line: &str) -> Vec<&str> {
         }
     }
     results
+}
+
+/// Decide whether an identifier token is worth indexing as a ref.
+///
+/// Filters tuned to balance recall (catch real symbol uses across all
+/// supported case conventions) against FST bloat (skip prose nouns and
+/// trivial locals).
+fn is_meaningful_identifier(word: &str) -> bool {
+    if word.len() < 3 || word.bytes().all(|b| b == b'_') {
+        return false;
+    }
+    if is_keyword(word) {
+        return false;
+    }
+
+    let has_underscore = word.contains('_');
+    let has_upper = word.bytes().any(|b| b.is_ascii_uppercase());
+    let has_lower = word.bytes().any(|b| b.is_ascii_lowercase());
+
+    // Accept any identifier with structural shape: either it carries a
+    // case boundary (mixed case) or an explicit word separator (`_`).
+    // Pure lowercase words like `total` or `amount` are skipped — they
+    // dominate prose and trivial locals and would drown out real refs.
+    has_underscore || (has_upper && has_lower)
 }
 
 #[cfg(test)]
@@ -744,5 +781,90 @@ mod tests {
         let syms = symbols(src, Language::Rust);
         assert_eq!(syms.len(), 1);
         assert!(syms[0].doc.is_none());
+    }
+
+    // --- Identifier scanner case-style coverage ---
+
+    fn scan(line: &str) -> Vec<String> {
+        scan_identifiers(line)
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn scan_pascal_case() {
+        assert_eq!(
+            scan("let g = PaymentGateway::new();"),
+            vec!["PaymentGateway"]
+        );
+    }
+
+    #[test]
+    fn scan_camel_case() {
+        assert_eq!(scan("await processOrder(total);"), vec!["processOrder"]);
+    }
+
+    #[test]
+    fn scan_snake_case() {
+        assert_eq!(
+            scan("return process_order(gateway, total)"),
+            vec!["process_order"]
+        );
+    }
+
+    #[test]
+    fn scan_screaming_snake_case() {
+        assert_eq!(scan("retries < MAX_RETRY_COUNT"), vec!["MAX_RETRY_COUNT"]);
+    }
+
+    #[test]
+    fn scan_skips_plain_lowercase_words() {
+        // Prose nouns and trivial locals would drown the refs FST in noise.
+        let captured = scan("the total amount equals the charge value");
+        assert!(captured.is_empty(), "captured noise: {captured:?}");
+    }
+
+    #[test]
+    fn scan_skips_short_identifiers() {
+        // Two-char identifiers (i, x, fn-locals like `id`, `ok`) are
+        // almost always noise; the threshold is len >= 3.
+        assert!(scan("if (i < n) { id = ok; }").is_empty());
+    }
+
+    #[test]
+    fn scan_skips_underscore_only() {
+        // `_`, `__`, `___` are placeholder/ignore tokens.
+        assert!(scan("let _ = foo();").is_empty());
+        assert!(scan("let __ = foo();").is_empty());
+    }
+
+    #[test]
+    fn scan_skips_keywords() {
+        // `return`, `class`, `function` are in is_keyword.
+        let captured = scan("return class function override");
+        assert!(captured.is_empty(), "leaked keyword: {captured:?}");
+    }
+
+    #[test]
+    fn scan_mixed_line() {
+        let line = "PaymentGateway gateway = new StripeGateway(api_key);";
+        let captured = scan(line);
+        // Should pick up the structurally-shaped identifiers and drop
+        // bare lowercase ones (`gateway`) and the 7-char keyword `new`.
+        assert!(captured.contains(&"PaymentGateway".to_string()));
+        assert!(captured.contains(&"StripeGateway".to_string()));
+        assert!(captured.contains(&"api_key".to_string()));
+        assert!(!captured.iter().any(|n| n == "gateway"));
+    }
+
+    #[test]
+    fn scan_python_snake_call() {
+        let captured = scan("result = calculate_total_price(items, tax_rate)");
+        assert!(captured.contains(&"calculate_total_price".to_string()));
+        assert!(captured.contains(&"tax_rate".to_string()));
+        // `result` and `items` are bare lowercase and should be skipped.
+        assert!(!captured.iter().any(|n| n == "result"));
+        assert!(!captured.iter().any(|n| n == "items"));
     }
 }

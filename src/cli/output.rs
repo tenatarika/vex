@@ -53,6 +53,7 @@ fn compact_kind(kind: &str) -> char {
         "constant" => 'K',
         "property" => 'P',
         "package" => 'G',
+        "heading" => 'H',
         _ => '?',
     }
 }
