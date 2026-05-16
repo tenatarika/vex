@@ -18,6 +18,13 @@ pub struct Manifest {
     /// Unix timestamp (seconds since epoch) when the index was written
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indexed_at: Option<u64>,
+
+    /// Stable identifier of the embedder used to build the semantic index
+    /// (e.g. `"minilm-l6-v2"`). `None` when the index has no embeddings, or
+    /// for pre-9.1 manifests that did not record this field — readers
+    /// interpret `None` as the default embedder for back-compat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedder_id: Option<String>,
 }
 
 impl Manifest {

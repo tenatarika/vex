@@ -7,7 +7,6 @@ use anyhow::{bail, Context, Result};
 use args::{Cli, Commands, OutputFormat};
 use clap::CommandFactory;
 
-use crate::embed::Embedder;
 use crate::index::pipeline;
 use crate::search::{fusion, semantic, structural};
 use crate::store::reader::IndexReader;
@@ -32,7 +31,9 @@ fn extract_path_hint(cmd: &Commands) -> Option<std::path::PathBuf> {
         | Commands::Callers { path, .. }
         | Commands::Callees { path, .. }
         | Commands::Check { path, .. }
-        | Commands::Pattern { path, .. } => path.clone(),
+        | Commands::Pattern { path, .. }
+        | Commands::Similar { path, .. }
+        | Commands::Duplicates { path, .. } => path.clone(),
         _ => None,
     }
 }
@@ -46,6 +47,19 @@ fn resolve_semantic(cli_semantic: bool, cli_no_semantic: bool, cfg: &config::Vex
     } else {
         cfg.semantic.unwrap_or(false)
     }
+}
+
+/// Resolve embedder id: CLI flag wins, else .vex.toml, else DEFAULT.
+fn resolve_embedder(cli_embedder: Option<&str>, cfg: &config::VexConfig) -> String {
+    crate::embed::resolve_embedder(cli_embedder, cfg.embedder.as_deref())
+}
+
+/// Verify that the embedder requested for semantic search matches the one
+/// recorded in the manifest at `root`. Pre-9.1 manifests without
+/// `embedder_id` are treated as the default embedder for back-compat.
+fn check_embedder_match(root: &std::path::Path, requested: &str) -> Result<()> {
+    let manifest = crate::index::manifest::Manifest::load(&config::manifest_path(root))?;
+    crate::embed::check_embedder_match(manifest.embedder_id.as_deref(), requested)
 }
 
 /// Resolve output format: CLI flag wins, else config, else Text.
@@ -94,8 +108,37 @@ fn handle_staleness(
         crate::index::staleness::Freshness::Stale { changed_count } => {
             if should_auto {
                 let semantic = cfg.semantic.unwrap_or(false);
+                let embedder_id = resolve_embedder(None, cfg);
+
+                // Refuse to silently switch embedders during auto-update —
+                // the user would not see the model change and the new index
+                // would produce silently-wrong results for previously cached
+                // queries. Force them to run `vex index --semantic` so the
+                // intent is explicit.
+                if semantic {
+                    if let Some(stored) = manifest.embedder_id.as_deref() {
+                        if stored != embedder_id {
+                            bail!(
+                                "auto-update would switch embedder from `{stored}` (manifest) \
+                                 to `{embedder_id}` (current config). Refusing — run \
+                                 `vex index --semantic --embedder {embedder_id}` explicitly."
+                            );
+                        }
+                    } else if embedder_id != crate::embed::DEFAULT_EMBEDDER {
+                        // Manifest lost or pre-9.1 with no recorded embedder.
+                        // We assume default for back-compat (see
+                        // check_embedder_match), but config asks for non-default.
+                        eprintln!(
+                            "Warning: manifest has no recorded embedder; auto-update will \
+                             rebuild with `{embedder_id}`. If the existing index was built \
+                             with a different model the new search results will diverge."
+                        );
+                    }
+                }
+
                 eprintln!("Index stale, auto-updating...");
-                let (total, changed, deleted) = pipeline::update(root, semantic, &cfg.exclude)?;
+                let (total, changed, deleted) =
+                    pipeline::update(root, semantic, &embedder_id, &cfg.exclude)?;
                 if changed > 0 || deleted > 0 {
                     eprintln!(
                         "Updated: {changed} changed, {deleted} deleted, {total} total symbols"
@@ -137,11 +180,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             path,
             semantic,
             no_semantic,
+            embedder,
         } => {
             let root = resolve_root(path)?;
             let start = Instant::now();
             let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
-            let count = pipeline::run(&root, with_semantic, excludes)?;
+            let embedder_id = resolve_embedder(embedder.as_deref(), &cfg);
+            let count = pipeline::run(&root, with_semantic, &embedder_id, excludes)?;
             let elapsed = start.elapsed();
             let index_path = config::index_path(&root.canonicalize()?);
 
@@ -175,6 +220,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             context_path,
             auto_update,
             no_stale_check,
+            no_bm25,
         } => {
             let semantic = resolve_semantic(semantic, no_semantic, &cfg);
             let root = resolve_root(None)?.canonicalize()?;
@@ -200,22 +246,55 @@ pub fn dispatch(cli: Cli) -> Result<()> {
 
             let structural_results = structural::search_with_fuzzy(&reader, &query, fetch_limit);
 
+            // BM25 channel: auto-on when the index has BM25 data, opt-out
+            // with `--no-bm25`. Returns empty for short queries or when no
+            // term hits — safe to always run.
+            let bm25_results = if !no_bm25 && reader.has_bm25() {
+                crate::search::bm25::search(&reader, &query, fetch_limit)
+            } else {
+                Vec::new()
+            };
+
             let results = if semantic && reader.has_vectors() {
-                let mut embedder = Embedder::new().context("load embedding model")?;
+                let embedder_id = resolve_embedder(None, &cfg);
+                // Warn (but don't fail) when the manifest doesn't record an
+                // embedder — typically a pre-9.1 index or a deleted manifest.
+                // We fall back to assuming DEFAULT_EMBEDDER; if the user
+                // configured something else they'll see the warning and can
+                // rebuild explicitly.
+                let manifest =
+                    crate::index::manifest::Manifest::load(&config::manifest_path(&root))?;
+                if manifest.embedder_id.is_none() && embedder_id != crate::embed::DEFAULT_EMBEDDER {
+                    eprintln!(
+                        "Warning: index manifest has no recorded embedder; assuming \
+                         `{}`. If the index was built with `{embedder_id}` the results \
+                         may be off — rebuild with `vex index --semantic --embedder {embedder_id}` \
+                         to make it explicit.",
+                        crate::embed::DEFAULT_EMBEDDER
+                    );
+                }
+                check_embedder_match(&root, &embedder_id)?;
+                let mut embedder =
+                    crate::embed::make_embedder(&embedder_id).context("load embedding model")?;
                 let hnsw_path = config::hnsw_path(&root);
                 let semantic_results = semantic::search_with_embedder(
                     &reader,
-                    &mut embedder,
+                    embedder.as_mut(),
                     &query,
                     fetch_limit,
                     &hnsw_path,
                 )?;
-                fusion::fuse(structural_results, semantic_results, limit)
+                fusion::fuse3(structural_results, bm25_results, semantic_results, limit)
             } else {
                 if semantic && !reader.has_vectors() {
                     eprintln!("Warning: no embeddings in index. Run `vex index --semantic` first.");
                 }
-                structural_results
+                if bm25_results.is_empty() {
+                    structural_results
+                } else {
+                    // 2-channel fusion when semantic is off but BM25 is available.
+                    fusion::fuse_many(vec![structural_results, bm25_results], limit)
+                }
             };
 
             let rerank_ctx = crate::search::rerank::RerankContext {
@@ -417,11 +496,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             path,
             semantic,
             no_semantic,
+            embedder,
         } => {
             let root = resolve_root(path)?;
             let start = Instant::now();
             let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
-            let (total, changed, deleted) = pipeline::update(&root, with_semantic, excludes)?;
+            let embedder_id = resolve_embedder(embedder.as_deref(), &cfg);
+            let (total, changed, deleted) =
+                pipeline::update(&root, with_semantic, &embedder_id, excludes)?;
             let elapsed = start.elapsed();
 
             match &format {
@@ -449,10 +531,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             path,
             semantic,
             no_semantic,
+            embedder,
         } => {
             let root = resolve_root(path)?;
             let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
-            crate::watch::handler::watch(&root, with_semantic, excludes)?;
+            let embedder_id = resolve_embedder(embedder.as_deref(), &cfg);
+            crate::watch::handler::watch(&root, with_semantic, &embedder_id, excludes)?;
             Ok(())
         }
         Commands::Show {
@@ -622,6 +706,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         "size_bytes": meta.len(),
                         "symbols": reader.symbol_count(),
                         "embeddings": reader.has_vectors(),
+                        "call_graph": reader.has_call_graph(),
+                        "bm25": reader.has_bm25(),
                     });
                     println!("{}", serde_json::to_string_pretty(&json)?);
                 }
@@ -633,6 +719,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     println!(
                         "Embeddings: {}",
                         if reader.has_vectors() { "yes" } else { "no" }
+                    );
+                    println!(
+                        "Call graph: {}",
+                        if reader.has_call_graph() { "yes" } else { "no" }
+                    );
+                    println!(
+                        "BM25:       {}",
+                        if reader.has_bm25() { "yes" } else { "no" }
                     );
                 }
             }
@@ -802,6 +896,114 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
 
+        Commands::Similar {
+            name,
+            path,
+            limit,
+            threshold,
+            filter_path,
+            auto_update,
+            no_stale_check,
+        } => {
+            let root = resolve_root(path)?.canonicalize()?;
+            let index_path = config::index_path(&root);
+
+            if !index_path.exists() {
+                bail!(
+                    "No index found. Run `vex index --semantic` first.\nExpected: {}",
+                    index_path.display()
+                );
+            }
+
+            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
+
+            let reader = IndexReader::open(&index_path).context("open index")?;
+            if !reader.has_vectors() {
+                bail!("No embeddings in index. Run `vex index --semantic` first.");
+            }
+
+            let hnsw = config::hnsw_path(&root);
+            let fetch_limit = if filter_path.is_some() {
+                reader.symbol_count()
+            } else {
+                limit
+            };
+            let matches = crate::search::similar::find_similar(
+                &reader,
+                &hnsw,
+                &name,
+                fetch_limit,
+                threshold,
+            )?;
+            let matches: Vec<_> = match filter_path.as_deref() {
+                Some(fp) => matches
+                    .into_iter()
+                    .filter(|m| m.path.contains(fp))
+                    .collect(),
+                None => matches,
+            };
+            let matches: Vec<_> = matches.into_iter().take(limit).collect();
+
+            output::print_similar(&matches, &name, &format);
+            Ok(())
+        }
+        Commands::Duplicates {
+            path,
+            threshold,
+            limit,
+            min_body_lines,
+            filter_path,
+            auto_update,
+            no_stale_check,
+        } => {
+            let root = resolve_root(path)?.canonicalize()?;
+            let index_path = config::index_path(&root);
+
+            if !index_path.exists() {
+                bail!(
+                    "No index found. Run `vex index --semantic` first.\nExpected: {}",
+                    index_path.display()
+                );
+            }
+
+            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
+
+            let reader = IndexReader::open(&index_path).context("open index")?;
+            if !reader.has_vectors() {
+                bail!("No embeddings in index. Run `vex index --semantic` first.");
+            }
+
+            let hnsw = config::hnsw_path(&root);
+            // When --filter is active we must over-fetch because the final
+            // `take(limit)` runs AFTER the path filter; a narrow filter can
+            // drop most pairs. Bound by total pair population
+            // `C(symbol_count, 2)` capped at usize::MAX. Mirrors how
+            // `vex similar --filter` uses `symbol_count()` as the ceiling.
+            let fetch_limit = if filter_path.is_some() {
+                usize::MAX
+            } else {
+                limit
+            };
+            let pairs = crate::search::similar::find_duplicates(
+                &reader,
+                &hnsw,
+                threshold,
+                min_body_lines,
+                fetch_limit,
+            )?;
+            let pairs: Vec<_> = match filter_path.as_deref() {
+                Some(fp) => pairs
+                    .into_iter()
+                    .filter(|(a, b)| a.path.contains(fp) || b.path.contains(fp))
+                    .collect(),
+                None => pairs,
+            };
+            let pairs: Vec<_> = pairs.into_iter().take(limit).collect();
+
+            output::print_duplicates(&pairs, &format);
+            Ok(())
+        }
+
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();
             let name = cmd.get_name().to_owned();
@@ -835,10 +1037,44 @@ fn cmd_callgraph(
     let root = resolve_root(path)?;
     let label = if is_callers { "callers" } else { "callees" };
     let start = std::time::Instant::now();
-    let matches = if is_callers {
-        crate::callgraph::find_callers(&root, name, limit, excludes)?
-    } else {
-        crate::callgraph::find_callees(&root, name, limit, excludes)?
+
+    // Fast path: if a v4 index with a call graph exists for this project,
+    // use the persistent FST (~4ms). Otherwise fall back to the live-scan
+    // implementation that walks files with tree-sitter (~seconds).
+    let canonical_root = root.canonicalize().ok();
+    let index_path = canonical_root.as_ref().map(|r| config::index_path(r));
+    let reader = match index_path.as_ref().filter(|p| p.exists()) {
+        Some(p) => match crate::store::reader::IndexReader::open(p) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                // Surface the reason for falling back so a corrupt/locked
+                // index doesn't masquerade as "no index found".
+                tracing::warn!(
+                    path = %p.display(),
+                    error = %e,
+                    "index exists but failed to open — falling back to live callgraph scan"
+                );
+                None
+            }
+        },
+        None => None,
+    };
+
+    let matches = match reader.as_ref() {
+        Some(r) if r.has_call_graph() => {
+            if is_callers {
+                crate::store::call_graph::find_callers_fast(r, name, limit)
+            } else {
+                crate::store::call_graph::find_callees_fast(r, name, limit)
+            }
+        }
+        _ => {
+            if is_callers {
+                crate::callgraph::find_callers(&root, name, limit, excludes)?
+            } else {
+                crate::callgraph::find_callees(&root, name, limit, excludes)?
+            }
+        }
     };
     let elapsed = start.elapsed();
 

@@ -289,6 +289,43 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
             }
             Ok(("check".into(), names))
         }
+        "similar" => {
+            let name = args["name"].as_str().context("missing name")?;
+            let limit = args["limit"].as_u64().unwrap_or(10);
+            let threshold = args["threshold"].as_f64().unwrap_or(0.5);
+            let mut extra = vec![
+                name.to_string(),
+                "--path".into(),
+                project_root.to_string(),
+                "--limit".into(),
+                limit.to_string(),
+                "--threshold".into(),
+                threshold.to_string(),
+            ];
+            if let Some(filter) = args["filter"].as_str() {
+                extra.extend(["--filter".into(), filter.to_string()]);
+            }
+            Ok(("similar".into(), extra))
+        }
+        "duplicates" => {
+            let threshold = args["threshold"].as_f64().unwrap_or(0.9);
+            let limit = args["limit"].as_u64().unwrap_or(50);
+            let min_body_lines = args["min_body_lines"].as_u64().unwrap_or(5);
+            let mut extra = vec![
+                "--path".into(),
+                project_root.to_string(),
+                "--threshold".into(),
+                threshold.to_string(),
+                "--limit".into(),
+                limit.to_string(),
+                "--min-body-lines".into(),
+                min_body_lines.to_string(),
+            ];
+            if let Some(filter) = args["filter"].as_str() {
+                extra.extend(["--filter".into(), filter.to_string()]);
+            }
+            Ok(("duplicates".into(), extra))
+        }
         _ => anyhow::bail!("unknown tool: {tool}"),
     }
 }
@@ -468,6 +505,35 @@ fn tool_descriptors() -> Value {
                     "project_root": { "type": "string", "description": "Project root path" }
                 },
                 "required": ["names"]
+            }
+        },
+        {
+            "name": "similar",
+            "description": "Find symbols semantically similar to an EXISTING symbol (resolves the symbol's stored embedding, returns nearest neighbors). Different from find_similar, which queries by free-form description. Requires `vex index --semantic`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Existing symbol name to find similar to" },
+                    "limit": { "type": "integer", "description": "Max results", "default": 10 },
+                    "threshold": { "type": "number", "description": "Minimum cosine similarity (0.0..1.0)", "default": 0.5 },
+                    "filter": { "type": "string", "description": "Filter results by path substring" },
+                    "project_root": { "type": "string", "description": "Project root path" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "duplicates",
+            "description": "Find pairs of near-duplicate symbols by embedding similarity. Useful for refactoring and dedup. Requires `vex index --semantic`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "threshold": { "type": "number", "description": "Minimum cosine similarity (0.0..1.0)", "default": 0.9 },
+                    "limit": { "type": "integer", "description": "Max pairs to return", "default": 50 },
+                    "min_body_lines": { "type": "integer", "description": "Skip symbols with body shorter than this many lines", "default": 5 },
+                    "filter": { "type": "string", "description": "Restrict to pairs where at least one symbol's path contains this substring" },
+                    "project_root": { "type": "string", "description": "Project root path" }
+                }
             }
         }
     ])

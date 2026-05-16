@@ -1,7 +1,9 @@
 pub mod bloom;
+pub mod bm25;
 pub mod fusion;
 pub mod rerank;
 pub mod semantic;
+pub mod similar;
 pub mod structural;
 
 use serde::{Deserialize, Serialize};
@@ -24,4 +26,5 @@ pub enum MatchType {
     Semantic,
     Hybrid,
     Fuzzy,
+    Bm25,
 }

@@ -236,6 +236,21 @@ mod tests {
     }
 }
 
+/// Raw call edge extracted from source, prior to caller-name resolution.
+///
+/// `caller_fn_name` + `caller_fn_line` identify the enclosing function
+/// definition — both fields are needed because a file may contain two
+/// functions with the same name (e.g. overloaded methods, duplicate impl
+/// blocks). The pair `(path, name, line)` uniquely identifies a symbol.
+/// Resolution to `caller_sym_idx` happens during writer assembly.
+#[derive(Debug, Clone)]
+pub struct RawCallEdge {
+    pub caller_fn_name: String,
+    pub caller_fn_line: usize,
+    pub callee_name: String,
+    pub line: usize,
+}
+
 /// Result of parsing a single file.
 #[derive(Debug, Clone)]
 pub struct ParsedFile {
@@ -243,4 +258,8 @@ pub struct ParsedFile {
     pub symbols: Vec<ParsedSymbol>,
     #[allow(dead_code)] // TODO: wire refs into search for usages/callers
     pub refs: Vec<ParsedRef>,
+    /// Caller → callee edges extracted at parse time. Empty for languages
+    /// without a call-graph tree-sitter query, and for incremental
+    /// reconstruction paths that skip the call-edge extraction step.
+    pub call_edges: Vec<RawCallEdge>,
 }

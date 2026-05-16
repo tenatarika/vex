@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use crate::embed;
 use crate::index::hasher;
 use crate::index::manifest::{self, Manifest};
-use crate::index::symbols::{ParsedFile, ParsedSymbol, SymbolKind};
+use crate::index::symbols::{ParsedFile, ParsedSymbol, RawCallEdge, SymbolKind};
 use crate::parse;
 use crate::parse::language::Language;
 use crate::store;
@@ -20,7 +20,12 @@ const CHUNK_SIZE: usize = 500;
 const EMBED_BATCH_SIZE: usize = 256;
 
 /// Full rebuild: index all files from scratch.
-pub fn run(root: &Path, with_embeddings: bool, excludes: &[String]) -> Result<usize> {
+pub fn run(
+    root: &Path,
+    with_embeddings: bool,
+    embedder_id: &str,
+    excludes: &[String],
+) -> Result<usize> {
     let root = root.canonicalize().context("canonicalize root")?;
     let files = discover_files(&root, excludes)?;
     tracing::info!(count = files.len(), "discovered files");
@@ -31,12 +36,25 @@ pub fn run(root: &Path, with_embeddings: bool, excludes: &[String]) -> Result<us
     let symbol_count: usize = all_parsed.iter().map(|f| f.symbols.len()).sum();
 
     let vectors = if with_embeddings && symbol_count > 0 {
-        generate_embeddings(&all_parsed)?
+        generate_embeddings(&all_parsed, embedder_id)?
     } else {
         Vec::new()
     };
 
-    write_output(&root, &all_parsed, &vectors, &file_hashes)?;
+    let manifest_embedder = if with_embeddings && !vectors.is_empty() {
+        Some(embedder_id.to_string())
+    } else {
+        None
+    };
+    let vector_dim = vector_dim_for(embedder_id, &vectors);
+    write_output(
+        &root,
+        &all_parsed,
+        &vectors,
+        vector_dim,
+        &file_hashes,
+        manifest_embedder,
+    )?;
 
     if !vectors.is_empty() {
         build_hnsw(&root, &vectors)?;
@@ -61,6 +79,7 @@ pub fn run(root: &Path, with_embeddings: bool, excludes: &[String]) -> Result<us
 pub fn update(
     root: &Path,
     with_embeddings: bool,
+    embedder_id: &str,
     excludes: &[String],
 ) -> Result<(usize, usize, usize)> {
     let root = root.canonicalize().context("canonicalize root")?;
@@ -129,7 +148,7 @@ pub fn update(
 
     // Generate embeddings only for new/changed symbols
     let new_vectors = if with_embeddings && new_sym_count > 0 {
-        generate_embeddings(&newly_parsed)?
+        generate_embeddings(&newly_parsed, embedder_id)?
     } else {
         Vec::new()
     };
@@ -142,7 +161,20 @@ pub fn update(
     let mut all_vectors = unchanged_vectors;
     all_vectors.extend(new_vectors);
 
-    write_output(&root, &all_parsed, &all_vectors, &file_hashes)?;
+    let manifest_embedder = if with_embeddings && !all_vectors.is_empty() {
+        Some(embedder_id.to_string())
+    } else {
+        None
+    };
+    let vector_dim = vector_dim_for(embedder_id, &all_vectors);
+    write_output(
+        &root,
+        &all_parsed,
+        &all_vectors,
+        vector_dim,
+        &file_hashes,
+        manifest_embedder,
+    )?;
 
     if !all_vectors.is_empty() {
         build_hnsw(&root, &all_vectors)?;
@@ -165,12 +197,27 @@ pub fn update(
 
 /// Reconstruct ParsedFile + vectors for unchanged files from the existing index.
 /// Symbols are in index order (file-contiguous), vectors align 1:1 with symbols.
-/// Refs are not recoverable per-file from the FST and are set to empty.
+///
+/// **Known limitation**: `body_tokens` is set to `None` because the on-disk
+/// SymbolRecord does not preserve them — we only stored vectors, names,
+/// signatures, kinds, lines, paths. Consequently the next BM25 rebuild for
+/// these unchanged symbols has only `name + signature` to draw from, which
+/// degrades recall on rare body terms after an incremental update relative
+/// to a fresh `vex index`. Emitting a one-shot `tracing::warn!` below so a
+/// user running `RUST_LOG=warn vex update` can see the regression.
+/// Persisting body_tokens to the index → roadmap follow-up.
 fn reconstruct_unchanged(
     reader: &crate::store::reader::IndexReader,
     changed: &HashSet<&str>,
     deleted: &HashSet<&str>,
 ) -> (Vec<ParsedFile>, Vec<Vec<f32>>) {
+    if reader.has_bm25() && (!changed.is_empty() || !deleted.is_empty()) {
+        tracing::warn!(
+            "incremental update is reconstructing unchanged symbols without body_tokens; \
+             BM25 recall for those symbols will rely on name+signature only until next full \
+             `vex index`. Tracking as a roadmap follow-up to persist body_tokens."
+        );
+    }
     let has_vectors = reader.has_vectors();
     let mut vectors: Vec<Vec<f32>> = Vec::new();
     let mut parsed_files: Vec<ParsedFile> = Vec::new();
@@ -195,6 +242,7 @@ fn reconstruct_unchanged(
                 path: std::mem::take(&mut current_path),
                 symbols: std::mem::take(&mut current_symbols),
                 refs: Vec::new(),
+                call_edges: Vec::new(),
             });
         }
         current_path = path;
@@ -232,7 +280,43 @@ fn reconstruct_unchanged(
             path: current_path,
             symbols: current_symbols,
             refs: Vec::new(),
+            call_edges: Vec::new(),
         });
+    }
+
+    // Reconstruct call edges for unchanged files from the existing index.
+    // We re-derive RawCallEdge { caller_fn_name, callee_name, line } from
+    // each edge by looking up the caller's symbol and callee string. Edges
+    // whose caller belongs to a changed/deleted file are dropped — those
+    // files are re-parsed and will produce fresh edges.
+    if reader.has_call_graph() {
+        let mut edges_by_file: HashMap<String, Vec<RawCallEdge>> = HashMap::new();
+        for j in 0..reader.call_edge_count() {
+            let Some(edge) = reader.call_edge(j) else {
+                continue;
+            };
+            let Some(caller_rec) = reader.symbol(edge.caller_sym_idx as usize) else {
+                continue;
+            };
+            let caller_path = reader.read_string(caller_rec.file_offset).to_string();
+            if changed.contains(caller_path.as_str()) || deleted.contains(caller_path.as_str()) {
+                continue;
+            }
+            let caller_name = reader.read_string(caller_rec.name_offset).to_string();
+            let callee_name = reader.read_string(edge.callee_name_offset).to_string();
+            edges_by_file
+                .entry(caller_path)
+                .or_default()
+                .push(RawCallEdge {
+                    caller_fn_name: caller_name,
+                    caller_fn_line: caller_rec.line as usize,
+                    callee_name,
+                    line: edge.line as usize,
+                });
+        }
+        for pf in &mut parsed_files {
+            pf.call_edges = edges_by_file.remove(&pf.path).unwrap_or_default();
+        }
     }
 
     (parsed_files, vectors)
@@ -349,35 +433,118 @@ fn read_capped(path: &Path) -> Option<String> {
     Some(buf)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn grammar_failure_summary_includes_language_count_and_reason() {
-        // Pin the structured fields the user-visible warning emits, so a future
-        // refactor cannot silently drop the count or error string without test
-        // fail. We cannot easily hit the path end-to-end (every grammar
-        // currently loads), so this test mirrors the format the warning
-        // produces and locks the contract.
-        let mut failures: HashMap<Language, (String, usize)> = HashMap::new();
-        failures.insert(Language::CSharp, ("ABI mismatch v15".to_string(), 42));
-
-        let mut rendered = String::new();
-        for (lang, (err, count)) in &failures {
-            rendered = format!("language={lang:?} skipped={count} error={err}");
-        }
-        assert!(rendered.contains("CSharp"), "{rendered}");
-        assert!(rendered.contains("42"), "{rendered}");
-        assert!(rendered.contains("ABI mismatch v15"), "{rendered}");
+/// Pick the `vector_dim` to record in the Header.
+///
+/// Priority: actual length of the first vector → registry lookup by id →
+/// default MiniLM dim. The first wins so non-embedded indexes still record a
+/// sensible legacy default.
+fn vector_dim_for(embedder_id: &str, vectors: &[Vec<f32>]) -> u32 {
+    if let Some(first) = vectors.first() {
+        return first.len() as u32;
     }
+    embed::embedder_dim(embedder_id).unwrap_or(embed::MINILM_DIM)
+}
+
+/// Build the BM25 index from per-symbol term bags.
+///
+/// Each symbol becomes a document whose terms are drawn from:
+/// - `name` (split on non-alnum, lowercased)
+/// - `signature` (same split)
+/// - `body_tokens` (already extracted, space-separated)
+/// - `doc` (docstring; same split)
+///
+/// Returns `(fst_bytes, postings_bytes, stats_bytes)`. The triple is empty
+/// when there are no documents (no symbols across all parsed files).
+fn build_bm25_index(parsed: &[ParsedFile]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let doc_count: usize = parsed.iter().map(|f| f.symbols.len()).sum();
+    if doc_count == 0 {
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
+    }
+    let mut builder = crate::store::bm25::Bm25IndexBuilder::new(doc_count);
+    let mut sym_idx: u32 = 0;
+    for file in parsed {
+        for sym in &file.symbols {
+            let mut bag = String::with_capacity(256);
+            bag.push_str(&sym.name);
+            bag.push(' ');
+            if let Some(s) = &sym.signature {
+                bag.push_str(s);
+                bag.push(' ');
+            }
+            if let Some(b) = &sym.body_tokens {
+                bag.push_str(b);
+                bag.push(' ');
+            }
+            if let Some(d) = &sym.doc {
+                bag.push_str(d);
+            }
+            let terms = crate::store::bm25::tokenize_document(&bag);
+            builder.add_document(sym_idx, &terms);
+            sym_idx += 1;
+        }
+    }
+    builder.build()
+}
+
+/// Resolve each [`RawCallEdge`] to a [`CallEdgeBuilder`] with a concrete
+/// `caller_sym_idx`. Edges whose caller doesn't match any symbol in the
+/// parsed-file iteration order are dropped — this happens for languages
+/// where the call-graph query produces function names that the symbol
+/// extractor doesn't register (e.g. inner closures, anonymous fns).
+///
+/// The key is `(file_path, fn_name, definition_line)` — the `line` is
+/// load-bearing because a single file can contain multiple functions
+/// sharing a name (overloaded methods, duplicate `impl` blocks, methods
+/// with the same name across nested modules). Keying only on `(path, name)`
+/// would cause every duplicate to inherit the first occurrence's symbol
+/// index, attributing call sites to the wrong caller.
+///
+/// The iteration order MUST match what `writer::write_index_to` uses to
+/// assign `symbol_idx` (`parsed.iter().flat_map(|f| f.symbols.iter())`)
+/// otherwise the resulting indices will be wrong.
+fn resolve_call_edges(parsed: &[ParsedFile]) -> Vec<crate::store::call_graph::CallEdgeBuilder> {
+    let mut sym_idx_of: HashMap<(&str, &str, usize), u32> = HashMap::new();
+    let mut next_idx: u32 = 0;
+    for file in parsed {
+        for sym in &file.symbols {
+            // Preserve the first symbol when `(path, name, line)` collides
+            // (genuinely identical entries — duplicate symbols at the same
+            // line are a parser bug, not a real case). The line component
+            // makes overloaded/same-name siblings distinct.
+            sym_idx_of
+                .entry((file.path.as_str(), sym.name.as_str(), sym.line))
+                .or_insert(next_idx);
+            next_idx += 1;
+        }
+    }
+
+    let mut out = Vec::new();
+    for file in parsed {
+        for edge in &file.call_edges {
+            let Some(&caller_sym_idx) = sym_idx_of.get(&(
+                file.path.as_str(),
+                edge.caller_fn_name.as_str(),
+                edge.caller_fn_line,
+            )) else {
+                continue;
+            };
+            out.push(crate::store::call_graph::CallEdgeBuilder {
+                caller_sym_idx,
+                callee_name: edge.callee_name.clone(),
+                line: edge.line as u32,
+            });
+        }
+    }
+    out
 }
 
 fn write_output(
     root: &Path,
     parsed: &[ParsedFile],
     vectors: &[Vec<f32>],
+    vector_dim: u32,
     file_hashes: &[(String, u64)],
+    embedder_id: Option<String>,
 ) -> Result<()> {
     let index_path = config::index_path(root);
     let cache_dir = index_path.parent().context("index path has no parent")?;
@@ -397,13 +564,33 @@ fn write_output(
         .context("acquire index lock (another vex instance may be indexing)")?;
 
     let result = (|| -> Result<()> {
-        store::writer::write_index_full(parsed, vectors, &index_path).context("write index")?;
+        let call_edges = resolve_call_edges(parsed);
+        let (bm25_fst, bm25_posts, bm25_stats) = build_bm25_index(parsed)?;
+        let bm25 = if bm25_fst.is_empty() {
+            None
+        } else {
+            Some((
+                bm25_fst.as_slice(),
+                bm25_posts.as_slice(),
+                bm25_stats.as_slice(),
+            ))
+        };
+        store::writer::write_index_with_call_graph(
+            parsed,
+            vectors,
+            vector_dim,
+            &call_edges,
+            bm25,
+            &index_path,
+        )
+        .context("write index")?;
 
         let manifest_path = config::manifest_path(root);
         let manifest = Manifest {
             files: file_hashes.iter().cloned().collect::<HashMap<_, _>>(),
             git_head,
             indexed_at: Some(indexed_at),
+            embedder_id,
         };
         manifest.save(&manifest_path)?;
         Ok(())
@@ -420,11 +607,17 @@ fn write_output(
     result
 }
 
-fn generate_embeddings(parsed: &[ParsedFile]) -> Result<Vec<Vec<f32>>> {
+fn generate_embeddings(parsed: &[ParsedFile], embedder_id: &str) -> Result<Vec<Vec<f32>>> {
     let start = Instant::now();
-    tracing::info!("loading embedding model");
-    let mut embedder = embed::Embedder::new()?;
-    tracing::info!(elapsed = ?start.elapsed(), "model loaded");
+    tracing::info!(embedder = embedder_id, "loading embedding model");
+    let mut embedder = embed::make_embedder(embedder_id)?;
+    let budget = embedder.char_budget();
+    tracing::info!(
+        elapsed = ?start.elapsed(),
+        model = embedder.id(),
+        dim = embedder.dim(),
+        "model loaded"
+    );
 
     let mut contexts = Vec::new();
     for file in parsed {
@@ -436,6 +629,7 @@ fn generate_embeddings(parsed: &[ParsedFile]) -> Result<Vec<Vec<f32>>> {
                 sym.signature.as_deref(),
                 sym.doc.as_deref(),
                 sym.body_tokens.as_deref(),
+                budget,
             );
             contexts.push(ctx);
         }
@@ -549,4 +743,28 @@ fn discover_files(root: &Path, excludes: &[String]) -> Result<Vec<std::path::Pat
     }
 
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grammar_failure_summary_includes_language_count_and_reason() {
+        // Pin the structured fields the user-visible warning emits, so a future
+        // refactor cannot silently drop the count or error string without test
+        // fail. We cannot easily hit the path end-to-end (every grammar
+        // currently loads), so this test mirrors the format the warning
+        // produces and locks the contract.
+        let mut failures: HashMap<Language, (String, usize)> = HashMap::new();
+        failures.insert(Language::CSharp, ("ABI mismatch v15".to_string(), 42));
+
+        let mut rendered = String::new();
+        for (lang, (err, count)) in &failures {
+            rendered = format!("language={lang:?} skipped={count} error={err}");
+        }
+        assert!(rendered.contains("CSharp"), "{rendered}");
+        assert!(rendered.contains("42"), "{rendered}");
+        assert!(rendered.contains("ABI mismatch v15"), "{rendered}");
+    }
 }

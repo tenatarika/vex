@@ -20,6 +20,10 @@ pub struct VexConfig {
 
     /// Automatically update the index before search if stale
     pub auto_update: Option<bool>,
+
+    /// Embedder identifier for semantic indexing. Defaults to `"minilm-l6-v2"`
+    /// when omitted. Use `vex --help` or the docs to list known IDs.
+    pub embedder: Option<String>,
 }
 
 /// Search for `.vex.toml` starting from `start_dir`, walking up to filesystem root.
@@ -64,6 +68,10 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 
 # Automatically run `vex update` before search if the index is stale
 # auto_update = false
+
+# Embedder used for semantic indexing. Known IDs: minilm-l6-v2 (default).
+# Changing the embedder requires a full reindex.
+# embedder = "minilm-l6-v2"
 "#;
 
 /// Get the cache directory for vex indexes.

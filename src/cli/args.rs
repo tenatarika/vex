@@ -40,6 +40,10 @@ pub enum Commands {
         /// Disable semantic embeddings (overrides .vex.toml)
         #[arg(long, conflicts_with = "semantic")]
         no_semantic: bool,
+
+        /// Embedder ID for semantic indexing (default: minilm-l6-v2)
+        #[arg(long)]
+        embedder: Option<String>,
     },
 
     /// Search symbols by name or semantics
@@ -78,6 +82,10 @@ pub enum Commands {
         /// Skip staleness check entirely
         #[arg(long)]
         no_stale_check: bool,
+
+        /// Disable BM25 channel (auto-on when the index has BM25 data)
+        #[arg(long)]
+        no_bm25: bool,
     },
 
     /// Find all usages/references of a symbol
@@ -133,6 +141,10 @@ pub enum Commands {
         /// Disable semantic embeddings (overrides .vex.toml)
         #[arg(long, conflicts_with = "semantic")]
         no_semantic: bool,
+
+        /// Embedder ID for semantic indexing (default: minilm-l6-v2)
+        #[arg(long)]
+        embedder: Option<String>,
     },
 
     /// Show structure of a file (symbols, kinds, lines)
@@ -158,6 +170,10 @@ pub enum Commands {
         /// Disable semantic embeddings (overrides .vex.toml)
         #[arg(long, conflicts_with = "semantic")]
         no_semantic: bool,
+
+        /// Embedder ID for semantic indexing (default: minilm-l6-v2)
+        #[arg(long)]
+        embedder: Option<String>,
     },
 
     /// Show the full body of a symbol (function, class, struct, etc.)
@@ -271,6 +287,67 @@ pub enum Commands {
         /// Project root path (defaults to cwd)
         #[arg(short, long)]
         path: Option<PathBuf>,
+
+        /// Auto-update index if stale
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
+    },
+
+    /// Find symbols semantically similar to a given symbol (requires --semantic index)
+    Similar {
+        /// Symbol name to find similar symbols to
+        name: String,
+
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Max results to return
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+
+        /// Minimum cosine similarity in 0.0..=1.0
+        #[arg(short, long, default_value = "0.5")]
+        threshold: f32,
+
+        /// Filter results by path substring (e.g. "src/api/" or "tests/")
+        #[arg(short = 'f', long = "filter")]
+        filter_path: Option<String>,
+
+        /// Auto-update index if stale
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
+    },
+
+    /// Find pairs of near-duplicate symbols (requires --semantic index)
+    Duplicates {
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Minimum cosine similarity to consider a duplicate (0.0..=1.0)
+        #[arg(short, long, default_value = "0.9")]
+        threshold: f32,
+
+        /// Max pairs to return
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+
+        /// Skip symbols whose body has fewer than this many lines (filters trivial 1-liners)
+        #[arg(long, default_value = "5")]
+        min_body_lines: usize,
+
+        /// Filter pairs to those involving this path substring
+        #[arg(short = 'f', long = "filter")]
+        filter_path: Option<String>,
 
         /// Auto-update index if stale
         #[arg(long)]

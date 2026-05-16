@@ -21,7 +21,7 @@ fn make_result(name: &str, kind: &str, path: &str) -> SearchResult {
 // --- Pipeline + search helpers ---
 
 fn run_index(project_dir: &std::path::Path) -> usize {
-    pipeline::run(project_dir, false, &[]).expect("pipeline::run failed")
+    pipeline::run(project_dir, false, "minilm-l6-v2", &[]).expect("pipeline::run failed")
 }
 
 fn open_reader(project_dir: &std::path::Path) -> IndexReader {
@@ -179,8 +179,8 @@ fn empty_directory_indexes_without_error() {
     // Create an empty src/ subdirectory — no files inside.
     std::fs::create_dir_all(project_dir.join("src")).unwrap();
 
-    let count =
-        pipeline::run(&project_dir, false, &[]).expect("pipeline::run must succeed on empty dir");
+    let count = pipeline::run(&project_dir, false, "minilm-l6-v2", &[])
+        .expect("pipeline::run must succeed on empty dir");
     assert_eq!(
         count, 0,
         "empty directory should produce 0 symbols, got {count}"
@@ -214,8 +214,8 @@ fn symlink_to_file() {
     symlink(src_dir.join("real.rs"), src_dir.join("link.rs")).unwrap();
 
     // Must not panic — pipeline handles the symlink gracefully.
-    let count =
-        pipeline::run(&project_dir, false, &[]).expect("pipeline::run must not fail with symlink");
+    let count = pipeline::run(&project_dir, false, "minilm-l6-v2", &[])
+        .expect("pipeline::run must not fail with symlink");
     assert!(count >= 1, "at least one symbol expected, got {count}");
 
     let reader = open_reader(&project_dir);

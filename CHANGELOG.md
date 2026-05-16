@@ -6,6 +6,89 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-05-16
+
+Phase 9 ships hybrid search v2: three orthogonal channels (structural FST,
+BM25 over body tokens, semantic HNSW) fused via 3-way RRF; persistent call
+graph delivering ~1000× speedups on `callers`/`callees`; a pluggable embedder
+trait that unblocks future code-specific models; and two new commands
+(`similar`, `duplicates`) on top of the existing vector index. The on-disk
+format bumps to v4 with backwards-compatible read of v3.
+
+- 19 commands (+2), 17 MCP tools (+2), 649 tests (+108 vs v1.4.3)
+
+### Added — Phase 9.4 (BM25 channel in hybrid search)
+- **BM25 inverted index** as the third channel in `vex search` alongside structural FST and semantic HNSW. Closes the gap between "exact symbol name" (structural) and "general meaning" (semantic) — finds rare body terms like `timeout`, `singlestore`, `idempotency_key` that aren't part of the symbol name
+- **`vex::store::bm25` module** — `Bm25IndexBuilder` (per-symbol term bags), `Bm25Reader` (zero-copy scoring), `tokenize_query`/`tokenize_document`, Okapi BM25 with `K1 = 1.2`, `B = 0.75`. Minimal English stop-word filter applied at query time only (keeps the index size unchanged when the stop-word list evolves)
+- **`vex::search::bm25::search(reader, query, top_k)`** — adapter that converts BM25 hits to `SearchResult` tagged with new `MatchType::Bm25`
+- **3-way RRF fusion** — `vex::search::fusion::{fuse3, fuse_many}`. `Hybrid` label when a result appears in ≥2 channels; original `MatchType` preserved when in just one
+- **CLI integration** — BM25 auto-on when the index has BM25 data. Flag `--no-bm25` to disable on a per-call basis
+- **Pipeline integration** — `pipeline::build_bm25_index` aggregates per-symbol terms from `name + signature + body_tokens + doc` and emits the FST/posting/stats triple
+- **20 new integration tests** in `tests/bm25_test.rs` plus 7 BM25 unit tests in `src/store/bm25.rs` — format size, writer/reader roundtrip (with and without BM25), pipeline emission, IDF discrimination (rare term ranks above common), short-doc preference under same TF, 3-way fusion with Hybrid labelling, MatchType tagging, Unicode tokenization, empty/stopword-only query handling
+
+### Changed — Phase 9.4
+- `CallGraphHeader` extended from 80 → 128 bytes (10 call-graph fields + 6 BM25 fields: fst/postings/stats offset+len). Internal name kept for back-compat with 9.3 callers; will be renamed to a generic `V4SectionHeader` in a follow-up. **No version bump v4 → v5** — v4 was unreleased outside this repo, and extending the existing v4 envelope avoids a second migration event
+- `writer::write_index_with_call_graph` signature gains `Option<Bm25Sections>` parameter (a `(&[u8], &[u8], &[u8])` triple of pre-built BM25 bytes)
+- `search::fusion::fuse` retained as a back-compat 2-way wrapper around `fuse_many`; new code uses `fuse3` / `fuse_many`
+- `MatchType` gains the `Bm25` variant
+
+### Note — format compatibility
+- v3 indexes still readable; `has_bm25() == false` → search falls back to structural-only behavior (plus semantic if `--semantic` and vectors present)
+- v4 indexes built between Phase 9.3 and 9.4 are also readable; `bm25_*_len == 0` → BM25 channel disabled until next `vex index` rebuilds
+
+### Added — Phase 9.3 (persistent call graph + format v4)
+- **Format bump v3 → v4**: new sections persisted at index time — `CallEdge` records, callers FST, callees FST + posting lists. The `Header` struct stays byte-identical to v3; a new `CallGraphHeader` (80 B) is placed at offset `Header::SIZE` when `version >= 4`. v3 indexes still open (back-compat read path)
+- **`vex callers <name>` / `vex callees <name>` fast path** — FST lookup (~4ms) on v4 indexes. Falls back to live tree-sitter scan when (a) no index exists, (b) index is v3, (c) v4 index has no call graph, or (d) index exists but fails to open (with a warning logged so corrupt/locked indexes don't silently degrade to the slow path)
+- **`crate::callgraph::extract_call_edges(content, lang)`** — returns `(caller_fn_name, caller_fn_line, callee_name, call_line)` quadruples. Used by `pipeline::parse_file` to populate `ParsedFile.call_edges`
+- **`store::call_graph` module** — `CallEdgeBuilder`, `build_callers_fst`, `build_callees_fst`, `CallGraphFstReader`, `find_callers_fast`, `find_callees_fast`, `encode_caller_key`
+- **Incremental update preserves call edges** — `reconstruct_unchanged` re-emits edges from the old index for files whose hash didn't change; only changed/deleted files get fresh extraction
+- **25 new integration tests** in `tests/call_graph_test.rs` — format sizes (Header::SIZE = 144, CallGraphHeader::SIZE = 80, CallEdge::SIZE = 16), writer/reader roundtrip, callers/callees FST fast paths with case-insensitivity and dedup, same-name-across-files isolation via `caller_sym_idx` keying, end-to-end pipeline → fast path, `extract_call_edges` for Rust + unsupported langs, incremental update preserves edges, regression test for same-name-within-file disambiguation (CRITICAL fix from Phase 9.3 review)
+
+### Changed — Phase 9.3
+- `ParsedFile` gains `call_edges: Vec<RawCallEdge>` — populated at parse time, consumed by writer
+- `pipeline::resolve_call_edges` keys on `(path, name, line)` (not just `(path, name)`) so two functions sharing a name in the same file (overloaded methods, duplicate `impl` blocks) get distinct caller symbol indices
+- `IndexReader::open` accepts versions in `[MIN_SUPPORTED_VERSION..=VERSION]` (v3..v4) plus legacy v2 — section-bounds validation extended for the new v4 sections
+- Writer aligns `call_edges_offset` to a 4-byte boundary so `CallEdge` records can be safely mmap-cast on strict-alignment platforms
+- `vex::store::writer::write_index_full` now delegates to a new `write_index_with_call_graph` (used by `pipeline`)
+
+### Fixed — Phase 9.3 (review findings)
+- **CRITICAL**: same-name symbols within a single file used to all resolve to the first occurrence's `caller_sym_idx`, attributing every later duplicate's call sites to the wrong caller. Fixed by including the symbol's definition line in the resolution key. Regression test in `tests/call_graph_test.rs::duplicate_function_name_in_same_file_resolves_to_correct_caller`
+- **HIGH**: `find_callers_fast` / `find_callees_fast` now early-return on `!has_call_graph()` instead of relying on callers to check the invariant
+- **HIGH**: `cmd_callgraph` logs a `tracing::warn!` when an existing index fails to open (corrupt/locked) instead of silently falling back to the slow path
+- Writer alignment bug surfaced during test authoring — `call_edges_offset` rounded up to a 4-byte boundary so subsequent mmap reads succeed alignment checks
+
+### Note — format compatibility
+- v3 indexes remain readable. `has_call_graph()` returns false → CLI falls back to live scan. Run `vex index` to rebuild as v4 and unlock fast paths.
+
+### Added — Phase 9.1 (pluggable embedder backend)
+- **`Embedder` trait** — `id()`, `dim()`, `char_budget()`, `embed()`, `embed_batch()`. Unblocks future code-specific embedders (BGE, GraphCodeBERT, CodeT5+)
+- **Registry**: `embed::make_embedder(id)`, `embed::embedder_dim(id)`, `embed::known_embedders()`. Unknown ID returns an error listing known IDs
+- **`MiniLMEmbedder`** — current default and only implementation. Output 384-dim, char budget 1100, ID `"minilm-l6-v2"`. Replaces the previous concrete `Embedder` struct
+- **`embedder` option** in `.vex.toml` and `--embedder <id>` flag for `index`/`update`/`watch`. Priority: CLI > config > `DEFAULT_EMBEDDER` (=`minilm-l6-v2`)
+- **`Manifest.embedder_id: Option<String>`** — records the embedder a semantic index was built with. Missing field on pre-9.1 manifests is interpreted as the default for back-compat
+- **Embedder mismatch detection** at `vex search --semantic`: when the requested embedder differs from `manifest.embedder_id`, search bails with a rebuild hint instead of producing nonsense results
+- **`writer::write_index_full`** now takes `vector_dim: u32` instead of hardcoding 384. `Header.vector_dim` is filled from the embedder, opening the door to non-384 models
+- **21 new integration tests** in `tests/embedder_test.rs` covering trait registry, dim lookup, resolve priority, mismatch detection (including back-compat with missing `embedder_id`), manifest roundtrip + skip-serializing-when-none, config parsing, `build_context` budget, writer variable dim + length validation
+
+### Changed — Phase 9.1
+- `embed::build_context` signature: takes `budget: usize` instead of hardcoded `EMBEDDING_CHAR_BUDGET`. Callers pass `embedder.char_budget()` to fit the model's token window
+- `semantic::search_with_embedder` now accepts `&mut dyn Embedder` (was `&mut Embedder` concrete struct)
+- `pipeline::run` and `pipeline::update` now take `embedder_id: &str`
+- `watch::watch` takes `embedder_id: &str`
+- `src/embed/model.rs` slimmed to `build_context` only; the model struct lives in the new `src/embed/minilm.rs`
+
+### Note — format compatibility
+- **No binary format bump in 9.1.** Embedder identification lives in `manifest.json`, not the index Header. Format v4 will land with Phase 9.3 (persistent call graph) when binary section additions are actually needed. This avoids breaking v3 read-back.
+
+### Added — Phase 9.2 (semantic similarity)
+- **`vex similar <symbol>`** — find symbols semantically close to a given one. Resolves the symbol's stored embedding, runs HNSW (or brute-force fallback), returns nearest neighbors with cosine similarity. Flags: `--limit`, `--threshold`, `--filter`, `--auto-update`. Requires `vex index --semantic`
+- **`vex duplicates`** — list pairs of near-duplicate symbols by embedding similarity. Canonical pair dedup `(min_idx, max_idx)` — never both `(A, B)` and `(B, A)`. Flags: `--threshold` (default 0.9), `--limit` (default 50), `--min-body-lines` (default 5, filters trivial 1-liner matches via approximated body length), `--filter`
+- **MCP tools**: `similar` (by existing symbol — distinct from existing `find_similar` which queries by description) and `duplicates`
+- **18 new integration tests** in `tests/similar_test.rs` covering self-exclusion, threshold filtering, canonical pair dedup, body-length filtering, empty index, missing vectors, unknown symbol errors, descending sort
+
+### Changed
+- `cosine_similarity` promoted from `fn` to `pub(crate) fn` in `src/search/semantic.rs` so `src/search/similar.rs` shares the same implementation
+
 ## [1.4.3] - 2026-05-14
 
 ### Added
@@ -202,7 +285,10 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/tenatarika/vex/compare/v1.4.3...v1.5.0
+[1.4.3]: https://github.com/tenatarika/vex/compare/v1.4.2...v1.4.3
+[1.4.2]: https://github.com/tenatarika/vex/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/tenatarika/vex/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/tenatarika/vex/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/tenatarika/vex/compare/v1.2.0...v1.3.0

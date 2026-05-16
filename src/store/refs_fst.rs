@@ -118,11 +118,6 @@ impl<'a> RefReader<'a> {
         self.fst_map.len()
     }
 
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.fst_map.is_empty()
-    }
-
     fn read_posting_list(&self, offset: u64) -> Vec<RefEntry> {
         let offset = offset as usize;
         if offset + 4 > self.posting_data.len() {

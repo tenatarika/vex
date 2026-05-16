@@ -3,8 +3,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/tenatarika/vex/actions/workflows/ci.yml/badge.svg)](https://github.com/tenatarika/vex/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
-[![Commands](https://img.shields.io/badge/commands-17-blue.svg)]()
+[![Commands](https://img.shields.io/badge/commands-19-blue.svg)]()
 [![Languages](https://img.shields.io/badge/languages-19-blueviolet.svg)]()
+[![Tests](https://img.shields.io/badge/tests-649-green.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
@@ -12,19 +13,24 @@ Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
 ```
 $ vex search "TelemetryProcessor"          # 4ms — find symbol definitions
+$ vex search "timeout retry"               # NEW: BM25 finds rare body terms
 $ vex show "TelemetryProcessor"            # extract just the class body (not the whole file)
 $ vex search "handle alert" --semantic     # find by meaning, not just name
 $ vex pattern 'fn $NAME($$$) -> Result'    # AST pattern matching (like ast-grep)
 $ vex usages "Config"                      # who references this symbol?
 $ vex implementations "BaseService"        # who extends/implements this?
-$ vex callers "process_event"              # who calls this function?
-$ vex check "Foo" "Bar" "Baz"             # fast existence check
+$ vex callers "process_event"              # who calls this function? (~4ms — FST lookup)
+$ vex similar "PaymentService"             # NEW: semantically close symbols
+$ vex duplicates --threshold 0.95          # NEW: near-duplicate pairs
+$ vex check "Foo" "Bar" "Baz"              # fast existence check
 ```
 
 ## Why Vex?
 
 - **~4ms search** after indexing — FST-based O(query_len) lookup, not O(symbols). Requires a pre-built index (indexing takes 20ms-600ms+ depending on project size)
-- **Semantic search** — "find payment processing" returns `ProcessPayment`, `ChargeCard`, `RefundOrder`
+- **3-channel hybrid search** — structural FST (names) + BM25 (rare body terms) + semantic HNSW (meaning), fused via Reciprocal Rank Fusion. Find symbols when you don't know the exact name AND when generic semantic-only search would be too noisy
+- **Persistent call graph** — `vex callers`/`vex callees` reads from an FST built at index time (~4ms), not a live tree-sitter scan (seconds)
+- **Pluggable embedder** — `Embedder` trait + registry; swap MiniLM-L6-v2 for future code-specific models (BGE, CodeBERT) without touching call sites
 - **Token-efficient** — compact output uses 6-88x fewer tokens than grep, `vex show` extracts just the symbol body instead of the whole file
 - **19 languages** out of the box — Rust, Python, Go, Java, C/C++, C#, Ruby, Swift, Kotlin, TypeScript, SQL, Markdown, PHP, Bash, Lua, CSS, HTML, YAML, TOML
 - **Single binary, zero config** — no LSP servers, no databases, no Docker. Just `vex index && vex search`
@@ -87,9 +93,15 @@ vex outline src/main.rs
 # Find implementations of a trait/interface
 vex implementations "Iterator"
 
-# Callgraph: who calls / is called by a function
+# Callgraph: who calls / is called by a function (fast path via persistent index)
 vex callers "process_event"
 vex callees "process_event"
+
+# Semantic similarity by existing symbol (requires --semantic index)
+vex similar "PaymentService" --limit 5 --threshold 0.7
+
+# Near-duplicate pairs (refactor / dedup helper)
+vex duplicates --threshold 0.95 --min-body-lines 5
 
 # Fast existence check
 vex check "Foo" "Bar" "Baz"
@@ -111,20 +123,22 @@ vex completions zsh > ~/.zfunc/_vex
 
 | Command | Description |
 |---------|-------------|
-| `vex index [--path .] [--semantic]` | Build full index. `--semantic` generates embeddings + HNSW. |
-| `vex search <query> [--semantic] [--limit N] [--kind fn] [--context-path p]` | Search symbols. `--kind` boosts matching type, `--context-path` boosts nearby files. |
+| `vex index [--path .] [--semantic] [--embedder ID]` | Build full index. `--semantic` generates embeddings + HNSW + BM25. `--embedder` selects embedding model (default `minilm-l6-v2`). |
+| `vex search <query> [--semantic] [--no-bm25] [--limit N] [--kind fn] [--context-path p]` | Hybrid search: structural + BM25 + semantic (when `--semantic`). 3-way RRF fusion. |
 | `vex show <symbol> [--limit N] [--context N] [--kind fn]` | Extract symbol body from source (saves tokens vs full file read). |
+| `vex similar <name> [--limit N] [--threshold T]` | Find symbols semantically close to an existing one (HNSW nearest neighbors). |
+| `vex duplicates [--threshold T] [--min-body-lines N]` | List near-duplicate symbol pairs by embedding similarity. |
 | `vex usages <name> [--limit N]` | Find all references/usages of a symbol (FST lookup). |
 | `vex pattern '<pat>' --lang <lang>` | AST pattern matching with metavariables ($NAME, $$$). |
 | `vex outline <file> [--kind fn]` | Show file structure, optionally filter by symbol kind. |
 | `vex implementations <name>` | Find types that extend/implement a base class, trait, or interface. |
-| `vex callers <name>` | Find all functions that call a given function. |
-| `vex callees <name>` | Find all functions called by a given function. |
+| `vex callers <name>` | Find all functions that call a given function (fast path via persistent call graph). |
+| `vex callees <name>` | Find all functions called by a given function (fast path via persistent call graph). |
 | `vex check <name> [name...]` | Fast existence check — which symbols exist in the index? |
 | `vex grep <pattern> [--filter path/]` | Regex content search (no index needed). |
-| `vex update [--path .] [--semantic]` | Incremental update — re-parse only changed files, reuse unchanged symbols from existing index. |
-| `vex watch [--path .] [--semantic]` | Watch filesystem, auto re-index on changes. |
-| `vex status [--path .]` | Show index stats: symbol count, size, embeddings. |
+| `vex update [--path .] [--semantic] [--embedder ID]` | Incremental update — re-parse only changed files, reuse unchanged symbols from existing index. |
+| `vex watch [--path .] [--semantic] [--embedder ID]` | Watch filesystem, auto re-index on changes. |
+| `vex status [--path .]` | Show index stats: symbol count, size, embeddings, call graph, BM25. |
 | `vex completions <shell>` | Generate shell completions (bash, zsh, fish). |
 | `vex init` | Create a default `.vex.toml` config file in the project root. |
 
@@ -209,8 +223,11 @@ Embeds your query with MiniLM-L6-v2 (384-dim vectors) and finds symbols with sim
 - `"database storage"` finds `populate_db`, `create_10k_db`, `add_root_persists_to_db`
 - `"find implementations of an interface"` finds `find_implementations`, `test_interface_extends`
 
-### Hybrid Search (both flags)
-When `--semantic` is used with an embedding-enabled index, results from both methods are merged using **Reciprocal Rank Fusion (RRF)**. Symbols found by both methods rank highest.
+### BM25 Channel (auto-on when index has BM25 data)
+A classic Okapi BM25 (`K1=1.2`, `B=0.75`) over symbol body tokens — identifiers, signatures, docstrings. Closes the gap between "exact name" (structural) and "general meaning" (semantic): finds **rare body terms** like `timeout`, `retry`, `singlestore`, `idempotency_key` that aren't part of any symbol name. Pass `--no-bm25` to disable per-call.
+
+### Hybrid Search (3-way RRF)
+When the index has all three channels (built with `--semantic`), `vex search` fuses structural + BM25 + semantic using **Reciprocal Rank Fusion**. Symbols hit by ≥2 channels rank as `Hybrid`; symbols unique to one keep their original match type. Cuts both structural-noise and semantic-blur in the same query.
 
 ### Usages (FST)
 References stored in an FST (Finite State Transducer) — zero-copy lookup from mmap with prefix search support.
@@ -403,16 +420,18 @@ cargo build --release -p vex-mcp
 }
 ```
 
-**MCP Tools (15):**
-- `search` — hybrid structural + semantic search
+**MCP Tools (17):**
+- `search` — 3-way hybrid (structural + BM25 + semantic)
 - `find_symbol` — exact name lookup
-- `find_similar` — semantic search by description
+- `find_similar` — semantic search by free-form description
+- `similar` — nearest neighbors of an existing symbol
+- `duplicates` — near-duplicate symbol pairs
 - `show` — extract symbol body from source
 - `outline` — file structure
 - `usages` — find all references to a symbol
 - `grep` — regex content search
 - `implementations` — find types extending a base class/trait
-- `callers` / `callees` — callgraph navigation
+- `callers` / `callees` — callgraph navigation (fast path via persistent index)
 - `check` — fast symbol existence check
 - `index` / `update` — build/rebuild index
 - `status` — index statistics
@@ -451,11 +470,14 @@ Use vex for code search instead of grep or manual file reading:
 - `vex usages "SymbolName"` — find all references
 - `vex grep "pattern"` — regex content search (when you need text, not symbols)
 - `vex search "description" --semantic` — search by meaning
+- `vex search "rare_term"` — BM25 channel finds rare terms in symbol bodies (auto-on when index has BM25 data)
 - `vex pattern 'class $NAME(BaseModel):' --lang python` — AST pattern matching
 - `vex outline path/to/file.py` — file structure overview
 - `vex implementations "BaseService"` — find types extending a class/interface
-- `vex callers "function_name"` — find all callers
-- `vex callees "function_name"` — find all callees
+- `vex callers "function_name"` — find all callers (~4ms via persistent call graph)
+- `vex callees "function_name"` — find all callees (~4ms via persistent call graph)
+- `vex similar "SymbolName"` — semantically close symbols (requires --semantic index)
+- `vex duplicates --threshold 0.95` — near-duplicate symbol pairs
 - `vex check "A" "B" "C"` — fast symbol existence check
 
 All commands support `--filter "path/"` to narrow results to a directory.
@@ -480,7 +502,7 @@ All commands support `--filter "path/"` to narrow results to a directory.
 ### Unit & Integration Tests
 
 ```bash
-cargo test                    # 541 tests — unit, integration, property-based, adversarial
+cargo test                    # 649 tests — unit, integration, property-based, adversarial
 cargo clippy -- -D warnings   # zero warnings policy
 ```
 
@@ -499,6 +521,10 @@ Test coverage includes:
 - **Unicode**: BOM, mixed CRLF, unicode identifiers, null bytes, empty/whitespace files
 - **Path edges**: spaces in paths, deep nesting (20 levels), symlinks, absolute vs relative, Windows backslashes
 - **Callgraph**: callers/callees for Rust, Python, Go, TypeScript, Java
+- **Persistent call graph (v1.5)**: format v4 roundtrip, callers/callees FST lookup, dedup, same-name-across-files isolation, same-name-within-file disambiguation, incremental update preserves edges, fallback to live scan for v3
+- **Similar/duplicates (v1.5)**: self-exclusion, threshold filtering, canonical pair dedup, body-length filter, empty-index handling
+- **Pluggable embedder (v1.5)**: registry lookup, mismatch detection (incl. back-compat for pre-9.1 manifests), config + CLI priority, writer variable `vector_dim`
+- **BM25 channel (v1.5)**: writer/reader roundtrip, pipeline emission, IDF discrimination, short-doc preference, 3-way RRF with Hybrid labeling, MatchType tagging, unicode tokens
 - **Staleness**: git HEAD comparison, dirty file detection, mtime fallback
 
 ### Fuzz Testing
@@ -531,26 +557,30 @@ Fuzzing found and fixed 3 bugs: out-of-bounds read on crafted `symbol_count`, mi
 ## Architecture
 
 ```
-CLI (clap) → Pipeline (rayon) → Tree-sitter → Binary Format (mmap)
+CLI (clap) → Pipeline (rayon) → Tree-sitter → Binary Format v4 (mmap)
                                       ↓
-                               ONNX Embeddings (fastembed)
+                               Embedder trait (fastembed/MiniLM)
                                       ↓
                                HNSW Index (usearch)
                                       ↓
-Search: Symbol FST (structural) + HNSW (semantic) → RRF Fusion
-Usages: Refs FST + Posting Lists → zero-copy refs lookup
-Show:   Tree-sitter node boundaries → symbol body extraction
+Search:    Symbol FST (structural) + BM25 (body) + HNSW (semantic) → 3-way RRF
+Callers/Callees: Callers FST + Callees FST (persistent edges) → ~4ms
+Usages:    Refs FST + Posting Lists → zero-copy refs lookup
+Show:      Tree-sitter node boundaries → symbol body extraction
+Similar:   HNSW nearest neighbors over stored embeddings
 ```
 
-- **No SQLite** — custom binary format with zero-copy mmap reads
+- **No SQLite** — custom binary format v4 with zero-copy mmap reads (v3 still readable)
 - **Symbol FST** — persistent inverted index, O(query_len) lookup
 - **Refs FST** — symbol references in Finite State Transducer, prefix search
+- **Persistent call graph** — `CallEdge` records + callers/callees FSTs built at index time, ~4ms lookup vs seconds of live tree-sitter scan
+- **BM25 channel** — Okapi BM25 over body identifiers, auto-on when section present
 - **HNSW** — approximate nearest neighbor via usearch, O(log N) semantic search
+- **Pluggable embedder** — `Embedder` trait + registry, identity recorded in manifest with mismatch detection at search
 - **Parallel parsing** — rayon with 500-file chunks
-- **Incremental updates** — content hashing via xxh3, only re-parse changed files (unchanged symbols reconstructed from existing index)
+- **Incremental updates** — content hashing via xxh3, only re-parse changed files (unchanged symbols + call edges reconstructed from existing index)
 - **Watch mode** — notify crate with 500ms debouncing
-- **Semantic search** — MiniLM-L6-v2 embeddings (384-dim), HNSW with brute-force fallback
-- **RRF fusion** — merges structural + semantic ranked lists
+- **3-way RRF fusion** — merges structural + BM25 + semantic ranked lists, marks cross-channel hits as `Hybrid`
 
 ## License
 

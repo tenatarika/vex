@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use memmap2::Mmap;
 
-use super::format::{Header, SymbolRecord};
+use super::format::{CallEdge, CallGraphHeader, Header, SymbolRecord};
 
 /// Memory-mapped index reader. Zero-copy access to symbols and strings.
 pub struct IndexReader {
@@ -32,11 +32,17 @@ impl IndexReader {
         if &header.magic != super::format::MAGIC {
             bail!("index file is corrupted (bad magic). Re-run `vex index` to rebuild.");
         }
-        // Accept v2 indexes written by vex ≤0.1.x (no symbol FST); has_symbol_fst() gates that section.
-        if header.version != super::format::VERSION && header.version != 2 {
+        // Accept any version in [MIN_SUPPORTED_VERSION ..= VERSION], plus
+        // legacy v2 (pre-FST). `has_symbol_fst()` / `has_call_graph_header()`
+        // gate the optional sections that may be missing in older versions.
+        let v = header.version;
+        let supported =
+            v == 2 || (super::format::MIN_SUPPORTED_VERSION..=super::format::VERSION).contains(&v);
+        if !supported {
             bail!(
-                "index version mismatch (found v{}, expected v{}). Re-run `vex index` to rebuild.",
-                header.version,
+                "index version mismatch (found v{}, this build supports v2 or v{}..v{}). Re-run `vex index` to rebuild.",
+                v,
+                super::format::MIN_SUPPORTED_VERSION,
                 super::format::VERSION
             );
         }
@@ -73,6 +79,40 @@ impl IndexReader {
             || sym_post_end > mmap_len
         {
             bail!("index file is corrupted (section offsets exceed file size). Re-run `vex index` to rebuild.");
+        }
+
+        // v4: validate CallGraphHeader fits AND its sections fit. Reuse the
+        // same accessor we expose externally so the validation logic
+        // matches the read path.
+        if header.has_call_graph_header() {
+            if (Header::SIZE + CallGraphHeader::SIZE) > reader.mmap.len() {
+                bail!("v4 index is truncated (no room for CallGraphHeader). Re-run `vex index` to rebuild.");
+            }
+            if let Some(cg) = reader.call_graph_header() {
+                let edges_end = cg.call_edges_offset.saturating_add(cg.call_edges_len);
+                let cers_fst_end = cg.callers_fst_offset.saturating_add(cg.callers_fst_len);
+                let cers_post_end = cg
+                    .callers_postings_offset
+                    .saturating_add(cg.callers_postings_len);
+                let cees_fst_end = cg.callees_fst_offset.saturating_add(cg.callees_fst_len);
+                let cees_post_end = cg
+                    .callees_postings_offset
+                    .saturating_add(cg.callees_postings_len);
+                let bm25_fst_end = cg.bm25_fst_offset.saturating_add(cg.bm25_fst_len);
+                let bm25_post_end = cg.bm25_postings_offset.saturating_add(cg.bm25_postings_len);
+                let bm25_stats_end = cg.bm25_stats_offset.saturating_add(cg.bm25_stats_len);
+                if edges_end > mmap_len
+                    || cers_fst_end > mmap_len
+                    || cers_post_end > mmap_len
+                    || cees_fst_end > mmap_len
+                    || cees_post_end > mmap_len
+                    || bm25_fst_end > mmap_len
+                    || bm25_post_end > mmap_len
+                    || bm25_stats_end > mmap_len
+                {
+                    bail!("v4 index is corrupted (call-graph or bm25 section offsets exceed file size). Re-run `vex index` to rebuild.");
+                }
+            }
         }
 
         Ok(reader)
@@ -247,5 +287,161 @@ impl IndexReader {
     /// Total number of indexed symbols.
     pub fn symbol_count(&self) -> usize {
         self.header().symbol_count as usize
+    }
+
+    /// Read the v4 [`CallGraphHeader`] when present. Returns `None` for v3
+    /// indexes or when the bytes after the base header don't fit a
+    /// `CallGraphHeader` (corrupt file).
+    pub fn call_graph_header(&self) -> Option<&CallGraphHeader> {
+        if !self.header().has_call_graph_header() {
+            return None;
+        }
+        let offset = Header::SIZE;
+        let end = offset.checked_add(CallGraphHeader::SIZE)?;
+        if end > self.mmap.len() {
+            return None;
+        }
+        let ptr = unsafe { self.mmap.as_ptr().add(offset) };
+        if ptr.align_offset(std::mem::align_of::<CallGraphHeader>()) != 0 {
+            return None;
+        }
+        // SAFETY: bounds + alignment checked. CallGraphHeader is #[repr(C)].
+        Some(unsafe { &*(ptr as *const CallGraphHeader) })
+    }
+
+    /// Whether the index carries call-graph data we can query directly.
+    /// False for v3 indexes and for v4 indexes that recorded zero edges.
+    pub fn has_call_graph(&self) -> bool {
+        self.call_graph_header()
+            .is_some_and(|h| h.call_edges_len > 0)
+    }
+
+    /// Number of call edges recorded in this index, 0 when absent.
+    pub fn call_edge_count(&self) -> usize {
+        self.call_graph_header()
+            .map(|h| (h.call_edges_len as usize) / CallEdge::SIZE)
+            .unwrap_or(0)
+    }
+
+    /// Get a call-edge record by index. Returns `None` when out of bounds
+    /// or when this index has no call graph.
+    pub fn call_edge(&self, idx: usize) -> Option<&CallEdge> {
+        let h = self.call_graph_header()?;
+        if idx >= self.call_edge_count() {
+            return None;
+        }
+        let offset = (h.call_edges_offset as usize).checked_add(idx * CallEdge::SIZE)?;
+        let end = offset.checked_add(CallEdge::SIZE)?;
+        if end > self.mmap.len() {
+            return None;
+        }
+        let ptr = unsafe { self.mmap.as_ptr().add(offset) };
+        if ptr.align_offset(std::mem::align_of::<CallEdge>()) != 0 {
+            return None;
+        }
+        // SAFETY: bounds + alignment checked. CallEdge is #[repr(C)].
+        Some(unsafe { &*(ptr as *const CallEdge) })
+    }
+
+    /// Raw bytes of the callers FST section (or empty when absent).
+    pub fn callers_fst_bytes(&self) -> &[u8] {
+        let Some(h) = self.call_graph_header() else {
+            return &[];
+        };
+        let start = h.callers_fst_offset as usize;
+        let end = start + h.callers_fst_len as usize;
+        if end > self.mmap.len() {
+            return &[];
+        }
+        &self.mmap[start..end]
+    }
+
+    /// Raw bytes of the callers posting list section.
+    pub fn callers_posting_bytes(&self) -> &[u8] {
+        let Some(h) = self.call_graph_header() else {
+            return &[];
+        };
+        let start = h.callers_postings_offset as usize;
+        let end = start + h.callers_postings_len as usize;
+        if end > self.mmap.len() {
+            return &[];
+        }
+        &self.mmap[start..end]
+    }
+
+    /// Raw bytes of the callees FST section.
+    pub fn callees_fst_bytes(&self) -> &[u8] {
+        let Some(h) = self.call_graph_header() else {
+            return &[];
+        };
+        let start = h.callees_fst_offset as usize;
+        let end = start + h.callees_fst_len as usize;
+        if end > self.mmap.len() {
+            return &[];
+        }
+        &self.mmap[start..end]
+    }
+
+    /// Raw bytes of the callees posting list section.
+    pub fn callees_posting_bytes(&self) -> &[u8] {
+        let Some(h) = self.call_graph_header() else {
+            return &[];
+        };
+        let start = h.callees_postings_offset as usize;
+        let end = start + h.callees_postings_len as usize;
+        if end > self.mmap.len() {
+            return &[];
+        }
+        &self.mmap[start..end]
+    }
+
+    /// Whether the index carries BM25 channel data (Phase 9.4).
+    /// False for v3 indexes and for v4 indexes built without BM25.
+    ///
+    /// The gate is `bm25_stats_len >= 8` (minimum valid stats: a `doc_count`
+    /// u32 plus an `avg_doc_len` f32 header) so any caller seeing
+    /// `has_bm25() == true` can safely construct `Bm25Reader`.
+    pub fn has_bm25(&self) -> bool {
+        self.call_graph_header()
+            .is_some_and(|h| h.bm25_stats_len >= 8)
+    }
+
+    /// Raw bytes of the BM25 FST section (empty when BM25 is absent).
+    pub fn bm25_fst_bytes(&self) -> &[u8] {
+        let Some(h) = self.call_graph_header() else {
+            return &[];
+        };
+        let start = h.bm25_fst_offset as usize;
+        let end = start + h.bm25_fst_len as usize;
+        if end > self.mmap.len() {
+            return &[];
+        }
+        &self.mmap[start..end]
+    }
+
+    /// Raw bytes of the BM25 postings section.
+    pub fn bm25_posting_bytes(&self) -> &[u8] {
+        let Some(h) = self.call_graph_header() else {
+            return &[];
+        };
+        let start = h.bm25_postings_offset as usize;
+        let end = start + h.bm25_postings_len as usize;
+        if end > self.mmap.len() {
+            return &[];
+        }
+        &self.mmap[start..end]
+    }
+
+    /// Raw bytes of the BM25 stats section.
+    pub fn bm25_stats_bytes(&self) -> &[u8] {
+        let Some(h) = self.call_graph_header() else {
+            return &[];
+        };
+        let start = h.bm25_stats_offset as usize;
+        let end = start + h.bm25_stats_len as usize;
+        if end > self.mmap.len() {
+            return &[];
+        }
+        &self.mmap[start..end]
     }
 }

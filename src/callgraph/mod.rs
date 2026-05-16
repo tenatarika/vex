@@ -166,6 +166,38 @@ fn callees_in_source(content: &str, lang: Language, path: &str, target: &str) ->
     results
 }
 
+/// Extract resolved `(caller_fn_name, caller_fn_line, callee_name, call_line)`
+/// edges from a single source file.
+///
+/// Each call is attributed to its innermost enclosing function definition.
+/// The caller's **definition line** is returned alongside its name so that a
+/// downstream resolver can disambiguate two functions with the same name in
+/// the same file (overloaded methods, duplicate `impl` blocks, etc.).
+///
+/// Returns an empty vec when the language has no call-graph query, when
+/// parsing fails, or when there are no calls inside a function.
+///
+/// Used by `index::pipeline` to build the persistent call-graph sections at
+/// index time. Live-scan paths in this module still use the internal
+/// [`extract_callgraph`].
+pub fn extract_call_edges(content: &str, lang: Language) -> Vec<(String, usize, String, usize)> {
+    let Some((fns, calls)) = extract_callgraph(content, lang) else {
+        return Vec::new();
+    };
+    let mut edges = Vec::with_capacity(calls.len());
+    for call in &calls {
+        // Find the innermost containing function (smallest byte range).
+        if let Some(f) = fns
+            .iter()
+            .filter(|f| call.byte_offset >= f.start_byte && call.byte_offset < f.end_byte)
+            .min_by_key(|f| f.end_byte - f.start_byte)
+        {
+            edges.push((f.name.clone(), f.line, call.callee.clone(), call.line));
+        }
+    }
+    edges
+}
+
 /// Extract function definitions and call expressions from source.
 fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<Call>)> {
     let query_src = callgraph_query(lang)?;
