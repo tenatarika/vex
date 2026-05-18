@@ -133,7 +133,13 @@ mod tests {
         let dir = setup_test_dir();
         let matches = search(dir.path(), "def", Some("api"), 50, &[]).unwrap();
         assert_eq!(matches.len(), 1);
-        assert!(matches[0].path.contains("api/"));
+        // Path separators differ between Unix (`api/routes.py`) and
+        // Windows (`api\routes.py`); assert on the directory name only.
+        assert!(
+            matches[0].path.contains("api"),
+            "expected match path to contain `api`, got {:?}",
+            matches[0].path
+        );
     }
 
     #[test]

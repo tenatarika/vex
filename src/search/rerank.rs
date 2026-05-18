@@ -199,7 +199,11 @@ fn parent_of(dir: &str) -> &str {
 }
 
 fn is_test_path(path: &str) -> bool {
-    let p = path.to_lowercase();
+    // Normalize backslashes so the same substring checks work for
+    // Windows-style paths (`tests\foo.rs`) too. Indexed paths preserve
+    // the host separator, so without normalization the down-rank for
+    // tests would silently disable itself on Windows.
+    let p = path.to_lowercase().replace('\\', "/");
     p.contains("/test/")
         || p.contains("/tests/")
         || p.contains("/test_")
