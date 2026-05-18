@@ -391,7 +391,7 @@ pub enum Commands {
     /// binary in place. Works on Linux, macOS, and Windows.
     SelfUpdate {
         /// Print the latest release version without modifying anything.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "yes")]
         check: bool,
 
         /// Skip the interactive confirmation prompt.

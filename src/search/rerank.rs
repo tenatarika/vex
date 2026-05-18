@@ -199,11 +199,19 @@ fn parent_of(dir: &str) -> &str {
 }
 
 fn is_test_path(path: &str) -> bool {
-    // Normalize backslashes so the same substring checks work for
-    // Windows-style paths (`tests\foo.rs`) too. Indexed paths preserve
-    // the host separator, so without normalization the down-rank for
-    // tests would silently disable itself on Windows.
-    let p = path.to_lowercase().replace('\\', "/");
+    // Hot path: runs once per search result during ranking. The common
+    // case (Unix) allocates once for the lowercase conversion; Windows
+    // pays a second allocation to swap separators. Indexed paths
+    // preserve the host separator, so without this normalization the
+    // tests down-rank would silently disable itself on Windows.
+    let lowered = path.to_lowercase();
+    let owned_normalized;
+    let p: &str = if lowered.contains('\\') {
+        owned_normalized = lowered.replace('\\', "/");
+        &owned_normalized
+    } else {
+        lowered.as_str()
+    };
     p.contains("/test/")
         || p.contains("/tests/")
         || p.contains("/test_")

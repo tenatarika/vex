@@ -1071,7 +1071,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
 
-        Commands::SelfUpdate { check, yes } => cmd_self_update(check, yes),
+        Commands::SelfUpdate { check, yes } => {
+            // Named at the call site so a future refactor cannot silently
+            // swap the two boolean positional args.
+            cmd_self_update(/*check_only=*/ check, /*no_confirm=*/ yes)
+        }
     }
 }
 
@@ -1089,18 +1093,25 @@ fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> {
         .show_download_progress(true)
         .no_confirm(no_confirm)
         .build()
-        .context("build self_update")?;
+        .context("configure self-update client")?;
 
     if check_only {
         let release = status
             .get_latest_release()
-            .context("fetch latest release from GitHub")?;
+            .context("fetch latest release from GitHub (offline or rate-limited?)")?;
         let latest = release.version.as_str();
         if latest == current {
             println!("vex is up to date ({current}).");
-        } else if self_update::version::bump_is_greater(current, latest).unwrap_or(false) {
+            return Ok(());
+        }
+        // Surface a semver parse failure as an error rather than silently
+        // mis-reporting direction — a release tagged with an unexpected
+        // prefix would otherwise produce a confusing "no action needed".
+        let newer = self_update::version::bump_is_greater(current, latest)
+            .with_context(|| format!("could not compare versions {current:?} and {latest:?}"))?;
+        if newer {
             println!(
-                "Update available: {current} → {latest} ({}).\nRun `vex self-update` to install.",
+                "Update available: {current} → {latest} ({}).\nRun `vex self-update` (omit --check) to install.",
                 release.name
             );
         } else {
