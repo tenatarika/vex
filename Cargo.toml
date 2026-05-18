@@ -97,14 +97,15 @@ fs2 = "0.4"
 clap_complete = "4.5"
 
 # Self-update: fetches GitHub releases and replaces the running binary in place.
-# `rustls-tls` avoids the openssl C dependency so Windows builds stay
-# self-contained. `compression-flate2` covers .tar.gz; `archive-zip` covers
-# the Windows `.zip` artifact.
+# `rustls` avoids the openssl C dependency so Windows builds stay
+# self-contained. `signatures` enables ed25519 verification via zipsign so a
+# compromised release / CDN cannot silently push a malicious binary.
 self_update = { version = "0.42", default-features = false, features = [
     "rustls",
     "compression-flate2",
     "archive-tar",
     "archive-zip",
+    "signatures",
 ] }
 
 [dev-dependencies]

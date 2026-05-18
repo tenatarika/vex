@@ -1079,10 +1079,22 @@ pub fn dispatch(cli: Cli) -> Result<()> {
     }
 }
 
+/// ed25519 public key used to verify release archives signed in CI via
+/// `zipsign`. Anyone modifying this MUST also rotate the corresponding
+/// private key stored in the `ZIPSIGN_PRIVATE_KEY` GitHub Secret —
+/// otherwise every subsequent release will fail to verify on update.
+///
+/// Generation: `zipsign gen-key vex.priv vex.pub`. The 32 bytes below
+/// are the raw contents of `vex.pub`.
+const VEX_RELEASE_PUBKEY: &[u8] = &[
+    0x03, 0x9e, 0x75, 0x96, 0xbe, 0x60, 0xaf, 0x61, 0xdf, 0xdf, 0xb7, 0x93, 0x07, 0xc3, 0x2e, 0x95,
+    0x38, 0xc9, 0x35, 0xc0, 0xe2, 0x05, 0xcc, 0x9d, 0x0e, 0x31, 0xf9, 0x66, 0x7d, 0xa6, 0x49, 0x51,
+];
+
 /// Update the running binary from the latest GitHub release. The
 /// self_update crate handles platform detection (target triple), archive
-/// download, atomic file replacement, and Windows-specific
-/// in-use-binary swap via a temp rename.
+/// download, ed25519 signature verification, atomic file replacement,
+/// and Windows-specific in-use-binary swap via a temp rename.
 fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     let status = self_update::backends::github::Update::configure()
@@ -1092,6 +1104,8 @@ fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> {
         .current_version(current)
         .show_download_progress(true)
         .no_confirm(no_confirm)
+        .verifying_keys([*<&[u8; 32]>::try_from(VEX_RELEASE_PUBKEY)
+            .expect("VEX_RELEASE_PUBKEY must be 32 bytes")])
         .build()
         .context("configure self-update client")?;
 
