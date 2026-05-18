@@ -15,6 +15,11 @@ pub struct Cli {
     /// Output format (overrides .vex.toml)
     #[arg(long, global = true)]
     pub format: Option<OutputFormat>,
+
+    /// Override the cache root for the index (overrides .vex.toml and $VEX_CACHE_DIR).
+    /// Accepts absolute paths, `~/...`, or paths relative to the current directory.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub cache_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -44,6 +49,11 @@ pub enum Commands {
         /// Embedder ID for semantic indexing (default: minilm-l6-v2)
         #[arg(long)]
         embedder: Option<String>,
+
+        /// Worker threads for parallel indexing. Default = 80% of cores, rounded up.
+        /// Pass `0` to use all cores; pass N for exactly N workers.
+        #[arg(short = 'j', long)]
+        jobs: Option<usize>,
     },
 
     /// Search symbols by name or semantics
@@ -145,6 +155,11 @@ pub enum Commands {
         /// Embedder ID for semantic indexing (default: minilm-l6-v2)
         #[arg(long)]
         embedder: Option<String>,
+
+        /// Worker threads for parallel indexing. Default = 80% of cores, rounded up.
+        /// Pass `0` to use all cores; pass N for exactly N workers.
+        #[arg(short = 'j', long)]
+        jobs: Option<usize>,
     },
 
     /// Show structure of a file (symbols, kinds, lines)
@@ -174,6 +189,11 @@ pub enum Commands {
         /// Embedder ID for semantic indexing (default: minilm-l6-v2)
         #[arg(long)]
         embedder: Option<String>,
+
+        /// Worker threads for parallel indexing. Default = 80% of cores, rounded up.
+        /// Pass `0` to use all cores; pass N for exactly N workers.
+        #[arg(short = 'j', long)]
+        jobs: Option<usize>,
     },
 
     /// Show the full body of a symbol (function, class, struct, etc.)

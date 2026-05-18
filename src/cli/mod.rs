@@ -19,6 +19,17 @@ fn resolve_root(path: Option<std::path::PathBuf>) -> Result<std::path::PathBuf> 
     }
 }
 
+/// Extract the `-j/--jobs` hint from a subcommand for the rayon-pool
+/// initialization. Only the three indexing commands carry the flag.
+fn extract_jobs_hint(cmd: &Commands) -> Option<usize> {
+    match cmd {
+        Commands::Index { jobs, .. }
+        | Commands::Update { jobs, .. }
+        | Commands::Watch { jobs, .. } => *jobs,
+        _ => None,
+    }
+}
+
 /// Extract the --path hint from a subcommand for config loading.
 fn extract_path_hint(cmd: &Commands) -> Option<std::path::PathBuf> {
     match cmd {
@@ -175,17 +186,49 @@ pub fn dispatch(cli: Cli) -> Result<()> {
     let format = resolve_format(cli.format, &cfg);
     let excludes = &cfg.exclude;
 
+    // Install the cache-root override (CLI > env > config > platform default).
+    // Done once here so every config::index_path/index_dir call downstream
+    // sees the resolved value without us threading it through 20+ call sites.
+    let resolved_cache = config::resolve_cache_root(cli.cache_dir.as_deref(), &cfg);
+    let local_cache_active = resolved_cache.skip_hash_subdir;
+    config::set_cache_override(resolved_cache.root, resolved_cache.skip_hash_subdir);
+
+    // Configure the global rayon pool before any par_iter runs.
+    //   * Indexing commands (Index/Update/Watch) always init — that is
+    //     where the 80% default earns its keep on long runs.
+    //   * Non-indexing commands only init when the user has an explicit
+    //     setting (CLI/env/config). Otherwise we leave rayon at its lazy
+    //     default so a fast `vex check` / `vex search` does not spawn
+    //     parked worker threads it never uses.
+    let jobs_cli = extract_jobs_hint(&cli.command);
+    let is_indexing_cmd = matches!(
+        cli.command,
+        Commands::Index { .. } | Commands::Update { .. } | Commands::Watch { .. }
+    );
+    if is_indexing_cmd {
+        config::init_rayon_pool(config::resolve_jobs(jobs_cli, &cfg));
+    } else if let Some(n) = config::resolve_explicit_jobs(jobs_cli, &cfg) {
+        config::init_rayon_pool(n);
+    }
+
     match cli.command {
         Commands::Index {
             path,
             semantic,
             no_semantic,
             embedder,
+            jobs,
         } => {
             let root = resolve_root(path)?;
             let start = Instant::now();
             let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
             let embedder_id = resolve_embedder(embedder.as_deref(), &cfg);
+            let _ = jobs; // honoured via dispatch-level rayon init
+            if local_cache_active {
+                let cache_root = config::index_dir(&root);
+                std::fs::create_dir_all(&cache_root).ok();
+                config::write_local_cache_gitignore(&cache_root);
+            }
             let count = pipeline::run(&root, with_semantic, &embedder_id, excludes)?;
             let elapsed = start.elapsed();
             let index_path = config::index_path(&root.canonicalize()?);
@@ -497,11 +540,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             semantic,
             no_semantic,
             embedder,
+            jobs,
         } => {
             let root = resolve_root(path)?;
             let start = Instant::now();
             let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
             let embedder_id = resolve_embedder(embedder.as_deref(), &cfg);
+            let _ = jobs; // honoured via dispatch-level rayon init
             let (total, changed, deleted) =
                 pipeline::update(&root, with_semantic, &embedder_id, excludes)?;
             let elapsed = start.elapsed();
@@ -532,10 +577,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             semantic,
             no_semantic,
             embedder,
+            jobs,
         } => {
             let root = resolve_root(path)?;
             let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
             let embedder_id = resolve_embedder(embedder.as_deref(), &cfg);
+            let _ = jobs; // honoured via dispatch-level rayon init
             crate::watch::handler::watch(&root, with_semantic, &embedder_id, excludes)?;
             Ok(())
         }
