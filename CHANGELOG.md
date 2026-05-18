@@ -6,6 +6,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-05-18
+
+Configurable cache location, first-class Windows support, and a thread-count
+limit for parallel indexing. The original trigger was a Windows-only MCP
+bug — `dirs_home()` had no Windows branch and fell back to `/tmp`, producing
+mangled paths like `/tmp\.cache\vex\<hash>`. Fixing that path resolver turned
+into a broader rework of cache management.
+
+### Added
+- **`--cache-dir <PATH>` global flag** plus `$VEX_CACHE_DIR` env var to override the cache root per-invocation
+- **`cache_dir = "..."` in `.vex.toml`** — accepts absolute paths, `~/...`, and paths relative to the config file (e.g. `"./.vex/cache"`)
+- **`local_cache = true` in `.vex.toml`** — store the index at `<project>/.vex_cache/` without a project-hash subdirectory. vex auto-writes a `.gitignore` so the cache is not committed. Useful when the cache should travel with the project (renames, copies, moves)
+- **`-j/--jobs N` flag** on `index`, `update`, `watch` to cap the worker pool. Mirrored by `$VEX_JOBS` and `jobs = N` in `.vex.toml`
+- **80% default thread count** (rounded up, floor 1) when no explicit jobs setting is supplied. Leaves headroom for the editor / browser / language server sharing the machine. Pass `0` to keep using every core
+- **Windows cache locations**: `%LOCALAPPDATA%\vex` (with `%USERPROFILE%\AppData\Local\vex` and `$HOME\AppData\Local\vex` as fallbacks). No more `/tmp` literal anywhere in the resolver
+
+### Fixed
+- **MCP server now forwards `--auto-update`** to the seven index-backed commands (`search`, `find_symbol`, `find_similar`, `show`, `usages`, `check`, `similar`, `duplicates`). Previously a stale index surfaced as a tool failure to the MCP client even though the bare CLI handled the same condition transparently
+- **MCP cache path mangling on Windows** — `HOME` fell back to `/tmp` and downstream paths became `/tmp\.cache\vex\<hash>\index.vex`. Fixed by the new platform-aware resolver
+
+### Changed
+- `.vex.toml` now accepts `cache_dir`, `local_cache`, and `jobs` fields (all optional). Existing configs continue to parse unchanged
+- Default worker count for parallel indexing dropped from "all cores" to "ceil(80%)". To restore the previous behaviour, set `jobs = 0` in `.vex.toml`, `$VEX_JOBS=0`, or pass `-j 0`. The change only affects indexing commands; one-shot search/show calls do not eagerly initialize the rayon pool
+
+### Security
+- **Path-traversal blocker** for `cache_dir`. A `.vex.toml` shared via a monorepo cannot redirect index writes outside the project root via `..` segments, including post-tilde-expansion cases like `~/../etc/evil`. Rejected paths produce a warning and fall back to the platform default
+- **Atomic `.gitignore` creation** for `local_cache` uses `OpenOptions::create_new` so a planted symlink at `.vex_cache/.gitignore` cannot be overwritten
+
+### Internal
+- `VexConfig` records the directory of the `.vex.toml` that produced it (`source_dir`) so relative `cache_dir` values resolve against the config file, not the cwd
+- Cache override is installed once at `dispatch()` via `OnceLock<CacheLayout>`, avoiding a per-call-site parameter through 20+ index/manifest/hnsw path accessors
+- New helpers in `util::config`: `resolve_cache_root` (`ResolvedCache { root, skip_hash_subdir }`), `resolve_jobs`, `resolve_explicit_jobs`, `default_thread_count`, `expand_user`, `write_local_cache_gitignore`, `set_cache_override`, `init_rayon_pool`
+- Test env helper uses an RAII `Drop` guard so a panicking test cannot leak mutated env into the next; poisoned-mutex recovery via `unwrap_or_else(|e| e.into_inner())`
+- 17 new unit tests covering the cache-resolution priority chain, tilde expansion, path-traversal rejection (relative and tilde-bypass), local_cache layout, VEX_JOBS opt-ins, and the 80%-default formula
+
 ## [1.5.0] - 2026-05-16
 
 Phase 9 ships hybrid search v2: three orthogonal channels (structural FST,
