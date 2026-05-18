@@ -62,12 +62,23 @@ $ vex check "Foo" "Bar" "Baz"              # fast existence check
 brew tap tenatarika/tap
 brew install vex
 
-# From source
+# From source (any platform with a Rust toolchain)
 git clone https://github.com/tenatarika/vex.git
 cd vex
 cargo build --release
 cp target/release/vex ~/.local/bin/
 ```
+
+### Windows
+
+Pre-built `vex.exe` ships in every GitHub Release.
+
+1. Download `vex-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/tenatarika/vex/releases/latest)
+2. Extract `vex.exe` somewhere stable (e.g. `C:\Users\<you>\bin\`)
+3. Add that folder to `PATH` (System Properties → Environment Variables → edit `Path` → add the folder)
+4. Open a fresh terminal and run `vex --version`
+
+To update, run `vex self-update` — it fetches the latest release, picks the right archive for your platform, and replaces the binary in-place. Same command works on macOS and Linux too.
 
 ## Quick Start
 

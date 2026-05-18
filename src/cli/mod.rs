@@ -1070,7 +1070,53 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             println!("Created {}", path.display());
             Ok(())
         }
+
+        Commands::SelfUpdate { check, yes } => cmd_self_update(check, yes),
     }
+}
+
+/// Update the running binary from the latest GitHub release. The
+/// self_update crate handles platform detection (target triple), archive
+/// download, atomic file replacement, and Windows-specific
+/// in-use-binary swap via a temp rename.
+fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    let status = self_update::backends::github::Update::configure()
+        .repo_owner("tenatarika")
+        .repo_name("vex")
+        .bin_name("vex")
+        .current_version(current)
+        .show_download_progress(true)
+        .no_confirm(no_confirm)
+        .build()
+        .context("build self_update")?;
+
+    if check_only {
+        let release = status
+            .get_latest_release()
+            .context("fetch latest release from GitHub")?;
+        let latest = release.version.as_str();
+        if latest == current {
+            println!("vex is up to date ({current}).");
+        } else if self_update::version::bump_is_greater(current, latest).unwrap_or(false) {
+            println!(
+                "Update available: {current} → {latest} ({}).\nRun `vex self-update` to install.",
+                release.name
+            );
+        } else {
+            // Local build ahead of GitHub (e.g. a dev branch). Don't
+            // pretend an update is needed — just report what's out there.
+            println!("Latest release: {latest} (current: {current} — newer, no action needed).");
+        }
+        return Ok(());
+    }
+
+    let result = status.update().context("apply self-update")?;
+    match result {
+        self_update::Status::UpToDate(v) => println!("vex is already up to date ({v})."),
+        self_update::Status::Updated(v) => println!("Updated to vex {v}. Restart any open shells."),
+    }
+    Ok(())
 }
 
 fn cmd_callgraph(

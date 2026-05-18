@@ -386,4 +386,16 @@ pub enum Commands {
 
     /// Create a default .vex.toml config file in the current directory
     Init,
+
+    /// Update vex to the latest GitHub release. Replaces the running
+    /// binary in place. Works on Linux, macOS, and Windows.
+    SelfUpdate {
+        /// Print the latest release version without modifying anything.
+        #[arg(long)]
+        check: bool,
+
+        /// Skip the interactive confirmation prompt.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
