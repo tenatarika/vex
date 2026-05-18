@@ -6,6 +6,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-05-18
+
+Follow-up patch for v1.6.0. Adds the `vex self-update` subcommand that
+Windows users needed (no Homebrew tap), and fixes the two Windows path
+issues that surfaced once CI started running on `windows-latest` for the
+first time.
+
+### Added
+- **`vex self-update` subcommand** — fetches the latest GitHub release, picks the archive for the running target triple, and replaces the binary in place. Works on Linux, macOS, and Windows. `--check` reports the latest version without modifying anything; `-y/--yes` skips the interactive confirmation. Closes the upgrade-flow gap on platforms without a package manager
+- **Windows install section in README** — step-by-step for downloading `vex-x86_64-pc-windows-msvc.zip`, extracting `vex.exe`, and putting it on `PATH`
+
+### Fixed
+- **`is_test_path` on Windows** — the test-file down-rank heuristic in `search::rerank` checked for `/test/`, `/tests/`, etc. as substrings. Indexed paths preserve the host separator, so on Windows the heuristic silently never matched and test files received no rank penalty. Now normalizes backslashes before the scan, allocating the extra string only when needed
+- **`grep::tests::grep_with_path_filter`** asserted `matches[0].path.contains("api/")` which fails on Windows (paths are `api\routes.py`). Assertion now contains "api" without the trailing slash, OS-agnostic
+
+### Security
+- **ed25519 signature verification** for `vex self-update`. Every release archive is signed in CI via [`zipsign`](https://github.com/Kijewski/zipsign); the 32-byte verifying key is embedded in the binary at compile time. The download path refuses to extract an archive whose signature does not match. Mitigates the "compromised GitHub account / CDN tamper" scenario in the v1.6.0 self-update threat model
+- `vex self-update` continues to use rustls (no openssl C dep), enforces certificate validation by default, and refuses to apply a downgrade
+- Key rotation and one-time setup documented in [`docs/RELEASING.md`](docs/RELEASING.md)
+
+### Internal
+- `--check` and `-y/--yes` are mutually exclusive at the clap layer (the combination would have silently dropped one flag)
+- `self_update::version::bump_is_greater` parse failures surface via `?` instead of `.unwrap_or(false)` so an unexpectedly-tagged release is reported as an error, not a silent "no action needed"
+- Named-argument comments at the `cmd_self_update` call site guard against a future refactor swapping the two `bool` positionals
+
 ## [1.6.0] - 2026-05-18
 
 Configurable cache location, first-class Windows support, and a thread-count
