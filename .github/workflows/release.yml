@@ -74,17 +74,31 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 is required so git-cliff sees every commit and tag
+      # between the previous release and the one we're cutting now.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
 
+      - name: Generate release body
+        uses: orhun/git-cliff-action@v3
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: release-body.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release-body.md
           files: |
             vex-*.tar.gz
             vex-*.zip
-          generate_release_notes: true
 
   update-homebrew:
     needs: release

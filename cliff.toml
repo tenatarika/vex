@@ -1,0 +1,66 @@
+# git-cliff configuration — https://git-cliff.org/docs/configuration
+#
+# Used by the release workflow to auto-generate the GitHub Release body
+# from commits since the previous tag. The curated CHANGELOG.md remains
+# the source of truth for the narrative; this config produces the
+# cheaper auto-categorized commit summary that GitHub releases display.
+
+[changelog]
+# Render only the body — the workflow passes --strip header, so a
+# top-level "# Changelog" heading would be redundant.
+header = ""
+
+body = """
+{% if version -%}
+## {{ version }} — {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+## Unreleased
+{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {{ commit.message | split(pat="\n") | first | upper_first }}\
+    {% if commit.breaking %} **[breaking]**{% endif %}\
+    {% if commit.id %} ({{ commit.id | truncate(length=7, end="") }}){% endif %}
+{%- endfor %}
+{% endfor %}
+"""
+
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+# Keep non-conforming commits — they go to a "miscellaneous" group rather
+# than being silently dropped, so any local-fix commit still gets surfaced.
+filter_unconventional = false
+split_commits = false
+protect_breaking_commits = true
+# Order: most recent commits last within a group.
+sort_commits = "oldest"
+
+# Match in priority order — first match wins. Scoped groups (like
+# `chore(ci)`) must come before their generic prefix (`chore`).
+commit_parsers = [
+    # Skip the version-bump and release-notes prep commits — they are
+    # mechanical and add no signal to the release body.
+    { message = "^chore: bump version", skip = true },
+    { message = "^chore\\(release\\)", skip = true },
+    { message = "^docs:? prepare v[0-9]", skip = true },
+
+    { message = "^feat", group = "Features" },
+    { message = "^fix", group = "Bug Fixes" },
+    { message = "^perf", group = "Performance" },
+    { message = "^security", group = "Security" },
+    { message = "^revert", group = "Reverts" },
+    { message = "^refactor", group = "Refactoring" },
+    { message = "^test", group = "Tests" },
+    { message = "^docs", group = "Documentation" },
+    { message = "^chore\\(ci\\)", group = "CI" },
+    { message = "^build", group = "Build" },
+    { message = "^ci", group = "CI" },
+    # Plain `chore:` commits are usually housekeeping noise (dep bumps,
+    # formatting). Surface them under a generic bucket — easier to spot
+    # if something slipped through than to silently drop them.
+    { message = "^chore", group = "Miscellaneous" },
+]
