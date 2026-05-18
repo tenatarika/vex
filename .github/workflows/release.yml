@@ -113,13 +113,19 @@ jobs:
             [ -f "$f" ] && zipsign sign zip "$f" "$keyfile"
           done
 
-      - name: Generate release body
-        uses: orhun/git-cliff-action@v3
+      # orhun/git-cliff-action@v3 was originally used here, but its
+      # Docker base image (debian:buster) is now EOL — `apt-get update`
+      # fails because the buster repositories returned 404. Install the
+      # tool directly instead; taiki-e/install-action fetches the
+      # prebuilt binary from the git-cliff release assets, so there is
+      # no Docker base layer to bitrot.
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
         with:
-          config: cliff.toml
-          args: --latest --strip header
-        env:
-          OUTPUT: release-body.md
+          tool: git-cliff
+
+      - name: Generate release body
+        run: git-cliff --config cliff.toml --strip header --latest -o release-body.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
