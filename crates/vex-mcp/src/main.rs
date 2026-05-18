@@ -142,6 +142,20 @@ fn handle_tool_call(params: &Option<Value>) -> Result<Value> {
     }))
 }
 
+/// Whether the caller asked vex to auto-update the index if stale.
+/// Defaults to `true` because the bare CLI does the same thing for the
+/// commands that accept the flag, and MCP clients are otherwise unable
+/// to react to staleness errors mid-conversation.
+fn auto_update(args: &Value) -> bool {
+    args["auto_update"].as_bool().unwrap_or(true)
+}
+
+fn push_auto_update(extra: &mut Vec<String>, args: &Value) {
+    if auto_update(args) {
+        extra.push("--auto-update".into());
+    }
+}
+
 fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String, Vec<String>)> {
     match tool {
         "search" => {
@@ -152,26 +166,25 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
             if semantic {
                 extra.push("--semantic".into());
             }
+            push_auto_update(&mut extra, args);
             Ok(("search".into(), extra))
         }
         "find_symbol" => {
             let name = args["name"].as_str().context("missing name")?;
-            Ok((
-                "search".into(),
-                vec![name.to_string(), "--limit".into(), "10".into()],
-            ))
+            let mut extra = vec![name.to_string(), "--limit".into(), "10".into()];
+            push_auto_update(&mut extra, args);
+            Ok(("search".into(), extra))
         }
         "find_similar" => {
             let query = args["query"].as_str().context("missing query")?;
-            Ok((
-                "search".into(),
-                vec![
-                    query.to_string(),
-                    "--semantic".into(),
-                    "--limit".into(),
-                    "10".into(),
-                ],
-            ))
+            let mut extra = vec![
+                query.to_string(),
+                "--semantic".into(),
+                "--limit".into(),
+                "10".into(),
+            ];
+            push_auto_update(&mut extra, args);
+            Ok(("search".into(), extra))
         }
         "outline" => {
             let file = args["file"].as_str().context("missing file")?;
@@ -210,15 +223,15 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
             let limit = args["limit"].as_u64().unwrap_or(1);
             let mut extra = symbols;
             extra.extend(["--limit".into(), limit.to_string()]);
+            push_auto_update(&mut extra, args);
             Ok(("show".into(), extra))
         }
         "usages" => {
             let name = args["name"].as_str().context("missing name")?;
             let limit = args["limit"].as_u64().unwrap_or(50);
-            Ok((
-                "usages".into(),
-                vec![name.to_string(), "--limit".into(), limit.to_string()],
-            ))
+            let mut extra = vec![name.to_string(), "--limit".into(), limit.to_string()];
+            push_auto_update(&mut extra, args);
+            Ok(("usages".into(), extra))
         }
         "grep" => {
             let pattern = args["pattern"].as_str().context("missing pattern")?;
@@ -287,7 +300,9 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
             if names.is_empty() {
                 anyhow::bail!("names array is empty");
             }
-            Ok(("check".into(), names))
+            let mut extra = names;
+            push_auto_update(&mut extra, args);
+            Ok(("check".into(), extra))
         }
         "similar" => {
             let name = args["name"].as_str().context("missing name")?;
@@ -305,6 +320,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
             if let Some(filter) = args["filter"].as_str() {
                 extra.extend(["--filter".into(), filter.to_string()]);
             }
+            push_auto_update(&mut extra, args);
             Ok(("similar".into(), extra))
         }
         "duplicates" => {
@@ -324,6 +340,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
             if let Some(filter) = args["filter"].as_str() {
                 extra.extend(["--filter".into(), filter.to_string()]);
             }
+            push_auto_update(&mut extra, args);
             Ok(("duplicates".into(), extra))
         }
         _ => anyhow::bail!("unknown tool: {tool}"),
@@ -341,7 +358,8 @@ fn tool_descriptors() -> Value {
                     "query": { "type": "string", "description": "Search query — symbol name, pattern, or natural language" },
                     "limit": { "type": "integer", "description": "Max results", "default": 20 },
                     "semantic": { "type": "boolean", "description": "Enable semantic vector search", "default": false },
-                    "project_root": { "type": "string", "description": "Project root path" }
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
                 },
                 "required": ["query"]
             }
@@ -353,7 +371,8 @@ fn tool_descriptors() -> Value {
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "description": "Symbol name to find" },
-                    "project_root": { "type": "string", "description": "Project root path" }
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
                 },
                 "required": ["name"]
             }
@@ -365,7 +384,8 @@ fn tool_descriptors() -> Value {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Natural language description" },
-                    "project_root": { "type": "string", "description": "Project root path" }
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
                 },
                 "required": ["query"]
             }
@@ -424,7 +444,8 @@ fn tool_descriptors() -> Value {
                 "properties": {
                     "symbols": { "type": "array", "items": { "type": "string" }, "description": "Symbol names to show" },
                     "limit": { "type": "integer", "description": "Max results per symbol", "default": 1 },
-                    "project_root": { "type": "string", "description": "Project root path" }
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
                 },
                 "required": ["symbols"]
             }
@@ -437,7 +458,8 @@ fn tool_descriptors() -> Value {
                 "properties": {
                     "name": { "type": "string", "description": "Symbol name to find usages of" },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
-                    "project_root": { "type": "string", "description": "Project root path" }
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
                 },
                 "required": ["name"]
             }
@@ -502,7 +524,8 @@ fn tool_descriptors() -> Value {
                 "type": "object",
                 "properties": {
                     "names": { "type": "array", "items": { "type": "string" }, "description": "Symbol names to check" },
-                    "project_root": { "type": "string", "description": "Project root path" }
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
                 },
                 "required": ["names"]
             }
@@ -517,7 +540,8 @@ fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 10 },
                     "threshold": { "type": "number", "description": "Minimum cosine similarity (0.0..1.0)", "default": 0.5 },
                     "filter": { "type": "string", "description": "Filter results by path substring" },
-                    "project_root": { "type": "string", "description": "Project root path" }
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
                 },
                 "required": ["name"]
             }
@@ -532,7 +556,8 @@ fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max pairs to return", "default": 50 },
                     "min_body_lines": { "type": "integer", "description": "Skip symbols with body shorter than this many lines", "default": 5 },
                     "filter": { "type": "string", "description": "Restrict to pairs where at least one symbol's path contains this substring" },
-                    "project_root": { "type": "string", "description": "Project root path" }
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
                 }
             }
         }
