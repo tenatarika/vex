@@ -12,24 +12,32 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
-      - run: cargo test
+        if: matrix.os == 'ubuntu-latest'
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
 
   build:
     needs: test
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -41,16 +49,26 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Package (unix)
+        if: matrix.os != 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../vex-${{ matrix.target }}.tar.gz vex
           cd ../../..
 
+      - name: Package (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/vex.exe -DestinationPath vex-${{ matrix.target }}.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: vex-${{ matrix.target }}
-          path: vex-${{ matrix.target }}.tar.gz
+          path: |
+            vex-${{ matrix.target }}.tar.gz
+            vex-${{ matrix.target }}.zip
+          if-no-files-found: error
 
   release:
     needs: build
@@ -63,7 +81,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: vex-*.tar.gz
+          files: |
+            vex-*.tar.gz
+            vex-*.zip
           generate_release_notes: true
 
   update-homebrew:
