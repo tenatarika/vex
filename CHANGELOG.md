@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-05-19
+
+Windows-only patch for the `vex self-update` failure reported on v1.6.2.
+
+### Fixed
+- **Windows zip archive now uses standard Deflate (method 8) instead of Deflate64.** PowerShell's `Compress-Archive` on the `windows-latest` runner emits Deflate64 in some configurations — .NET can decompress it, but the `zip` crate inside `self_update 0.42` cannot, surfacing as `Compression method not supported` when `vex self-update` tries to extract the new release. Release packaging now invokes `7z a -tzip -mm=Deflate` (preinstalled on `windows-latest`) which forces compatible compression. zipsign continues to preserve the method, so signed archives are also Deflate-compressed end-to-end.
+- **Migration**: v1.6.1 → v1.6.2 self-update on Windows failed for users on v1.6.1 trying to land on v1.6.2 (and v1.6.0 → v1.6.1 in retrospect was likely affected too). v1.6.2 → v1.6.3 should self-update normally because v1.6.3 ships standard Deflate, which the existing v1.6.2 binary can read. If `vex self-update` from v1.6.2 still fails for any reason, download `vex-x86_64-pc-windows-msvc.zip` from the v1.6.3 release page once — from 1.6.3 onwards updates are clean.
+
 ## [1.6.2] - 2026-05-19
 
 UX/perf hotfix on top of v1.6.1, motivated by Windows users hitting two
