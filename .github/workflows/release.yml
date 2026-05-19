@@ -88,7 +88,8 @@ jobs:
           bad = []
           for info in z.infolist():
               if info.compress_type != 8:
-                  bad.append(f'{info.filename}: method={info.compress_type} ({names.get(info.compress_type, \"unknown\")})')
+                  method_name = names.get(info.compress_type, 'unknown')
+                  bad.append(f'{info.filename}: method={info.compress_type} ({method_name})')
           if bad:
               print(f'FAIL: {archive} has entries not using Deflate:')
               for b in bad: print(f'  {b}')
