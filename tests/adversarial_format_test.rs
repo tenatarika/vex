@@ -457,3 +457,41 @@ fn legacy_version_2_no_crash() {
         }
     }
 }
+
+/// 10.6 regression: every IndexReader::open failure must surface the index
+/// file path so the user can `rm` it without grepping stderr for the cache
+/// location.
+#[test]
+fn open_error_includes_index_path() {
+    assert_header_size();
+    let mut buf = minimal_valid_header_bytes();
+    buf[0..4].copy_from_slice(b"NOPE"); // bad magic — picks one of the bail! paths
+    let f = write_tmp(&buf);
+    let err = match IndexReader::open(f.path()) {
+        Ok(_) => panic!("expected Err for bad magic"),
+        Err(e) => e,
+    };
+    let msg = format!("{err:#}"); // anyhow chain
+    let path_str = f.path().to_string_lossy();
+    assert!(
+        msg.contains(path_str.as_ref()),
+        "open error should include the index file path `{path_str}`, got: {msg}"
+    );
+}
+
+/// 10.6 regression: opening a non-existent file should also surface the
+/// requested path (different code path — `File::open` failure rather than a
+/// `bail!` after mmap).
+#[test]
+fn open_missing_file_error_includes_path() {
+    let path = std::path::PathBuf::from("/nonexistent-vex-test-path/index.vex");
+    let err = match IndexReader::open(&path) {
+        Ok(_) => panic!("expected Err for nonexistent file"),
+        Err(e) => e,
+    };
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("/nonexistent-vex-test-path/index.vex"),
+        "open error should include the requested path, got: {msg}"
+    );
+}

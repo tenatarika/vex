@@ -266,8 +266,12 @@ pub fn resolve_cache_root(cli_override: Option<&Path>, cfg: &VexConfig) -> Resol
             .components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
         {
+            // Show both the raw config value AND what tilde-expansion produced
+            // so a user who wrote `cache_dir = "~/../etc"` can see that the
+            // expansion (not the literal `~/..`) is what triggered the block.
             eprintln!(
-                "warning: cache_dir {s:?} contains `..` traversal — ignoring and using platform default."
+                "warning: cache_dir {s:?} (expanded to {expanded}) contains `..` traversal — ignoring and using platform default.",
+                expanded = expanded.display()
             );
             return ResolvedCache {
                 root: default_cache_root(),

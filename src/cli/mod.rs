@@ -69,8 +69,13 @@ fn resolve_embedder(cli_embedder: Option<&str>, cfg: &config::VexConfig) -> Stri
 /// recorded in the manifest at `root`. Pre-9.1 manifests without
 /// `embedder_id` are treated as the default embedder for back-compat.
 fn check_embedder_match(root: &std::path::Path, requested: &str) -> Result<()> {
-    let manifest = crate::index::manifest::Manifest::load(&config::manifest_path(root))?;
+    let manifest_path = config::manifest_path(root);
+    let manifest = crate::index::manifest::Manifest::load(&manifest_path)?;
+    // Append manifest path so the user can `cat` it to inspect the
+    // recorded embedder_id when the mismatch is surprising. The
+    // embed-module bail message is generic on purpose.
     crate::embed::check_embedder_match(manifest.embedder_id.as_deref(), requested)
+        .with_context(|| format!("manifest: {}", manifest_path.display()))
 }
 
 /// Resolve output format: CLI flag wins, else config, else Text.
@@ -130,9 +135,10 @@ fn handle_staleness(
                     if let Some(stored) = manifest.embedder_id.as_deref() {
                         if stored != embedder_id {
                             bail!(
-                                "auto-update would switch embedder from `{stored}` (manifest) \
+                                "auto-update would switch embedder from `{stored}` (manifest at {}) \
                                  to `{embedder_id}` (current config). Refusing — run \
-                                 `vex index --semantic --embedder {embedder_id}` explicitly."
+                                 `vex index --semantic --embedder {embedder_id}` explicitly.",
+                                manifest_path.display()
                             );
                         }
                     } else if embedder_id != crate::embed::DEFAULT_EMBEDDER {
@@ -233,7 +239,8 @@ fn ensure_index_exists(
         config::write_local_cache_gitignore(&cache_root);
     }
     let embedder_id = resolve_embedder(None, cfg);
-    let count = pipeline::run(root, with_semantic, &embedder_id, &cfg.exclude)?;
+    let count = pipeline::run(root, with_semantic, &embedder_id, &cfg.exclude)
+        .with_context(|| format!("bootstrap index for {}", root.display()))?;
     eprintln!(
         "Bootstrap complete: {count} symbols indexed{}.",
         if with_semantic {
@@ -1320,11 +1327,14 @@ fn cmd_callgraph(
             Ok(r) => Some(r),
             Err(e) => {
                 // Surface the reason for falling back so a corrupt/locked
-                // index doesn't masquerade as "no index found".
-                tracing::warn!(
-                    path = %p.display(),
-                    error = %e,
-                    "index exists but failed to open — falling back to live callgraph scan"
+                // index doesn't masquerade as "no index found". Direct
+                // stderr (not tracing::warn!) because the fallback is a
+                // load-bearing UX event — without it the user sees the
+                // ~seconds live-scan latency and has no clue why.
+                // `{e:#}` includes the anyhow chain (e.g. open + path).
+                eprintln!(
+                    "Warning: index at {} exists but failed to open ({e:#}). Falling back to live callgraph scan.",
+                    p.display()
                 );
                 None
             }

@@ -13,16 +13,22 @@ pub struct IndexReader {
 impl IndexReader {
     /// Open and mmap the index file.
     pub fn open(path: &Path) -> Result<Self> {
-        let file = std::fs::File::open(path).context("open index file")?;
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("open index file at {}", path.display()))?;
         // SAFETY: the file is opened read-only. The mmap is not modified after creation.
         // The Mmap is owned by IndexReader and lives as long as all references to it.
-        let mmap = unsafe { Mmap::map(&file) }.context("mmap index file")?;
+        let mmap = unsafe { Mmap::map(&file) }
+            .with_context(|| format!("mmap index file at {}", path.display()))?;
 
         let reader = Self { mmap };
+        // All validation failures point at the same file path so the user
+        // can act on the message (delete the file, re-run `vex index`)
+        // without having to dig through stderr for the cache location.
+        let p = path.display();
 
         if reader.mmap.len() < Header::SIZE {
             bail!(
-                "index file is too small ({} bytes, need at least {}). Re-run `vex index` to rebuild.",
+                "index file at {p} is too small ({} bytes, need at least {}). Re-run `vex index` to rebuild.",
                 reader.mmap.len(),
                 Header::SIZE
             );
@@ -30,7 +36,7 @@ impl IndexReader {
 
         let header = reader.header();
         if &header.magic != super::format::MAGIC {
-            bail!("index file is corrupted (bad magic). Re-run `vex index` to rebuild.");
+            bail!("index file at {p} is corrupted (bad magic). Re-run `vex index` to rebuild.");
         }
         // Accept any version in [MIN_SUPPORTED_VERSION ..= VERSION], plus
         // legacy v2 (pre-FST). `has_symbol_fst()` / `has_call_graph_header()`
@@ -40,7 +46,7 @@ impl IndexReader {
             v == 2 || (super::format::MIN_SUPPORTED_VERSION..=super::format::VERSION).contains(&v);
         if !supported {
             bail!(
-                "index version mismatch (found v{}, this build supports v2 or v{}..v{}). Re-run `vex index` to rebuild.",
+                "index version mismatch at {p} (found v{}, this build supports v2 or v{}..v{}). Re-run `vex index` to rebuild.",
                 v,
                 super::format::MIN_SUPPORTED_VERSION,
                 super::format::VERSION
@@ -56,7 +62,7 @@ impl IndexReader {
         );
         if sym_end > mmap_len {
             bail!(
-                "index file is truncated (claims {} symbols but file too small). Re-run `vex index` to rebuild.",
+                "index file at {p} is truncated (claims {} symbols but file too small). Re-run `vex index` to rebuild.",
                 header.symbol_count
             );
         }
@@ -78,7 +84,7 @@ impl IndexReader {
             || sym_fst_end > mmap_len
             || sym_post_end > mmap_len
         {
-            bail!("index file is corrupted (section offsets exceed file size). Re-run `vex index` to rebuild.");
+            bail!("index file at {p} is corrupted (section offsets exceed file size). Re-run `vex index` to rebuild.");
         }
 
         // v4: validate CallGraphHeader fits AND its sections fit. Reuse the
@@ -86,7 +92,7 @@ impl IndexReader {
         // matches the read path.
         if header.has_call_graph_header() {
             if (Header::SIZE + CallGraphHeader::SIZE) > reader.mmap.len() {
-                bail!("v4 index is truncated (no room for CallGraphHeader). Re-run `vex index` to rebuild.");
+                bail!("v4 index at {p} is truncated (no room for CallGraphHeader). Re-run `vex index` to rebuild.");
             }
             if let Some(cg) = reader.call_graph_header() {
                 let edges_end = cg.call_edges_offset.saturating_add(cg.call_edges_len);
@@ -110,7 +116,7 @@ impl IndexReader {
                     || bm25_post_end > mmap_len
                     || bm25_stats_end > mmap_len
                 {
-                    bail!("v4 index is corrupted (call-graph or bm25 section offsets exceed file size). Re-run `vex index` to rebuild.");
+                    bail!("v4 index at {p} is corrupted (call-graph or bm25 section offsets exceed file size). Re-run `vex index` to rebuild.");
                 }
             }
         }
