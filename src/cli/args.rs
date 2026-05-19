@@ -54,6 +54,18 @@ pub enum Commands {
         /// Pass `0` to use all cores; pass N for exactly N workers.
         #[arg(short = 'j', long)]
         jobs: Option<usize>,
+
+        /// Skip the persistent call-graph section. `vex callers`/`vex callees`
+        /// will fall back to live-scan. Persisted in the manifest so `vex
+        /// update` honours the opt-out across incremental rebuilds.
+        #[arg(long)]
+        no_call_graph: bool,
+
+        /// Skip the BM25 channel. Hybrid search drops the third RRF channel
+        /// and uses structural (+ semantic if enabled). Persisted in the
+        /// manifest like `--no-call-graph`.
+        #[arg(long)]
+        no_bm25: bool,
     },
 
     /// Search symbols by name or semantics
@@ -160,6 +172,18 @@ pub enum Commands {
         /// Pass `0` to use all cores; pass N for exactly N workers.
         #[arg(short = 'j', long)]
         jobs: Option<usize>,
+
+        /// Skip the persistent call-graph section. Overrides whatever the
+        /// previous build recorded in the manifest. Without this flag,
+        /// `update` honours the previous decision.
+        #[arg(long)]
+        no_call_graph: bool,
+
+        /// Skip the BM25 channel. Overrides whatever the previous build
+        /// recorded in the manifest. Without this flag, `update` honours
+        /// the previous decision.
+        #[arg(long)]
+        no_bm25: bool,
     },
 
     /// Show structure of a file (symbols, kinds, lines)
@@ -194,6 +218,16 @@ pub enum Commands {
         /// Pass `0` to use all cores; pass N for exactly N workers.
         #[arg(short = 'j', long)]
         jobs: Option<usize>,
+
+        /// Skip the persistent call-graph section in both the initial build
+        /// and subsequent incremental updates.
+        #[arg(long)]
+        no_call_graph: bool,
+
+        /// Skip the BM25 channel in both the initial build and subsequent
+        /// incremental updates.
+        #[arg(long)]
+        no_bm25: bool,
     },
 
     /// Show the full body of a symbol (function, class, struct, etc.)

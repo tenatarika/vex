@@ -231,7 +231,13 @@ pub fn handle_payment() {
     )
     .unwrap();
 
-    vex::index::pipeline::run(&root, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::run(
+        &root,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     let index_path = vex::util::config::index_path(&root);
     let reader = IndexReader::open(&index_path).unwrap();
@@ -274,9 +280,21 @@ fn pipeline_update_preserves_bm25() {
     )
     .unwrap();
 
-    vex::index::pipeline::run(&root, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::run(
+        &root,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
     // No file changes — update should be a no-op but keep BM25 intact
-    vex::index::pipeline::update(&root, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::update(
+        &root,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     let index_path = vex::util::config::index_path(&root);
     let reader = IndexReader::open(&index_path).unwrap();
@@ -317,7 +335,13 @@ pub fn process_order() {
     )
     .unwrap();
 
-    vex::index::pipeline::run(&root, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::run(
+        &root,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     let index_path = vex::util::config::index_path(&root);
     let reader = IndexReader::open(&index_path).unwrap();
@@ -539,7 +563,13 @@ fn search_bm25_adapter_tags_match_type() {
     )
     .unwrap();
 
-    vex::index::pipeline::run(&root, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::run(
+        &root,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     let index_path = vex::util::config::index_path(&root);
     let reader = IndexReader::open(&index_path).unwrap();

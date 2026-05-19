@@ -48,6 +48,18 @@ pub struct VexConfig {
     ///   * `None` — 80% of available cores, rounded up (default)
     pub jobs: Option<usize>,
 
+    /// Build the persistent call-graph section during `vex index`. When
+    /// `false`, `vex callers`/`vex callees` fall back to live-scan
+    /// (~seconds on medium repos) but indexing is materially faster on
+    /// monorepos. Default `true`. Resolution order for individual builds:
+    /// CLI flag > this field > previous manifest > default.
+    pub call_graph: Option<bool>,
+
+    /// Build the BM25 channel during `vex index`. When `false`, hybrid
+    /// search falls back to structural-only (+ semantic if enabled). Same
+    /// resolution order as `call_graph`. Default `true`.
+    pub bm25: Option<bool>,
+
     /// Directory containing the `.vex.toml` that produced this config.
     /// Used to resolve relative `cache_dir` paths.
     #[serde(skip)]
@@ -122,6 +134,18 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 #   * N      — exactly N workers
 # Overridable per-invocation with `-j/--jobs` or $VEX_JOBS.
 # jobs = 4
+
+# Build the persistent call-graph section. Disabling falls back to live-scan
+# for `vex callers`/`vex callees` (slower per-query, but saves indexing
+# time on large monorepos). The opt-out is persisted in the manifest so
+# `vex update` does not silently re-add the section.
+# Per-invocation override: `vex index --no-call-graph`.
+# call_graph = true
+
+# Build the BM25 channel. Disabling drops the third RRF channel and keeps
+# only structural (+ semantic). Same persistence rules as `call_graph`.
+# Per-invocation override: `vex index --no-bm25`.
+# bm25 = true
 "#;
 
 /// Process-global override for the cache root. Set once at CLI startup

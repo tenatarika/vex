@@ -18,7 +18,13 @@ fn write_src(root: &Path, name: &str, content: &str) {
 
 fn run_index(root: &Path) {
     let root = root.canonicalize().unwrap();
-    pipeline::run(&root, false, "minilm-l6-v2", &[]).expect("pipeline::run");
+    pipeline::run(
+        &root,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .expect("pipeline::run");
 }
 
 fn open_reader(root: &Path) -> IndexReader {
@@ -48,7 +54,12 @@ fn parallel_index_serialized_by_lock() {
             thread::spawn(move || {
                 b.wait();
                 let r = r.canonicalize().unwrap();
-                pipeline::run(&r, false, "minilm-l6-v2", &[])
+                pipeline::run(
+                    &r,
+                    vex::index::pipeline::IndexOptions::default(),
+                    "minilm-l6-v2",
+                    &[],
+                )
             })
         })
         .collect();
@@ -114,7 +125,12 @@ fn read_during_reindex_no_crash() {
             "pub fn modified() {}\npub fn extra() {}\n",
         )
         .unwrap();
-        pipeline::run(&r, false, "minilm-l6-v2", &[])
+        pipeline::run(
+            &r,
+            vex::index::pipeline::IndexOptions::default(),
+            "minilm-l6-v2",
+            &[],
+        )
     });
 
     // Neither thread should panic
@@ -191,7 +207,12 @@ fn parallel_update_serialized_by_lock() {
             thread::spawn(move || {
                 b.wait();
                 let r = r.canonicalize().unwrap();
-                pipeline::update(&r, false, "minilm-l6-v2", &[])
+                pipeline::update(
+                    &r,
+                    vex::index::pipeline::IndexOptions::default(),
+                    "minilm-l6-v2",
+                    &[],
+                )
             })
         })
         .collect();

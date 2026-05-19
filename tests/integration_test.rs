@@ -821,7 +821,13 @@ fn incremental_update_reuses_unchanged_symbols() {
     std::fs::write(project_dir.join("src/changing.rs"), "pub fn old_func() {}").unwrap();
 
     // Full index
-    let count = vex::index::pipeline::run(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    let count = vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
     assert!(count >= 3, "expected at least 3 symbols, got {count}");
 
     // Verify initial search
@@ -840,8 +846,13 @@ fn incremental_update_reuses_unchanged_symbols() {
     .unwrap();
 
     // Incremental update
-    let (total, changed, deleted) =
-        vex::index::pipeline::update(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    let (total, changed, deleted) = vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
     assert_eq!(changed, 1, "only one file changed");
     assert_eq!(deleted, 0);
     assert!(total >= 4, "expected at least 4 symbols, got {total}");
@@ -877,13 +888,24 @@ fn incremental_update_handles_deleted_files() {
     std::fs::write(project_dir.join("src/keep.rs"), "pub fn keep_me() {}").unwrap();
     std::fs::write(project_dir.join("src/remove.rs"), "pub fn remove_me() {}").unwrap();
 
-    vex::index::pipeline::run(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     // Delete a file
     std::fs::remove_file(project_dir.join("src/remove.rs")).unwrap();
 
-    let (total, _changed, deleted) =
-        vex::index::pipeline::update(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    let (total, _changed, deleted) = vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
     assert_eq!(deleted, 1);
     assert!(total >= 1);
 
@@ -905,10 +927,21 @@ fn incremental_update_noop_when_nothing_changed() {
 
     std::fs::write(project_dir.join("src/main.rs"), "pub fn main() {}").unwrap();
 
-    let count = vex::index::pipeline::run(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    let count = vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
-    let (total, changed, deleted) =
-        vex::index::pipeline::update(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    let (total, changed, deleted) = vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
     assert_eq!(changed, 0);
     assert_eq!(deleted, 0);
     assert_eq!(total, count);

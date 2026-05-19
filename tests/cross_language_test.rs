@@ -31,7 +31,13 @@ fn same_symbol_name_across_languages() {
     write_src_file(&tmp, "config.ts", "export class Config {}");
 
     // Full structural index (no embeddings).
-    let count = vex::index::pipeline::run(tmp.path(), false, "minilm-l6-v2", &[]).unwrap();
+    let count = vex::index::pipeline::run(
+        tmp.path(),
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
     assert!(count >= 3, "expected at least 3 symbols, got {count}");
 
     // Open the resulting index.

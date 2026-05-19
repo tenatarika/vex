@@ -65,6 +65,36 @@ fn resolve_embedder(cli_embedder: Option<&str>, cfg: &config::VexConfig) -> Stri
     crate::embed::resolve_embedder(cli_embedder, cfg.embedder.as_deref())
 }
 
+/// Resolve whether an index section should be built.
+///
+/// Precedence (highest first):
+///   1. CLI `--no-...` flag → forces `false`.
+///   2. `.vex.toml` value → wins over the manifest so a project-wide
+///      preference can override a one-off opt-out from a previous build.
+///   3. Previous manifest value → sticky across `vex update`; without
+///      this, a no-bm25 build would silently grow a BM25 section on the
+///      next update.
+///   4. Default `true`.
+///
+/// Used for both `call_graph` and `bm25`. For `vex index` callers, pass
+/// `None` for `manifest_value` — the manifest is about to be overwritten.
+fn resolve_section_enabled(
+    cli_no_flag: bool,
+    cfg_value: Option<bool>,
+    manifest_value: Option<bool>,
+) -> bool {
+    if cli_no_flag {
+        return false;
+    }
+    if let Some(v) = cfg_value {
+        return v;
+    }
+    if let Some(v) = manifest_value {
+        return v;
+    }
+    true
+}
+
 /// Verify that the embedder requested for semantic search matches the one
 /// recorded in the manifest at `root`. Pre-9.1 manifests without
 /// `embedder_id` are treated as the default embedder for back-compat.
@@ -154,8 +184,19 @@ fn handle_staleness(
                 }
 
                 eprintln!("Index stale, auto-updating...");
+                // Inherit prior section composition from the manifest;
+                // auto-update never silently grows new sections.
+                let opts = pipeline::IndexOptions {
+                    with_embeddings: semantic,
+                    with_call_graph: resolve_section_enabled(
+                        false,
+                        cfg.call_graph,
+                        manifest.call_graph,
+                    ),
+                    with_bm25: resolve_section_enabled(false, cfg.bm25, manifest.bm25),
+                };
                 let (total, changed, deleted) =
-                    pipeline::update(root, semantic, &embedder_id, &cfg.exclude)?;
+                    pipeline::update(root, opts, &embedder_id, &cfg.exclude)?;
                 if changed > 0 || deleted > 0 {
                     eprintln!(
                         "Updated: {changed} changed, {deleted} deleted, {total} total symbols"
@@ -239,7 +280,14 @@ fn ensure_index_exists(
         config::write_local_cache_gitignore(&cache_root);
     }
     let embedder_id = resolve_embedder(None, cfg);
-    let count = pipeline::run(root, with_semantic, &embedder_id, &cfg.exclude)
+    // Bootstrap honours `.vex.toml` section opt-outs but cannot consult a
+    // previous manifest (this branch only fires when none exists).
+    let opts = pipeline::IndexOptions {
+        with_embeddings: with_semantic,
+        with_call_graph: resolve_section_enabled(false, cfg.call_graph, None),
+        with_bm25: resolve_section_enabled(false, cfg.bm25, None),
+    };
+    let count = pipeline::run(root, opts, &embedder_id, &cfg.exclude)
         .with_context(|| format!("bootstrap index for {}", root.display()))?;
     eprintln!(
         "Bootstrap complete: {count} symbols indexed{}.",
@@ -335,6 +383,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_semantic,
             embedder,
             jobs,
+            no_call_graph,
+            no_bm25,
         } => {
             let root = resolve_root(path)?;
             let start = Instant::now();
@@ -346,7 +396,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 std::fs::create_dir_all(&cache_root).ok();
                 config::write_local_cache_gitignore(&cache_root);
             }
-            let count = pipeline::run(&root, with_semantic, &embedder_id, excludes)?;
+            // Fresh `vex index` ignores any prior manifest (it's about to
+            // be overwritten). CLI flag > .vex.toml > default(true).
+            let opts = pipeline::IndexOptions {
+                with_embeddings: with_semantic,
+                with_call_graph: resolve_section_enabled(no_call_graph, cfg.call_graph, None),
+                with_bm25: resolve_section_enabled(no_bm25, cfg.bm25, None),
+            };
+            let count = pipeline::run(&root, opts, &embedder_id, excludes)?;
             let elapsed = start.elapsed();
             let index_path = config::index_path(&root.canonicalize()?);
 
@@ -654,14 +711,37 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_semantic,
             embedder,
             jobs,
+            no_call_graph,
+            no_bm25,
         } => {
-            let root = resolve_root(path)?;
+            // Canonicalize once at the top so `prior_manifest`'s lookup
+            // path matches the one `pipeline::update` uses internally —
+            // a divergent path would map to a different cache subdir and
+            // silently drop the sticky-opt-out invariant.
+            let root = resolve_root(path)?
+                .canonicalize()
+                .context("canonicalize project root")?;
             let start = Instant::now();
             let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
             let embedder_id = resolve_embedder(embedder.as_deref(), &cfg);
             let _ = jobs; // honoured via dispatch-level rayon init
-            let (total, changed, deleted) =
-                pipeline::update(&root, with_semantic, &embedder_id, excludes)?;
+                          // `update` consults the previous manifest so an unflagged call
+                          // does not silently re-add a section the user opted out of.
+                          // Surface real load errors via `?` — `Manifest::load` already
+                          // returns `Ok(default)` for the missing-file case, so any `Err`
+                          // here is a parse or IO failure we must not swallow.
+            let prior_manifest =
+                crate::index::manifest::Manifest::load(&config::manifest_path(&root))?;
+            let opts = pipeline::IndexOptions {
+                with_embeddings: with_semantic,
+                with_call_graph: resolve_section_enabled(
+                    no_call_graph,
+                    cfg.call_graph,
+                    prior_manifest.call_graph,
+                ),
+                with_bm25: resolve_section_enabled(no_bm25, cfg.bm25, prior_manifest.bm25),
+            };
+            let (total, changed, deleted) = pipeline::update(&root, opts, &embedder_id, excludes)?;
             let elapsed = start.elapsed();
 
             match &format {
@@ -691,12 +771,33 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_semantic,
             embedder,
             jobs,
+            no_call_graph,
+            no_bm25,
         } => {
-            let root = resolve_root(path)?;
+            // Canonicalize once (see Update arm) so the manifest lookup
+            // matches what `pipeline::run/update` will use.
+            let root = resolve_root(path)?
+                .canonicalize()
+                .context("canonicalize project root")?;
             let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
             let embedder_id = resolve_embedder(embedder.as_deref(), &cfg);
             let _ = jobs; // honoured via dispatch-level rayon init
-            crate::watch::handler::watch(&root, with_semantic, &embedder_id, excludes)?;
+                          // Watch builds the initial index AND subsequent incremental
+                          // updates inside one long-running process. Both should use
+                          // the same composition. Real load errors surface via `?` —
+                          // `Manifest::load` already maps "file missing" to default.
+            let prior_manifest =
+                crate::index::manifest::Manifest::load(&config::manifest_path(&root))?;
+            let opts = pipeline::IndexOptions {
+                with_embeddings: with_semantic,
+                with_call_graph: resolve_section_enabled(
+                    no_call_graph,
+                    cfg.call_graph,
+                    prior_manifest.call_graph,
+                ),
+                with_bm25: resolve_section_enabled(no_bm25, cfg.bm25, prior_manifest.bm25),
+            };
+            crate::watch::handler::watch(&root, opts, &embedder_id, excludes)?;
             Ok(())
         }
         Commands::Show {
@@ -1465,5 +1566,34 @@ fn print_outline(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_section_enabled;
+
+    #[test]
+    fn cli_no_flag_wins_over_everything() {
+        assert!(!resolve_section_enabled(true, Some(true), Some(true)));
+        assert!(!resolve_section_enabled(true, None, None));
+        assert!(!resolve_section_enabled(true, Some(true), None));
+    }
+
+    #[test]
+    fn config_wins_over_manifest_and_default() {
+        assert!(!resolve_section_enabled(false, Some(false), Some(true)));
+        assert!(resolve_section_enabled(false, Some(true), Some(false)));
+    }
+
+    #[test]
+    fn manifest_used_when_no_cli_or_config() {
+        assert!(!resolve_section_enabled(false, None, Some(false)));
+        assert!(resolve_section_enabled(false, None, Some(true)));
+    }
+
+    #[test]
+    fn defaults_to_true_when_all_unset() {
+        assert!(resolve_section_enabled(false, None, None));
     }
 }

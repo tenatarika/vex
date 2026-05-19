@@ -25,6 +25,19 @@ pub struct Manifest {
     /// interpret `None` as the default embedder for back-compat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedder_id: Option<String>,
+
+    /// Whether this index was built with the persistent call-graph section.
+    /// `Some(false)` means the user opted out via `--no-call-graph` or
+    /// `.vex.toml`; `vex update` reads this to keep the opt-out sticky
+    /// across incremental rebuilds. `None` on pre-10.3 manifests is treated
+    /// as enabled (pre-flag behaviour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_graph: Option<bool>,
+
+    /// Whether this index was built with the BM25 channel. Same semantics
+    /// as `call_graph` — opt-out is sticky across updates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bm25: Option<bool>,
 }
 
 impl Manifest {

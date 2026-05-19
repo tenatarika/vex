@@ -417,3 +417,201 @@ fn self_update_check_and_yes_are_mutually_exclusive() {
         "clap should reject --check + --yes combo: {stderr}"
     );
 }
+
+/// Read the project's manifest as JSON. Locates the cache root via the
+/// VEX_CACHE_DIR env var that `vex_in` sets, then matches the only
+/// project-hash subdir inside it. Returns the parsed manifest.
+fn read_manifest(tmp: &Path) -> serde_json::Value {
+    // VEX_CACHE_DIR is set by `vex_in` to <tmp>/.vex-test-cache. The
+    // resolver creates a single project-hash subdir under it.
+    let cache = tmp.join(".vex-test-cache");
+    let entries: Vec<_> = std::fs::read_dir(&cache)
+        .unwrap_or_else(|e| panic!("cache dir {} not readable: {e}", cache.display()))
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .collect();
+    assert_eq!(
+        entries.len(),
+        1,
+        "expected exactly one project subdir in {}",
+        cache.display()
+    );
+    let manifest_path = entries[0].path().join("manifest.json");
+    let bytes = std::fs::read(&manifest_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", manifest_path.display()));
+    serde_json::from_slice(&bytes).expect("parse manifest")
+}
+
+#[test]
+fn index_no_call_graph_persists_opt_out_in_manifest() {
+    // 10.3 core invariant: `--no-call-graph` writes call_graph=false in
+    // the manifest so subsequent `vex update` knows the user opted out.
+    let tmp = TempDir::new().unwrap();
+    write_project(
+        tmp.path(),
+        "",
+        "lib.rs",
+        "fn helper() {}\nfn main() { helper(); }\n",
+    );
+
+    vex_in(tmp.path())
+        .args(["index", "--no-call-graph"])
+        .assert()
+        .success();
+
+    let manifest = read_manifest(tmp.path());
+    assert_eq!(
+        manifest["call_graph"].as_bool(),
+        Some(false),
+        "manifest should record call_graph=false after --no-call-graph: {manifest}"
+    );
+    // BM25 was not opted out — should be true.
+    assert_eq!(
+        manifest["bm25"].as_bool(),
+        Some(true),
+        "manifest should record bm25=true when only call-graph was opted out: {manifest}"
+    );
+}
+
+#[test]
+fn index_no_bm25_persists_opt_out_in_manifest() {
+    let tmp = TempDir::new().unwrap();
+    write_project(tmp.path(), "", "lib.rs", "fn helper() {}\n");
+
+    vex_in(tmp.path())
+        .args(["index", "--no-bm25"])
+        .assert()
+        .success();
+
+    let manifest = read_manifest(tmp.path());
+    assert_eq!(manifest["bm25"].as_bool(), Some(false));
+    assert_eq!(manifest["call_graph"].as_bool(), Some(true));
+}
+
+#[test]
+fn update_inherits_no_call_graph_from_manifest() {
+    // The sticky-opt-out invariant: after `vex index --no-call-graph`,
+    // a bare `vex update` must NOT silently grow the call-graph section.
+    let tmp = TempDir::new().unwrap();
+    write_project(
+        tmp.path(),
+        "",
+        "lib.rs",
+        "fn helper() {}\nfn main() { helper(); }\n",
+    );
+
+    vex_in(tmp.path())
+        .args(["index", "--no-call-graph"])
+        .assert()
+        .success();
+
+    // Touch the source to force a meaningful update pass.
+    std::fs::write(
+        tmp.path().join("lib.rs"),
+        "fn helper() {}\nfn main() { helper(); }\nfn extra() {}\n",
+    )
+    .unwrap();
+
+    vex_in(tmp.path()).args(["update"]).assert().success();
+
+    let manifest = read_manifest(tmp.path());
+    assert_eq!(
+        manifest["call_graph"].as_bool(),
+        Some(false),
+        "update without flag must inherit call_graph=false from prior manifest: {manifest}"
+    );
+}
+
+#[test]
+fn config_call_graph_false_drives_index() {
+    // `.vex.toml call_graph = false` should opt out without needing the
+    // CLI flag.
+    let tmp = TempDir::new().unwrap();
+    write_project(tmp.path(), "call_graph = false\n", "lib.rs", "fn x() {}\n");
+
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let manifest = read_manifest(tmp.path());
+    assert_eq!(manifest["call_graph"].as_bool(), Some(false));
+}
+
+#[test]
+fn callers_works_with_no_call_graph_index() {
+    // Primary user-visible contract: after `vex index --no-call-graph`,
+    // `vex callers` must still find callers via live-scan fallback. The
+    // index lacks the call-graph FST so the reader's fast path is gated
+    // off (`has_call_graph()` returns false) and cmd_callgraph drops to
+    // the tree-sitter walker.
+    let tmp = TempDir::new().unwrap();
+    write_project(
+        tmp.path(),
+        "",
+        "lib.rs",
+        "fn helper() {}\nfn main() { helper(); }\n",
+    );
+
+    vex_in(tmp.path())
+        .args(["index", "--no-call-graph"])
+        .assert()
+        .success();
+
+    let assert = vex_in(tmp.path())
+        .args(["callers", "helper"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("main"),
+        "callers must still find `main` via live-scan when call-graph section is absent: {stdout}"
+    );
+}
+
+#[test]
+fn search_works_with_no_bm25_index() {
+    // `--no-bm25` drops the BM25 channel from hybrid search. Structural
+    // (FST) search must still resolve symbol names — degradation is
+    // graceful, not breakage.
+    let tmp = TempDir::new().unwrap();
+    write_project(
+        tmp.path(),
+        "",
+        "lib.rs",
+        "fn payment_processor() {}\nfn unrelated() {}\n",
+    );
+
+    vex_in(tmp.path())
+        .args(["index", "--no-bm25"])
+        .assert()
+        .success();
+
+    let assert = vex_in(tmp.path())
+        .args(["search", "payment_processor"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("payment_processor"),
+        "structural search must still return symbol hits with bm25 disabled: {stdout}"
+    );
+}
+
+#[test]
+fn cli_no_call_graph_overrides_config_true() {
+    // Precedence test: CLI flag wins over `.vex.toml call_graph = true`.
+    // Tested direction is the opposite of the existing config-drives-index
+    // test (config=false). Together they cover both directions.
+    let tmp = TempDir::new().unwrap();
+    write_project(tmp.path(), "call_graph = true\n", "lib.rs", "fn x() {}\n");
+
+    vex_in(tmp.path())
+        .args(["index", "--no-call-graph"])
+        .assert()
+        .success();
+
+    let manifest = read_manifest(tmp.path());
+    assert_eq!(
+        manifest["call_graph"].as_bool(),
+        Some(false),
+        "CLI --no-call-graph must override .vex.toml call_graph = true: {manifest}"
+    );
+}

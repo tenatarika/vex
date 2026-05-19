@@ -355,7 +355,13 @@ fn cli_callers_uses_fast_path_with_v4_index() {
     let src = "fn caller() { target(); }\nfn target() {}\n";
     let root = make_tmp_project(&tmp, src);
 
-    vex::index::pipeline::run(&root, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::run(
+        &root,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     let index_path = vex::util::config::index_path(&root);
     let reader = IndexReader::open(&index_path).unwrap();
@@ -375,7 +381,13 @@ fn cli_callees_uses_fast_path_with_v4_index() {
     let src = "fn caller() { target(); }\nfn target() {}\n";
     let root = make_tmp_project(&tmp, src);
 
-    vex::index::pipeline::run(&root, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::run(
+        &root,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     let index_path = vex::util::config::index_path(&root);
     let reader = IndexReader::open(&index_path).unwrap();
@@ -469,7 +481,13 @@ fn incremental_update_keeps_edges_for_unchanged_files() {
     let root = tmp.path().canonicalize().unwrap();
 
     // Initial full index
-    vex::index::pipeline::run(&root, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::run(
+        &root,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     // Verify initial state: caller_a calls target
     let index_path = vex::util::config::index_path(&root);
@@ -490,7 +508,13 @@ fn incremental_update_keeps_edges_for_unchanged_files() {
     .unwrap();
 
     // Incremental update
-    vex::index::pipeline::update(&root, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::update(
+        &root,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     // After update caller_a no longer calls target (re-parsed).
     // b.rs is unchanged; its edges (none to target) still hold.
@@ -528,7 +552,13 @@ fn beta() {}
 ";
     std::fs::write(src_dir.join("dup.rs"), src).unwrap();
     let root = tmp.path().canonicalize().unwrap();
-    vex::index::pipeline::run(&root, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::run(
+        &root,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     let index_path = vex::util::config::index_path(&root);
     let reader = IndexReader::open(&index_path).unwrap();

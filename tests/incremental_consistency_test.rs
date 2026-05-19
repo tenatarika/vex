@@ -44,7 +44,13 @@ fn update_after_file_renamed() {
     fs::write(project_dir.join("src/a.rs"), "pub fn original() {}").unwrap();
 
     // Full index.
-    vex::index::pipeline::run(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     let symbols_before = total_symbols(&project_dir);
     assert!(
@@ -65,8 +71,13 @@ fn update_after_file_renamed() {
     fs::rename(project_dir.join("src/a.rs"), project_dir.join("src/b.rs")).unwrap();
 
     // Incremental update.
-    let (total, changed, deleted) =
-        vex::index::pipeline::update(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    let (total, changed, deleted) = vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     // The rename is observed as one deletion + one new file.
     assert_eq!(
@@ -118,7 +129,13 @@ fn update_after_symbol_moved_between_files() {
     fs::write(project_dir.join("src/b.rs"), "pub fn other() {}").unwrap();
 
     // Full index.
-    vex::index::pipeline::run(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     // Verify shared is in a.rs before the move.
     let paths_before = result_paths(&project_dir, "shared");
@@ -138,8 +155,13 @@ fn update_after_symbol_moved_between_files() {
     .unwrap();
 
     // Incremental update.
-    let (_total, changed, deleted) =
-        vex::index::pipeline::update(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    let (_total, changed, deleted) = vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     assert_eq!(deleted, 0, "no files deleted in symbol-move scenario");
     assert_eq!(changed, 2, "both a.rs and b.rs were modified");
@@ -191,7 +213,13 @@ fn update_after_file_becomes_empty() {
     .unwrap();
 
     // Full index: expect foo and bar.
-    vex::index::pipeline::run(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     let symbols_before = total_symbols(&project_dir);
     assert!(
@@ -212,8 +240,13 @@ fn update_after_file_becomes_empty() {
     fs::write(project_dir.join("src/a.rs"), "").unwrap();
 
     // Incremental update.
-    let (total, changed, deleted) =
-        vex::index::pipeline::update(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    let (total, changed, deleted) = vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     assert_eq!(deleted, 0, "file still exists — not a deletion");
     assert_eq!(changed, 1, "emptied file should be detected as changed");
@@ -249,7 +282,13 @@ fn update_after_new_file_added() {
     fs::write(project_dir.join("src/a.rs"), "pub fn existing() {}").unwrap();
 
     // Full index.
-    vex::index::pipeline::run(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     let symbols_before = total_symbols(&project_dir);
 
@@ -264,8 +303,13 @@ fn update_after_new_file_added() {
     fs::write(project_dir.join("src/new.rs"), "pub fn brand_new() {}").unwrap();
 
     // Incremental update.
-    let (total, changed, deleted) =
-        vex::index::pipeline::update(&project_dir, false, "minilm-l6-v2", &[]).unwrap();
+    let (total, changed, deleted) = vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
 
     assert_eq!(deleted, 0, "no file was deleted");
     assert_eq!(changed, 1, "exactly one new file added");

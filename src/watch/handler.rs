@@ -15,14 +15,14 @@ const DEBOUNCE_MS: u64 = 500;
 /// Blocks until SIGINT (Ctrl+C).
 pub fn watch(
     root: &Path,
-    with_embeddings: bool,
+    opts: pipeline::IndexOptions,
     embedder_id: &str,
     excludes: &[String],
 ) -> Result<()> {
     let root = root.canonicalize().context("canonicalize root")?;
 
     println!("Building initial index...");
-    let count = pipeline::run(&root, with_embeddings, embedder_id, excludes)?;
+    let count = pipeline::run(&root, opts, embedder_id, excludes)?;
     println!(
         "Watching {} ({count} symbols). Press Ctrl+C to stop.",
         root.display()
@@ -62,7 +62,7 @@ pub fn watch(
 
         if relevant {
             let start = std::time::Instant::now();
-            match pipeline::update(&root, with_embeddings, embedder_id, excludes) {
+            match pipeline::update(&root, opts, embedder_id, excludes) {
                 Ok((total, changed, deleted)) => {
                     if changed > 0 || deleted > 0 {
                         println!(

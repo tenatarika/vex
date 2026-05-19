@@ -19,10 +19,33 @@ use crate::util::config;
 const CHUNK_SIZE: usize = 500;
 const EMBED_BATCH_SIZE: usize = 256;
 
+/// Build-time toggles for [`run`] and [`update`].
+///
+/// `with_embeddings` is a transient run-time choice (the user decides per
+/// invocation). `with_call_graph` and `with_bm25` are persisted into the
+/// manifest after a successful build so `update` can keep the opt-out
+/// sticky across incremental rebuilds.
+#[derive(Debug, Clone, Copy)]
+pub struct IndexOptions {
+    pub with_embeddings: bool,
+    pub with_call_graph: bool,
+    pub with_bm25: bool,
+}
+
+impl Default for IndexOptions {
+    fn default() -> Self {
+        Self {
+            with_embeddings: false,
+            with_call_graph: true,
+            with_bm25: true,
+        }
+    }
+}
+
 /// Full rebuild: index all files from scratch.
 pub fn run(
     root: &Path,
-    with_embeddings: bool,
+    opts: IndexOptions,
     embedder_id: &str,
     excludes: &[String],
 ) -> Result<usize> {
@@ -35,13 +58,13 @@ pub fn run(
     let all_parsed = parse_files(&root, &files)?;
     let symbol_count: usize = all_parsed.iter().map(|f| f.symbols.len()).sum();
 
-    let vectors = if with_embeddings && symbol_count > 0 {
+    let vectors = if opts.with_embeddings && symbol_count > 0 {
         generate_embeddings(&all_parsed, embedder_id)?
     } else {
         Vec::new()
     };
 
-    let manifest_embedder = if with_embeddings && !vectors.is_empty() {
+    let manifest_embedder = if opts.with_embeddings && !vectors.is_empty() {
         Some(embedder_id.to_string())
     } else {
         None
@@ -54,6 +77,7 @@ pub fn run(
         vector_dim,
         &file_hashes,
         manifest_embedder,
+        opts,
     )?;
 
     if !vectors.is_empty() {
@@ -78,7 +102,7 @@ pub fn run(
 /// symbols from the existing index. Returns (total_symbols, changed_count, deleted_count).
 pub fn update(
     root: &Path,
-    with_embeddings: bool,
+    opts: IndexOptions,
     embedder_id: &str,
     excludes: &[String],
 ) -> Result<(usize, usize, usize)> {
@@ -147,7 +171,7 @@ pub fn update(
     let new_sym_count: usize = newly_parsed.iter().map(|f| f.symbols.len()).sum();
 
     // Generate embeddings only for new/changed symbols
-    let new_vectors = if with_embeddings && new_sym_count > 0 {
+    let new_vectors = if opts.with_embeddings && new_sym_count > 0 {
         generate_embeddings(&newly_parsed, embedder_id)?
     } else {
         Vec::new()
@@ -161,7 +185,7 @@ pub fn update(
     let mut all_vectors = unchanged_vectors;
     all_vectors.extend(new_vectors);
 
-    let manifest_embedder = if with_embeddings && !all_vectors.is_empty() {
+    let manifest_embedder = if opts.with_embeddings && !all_vectors.is_empty() {
         Some(embedder_id.to_string())
     } else {
         None
@@ -174,6 +198,7 @@ pub fn update(
         vector_dim,
         &file_hashes,
         manifest_embedder,
+        opts,
     )?;
 
     if !all_vectors.is_empty() {
@@ -545,6 +570,7 @@ fn write_output(
     vector_dim: u32,
     file_hashes: &[(String, u64)],
     embedder_id: Option<String>,
+    opts: IndexOptions,
 ) -> Result<()> {
     let index_path = config::index_path(root);
     let cache_dir = index_path.parent().context("index path has no parent")?;
@@ -564,17 +590,27 @@ fn write_output(
         .context("acquire index lock (another vex instance may be indexing)")?;
 
     let result = (|| -> Result<()> {
-        let call_edges = resolve_call_edges(parsed);
-        let (bm25_fst, bm25_posts, bm25_stats) = build_bm25_index(parsed)?;
-        let bm25 = if bm25_fst.is_empty() {
-            None
+        // Skip the corresponding build work entirely when the section is
+        // opted out — the reader gates these via `*_len == 0`, so passing
+        // empty slices / `None` is a valid disabled state in the format.
+        let call_edges = if opts.with_call_graph {
+            resolve_call_edges(parsed)
         } else {
-            Some((
-                bm25_fst.as_slice(),
-                bm25_posts.as_slice(),
-                bm25_stats.as_slice(),
-            ))
+            Vec::new()
         };
+
+        let bm25_built = if opts.with_bm25 {
+            Some(build_bm25_index(parsed)?)
+        } else {
+            None
+        };
+        let bm25 = bm25_built.as_ref().and_then(|(fst, posts, stats)| {
+            if fst.is_empty() {
+                None
+            } else {
+                Some((fst.as_slice(), posts.as_slice(), stats.as_slice()))
+            }
+        });
         store::writer::write_index_with_call_graph(
             parsed,
             vectors,
@@ -591,6 +627,11 @@ fn write_output(
             git_head,
             indexed_at: Some(indexed_at),
             embedder_id,
+            // Persist explicit `Some(false)` for opt-outs so `vex update`
+            // can detect them. `Some(true)` rather than `None` for the
+            // default case so post-10.3 manifests are unambiguous.
+            call_graph: Some(opts.with_call_graph),
+            bm25: Some(opts.with_bm25),
         };
         manifest.save(&manifest_path)?;
         Ok(())
