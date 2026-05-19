@@ -387,6 +387,22 @@ pub fn manifest_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("manifest.json")
 }
 
+/// Cache directory for embedding model files (e.g. MiniLM ONNX weights).
+/// The model is identical across projects and is ~86 MB, so we store it
+/// in a single shared location instead of per-project. The path mirrors
+/// the index cache root but never appends the project hash and never
+/// follows `local_cache = true` — duplicating the model into every
+/// project's `.vex_cache/` would waste disk and bandwidth.
+pub fn embed_cache_dir() -> PathBuf {
+    let root = match CACHE_OVERRIDE.get() {
+        // Even when the override is "project-local" (skip_hash_subdir),
+        // we still treat the model as global — see doc comment.
+        Some(layout) => layout.root.clone(),
+        None => default_cache_root(),
+    };
+    root.join("embeddings")
+}
+
 /// Platform-default cache root with the `vex/` segment appended.
 fn default_cache_root() -> PathBuf {
     platform_cache_base().join("vex")

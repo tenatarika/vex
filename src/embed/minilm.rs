@@ -23,10 +23,18 @@ pub struct MiniLMEmbedder {
 }
 
 impl MiniLMEmbedder {
-    /// Initialize the model. Downloads ~86 MB on first use.
+    /// Initialize the model. Downloads ~86 MB on first use into the
+    /// global vex embedding cache (shared across projects). Without an
+    /// explicit cache dir fastembed would drop `.fastembed_cache/` into
+    /// the current working directory — that re-downloads the same model
+    /// for every project and pollutes the project tree.
     pub fn new() -> Result<Self> {
+        let cache_dir = crate::util::config::embed_cache_dir();
+        std::fs::create_dir_all(&cache_dir).ok();
         let model = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::AllMiniLML6V2).with_show_download_progress(true),
+            InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+                .with_cache_dir(cache_dir)
+                .with_show_download_progress(true),
         )
         .context("failed to load MiniLM-L6-v2 embedding model")?;
         Ok(Self { model })
