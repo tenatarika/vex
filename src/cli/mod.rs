@@ -165,6 +165,54 @@ fn handle_staleness(
     }
 }
 
+/// Resolve the index file path, bootstrapping the index in place when
+/// the caller has `auto_update` set and no index exists yet. Replaces
+/// the bare `if !index_path.exists() { bail!(...) }` pattern that every
+/// index-backed command used to inline.
+///
+/// Returns the path to `index.vex` so the caller can immediately open
+/// it. Callers that need a *semantic* index (`Similar`, `Duplicates`)
+/// pass `needs_semantic = true` so the bootstrap rebuilds with
+/// embeddings instead of structural-only.
+fn ensure_index_exists(
+    root: &std::path::Path,
+    auto_update_flag: bool,
+    needs_semantic: bool,
+    cfg: &config::VexConfig,
+) -> Result<std::path::PathBuf> {
+    let index_path = config::index_path(root);
+    if index_path.exists() {
+        return Ok(index_path);
+    }
+    let should_auto = auto_update_flag || cfg.auto_update.unwrap_or(false);
+    let cmd_hint = if needs_semantic {
+        "vex index --semantic"
+    } else {
+        "vex index"
+    };
+    if !should_auto {
+        bail!(
+            "No index found.\n  Expected: {}\n  Run `{cmd_hint}` to build one, or set `auto_update = true` in .vex.toml to bootstrap on first use.",
+            index_path.display()
+        );
+    }
+    eprintln!(
+        "No index for this project yet — bootstrapping (auto_update = true).\nThis is a one-time cost; subsequent runs reuse the index."
+    );
+    let with_semantic = needs_semantic || cfg.semantic.unwrap_or(false);
+    let embedder_id = resolve_embedder(None, cfg);
+    let count = pipeline::run(root, with_semantic, &embedder_id, &cfg.exclude)?;
+    eprintln!(
+        "Bootstrap complete: {count} symbols indexed{}.",
+        if with_semantic {
+            " with semantic embeddings"
+        } else {
+            ""
+        }
+    );
+    Ok(index_path)
+}
+
 fn filter_by_path(
     results: Vec<crate::search::SearchResult>,
     filter: Option<&str>,
@@ -267,15 +315,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         } => {
             let semantic = resolve_semantic(semantic, no_semantic, &cfg);
             let root = resolve_root(None)?.canonicalize()?;
-            let index_path = config::index_path(&root);
-
-            if !index_path.exists() {
-                bail!(
-                    "No index found. Run `vex index` first.\nExpected: {}",
-                    index_path.display()
-                );
-            }
-
+            let index_path = ensure_index_exists(&root, auto_update, semantic, &cfg)?;
             handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
@@ -381,15 +421,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(None)?.canonicalize()?;
-            let index_path = config::index_path(&root);
-
-            if !index_path.exists() {
-                bail!(
-                    "No index found. Run `vex index` first.\nExpected: {}",
-                    index_path.display()
-                );
-            }
-
+            let index_path = ensure_index_exists(&root, auto_update, false, &cfg)?;
             handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
@@ -597,15 +629,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(None)?.canonicalize()?;
-            let index_path = config::index_path(&root);
-
-            if !index_path.exists() {
-                bail!(
-                    "No index found. Run `vex index` first.\nExpected: {}",
-                    index_path.display()
-                );
-            }
-
+            let index_path = ensure_index_exists(&root, auto_update, false, &cfg)?;
             handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
@@ -878,15 +902,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(path)?.canonicalize()?;
-            let index_path = config::index_path(&root);
-
-            if !index_path.exists() {
-                bail!(
-                    "No index found. Run `vex index` first.\nExpected: {}",
-                    index_path.display()
-                );
-            }
-
+            let index_path = ensure_index_exists(&root, auto_update, false, &cfg)?;
             handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
@@ -953,15 +969,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(path)?.canonicalize()?;
-            let index_path = config::index_path(&root);
-
-            if !index_path.exists() {
-                bail!(
-                    "No index found. Run `vex index --semantic` first.\nExpected: {}",
-                    index_path.display()
-                );
-            }
-
+            let index_path = ensure_index_exists(&root, auto_update, true, &cfg)?;
             handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
@@ -1004,15 +1012,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(path)?.canonicalize()?;
-            let index_path = config::index_path(&root);
-
-            if !index_path.exists() {
-                bail!(
-                    "No index found. Run `vex index --semantic` first.\nExpected: {}",
-                    index_path.display()
-                );
-            }
-
+            let index_path = ensure_index_exists(&root, auto_update, true, &cfg)?;
             handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
