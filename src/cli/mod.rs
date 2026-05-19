@@ -174,10 +174,16 @@ fn handle_staleness(
 /// it. Callers that need a *semantic* index (`Similar`, `Duplicates`)
 /// pass `needs_semantic = true` so the bootstrap rebuilds with
 /// embeddings instead of structural-only.
+///
+/// `local_cache_active` mirrors the flag computed in `dispatch()` so we
+/// can write the project-local `.gitignore` for `local_cache = true`
+/// users on the *first* invocation — otherwise the bootstrap path
+/// would skip the safeguard that `Commands::Index` applies.
 fn ensure_index_exists(
     root: &std::path::Path,
     auto_update_flag: bool,
     needs_semantic: bool,
+    local_cache_active: bool,
     cfg: &config::VexConfig,
 ) -> Result<std::path::PathBuf> {
     let index_path = config::index_path(root);
@@ -196,10 +202,23 @@ fn ensure_index_exists(
             index_path.display()
         );
     }
+    let with_semantic = needs_semantic || cfg.semantic.unwrap_or(false);
     eprintln!(
         "No index for this project yet — bootstrapping (auto_update = true).\nThis is a one-time cost; subsequent runs reuse the index."
     );
-    let with_semantic = needs_semantic || cfg.semantic.unwrap_or(false);
+    if with_semantic {
+        // The model is shared across projects, but a fresh machine
+        // pays the download once. Warning here means the user sees an
+        // explanation right before fastembed's progress bar appears.
+        eprintln!(
+            "Note: first semantic index downloads the MiniLM ONNX model (~86 MB) to the shared embedding cache."
+        );
+    }
+    if local_cache_active {
+        let cache_root = config::index_dir(root);
+        std::fs::create_dir_all(&cache_root).ok();
+        config::write_local_cache_gitignore(&cache_root);
+    }
     let embedder_id = resolve_embedder(None, cfg);
     let count = pipeline::run(root, with_semantic, &embedder_id, &cfg.exclude)?;
     eprintln!(
@@ -315,7 +334,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         } => {
             let semantic = resolve_semantic(semantic, no_semantic, &cfg);
             let root = resolve_root(None)?.canonicalize()?;
-            let index_path = ensure_index_exists(&root, auto_update, semantic, &cfg)?;
+            let index_path =
+                ensure_index_exists(&root, auto_update, semantic, local_cache_active, &cfg)?;
             handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
@@ -421,7 +441,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(None)?.canonicalize()?;
-            let index_path = ensure_index_exists(&root, auto_update, false, &cfg)?;
+            let index_path =
+                ensure_index_exists(&root, auto_update, false, local_cache_active, &cfg)?;
             handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
@@ -629,7 +650,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(None)?.canonicalize()?;
-            let index_path = ensure_index_exists(&root, auto_update, false, &cfg)?;
+            let index_path =
+                ensure_index_exists(&root, auto_update, false, local_cache_active, &cfg)?;
             handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
@@ -902,7 +924,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(path)?.canonicalize()?;
-            let index_path = ensure_index_exists(&root, auto_update, false, &cfg)?;
+            let index_path =
+                ensure_index_exists(&root, auto_update, false, local_cache_active, &cfg)?;
             handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
@@ -969,7 +992,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(path)?.canonicalize()?;
-            let index_path = ensure_index_exists(&root, auto_update, true, &cfg)?;
+            let index_path =
+                ensure_index_exists(&root, auto_update, true, local_cache_active, &cfg)?;
             handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
@@ -1012,7 +1036,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(path)?.canonicalize()?;
-            let index_path = ensure_index_exists(&root, auto_update, true, &cfg)?;
+            let index_path =
+                ensure_index_exists(&root, auto_update, true, local_cache_active, &cfg)?;
             handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
