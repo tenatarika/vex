@@ -71,6 +71,31 @@ jobs:
           7z a -tzip -mm=Deflate -mx=5 "../../../vex-${{ matrix.target }}.zip" vex.exe
           Pop-Location
 
+      # Regression guard for the v1.6.2 Windows self-update failure: every
+      # entry in the release zip MUST use compression method 8 (Deflate).
+      # Method 9 (Deflate64) is silently emitted by some Compress-Archive
+      # configurations and breaks `vex self-update` even though .NET
+      # extraction works. Fails the release loudly instead.
+      - name: Verify zip uses Deflate (not Deflate64)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          python -c @"
+          import sys, zipfile
+          archive = 'vex-${{ matrix.target }}.zip'
+          z = zipfile.ZipFile(archive)
+          names = {8: 'Deflate', 9: 'Deflate64', 0: 'Stored', 12: 'Bzip2', 14: 'LZMA', 93: 'Zstd'}
+          bad = []
+          for info in z.infolist():
+              if info.compress_type != 8:
+                  bad.append(f'{info.filename}: method={info.compress_type} ({names.get(info.compress_type, \"unknown\")})')
+          if bad:
+              print(f'FAIL: {archive} has entries not using Deflate:')
+              for b in bad: print(f'  {b}')
+              sys.exit(1)
+          print(f'OK: {len(z.namelist())} entry(ies) in {archive} use Deflate (method 8)')
+          "@
+
       - uses: actions/upload-artifact@v4
         with:
           name: vex-${{ matrix.target }}
