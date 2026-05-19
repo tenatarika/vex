@@ -165,15 +165,25 @@ fn handle_staleness(
     }
 }
 
+/// Outcome of [`ensure_index_exists`]: either the index already existed, or this
+/// call bootstrapped it from scratch. Callers use [`IndexAvail::just_bootstrapped`]
+/// to skip the redundant `handle_staleness` pass on a fresh manifest.
+struct IndexAvail {
+    path: std::path::PathBuf,
+    just_bootstrapped: bool,
+}
+
 /// Resolve the index file path, bootstrapping the index in place when
 /// the caller has `auto_update` set and no index exists yet. Replaces
 /// the bare `if !index_path.exists() { bail!(...) }` pattern that every
 /// index-backed command used to inline.
 ///
-/// Returns the path to `index.vex` so the caller can immediately open
-/// it. Callers that need a *semantic* index (`Similar`, `Duplicates`)
-/// pass `needs_semantic = true` so the bootstrap rebuilds with
-/// embeddings instead of structural-only.
+/// Returns an [`IndexAvail`] so the caller can immediately open the
+/// index and also know whether this call bootstrapped it (used by
+/// [`ensure_index_ready`] to skip a redundant staleness check on a
+/// freshly built manifest). Callers that need a *semantic* index
+/// (`Similar`, `Duplicates`) pass `needs_semantic = true` so the
+/// bootstrap rebuilds with embeddings instead of structural-only.
 ///
 /// `local_cache_active` mirrors the flag computed in `dispatch()` so we
 /// can write the project-local `.gitignore` for `local_cache = true`
@@ -185,10 +195,13 @@ fn ensure_index_exists(
     needs_semantic: bool,
     local_cache_active: bool,
     cfg: &config::VexConfig,
-) -> Result<std::path::PathBuf> {
+) -> Result<IndexAvail> {
     let index_path = config::index_path(root);
     if index_path.exists() {
-        return Ok(index_path);
+        return Ok(IndexAvail {
+            path: index_path,
+            just_bootstrapped: false,
+        });
     }
     let should_auto = auto_update_flag || cfg.auto_update.unwrap_or(false);
     let cmd_hint = if needs_semantic {
@@ -229,7 +242,37 @@ fn ensure_index_exists(
             ""
         }
     );
-    Ok(index_path)
+    Ok(IndexAvail {
+        path: index_path,
+        just_bootstrapped: true,
+    })
+}
+
+/// Common bootstrap-then-staleness flow for index-backed commands.
+///
+/// Composes [`ensure_index_exists`] and [`handle_staleness`], skipping the latter
+/// when the index was just bootstrapped (a freshly built manifest is guaranteed
+/// fresh, so re-running the git/mtime probe is pure waste). Returns the resolved
+/// `index.vex` path.
+fn ensure_index_ready(
+    root: &std::path::Path,
+    auto_update_flag: bool,
+    no_stale_check: bool,
+    needs_semantic: bool,
+    local_cache_active: bool,
+    cfg: &config::VexConfig,
+) -> Result<std::path::PathBuf> {
+    let avail = ensure_index_exists(
+        root,
+        auto_update_flag,
+        needs_semantic,
+        local_cache_active,
+        cfg,
+    )?;
+    if !avail.just_bootstrapped {
+        handle_staleness(root, auto_update_flag, no_stale_check, cfg)?;
+    }
+    Ok(avail.path)
 }
 
 fn filter_by_path(
@@ -334,9 +377,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         } => {
             let semantic = resolve_semantic(semantic, no_semantic, &cfg);
             let root = resolve_root(None)?.canonicalize()?;
-            let index_path =
-                ensure_index_exists(&root, auto_update, semantic, local_cache_active, &cfg)?;
-            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
+            let index_path = ensure_index_ready(
+                &root,
+                auto_update,
+                no_stale_check,
+                semantic,
+                local_cache_active,
+                &cfg,
+            )?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
 
@@ -441,9 +489,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(None)?.canonicalize()?;
-            let index_path =
-                ensure_index_exists(&root, auto_update, false, local_cache_active, &cfg)?;
-            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
+            let index_path = ensure_index_ready(
+                &root,
+                auto_update,
+                no_stale_check,
+                false,
+                local_cache_active,
+                &cfg,
+            )?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
             let ref_reader = reader
@@ -650,9 +703,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(None)?.canonicalize()?;
-            let index_path =
-                ensure_index_exists(&root, auto_update, false, local_cache_active, &cfg)?;
-            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
+            let index_path = ensure_index_ready(
+                &root,
+                auto_update,
+                no_stale_check,
+                false,
+                local_cache_active,
+                &cfg,
+            )?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
             let fetch_limit = if filter_path.is_some() {
@@ -911,12 +969,42 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Commands::Callers { name, path, limit } => {
-            cmd_callgraph(&name, path, limit, true, &format, excludes)
-        }
-        Commands::Callees { name, path, limit } => {
-            cmd_callgraph(&name, path, limit, false, &format, excludes)
-        }
+        Commands::Callers {
+            name,
+            path,
+            limit,
+            auto_update,
+            no_stale_check,
+        } => cmd_callgraph(
+            &name,
+            path,
+            limit,
+            true,
+            auto_update,
+            no_stale_check,
+            local_cache_active,
+            &cfg,
+            &format,
+            excludes,
+        ),
+        Commands::Callees {
+            name,
+            path,
+            limit,
+            auto_update,
+            no_stale_check,
+        } => cmd_callgraph(
+            &name,
+            path,
+            limit,
+            false,
+            auto_update,
+            no_stale_check,
+            local_cache_active,
+            &cfg,
+            &format,
+            excludes,
+        ),
         Commands::Check {
             names,
             path,
@@ -924,9 +1012,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(path)?.canonicalize()?;
-            let index_path =
-                ensure_index_exists(&root, auto_update, false, local_cache_active, &cfg)?;
-            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
+            let index_path = ensure_index_ready(
+                &root,
+                auto_update,
+                no_stale_check,
+                false,
+                local_cache_active,
+                &cfg,
+            )?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
 
@@ -992,9 +1085,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(path)?.canonicalize()?;
-            let index_path =
-                ensure_index_exists(&root, auto_update, true, local_cache_active, &cfg)?;
-            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
+            let index_path = ensure_index_ready(
+                &root,
+                auto_update,
+                no_stale_check,
+                true,
+                local_cache_active,
+                &cfg,
+            )?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
             if !reader.has_vectors() {
@@ -1036,9 +1134,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
         } => {
             let root = resolve_root(path)?.canonicalize()?;
-            let index_path =
-                ensure_index_exists(&root, auto_update, true, local_cache_active, &cfg)?;
-            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
+            let index_path = ensure_index_ready(
+                &root,
+                auto_update,
+                no_stale_check,
+                true,
+                local_cache_active,
+                &cfg,
+            )?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
             if !reader.has_vectors() {
@@ -1169,11 +1272,16 @@ fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_callgraph(
     name: &str,
     path: Option<std::path::PathBuf>,
     limit: usize,
     is_callers: bool,
+    auto_update: bool,
+    no_stale_check: bool,
+    local_cache_active: bool,
+    cfg: &config::VexConfig,
     format: &OutputFormat,
     excludes: &[String],
 ) -> Result<()> {
@@ -1184,8 +1292,29 @@ fn cmd_callgraph(
     // Fast path: if a v4 index with a call graph exists for this project,
     // use the persistent FST (~4ms). Otherwise fall back to the live-scan
     // implementation that walks files with tree-sitter (~seconds).
+    //
+    // Bootstrap/staleness behaviour, gated on `auto_update`:
+    //   * missing index + auto-update on → bootstrap, then read the v4 FST.
+    //   * stale index  + auto-update on → handle_staleness() refreshes it.
+    //   * missing index + auto-update off → silently use live-scan (preserves
+    //     pre-10.2 UX for projects without an index).
     let canonical_root = root.canonicalize().ok();
     let index_path = canonical_root.as_ref().map(|r| config::index_path(r));
+    if let (Some(croot), Some(idx)) = (canonical_root.as_ref(), index_path.as_ref()) {
+        let should_auto = auto_update || cfg.auto_update.unwrap_or(false);
+        if !idx.exists() {
+            if should_auto {
+                // Discard the IndexAvail return — we only need the side effect
+                // of bootstrap. Reader is opened below the same way as before.
+                ensure_index_exists(croot, auto_update, false, local_cache_active, cfg)?;
+                // just-bootstrapped → manifest is fresh, skip handle_staleness
+            }
+            // else: live-scan path; no warning, this command supports it natively
+        } else {
+            handle_staleness(croot, auto_update, no_stale_check, cfg)?;
+        }
+    }
+
     let reader = match index_path.as_ref().filter(|p| p.exists()) {
         Some(p) => match crate::store::reader::IndexReader::open(p) {
             Ok(r) => Some(r),

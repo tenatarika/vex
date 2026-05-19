@@ -265,30 +265,28 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
         "callers" => {
             let name = args["name"].as_str().context("missing name")?;
             let limit = args["limit"].as_u64().unwrap_or(50);
-            Ok((
-                "callers".into(),
-                vec![
-                    name.to_string(),
-                    "--path".into(),
-                    project_root.to_string(),
-                    "--limit".into(),
-                    limit.to_string(),
-                ],
-            ))
+            let mut extra = vec![
+                name.to_string(),
+                "--path".into(),
+                project_root.to_string(),
+                "--limit".into(),
+                limit.to_string(),
+            ];
+            push_auto_update(&mut extra, args);
+            Ok(("callers".into(), extra))
         }
         "callees" => {
             let name = args["name"].as_str().context("missing name")?;
             let limit = args["limit"].as_u64().unwrap_or(50);
-            Ok((
-                "callees".into(),
-                vec![
-                    name.to_string(),
-                    "--path".into(),
-                    project_root.to_string(),
-                    "--limit".into(),
-                    limit.to_string(),
-                ],
-            ))
+            let mut extra = vec![
+                name.to_string(),
+                "--path".into(),
+                project_root.to_string(),
+                "--limit".into(),
+                limit.to_string(),
+            ];
+            push_auto_update(&mut extra, args);
+            Ok(("callees".into(), extra))
         }
         "check" => {
             let names: Vec<String> = args["names"]
@@ -359,7 +357,7 @@ fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 20 },
                     "semantic": { "type": "boolean", "description": "Enable semantic vector search", "default": false },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
                 },
                 "required": ["query"]
             }
@@ -372,7 +370,7 @@ fn tool_descriptors() -> Value {
                 "properties": {
                     "name": { "type": "string", "description": "Symbol name to find" },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
                 },
                 "required": ["name"]
             }
@@ -385,7 +383,7 @@ fn tool_descriptors() -> Value {
                 "properties": {
                     "query": { "type": "string", "description": "Natural language description" },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
                 },
                 "required": ["query"]
             }
@@ -445,7 +443,7 @@ fn tool_descriptors() -> Value {
                     "symbols": { "type": "array", "items": { "type": "string" }, "description": "Symbol names to show" },
                     "limit": { "type": "integer", "description": "Max results per symbol", "default": 1 },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
                 },
                 "required": ["symbols"]
             }
@@ -459,7 +457,7 @@ fn tool_descriptors() -> Value {
                     "name": { "type": "string", "description": "Symbol name to find usages of" },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
                 },
                 "required": ["name"]
             }
@@ -493,26 +491,28 @@ fn tool_descriptors() -> Value {
         },
         {
             "name": "callers",
-            "description": "Find all functions that call a given function (no index needed).",
+            "description": "Find all functions that call a given function. Uses the persistent call-graph FST (fast, ~4ms) when an index is present; falls back to live-scan otherwise.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "description": "Function name" },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
-                    "project_root": { "type": "string", "description": "Project root path" }
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)", "default": true }
                 },
                 "required": ["name"]
             }
         },
         {
             "name": "callees",
-            "description": "Find all functions called by a given function (no index needed).",
+            "description": "Find all functions called by a given function. Uses the persistent call-graph FST (fast, ~4ms) when an index is present; falls back to live-scan otherwise.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "description": "Function name" },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
-                    "project_root": { "type": "string", "description": "Project root path" }
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)", "default": true }
                 },
                 "required": ["name"]
             }
@@ -525,7 +525,7 @@ fn tool_descriptors() -> Value {
                 "properties": {
                     "names": { "type": "array", "items": { "type": "string" }, "description": "Symbol names to check" },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
                 },
                 "required": ["names"]
             }
@@ -541,7 +541,7 @@ fn tool_descriptors() -> Value {
                     "threshold": { "type": "number", "description": "Minimum cosine similarity (0.0..1.0)", "default": 0.5 },
                     "filter": { "type": "string", "description": "Filter results by path substring" },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
                 },
                 "required": ["name"]
             }
@@ -557,7 +557,7 @@ fn tool_descriptors() -> Value {
                     "min_body_lines": { "type": "integer", "description": "Skip symbols with body shorter than this many lines", "default": 5 },
                     "filter": { "type": "string", "description": "Restrict to pairs where at least one symbol's path contains this substring" },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
                 }
             }
         }
@@ -588,4 +588,74 @@ struct JsonRpcResponse {
 struct JsonRpcError {
     code: i32,
     message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn args_for(tool: &str, args: Value) -> Vec<String> {
+        let (_subcmd, extra) = build_command(tool, &args, "/tmp/proj").expect("build_command");
+        extra
+    }
+
+    #[test]
+    fn callers_default_pushes_auto_update_flag() {
+        // Most common path: MCP client omits the field. The auto_update()
+        // helper defaults to true, so --auto-update must appear in the
+        // spawned CLI args.
+        let extra = args_for("callers", json!({"name": "Foo"}));
+        assert!(
+            extra.iter().any(|a| a == "--auto-update"),
+            "expected --auto-update flag in callers args, got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn callers_explicit_false_omits_auto_update_flag() {
+        let extra = args_for("callers", json!({"name": "Foo", "auto_update": false}));
+        assert!(
+            !extra.iter().any(|a| a == "--auto-update"),
+            "callers with auto_update=false must not pass --auto-update, got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn callees_default_pushes_auto_update_flag() {
+        let extra = args_for("callees", json!({"name": "Bar"}));
+        assert!(
+            extra.iter().any(|a| a == "--auto-update"),
+            "expected --auto-update flag in callees args, got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn callees_explicit_false_omits_auto_update_flag() {
+        let extra = args_for("callees", json!({"name": "Bar", "auto_update": false}));
+        assert!(
+            !extra.iter().any(|a| a == "--auto-update"),
+            "callees with auto_update=false must not pass --auto-update, got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn callers_and_callees_schemas_expose_auto_update() {
+        // Schema-regression guard: removing the field would silently break
+        // MCP clients that pass `auto_update` and expect it to be honored.
+        let desc = tool_descriptors();
+        let tools = desc.as_array().expect("tool_descriptors returns array");
+
+        for name in ["callers", "callees"] {
+            let entry = tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("missing tool {name}"));
+            let props = &entry["inputSchema"]["properties"];
+            assert!(
+                props["auto_update"].is_object(),
+                "{name} schema is missing the auto_update field: {props}"
+            );
+        }
+    }
 }

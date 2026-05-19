@@ -274,6 +274,132 @@ fn check_command_bootstraps_when_auto_update_set() {
 }
 
 #[test]
+fn callers_auto_update_flag_bootstraps_missing_index() {
+    // 10.2 regression: `vex callers --auto-update` in a project with no
+    // index must bootstrap on first call instead of staying in live-scan.
+    // Without bootstrap, the persistent call-graph FST is never available.
+    let tmp = TempDir::new().unwrap();
+    write_project(
+        tmp.path(),
+        "local_cache = true\n",
+        "lib.rs",
+        "fn helper() {}\nfn main() { helper(); }\n",
+    );
+
+    let assert = vex_in(tmp.path())
+        .args(["callers", "helper", "--auto-update"])
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        stderr.contains("bootstrapping"),
+        "callers --auto-update should bootstrap missing index: {stderr}"
+    );
+    assert!(
+        stdout.contains("main"),
+        "callers should report `main` as caller of `helper`: {stdout}"
+    );
+    // Bootstrap must persist — second invocation reuses the index, so
+    // the bootstrap banner must not appear again.
+    let second = vex_in(tmp.path())
+        .args(["callers", "helper", "--auto-update"])
+        .assert()
+        .success();
+    let stderr2 = String::from_utf8_lossy(&second.get_output().stderr);
+    assert!(
+        !stderr2.contains("bootstrapping"),
+        "second callers invocation should reuse the existing index, got: {stderr2}"
+    );
+}
+
+#[test]
+fn callees_auto_update_flag_bootstraps_missing_index() {
+    // Symmetric to the callers test — verifies the same wiring on the
+    // callees branch of cmd_callgraph.
+    let tmp = TempDir::new().unwrap();
+    write_project(
+        tmp.path(),
+        "local_cache = true\n",
+        "lib.rs",
+        "fn helper() {}\nfn main() { helper(); }\n",
+    );
+
+    let assert = vex_in(tmp.path())
+        .args(["callees", "main", "--auto-update"])
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stderr.contains("bootstrapping"),
+        "callees --auto-update should bootstrap missing index: {stderr}"
+    );
+    assert!(
+        stdout.contains("helper"),
+        "callees should report `helper` as callee of `main`: {stdout}"
+    );
+}
+
+#[test]
+fn callers_without_auto_update_falls_back_to_live_scan() {
+    // Pre-10.2 UX must be preserved: `vex callers Foo` in a project
+    // without an index and without auto_update enabled should NOT bail
+    // with "No index found" — it falls through to the live tree-sitter
+    // scan that callers always supported.
+    let tmp = TempDir::new().unwrap();
+    // local_cache so VEX_CACHE_DIR fallback is not hit; no auto_update.
+    write_project(
+        tmp.path(),
+        "local_cache = true\n",
+        "lib.rs",
+        "fn helper() {}\nfn main() { helper(); }\n",
+    );
+
+    let assert = vex_in(tmp.path())
+        .args(["callers", "helper"])
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        !stderr.contains("No index found"),
+        "live-scan fallback must not surface index errors: {stderr}"
+    );
+    assert!(
+        !stderr.contains("bootstrapping"),
+        "no bootstrap should run without auto_update: {stderr}"
+    );
+    assert!(
+        stdout.contains("main"),
+        "live-scan should still find `main` as caller of `helper`: {stdout}"
+    );
+}
+
+#[test]
+fn callers_auto_update_config_drives_bootstrap() {
+    // CLI flag is optional when `.vex.toml` sets auto_update = true.
+    // Verifies cmd_callgraph's `auto_update || cfg.auto_update` check.
+    let tmp = TempDir::new().unwrap();
+    write_project(
+        tmp.path(),
+        "auto_update = true\nlocal_cache = true\n",
+        "lib.rs",
+        "fn helper() {}\nfn main() { helper(); }\n",
+    );
+
+    let assert = vex_in(tmp.path())
+        .args(["callers", "helper"])
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("bootstrapping"),
+        "callers should bootstrap when .vex.toml auto_update = true: {stderr}"
+    );
+}
+
+#[test]
 fn self_update_check_and_yes_are_mutually_exclusive() {
     // Regression for the earlier review finding: --check + --yes used
     // to be silently accepted with --yes ignored. clap must now reject

@@ -270,7 +270,8 @@ pub enum Commands {
         limit: usize,
     },
 
-    /// Find all functions that call a given function (no index needed)
+    /// Find all functions that call a given function. Uses the persistent call
+    /// graph (fast, ~4ms) when an index is available; falls back to live scan otherwise.
     Callers {
         /// Function name to find callers of
         name: String,
@@ -282,9 +283,19 @@ pub enum Commands {
         /// Max results to return
         #[arg(short, long, default_value = "50")]
         limit: usize,
+
+        /// Auto-update index if stale (or bootstrap if missing) before searching.
+        /// Enables the persistent call-graph fast path; live-scan is used otherwise.
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
     },
 
-    /// Find all functions called by a given function (no index needed)
+    /// Find all functions called by a given function. Uses the persistent call
+    /// graph (fast, ~4ms) when an index is available; falls back to live scan otherwise.
     Callees {
         /// Function name to find callees of
         name: String,
@@ -296,6 +307,15 @@ pub enum Commands {
         /// Max results to return
         #[arg(short, long, default_value = "50")]
         limit: usize,
+
+        /// Auto-update index if stale (or bootstrap if missing) before searching.
+        /// Enables the persistent call-graph fast path; live-scan is used otherwise.
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
     },
 
     /// Fast existence check: which of the given symbols exist in the index?
