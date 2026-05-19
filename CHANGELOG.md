@@ -6,6 +6,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-05-19
+
+UX/perf hotfix on top of v1.6.1, motivated by Windows users hitting two
+sharp edges as soon as they tried `auto_update = true` in `.vex.toml`.
+
+### Fixed
+- **`auto_update = true` now bootstraps a missing index on first use.** The previous code path bailed with "No index found" before the auto-update logic ever ran, and `handle_staleness` could only do incremental updates anyway. A bare `vex search` / `show` / `usages` / `check` / `similar` / `duplicates` in a fresh project will now print "Bootstrapping…" and run the equivalent of `vex index` before continuing. `Similar` and `Duplicates` bootstrap with `--semantic` automatically since they require embeddings
+- **Improved "no index" error message** when `auto_update` is *not* set — now lists both fixes: run `vex index` or set `auto_update = true` in `.vex.toml`
+- **MiniLM embedding model is now cached globally**, not in `./.fastembed_cache/` relative to the working directory. The ~86 MB ONNX model lives at `<platform-cache>/vex/embeddings/` and is shared across every project. Previously every project re-downloaded the same model and dropped a `.fastembed_cache/` folder into the project tree. Existing `.fastembed_cache/` directories inside user projects can be deleted safely — the model will not be re-downloaded
+- **`local_cache = true` + bootstrap now writes the `.gitignore` safeguard**. The auto-bootstrap path previously skipped the project-`.gitignore` creation that the explicit `vex index` command performs, so users with both flags set could end up committing the binary index. Now the bootstrap mirrors the `Commands::Index` behaviour
+- **Semantic bootstrap announces the model download.** `vex similar` / `vex duplicates` on a fresh machine print "Note: first semantic index downloads the MiniLM ONNX model (~86 MB)…" before fastembed's progress bar appears
+- **Clearer embed cache errors.** `MiniLMEmbedder::new` now wraps `create_dir_all` with `.with_context(...)`, so a failed cache-dir create surfaces with the actual path instead of hiding behind fastembed's generic "failed to load MiniLM" message
+
+### Fixed (CI)
+- Replaced `orhun/git-cliff-action@v3` with a direct install via `taiki-e/install-action`. The Docker image used by the action was based on debian:buster which is EOL — `apt-get update` returned 404 and the release job failed before the body could be generated. v1.6.1 release shipped via this fix; documenting here for the changelog trail
+
+### Internal
+- New `ensure_index_exists(root, auto_update_flag, needs_semantic, local_cache_active, cfg)` helper in `cli::mod` replaces the same six-line `if !index_path.exists() { bail!(...) }` block that appeared in every index-backed command. Returns the resolved `index.vex` path so callers do not recompute it
+- New `util::config::embed_cache_dir()` returns `<cache-root>/embeddings/` without appending the project-hash subdir — every project that shares the platform cache root also shares the model. Users on `local_cache = true` consciously opt in to a portable layout and pay the per-project cost
+- 9 new CLI integration tests in `tests/cli_bootstrap_test.rs` drive the actual binary via `assert_cmd`. Cover the auto-bootstrap path, the helpful-error path, the `.gitignore` safeguard, path-traversal rejection end-to-end, the `--no-stale-check` interaction, and the `--check` / `--yes` mutual exclusion. Each test scopes its cache to a tempdir so the shared platform cache is never touched
+
 ## [1.6.1] - 2026-05-18
 
 Follow-up patch for v1.6.0. Adds the `vex self-update` subcommand that
