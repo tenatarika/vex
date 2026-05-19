@@ -59,8 +59,17 @@ jobs:
       - name: Package (windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
+        # 7z (preinstalled on windows-latest) with explicit -mm=Deflate
+        # avoids the Deflate64 archives that `Compress-Archive` emits on
+        # some pwsh 7.x configurations — those decompress fine with .NET
+        # but fail in the zip crate used by self_update with
+        # "Compression method not supported". v1.6.2 self-update was
+        # bitten by this on Windows. Push-Location keeps the archive
+        # entry as bare `vex.exe`, not `target/.../release/vex.exe`.
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/vex.exe -DestinationPath vex-${{ matrix.target }}.zip
+          Push-Location target/${{ matrix.target }}/release
+          7z a -tzip -mm=Deflate -mx=5 "../../../vex-${{ matrix.target }}.zip" vex.exe
+          Pop-Location
 
       - uses: actions/upload-artifact@v4
         with:
