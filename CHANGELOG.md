@@ -6,6 +6,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.4] - 2026-05-19
+
+Feature + UX polish release. Headline change is the new indexing-time
+opt-out flags (`--no-call-graph` / `--no-bm25`) that let monorepos and
+CI hot-paths skip the call-graph and BM25 build steps that v1.5.0
+added unconditionally — recovering most of the v1.4.3-era indexing
+speed when the user does not need those search channels.
+
+### Added
+- **`vex index --no-call-graph` / `--no-bm25`** (also on `update` and `watch`). v1.5.0 made `vex index` ~6× slower than v1.4.3 because the persistent call-graph and BM25 sections were always built. Users who only need structural + vector search can now opt out per-build or globally via `.vex.toml`. With `--no-call-graph` set, `vex callers` / `vex callees` transparently fall back to the live tree-sitter scan they always supported; with `--no-bm25`, hybrid search drops the BM25 channel and uses structural (+ semantic if enabled). The opt-out is recorded in the manifest so a subsequent `vex update` does not silently re-add the section.
+- **`.vex.toml` keys `call_graph` and `bm25`** for project-wide opt-out. Resolution precedence: CLI `--no-...` flag > `.vex.toml` > previous manifest > default (true).
+- **`vex callers` / `vex callees` accept `--auto-update` and `--no-stale-check`**, symmetric with the other index-backed commands. With `--auto-update`, a missing index is bootstrapped on first call so the persistent call-graph FST (~4 ms) becomes available immediately; the existing live-scan fallback is preserved when no index and no auto-update are in play. MCP wrappers gained the matching `auto_update` schema field.
+
+### Fixed
+- **`auto_update`-driven bootstrap no longer re-runs the staleness probe** on the freshly built index. A just-bootstrapped manifest is guaranteed `Freshness::Fresh`, so the manifest read + git HEAD probe that fired immediately after the bootstrap was pure waste. Behaviourally invisible; just trims the first-search latency on `auto_update = true` projects.
+- **`IndexReader::open` errors now carry the index file path** in every `bail!` and `File::open`/`Mmap::map` context. Previously a corrupt or version-mismatched index surfaced as a path-less "index file is corrupted (bad magic)" — users had to grep stderr or read source to find the file. Same treatment for the embedder-mismatch and stale-embedder-switch bails (now include the manifest path), and the cache-dir `..`-traversal warning (now shows both the raw config value and the tilde-expanded form).
+- **`vex callers` / `vex callees` live-scan fallback reason is now printed via `eprintln!`** when an index exists but fails to open. Previously logged via `tracing::warn!` which `RUST_LOG` hides by default — users saw the ~seconds live-scan latency without knowing why the fast path was skipped.
+- **Bootstrap `pipeline::run` failure now includes the project root** via `.with_context()`. Bare pipeline errors during first-run bootstrap no longer drop the root path.
+- **CI release-zip Deflate guard** introduced in v1.6.3 contained an f-string syntax error inside a PowerShell here-string that crashed on the next tag push. The dict lookup is now pulled into a local variable so the f-string only references a bare identifier. (Affects only the release pipeline; published binaries on v1.6.3 are unchanged.)
+
+### Internal
+- New `pipeline::IndexOptions { with_embeddings, with_call_graph, with_bm25 }` struct replaces the bare `with_embeddings: bool` parameter on `pipeline::run` / `pipeline::update`. Default is `with_embeddings = false, with_call_graph = true, with_bm25 = true`. All seven library-test callsites migrated to `IndexOptions::default()`.
+- `Manifest` gains `call_graph: Option<bool>` and `bm25: Option<bool>` fields (back-compat: `None` on pre-10.4 manifests is treated as enabled).
+- New `resolve_section_enabled(cli_no_flag, cfg_value, manifest_value) -> bool` helper in `cli::mod` encodes the precedence rule in one place.
+- `ensure_index_exists` now returns `IndexAvail { path, just_bootstrapped }` instead of bare `PathBuf`. A new `ensure_index_ready` wrapper composes ensure + staleness, skipping the latter on a fresh bootstrap. Six existing call sites (search/show/usages/check/similar/duplicates) collapsed from a pair of calls to a single helper.
+- `cmd_callgraph` gains `auto_update`, `no_stale_check`, `local_cache_active`, `cfg` parameters and a bootstrap-or-staleness block that runs before the existing fast-path / live-scan branching. The live-scan fallback when neither an index nor auto-update is available is preserved exactly.
+- `Update` / `Watch` arms canonicalize `root` once at the top of the arm and `?`-propagate `Manifest::load` errors so a partially-written manifest does not silently re-enable opted-out sections.
+- 11 new tests: 4 integration tests for callers/callees auto-update bootstrap and live-scan fallback, 4 integration tests for the opt-out persistence + sticky-update invariant, 2 behavioural tests proving callers/search still work with the opt-out, 1 unit test suite (4 cases) for `resolve_section_enabled` covering all precedence levels.
+
 ## [1.6.3] - 2026-05-19
 
 Windows-only patch for the `vex self-update` failure reported on v1.6.2.
