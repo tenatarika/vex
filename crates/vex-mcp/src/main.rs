@@ -228,7 +228,14 @@ fn push_scope_field(extra: &mut Vec<String>, args: &Value, key: &str, flag: &str
 
 /// Translate MCP metadata fields (visibility / async / static /
 /// sealed) into the matching CLI flags. 11.6.
-fn push_metadata(extra: &mut Vec<String>, args: &Value) {
+fn push_metadata(extra: &mut Vec<String>, args: &Value) -> Result<()> {
+    // Early-bail on the mutually-exclusive pair so the caller sees an
+    // intent-aware JSON-RPC error instead of clap's parser dumping
+    // its `conflicts_with` template into the response body.
+    if args["async_only"].as_bool().unwrap_or(false) && args["no_async"].as_bool().unwrap_or(false)
+    {
+        anyhow::bail!("`async_only` and `no_async` are mutually exclusive");
+    }
     if let Some(vis) = args["visibility"].as_str() {
         extra.extend(["--visibility".into(), vis.to_string()]);
     }
@@ -244,6 +251,7 @@ fn push_metadata(extra: &mut Vec<String>, args: &Value) {
     if args["sealed_only"].as_bool().unwrap_or(false) {
         extra.push("--sealed-only".into());
     }
+    Ok(())
 }
 
 /// Read a string-valued argument under its canonical name, falling back
@@ -302,7 +310,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             }
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
-            push_metadata(&mut extra, args);
+            push_metadata(&mut extra, args)?;
             ("search".to_string(), extra)
         }
         "find_symbol" => {
@@ -311,7 +319,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             let mut extra = vec![symbol.to_string(), "--limit".into(), "10".into()];
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
-            push_metadata(&mut extra, args);
+            push_metadata(&mut extra, args)?;
             ("search".to_string(), extra)
         }
         "find_similar" => {
@@ -324,7 +332,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             ];
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
-            push_metadata(&mut extra, args);
+            push_metadata(&mut extra, args)?;
             ("search".to_string(), extra)
         }
         "outline" => {
@@ -371,7 +379,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             extra.extend(["--limit".into(), limit.to_string()]);
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
-            push_metadata(&mut extra, args);
+            push_metadata(&mut extra, args)?;
             ("show".to_string(), extra)
         }
         "usages" => {

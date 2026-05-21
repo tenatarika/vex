@@ -59,7 +59,13 @@ pub struct MetadataFilter {
     /// `Some(true)` keeps only async/suspend symbols; `Some(false)`
     /// keeps only non-async. `None` is "don't filter on this axis".
     pub async_required: Option<bool>,
+    /// `Some(true)` from `--static-only`. The `Some(false)` branch is
+    /// reserved for a future `--no-static` CLI flag — `build_metadata_filter`
+    /// never produces it today, but `matches()` handles it correctly
+    /// so the future flag drops in without core changes.
     pub static_required: Option<bool>,
+    /// `Some(true)` from `--sealed-only`. Same `Some(false)` reservation
+    /// as `static_required`.
     pub sealed_required: Option<bool>,
 }
 
@@ -98,7 +104,17 @@ impl MetadataFilter {
             }
         }
         if let Some(want) = self.sealed_required {
-            if has_token_any(&tokens, &["sealed", "final"]) != want {
+            // `sealed` is unambiguous (Kotlin/C#); `final` is overloaded
+            // — Java uses `final class Foo` for the same concept, but
+            // the same keyword also annotates method parameters
+            // (`void f(final String x)`) and fields (`private final
+            // int id`). Match `final` only when it co-occurs with a
+            // type-introducing keyword so a parameter doesn't false-
+            // positive into the sealed bucket.
+            let is_sealed_token = has_token_any(&tokens, &["sealed"])
+                || (has_token_any(&tokens, &["final"])
+                    && has_token_any(&tokens, &["class", "interface", "enum", "record"]));
+            if is_sealed_token != want {
                 return false;
             }
         }
@@ -217,6 +233,20 @@ mod tests {
         assert!(f.matches(Some("public static void main(String[] args)")));
         assert!(f.matches(Some("static factory(): Foo")));
         assert!(!f.matches(Some("public void instance()")));
+    }
+
+    #[test]
+    fn sealed_required_rejects_final_in_method_parameter() {
+        // Regression guard: Java methods can take `final` parameters
+        // (`void process(final String x)`). Before the type-keyword
+        // co-requirement, that signature matched `--sealed-only`
+        // because `final` alone was treated as a sealing modifier.
+        let f = MetadataFilter {
+            sealed_required: Some(true),
+            ..Default::default()
+        };
+        assert!(!f.matches(Some("public void process(final String input)")));
+        assert!(!f.matches(Some("private final int id;")));
     }
 
     #[test]

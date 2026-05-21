@@ -9,6 +9,8 @@
 //! - `$_` matches anything without capturing
 //! - `$$$` matches zero or more characters (ellipsis)
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use tree_sitter::{Node, Parser};
 
@@ -182,7 +184,7 @@ fn try_match(text: &str, segments: &[Segment]) -> Option<Vec<(String, String)>> 
     let text = text.trim();
     let mut pos = 0;
     let mut captures: Vec<(String, String)> = Vec::new();
-    let mut bound: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut bound: HashMap<String, String> = HashMap::new();
 
     for (i, seg) in segments.iter().enumerate() {
         match seg {
@@ -218,13 +220,19 @@ fn try_match(text: &str, segments: &[Segment]) -> Option<Vec<(String, String)>> 
                 }
                 // 11.4: back-reference enforcement. Second-and-later
                 // occurrences of `$NAME` in the same pattern must
-                // capture the same text the first occurrence did.
+                // capture the same text the first occurrence did. Both
+                // sides are whitespace-normalised first so a balanced
+                // expression like `(x + y)` vs `(x+y)` unifies — the
+                // bracket-balanced `extract_word` returns the interior
+                // verbatim, so without normalisation `assertEqual($X,
+                // $X)` would spuriously mismatch on argument formatting.
+                let norm = normalise_capture(word);
                 if let Some(prev) = bound.get(name) {
-                    if prev != word {
+                    if prev != &norm {
                         return None;
                     }
                 } else {
-                    bound.insert(name.clone(), word.to_string());
+                    bound.insert(name.clone(), norm);
                 }
                 captures.push((name.clone(), word.to_string()));
                 pos += word.len();
@@ -310,6 +318,19 @@ fn extract_word(s: &str) -> &str {
         }
     }
     &s[..i]
+}
+
+/// Strip all whitespace so back-reference equality on balanced
+/// expressions ignores formatting differences. `(x + y)`, `(x+y)`,
+/// and `( x +  y )` all normalise to `(x+y)`. Identifier captures
+/// (no whitespace) round-trip unchanged. String-literal interiors
+/// with significant whitespace are a known edge case — back-refs
+/// over identical string literals still unify because the bytes
+/// match before stripping; pattern matches that depend on
+/// preserving interior whitespace of a captured string aren't a
+/// supported v1 workflow.
+fn normalise_capture(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
 fn find_next_literal(segments: &[Segment]) -> Option<&str> {
@@ -488,6 +509,32 @@ func main() {}
             .map(|(_, v)| v.as_str())
             .collect();
         assert_eq!(name_captures, vec!["state", "state"]);
+    }
+
+    #[test]
+    fn back_reference_normalises_interior_whitespace() {
+        // The bracket-balanced `extract_word` returns interior bytes
+        // verbatim. Without normalisation `assertEqual($X, $X)`
+        // against `assertEqual((a + b), (a+b))` would spuriously
+        // mismatch on the whitespace difference. The normalised
+        // back-ref equality fires so the pattern matches.
+        let source = "fn t() { assertEqual((a + b), (a+b)); }\n";
+        let pattern = parse_pattern("assertEqual($X, $X)", Language::Rust).unwrap();
+        let matches = find_matches(source, &pattern, "test.rs");
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.matched_text.contains("assertEqual")),
+            "whitespace-only diff should not block back-ref: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn normalise_capture_strips_all_whitespace() {
+        assert_eq!(normalise_capture("foo"), "foo");
+        assert_eq!(normalise_capture("(x + y)"), "(x+y)");
+        assert_eq!(normalise_capture("( x  +   y )"), "(x+y)");
+        assert_eq!(normalise_capture("\tindented\n"), "indented");
     }
 
     #[test]
