@@ -194,6 +194,14 @@ pub enum Commands {
         #[arg(long)]
         no_stale_check: bool,
 
+        /// Request scope-resolved (type-aware) refs. Until the
+        /// persistent `reference_edges` section ships in 11.1.3 this
+        /// flag prints a deferral notice on stderr and still serves
+        /// from the legacy refs FST — so callers can wire `--strict`
+        /// into their workflow ahead of the format bump.
+        #[arg(long)]
+        strict: bool,
+
         #[command(flatten)]
         scope: ScopeArgs,
     },

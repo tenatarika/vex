@@ -678,8 +678,15 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             filter_path,
             auto_update,
             no_stale_check,
+            strict,
             scope,
         } => {
+            if strict {
+                eprintln!(
+                    "warning: type-aware refs not yet built — run `vex index --strict` once \
+                     11.1.3 ships; serving from the legacy refs FST for now."
+                );
+            }
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(None)?.canonicalize()?;
             let index_path = ensure_index_ready(

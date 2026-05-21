@@ -387,6 +387,9 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 .context("missing symbol")?;
             let limit = args["limit"].as_u64().unwrap_or(50);
             let mut extra = vec![symbol.to_string(), "--limit".into(), limit.to_string()];
+            if args["strict"].as_bool() == Some(true) {
+                extra.push("--strict".into());
+            }
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
             ("usages".to_string(), extra)
@@ -717,6 +720,7 @@ fn tool_descriptors() -> Value {
                     "symbol": { "type": "string", "description": "Symbol name to find usages of (canonical key, v1.7+)" },
                     "name": { "type": "string", "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta." },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
+                    "strict": { "type": "boolean", "description": "Request scope-resolved (type-aware) refs. Until the persistent reference_edges section ships in 11.1.3, this flag prints a deferral notice and still serves from the legacy refs FST.", "default": false },
                     "project_root": { "type": "string", "description": "Project root path" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
