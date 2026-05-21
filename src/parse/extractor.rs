@@ -460,10 +460,7 @@ fn walk_for_refs(
         let text = node.utf8_text(content.as_bytes()).unwrap_or_default();
         if is_meaningful_identifier(text) {
             let line = node.start_position().row + 1;
-            let context = content
-                .lines()
-                .nth(line - 1)
-                .map(|l| l.trim().to_string());
+            let context = content.lines().nth(line - 1).map(|l| l.trim().to_string());
             refs.push(ParsedRef {
                 name: text.to_string(),
                 line,
@@ -489,9 +486,11 @@ fn is_comment_kind(kind: &str, lang: Language) -> bool {
 
 fn is_plain_string_kind(kind: &str, lang: Language) -> bool {
     match lang {
+        // tree-sitter-rust 0.24 parses `b"..."` as `string_literal` —
+        // no separate `byte_string_literal` kind exists.
         Language::Rust => matches!(
             kind,
-            "string_literal" | "raw_string_literal" | "char_literal" | "byte_string_literal"
+            "string_literal" | "raw_string_literal" | "char_literal"
         ),
         Language::TypeScript => matches!(kind, "string" | "regex"),
         // Python `string` is handled below via `interpolation_child_kind`

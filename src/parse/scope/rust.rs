@@ -148,6 +148,13 @@ impl<'a> Walker<'a> {
         if let Some(value) = node.child_by_field_name("value") {
             self.walk(value, scope);
         }
+        // `let Ok(x) = foo() else { return default; }` — the `else`
+        // block is a regular ref-bearing subtree (the `block` arm in
+        // `walk` opens its own child scope), so dispatch it through
+        // the main walker.
+        if let Some(alt) = node.child_by_field_name("alternative") {
+            self.walk(alt, scope);
+        }
         if let Some(pat) = node.child_by_field_name("pattern") {
             self.bind_pattern(pat, scope, DefKind::Variable);
         }
@@ -177,21 +184,20 @@ impl<'a> Walker<'a> {
 
     fn walk_impl(&mut self, node: tree_sitter::Node, parent: ScopeId) {
         let impl_scope = self.tree.push_scope(ScopeKind::Impl, parent);
-        // Walk the impl type so any refs (e.g. `impl Foo for Bar`) are
-        // captured; field accessors are not used because tree-sitter
-        // wraps the type / trait in separate fields whose names vary
-        // across grammar minor versions.
+        // `impl Foo for Bar` — `type` and `trait` are ref-bearing
+        // positions and live in the parent scope; the method bodies
+        // (`declaration_list` under `body`) live in the child impl
+        // scope. Dispatch by field name rather than skipping by node-
+        // kind string so a future grammar rename of `declaration_list`
+        // can't double-emit the body or silently drop the type/trait.
+        if let Some(ty) = node.child_by_field_name("type") {
+            self.walk(ty, parent);
+        }
+        if let Some(tr) = node.child_by_field_name("trait") {
+            self.walk(tr, parent);
+        }
         if let Some(body) = node.child_by_field_name("body") {
             self.walk_children(body, impl_scope);
-            // Also walk siblings of `body` (type / trait fields) under
-            // the impl's parent scope for ref capture. The simpler
-            // pass below covers it.
-        }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() != "declaration_list" {
-                self.walk(child, parent);
-            }
         }
     }
 
@@ -237,20 +243,17 @@ impl<'a> Walker<'a> {
         );
     }
 
-    /// Process a `use_declaration` node. Children are *not* emitted as
-    /// refs (the use path is a binding site, not a reference site) —
-    /// instead we collect `(local_name, UsePath)` pairs and stamp them
-    /// into the current scope as `DefKind::Import` bindings carrying
-    /// their original path.
+    /// Process a `use_declaration` node. The use path is a binding
+    /// site, not a reference site — children are *not* emitted as refs
+    /// (otherwise the line scanner inside 11.1.1 would have already
+    /// done that work). Instead we walk the path tree via
+    /// [`collect_use_imports`] and stamp `(local_name, UsePath)` pairs
+    /// into the current scope as `DefKind::Import` bindings.
     fn walk_use(&mut self, node: tree_sitter::Node, scope: ScopeId) {
         let line = node.start_position().row + 1;
         let mut imports: Vec<(String, UsePath)> = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            match child.kind() {
-                "use" | ";" | "visibility_modifier" => continue,
-                _ => collect_use_imports(child, &[], self.content, &mut imports),
-            }
+        if let Some(arg) = node.child_by_field_name("argument") {
+            collect_use_imports(arg, &[], self.content, &mut imports);
         }
         for (name, path) in imports {
             self.tree.add_binding(
@@ -290,6 +293,10 @@ impl<'a> Walker<'a> {
     fn resolve(&self, scope: ScopeId, name: &str) -> BindTarget {
         match self.tree.resolve(scope, name) {
             Some((sid, def)) => {
+                // Import wins over a same-name `ModuleSymbol`: in valid
+                // Rust a `use foo as Bar;` cannot coexist with a local
+                // `struct Bar;` in the same scope (compile error), so
+                // the ordering is harmless and matches the language.
                 if def.kind == DefKind::Import {
                     if let Some(path) = &def.import_path {
                         return BindTarget::Imported(path.clone());
@@ -317,9 +324,12 @@ fn is_rust_comment_kind(kind: &str) -> bool {
 }
 
 fn is_rust_string_kind(kind: &str) -> bool {
+    // tree-sitter-rust 0.24 parses `b"..."` as `string_literal` too
+    // (the lexer prefix is part of the same rule), so the three kinds
+    // below cover every string-shaped literal in current Rust.
     matches!(
         kind,
-        "string_literal" | "raw_string_literal" | "char_literal" | "byte_string_literal"
+        "string_literal" | "raw_string_literal" | "char_literal"
     )
 }
 

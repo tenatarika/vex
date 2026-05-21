@@ -123,7 +123,8 @@ fn use_list_brings_multiple_names() {
 
 #[test]
 fn use_as_alias_records_original_path_under_alias_name() {
-    let src = "use external_crate::Long_Original_Name as Short_Alias;\nfn run(_p: Short_Alias) {}\n";
+    let src =
+        "use external_crate::Long_Original_Name as Short_Alias;\nfn run(_p: Short_Alias) {}\n";
     let (_syms, refs) = bind(src);
     let path = imported_path(&refs, "Short_Alias", 2);
     assert_eq!(path, vec!["external_crate", "Long_Original_Name"]);

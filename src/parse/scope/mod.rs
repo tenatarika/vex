@@ -11,10 +11,13 @@
 //! Until 11.1.2b lands the stub binders return an empty `bound_refs`
 //! vector and `vex usages` keeps serving from the existing refs FST.
 //!
-//! Many fields/variants below stay unread until the real binder plugs
-//! in during 11.1.2b/c; we tolerate dead-code warnings at the module
-//! level rather than scattering `#[allow]` over every variant.
-
+//! Many fields/variants below (`BoundRef` field reads, `RefKind::Call`,
+//! `RefKind::Macro`, `BindTarget` arms, `UsePath::segments` outside of
+//! tests) stay unread until 11.1.3 wires them to the persistent
+//! `reference_edges` section and 11.1.6 wires them to
+//! `vex implementations`. We tolerate dead-code warnings at the module
+//! level rather than scattering `#[allow]` over every variant; revisit
+//! and remove this when 11.1.3 lands.
 #![allow(dead_code)]
 
 use anyhow::Result;
