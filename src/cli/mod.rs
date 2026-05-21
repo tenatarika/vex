@@ -681,12 +681,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             strict,
             scope,
         } => {
-            if strict {
-                eprintln!(
-                    "warning: type-aware refs not yet built — run `vex index --strict` once \
-                     11.1.3 ships; serving from the legacy refs FST for now."
-                );
-            }
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(None)?.canonicalize()?;
             let index_path = ensure_index_ready(
@@ -704,7 +698,35 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 .context("no refs in index — re-run `vex index` to rebuild")?;
             let file_paths = reader.file_paths();
 
-            let entries = ref_reader.find(&name);
+            // `--strict` reads from the v5 reference_edges section
+            // (binder-resolved refs only). The legacy FST still backs
+            // the non-strict path because it captures identifiers in
+            // every supported language, including the 16 without a
+            // scope binder yet.
+            let entries: Vec<crate::store::refs_fst::RefEntry> = if strict {
+                if !reader.has_ref_edges() {
+                    anyhow::bail!(
+                        "--strict needs a v5 index with reference_edges (this index is v{} or has no resolved refs). Re-run `vex index` to rebuild.",
+                        reader.header().version
+                    );
+                }
+                let sym_fst = reader
+                    .symbol_fst_reader()
+                    .context("symbol FST missing — re-run `vex index` to rebuild for --strict")?;
+                let sym_indices = sym_fst.find(&name);
+                let mut out = Vec::new();
+                for sym_idx in sym_indices {
+                    for edge in reader.find_ref_edges_by_symbol(sym_idx) {
+                        out.push(crate::store::refs_fst::RefEntry {
+                            file_id: edge.from_file_id,
+                            line: edge.line,
+                        });
+                    }
+                }
+                out
+            } else {
+                ref_reader.find(&name)
+            };
             let entries: Vec<_> = entries
                 .into_iter()
                 .filter(|e| {
