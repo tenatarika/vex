@@ -210,11 +210,21 @@ fn write_index_to(
     let (callers_fst_bytes, callers_post_bytes) = build_callers_fst(call_edges)?;
     let (callees_fst_bytes, callees_post_bytes) = build_callees_fst(call_edges)?;
 
-    // v5: collect resolved bound refs from every parsed file and map
-    // each file-local `BindTarget::ModuleSymbol(local_idx)` into the
-    // global symbol idx via the running per-file base. Imported targets
-    // are deferred to 11.1.3c; Local / Unresolved targets are not
-    // persisted (the legacy refs FST already covers in-file lookups).
+    // v5 Pass 2 — cross-file Imported resolution (11.1.3c). Build a
+    // name → global-idx index over every symbol so each
+    // `BindTarget::Imported(use_path)` can be rewritten into a real
+    // `to_sym_idx` by matching `use_path.segments.last()` against the
+    // file's defining symbol. Ambiguous matches (same name in N files)
+    // pick the first hit for now — the plan reserves a future
+    // `RefKind::Ambiguous` flag, but that needs `--explain` to surface
+    // it usefully so it's deferred.
+    let name_to_global: HashMap<&str, Vec<u32>> = {
+        let mut m: HashMap<&str, Vec<u32>> = HashMap::with_capacity(records.len());
+        for (i, (name, _)) in sym_entries.iter().enumerate() {
+            m.entry(name.as_str()).or_default().push(i as u32);
+        }
+        m
+    };
     let mut ref_edge_builders: Vec<RefEdgeBuilder> = Vec::new();
     {
         let mut base_idx: u32 = 0;
@@ -224,8 +234,16 @@ fn write_index_to(
                 .copied()
                 .expect("file_id must exist");
             for r in &file.bound_refs {
-                if let BindTarget::ModuleSymbol(local) = r.target {
-                    let global = base_idx.saturating_add(local);
+                let to_sym_idx = match &r.target {
+                    BindTarget::ModuleSymbol(local) => Some(base_idx.saturating_add(*local)),
+                    BindTarget::Imported(use_path) => use_path
+                        .segments
+                        .last()
+                        .and_then(|name| name_to_global.get(name.as_str()))
+                        .and_then(|hits| hits.first().copied()),
+                    BindTarget::Local(_) | BindTarget::Unresolved => None,
+                };
+                if let Some(global) = to_sym_idx {
                     ref_edge_builders.push(RefEdgeBuilder {
                         to_sym_idx: global,
                         from_file_id: file_id,

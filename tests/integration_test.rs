@@ -1054,6 +1054,93 @@ fn ref_edges_roundtrip_module_symbols() {
     assert!(unknown.is_empty(), "missing key returns empty vec");
 }
 
+#[test]
+fn ref_edges_resolve_imported_use_path_cross_file() {
+    use vex::parse::scope::{BindTarget, BoundRef, RefKind, UsePath};
+
+    let tmp = TempDir::new().unwrap();
+    let index_path = tmp.path().join("index.vex");
+
+    // File A defines the symbol; File B imports + uses it. The binder
+    // in File B can't see File A's symbol table, so its BoundRef is
+    // `Imported(UsePath{["crate","Important_Type"]})`. The writer's
+    // Pass-2 cross-file resolution (11.1.3c) must rewrite that into a
+    // global ModuleSymbol idx pointing at File A's record.
+    let files = vec![
+        ParsedFile {
+            path: "a.rs".into(),
+            symbols: vec![make_symbol("Important_Type", SymbolKind::Struct, 1)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![],
+        },
+        ParsedFile {
+            path: "b.rs".into(),
+            symbols: vec![make_symbol("caller_fn", SymbolKind::Function, 5)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![BoundRef {
+                name: "Important_Type".into(),
+                line: 7,
+                col: 12,
+                target: BindTarget::Imported(UsePath {
+                    segments: vec!["crate".into(), "Important_Type".into()],
+                }),
+                kind: RefKind::Type,
+            }],
+        },
+    ];
+
+    vex::store::writer::write_index(&files, &index_path).unwrap();
+    let reader = vex::store::reader::IndexReader::open(&index_path).unwrap();
+
+    // global idx 0 = Important_Type (from file A); 1 = caller_fn (file B).
+    let edges = reader.find_ref_edges_by_symbol(0);
+    assert_eq!(
+        edges.len(),
+        1,
+        "the b.rs `use crate::Important_Type;` site must resolve to a.rs's Important_Type",
+    );
+    assert_eq!(edges[0].line, 7);
+    assert_eq!(edges[0].from_file_id, 1, "ref came from b.rs (file_id 1)");
+}
+
+#[test]
+fn ref_edges_drop_imported_when_use_path_unresolvable() {
+    use vex::parse::scope::{BindTarget, BoundRef, RefKind, UsePath};
+
+    let tmp = TempDir::new().unwrap();
+    let index_path = tmp.path().join("index.vex");
+
+    // The imported name `Outside_Crate_Type` exists in no file's
+    // symbols → cross-file resolution must skip the ref. The legacy
+    // refs FST keeps catching it for `vex usages` (no --strict).
+    let files = vec![ParsedFile {
+        path: "b.rs".into(),
+        symbols: vec![make_symbol("caller_fn", SymbolKind::Function, 1)],
+        refs: vec![],
+        call_edges: vec![],
+        bound_refs: vec![BoundRef {
+            name: "Outside_Crate_Type".into(),
+            line: 3,
+            col: 1,
+            target: BindTarget::Imported(UsePath {
+                segments: vec!["external".into(), "Outside_Crate_Type".into()],
+            }),
+            kind: RefKind::Type,
+        }],
+    }];
+
+    vex::store::writer::write_index(&files, &index_path).unwrap();
+    let reader = vex::store::reader::IndexReader::open(&index_path).unwrap();
+    // caller_fn is sym_idx 0; no other symbol exists.
+    let edges = reader.find_ref_edges_by_symbol(0);
+    assert!(
+        edges.is_empty(),
+        "external symbol must not produce a fake edge against an unrelated local symbol",
+    );
+}
+
 // --- Empty index ---
 
 #[test]

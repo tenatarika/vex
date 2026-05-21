@@ -57,9 +57,21 @@ impl ScopeBinder for RustBinder {
             .parse(content, None)
             .context("tree-sitter parse failed in rust binder")?;
 
+        // Index file_symbols by name once so `Walker::resolve` is O(1)
+        // per call. The linear scan we had before was O(R × S) per
+        // file, which the rust-reviewer flagged (M5) before 11.1.3
+        // would run the binder across an entire repo at index time.
+        let mut by_name: std::collections::HashMap<&str, u32> =
+            std::collections::HashMap::with_capacity(file_symbols.len());
+        for (i, s) in file_symbols.iter().enumerate() {
+            // Multiple symbols with the same name keep the *first*
+            // index — matches the prior `iter().position` behaviour.
+            by_name.entry(s.name.as_str()).or_insert(i as u32);
+        }
+
         let mut walker = Walker {
             content,
-            file_symbols,
+            file_symbols_by_name: by_name,
             tree: ScopeTree::new(),
             refs: Vec::new(),
         };
@@ -71,7 +83,7 @@ impl ScopeBinder for RustBinder {
 
 struct Walker<'a> {
     content: &'a str,
-    file_symbols: &'a [ParsedSymbol],
+    file_symbols_by_name: std::collections::HashMap<&'a str, u32>,
     tree: ScopeTree,
     refs: Vec<BoundRef>,
 }
@@ -304,10 +316,11 @@ impl<'a> Walker<'a> {
                 }
                 if sid == self.tree.root() {
                     // Prefer ModuleSymbol when the file-level resolution
-                    // also matches a ParsedSymbol entry — 11.1.3 will use
-                    // the idx to look up the global symbol id.
-                    if let Some(idx) = self.file_symbols.iter().position(|s| s.name == name) {
-                        return BindTarget::ModuleSymbol(idx as u32);
+                    // also matches a ParsedSymbol entry — the writer
+                    // resolves the file-local idx to a global one before
+                    // emitting the v5 reference_edges record.
+                    if let Some(&idx) = self.file_symbols_by_name.get(name) {
+                        return BindTarget::ModuleSymbol(idx);
                     }
                     BindTarget::Local(sid)
                 } else {
