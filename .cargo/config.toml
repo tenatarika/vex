@@ -1,0 +1,20 @@
+# Windows MSVC defaults the main-thread stack to 1 MiB. The v1.7.0
+# clap subcommand tree (10 ScopeArgs flatten + 2 MetadataArgs flatten
+# + 3 new subcommands — Paths, Reachable, Diff) inflates the parser's
+# expanded match tree enough that the auto-generated `clap::Parser`
+# derivation now blows that limit on Windows during startup. macOS
+# and Linux default to 8 MiB so they were never affected.
+#
+# Symptom on Windows before this config: every `vex` invocation
+# exits with NTSTATUS 0xC00000FD (STACK_OVERFLOW) and the message
+# `thread 'main' has overflowed its stack` before `main` even runs.
+#
+# Bump the link-time reserved stack to 8 MiB to match Unix defaults.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-args=/STACK:8388608"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "link-args=/STACK:8388608"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "link-args=/STACK:8388608"]
