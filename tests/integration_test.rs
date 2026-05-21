@@ -29,6 +29,7 @@ fn make_parsed_file(path: &str, symbols: Vec<ParsedSymbol>) -> ParsedFile {
         symbols,
         refs: Vec::new(),
         call_edges: Vec::new(),
+        bound_refs: Vec::new(),
     }
 }
 
@@ -264,6 +265,7 @@ fn refs_roundtrip_and_search() {
             },
         ],
         call_edges: Vec::new(),
+        bound_refs: Vec::new(),
     }];
 
     vex::store::writer::write_index(&files, &index_path).unwrap();

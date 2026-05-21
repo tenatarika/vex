@@ -268,6 +268,7 @@ fn reconstruct_unchanged(
                 symbols: std::mem::take(&mut current_symbols),
                 refs: Vec::new(),
                 call_edges: Vec::new(),
+                bound_refs: Vec::new(),
             });
         }
         current_path = path;
@@ -306,6 +307,7 @@ fn reconstruct_unchanged(
             symbols: current_symbols,
             refs: Vec::new(),
             call_edges: Vec::new(),
+            bound_refs: Vec::new(),
         });
     }
 

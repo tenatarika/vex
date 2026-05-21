@@ -32,6 +32,7 @@ fn make_file(path: &str, symbols: Vec<ParsedSymbol>) -> ParsedFile {
         symbols,
         refs: Vec::new(),
         call_edges: Vec::new(),
+        bound_refs: Vec::new(),
     }
 }
 

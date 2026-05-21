@@ -41,6 +41,7 @@ fn one_symbol_parsed() -> Vec<ParsedFile> {
         symbols: vec![make_sym("example_fn")],
         refs: vec![],
         call_edges: vec![],
+        bound_refs: vec![],
     }]
 }
 

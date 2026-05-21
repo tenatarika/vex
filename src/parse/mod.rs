@@ -2,6 +2,7 @@ pub mod body;
 pub mod extractor;
 pub mod language;
 pub mod queries;
+pub mod scope;
 
 use anyhow::Result;
 use language::Language;
@@ -27,10 +28,12 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
             },
         )
         .collect();
+    let bound_refs = scope::bind_refs(content, lang, &symbols)?;
     Ok(ParsedFile {
         path: path.to_string(),
         symbols,
         refs,
         call_edges,
+        bound_refs,
     })
 }

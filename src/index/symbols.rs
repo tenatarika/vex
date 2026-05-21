@@ -262,4 +262,11 @@ pub struct ParsedFile {
     /// without a call-graph tree-sitter query, and for incremental
     /// reconstruction paths that skip the call-edge extraction step.
     pub call_edges: Vec<RawCallEdge>,
+    /// Scope-resolved references produced by the per-language binder
+    /// (11.1.2). Empty for languages without a binder and for the
+    /// incremental reconstruction paths in `pipeline.rs` that never
+    /// re-parse from source. Becomes the input to the persistent
+    /// `reference_edges` section in 11.1.3.
+    #[allow(dead_code)]
+    pub bound_refs: Vec<crate::parse::scope::BoundRef>,
 }
