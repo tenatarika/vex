@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{ensure, Context, Result};
 
 use super::call_graph::{build_callees_fst, build_callers_fst, CallEdgeBuilder};
-use super::format::{CallEdge, CallGraphHeader, Header, SymbolRecord, MAGIC, VECTOR_DIM, VERSION};
+use super::format::{
+    CallEdge, CallGraphHeader, Header, SymbolRecord, V5SectionHeader, MAGIC, VECTOR_DIM, VERSION,
+};
 use super::{refs_fst, symbol_fst};
 use crate::index::symbols::ParsedFile;
 
@@ -194,10 +196,12 @@ fn write_index_to(
     let (callers_fst_bytes, callers_post_bytes) = build_callers_fst(call_edges)?;
     let (callees_fst_bytes, callees_post_bytes) = build_callees_fst(call_edges)?;
 
-    // Calculate section offsets — v4 places the CallGraphHeader immediately
-    // after the base Header, so Symbols starts at Header::SIZE + CallGraphHeader::SIZE.
+    // Calculate section offsets — v5 places the CallGraphHeader then
+    // the V5SectionHeader immediately after the base Header, so Symbols
+    // starts at Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE.
     let cg_header_offset = Header::SIZE as u64;
-    let symbols_offset = cg_header_offset + CallGraphHeader::SIZE as u64;
+    let v5_header_offset = cg_header_offset + CallGraphHeader::SIZE as u64;
+    let symbols_offset = v5_header_offset + V5SectionHeader::SIZE as u64;
     let symbols_size = records.len() * SymbolRecord::SIZE;
 
     let vectors_offset = symbols_offset + symbols_size as u64;
@@ -293,6 +297,26 @@ fn write_index_to(
         )
     };
     w.write_all(cg_header_bytes)?;
+
+    // v5: V5SectionHeader immediately after the CallGraphHeader. In
+    // 11.1.3a the section payload itself is still empty — every offset
+    // and length is zero. 11.1.3b will populate this block.
+    let v5_header = V5SectionHeader {
+        ref_edges_offset: 0,
+        ref_edges_len: 0,
+        ref_edges_fst_offset: 0,
+        ref_edges_fst_len: 0,
+        ref_edges_postings_offset: 0,
+        ref_edges_postings_len: 0,
+    };
+    // SAFETY: V5SectionHeader is #[repr(C)] with fixed layout.
+    let v5_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            &v5_header as *const V5SectionHeader as *const u8,
+            V5SectionHeader::SIZE,
+        )
+    };
+    w.write_all(v5_bytes)?;
 
     for rec in &records {
         // SAFETY: SymbolRecord is #[repr(C)] with fixed layout

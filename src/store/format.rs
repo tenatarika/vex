@@ -25,8 +25,10 @@
 //! and v4 — version dispatch happens at the reader.
 
 pub const MAGIC: &[u8; 4] = b"VEXI";
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 /// Oldest format version this build can still open for read.
+/// v3 and v4 indexes continue to read without the v5-only sections —
+/// `vex usages --strict` will refuse, everything else still works.
 pub const MIN_SUPPORTED_VERSION: u32 = 3;
 pub const VECTOR_DIM: u32 = 384;
 
@@ -75,6 +77,13 @@ impl Header {
     pub fn has_call_graph_header(&self) -> bool {
         self.version >= 4
     }
+
+    /// Whether this index format carries a [`V5SectionHeader`] immediately
+    /// after the [`CallGraphHeader`]. v3/v4 indexes do not — `vex usages
+    /// --strict` falls back to the legacy refs FST on those.
+    pub fn has_v5_section_header(&self) -> bool {
+        self.version >= 5
+    }
 }
 
 /// Section offsets and lengths for the v4-only sections (call graph + BM25).
@@ -110,6 +119,36 @@ pub struct CallGraphHeader {
 }
 
 impl CallGraphHeader {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+}
+
+/// Section offsets and lengths for the v5-only sections (type-aware
+/// reference edges from the scope binder, 11.1.x). Located in the file
+/// at exactly `Header::SIZE + CallGraphHeader::SIZE` when
+/// `header.version >= 5`. Absent from v3/v4 files.
+///
+/// In 11.1.3a the section payload itself is not yet written — every
+/// field below stays zero so a v5 index is bit-identical to a v4 index
+/// from the symbols section onward, just with an extra zeroed header
+/// block. 11.1.3b populates the section with real `RefEdge` records.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct V5SectionHeader {
+    /// Raw fixed-size `RefEdge` records (16 bytes each). The number of
+    /// records is `ref_edges_len / RefEdge::SIZE`.
+    pub ref_edges_offset: u64,
+    pub ref_edges_len: u64,
+    /// FST keyed on the stringified `to_sym_idx` (decimal). Values are
+    /// u64 offsets into `ref_edges_postings`.
+    pub ref_edges_fst_offset: u64,
+    pub ref_edges_fst_len: u64,
+    /// Posting lists: for each `to_sym_idx` key, a `[u32 count][u32
+    /// edge_idx; count]` block that indexes into the `RefEdge` records.
+    pub ref_edges_postings_offset: u64,
+    pub ref_edges_postings_len: u64,
+}
+
+impl V5SectionHeader {
     pub const SIZE: usize = std::mem::size_of::<Self>();
 }
 

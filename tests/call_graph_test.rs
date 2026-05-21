@@ -55,8 +55,11 @@ fn write_and_open(tmp: &TempDir, parsed: &[ParsedFile], edges: &[CallEdgeBuilder
 // ---------------------------------------------------------------------------
 
 #[test]
-fn current_version_is_4() {
-    assert_eq!(VERSION, 4);
+fn current_version_is_5() {
+    // Bumped from 4 to 5 in 11.1.3a (adds V5SectionHeader for the
+    // type-aware reference_edges section). v3/v4 indexes still open
+    // because MIN_SUPPORTED_VERSION stays at 3.
+    assert_eq!(VERSION, 5);
 }
 
 #[test]

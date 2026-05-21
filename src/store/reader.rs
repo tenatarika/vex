@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use memmap2::Mmap;
 
-use super::format::{CallEdge, CallGraphHeader, Header, SymbolRecord};
+use super::format::{CallEdge, CallGraphHeader, Header, SymbolRecord, V5SectionHeader};
 
 /// Memory-mapped index reader. Zero-copy access to symbols and strings.
 pub struct IndexReader {
@@ -93,6 +93,24 @@ impl IndexReader {
         if header.has_call_graph_header() {
             if (Header::SIZE + CallGraphHeader::SIZE) > reader.mmap.len() {
                 bail!("v4 index at {p} is truncated (no room for CallGraphHeader). Re-run `vex index` to rebuild.");
+            }
+            // v5: V5SectionHeader sits directly after CallGraphHeader; if
+            // the file claims v5 the bytes must fit.
+            if header.has_v5_section_header()
+                && (Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE)
+                    > reader.mmap.len()
+            {
+                bail!("v5 index at {p} is truncated (no room for V5SectionHeader). Re-run `vex index` to rebuild.");
+            }
+            if let Some(v5) = reader.v5_section_header() {
+                let edges_end = v5.ref_edges_offset.saturating_add(v5.ref_edges_len);
+                let fst_end = v5.ref_edges_fst_offset.saturating_add(v5.ref_edges_fst_len);
+                let post_end = v5
+                    .ref_edges_postings_offset
+                    .saturating_add(v5.ref_edges_postings_len);
+                if edges_end > mmap_len || fst_end > mmap_len || post_end > mmap_len {
+                    bail!("v5 index at {p} is corrupted (reference_edges section offsets exceed file size). Re-run `vex index` to rebuild.");
+                }
             }
             if let Some(cg) = reader.call_graph_header() {
                 let edges_end = cg.call_edges_offset.saturating_add(cg.call_edges_len);
@@ -320,6 +338,35 @@ impl IndexReader {
     pub fn has_call_graph(&self) -> bool {
         self.call_graph_header()
             .is_some_and(|h| h.call_edges_len > 0)
+    }
+
+    /// Read the v5 [`V5SectionHeader`] when present. Returns `None` for
+    /// v3/v4 indexes or when the bytes after the `CallGraphHeader` don't
+    /// fit a `V5SectionHeader`.
+    pub fn v5_section_header(&self) -> Option<&V5SectionHeader> {
+        if !self.header().has_v5_section_header() {
+            return None;
+        }
+        let offset = Header::SIZE.checked_add(CallGraphHeader::SIZE)?;
+        let end = offset.checked_add(V5SectionHeader::SIZE)?;
+        if end > self.mmap.len() {
+            return None;
+        }
+        let ptr = unsafe { self.mmap.as_ptr().add(offset) };
+        if ptr.align_offset(std::mem::align_of::<V5SectionHeader>()) != 0 {
+            return None;
+        }
+        // SAFETY: bounds + alignment checked. V5SectionHeader is #[repr(C)].
+        Some(unsafe { &*(ptr as *const V5SectionHeader) })
+    }
+
+    /// Whether the index carries scope-resolved reference edges. False
+    /// for v3/v4 indexes (no v5 section header) and v5 indexes that
+    /// were built before 11.1.3b wired the binder into the writer.
+    #[allow(dead_code)] // becomes the dispatch knob in 11.1.3d
+    pub fn has_ref_edges(&self) -> bool {
+        self.v5_section_header()
+            .is_some_and(|h| h.ref_edges_len > 0)
     }
 
     /// Number of call edges recorded in this index, 0 when absent.

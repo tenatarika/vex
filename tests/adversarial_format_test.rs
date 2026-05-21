@@ -31,7 +31,7 @@
 use std::io::Write;
 
 use tempfile::NamedTempFile;
-use vex::store::format::{Header, MAGIC, VERSION};
+use vex::store::format::{CallGraphHeader, Header, V5SectionHeader, MAGIC, VERSION};
 use vex::store::reader::IndexReader;
 
 // ---------------------------------------------------------------------------
@@ -494,4 +494,68 @@ fn open_missing_file_error_includes_path() {
         msg.contains("/nonexistent-vex-test-path/index.vex"),
         "open error should include the requested path, got: {msg}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 11.1.3a: v5 format bump — V5SectionHeader appended after CallGraphHeader.
+// All offsets stay zero in 11.1.3a; the section payload itself lands in 11.1.3b.
+// ---------------------------------------------------------------------------
+
+/// `VERSION` is the version this build writes. After 11.1.3a it must be 5
+/// and the v5 layout must place a `V5SectionHeader` immediately after the
+/// existing `CallGraphHeader`.
+#[test]
+fn version_is_five_after_format_bump() {
+    assert_eq!(VERSION, 5, "11.1.3a bumps the writer to v5");
+}
+
+/// A v5 file truncated *exactly* at the end of the CallGraphHeader (i.e.,
+/// missing the V5SectionHeader bytes) must be rejected with a clear
+/// error rather than silently treated as an empty section.
+#[test]
+fn v5_truncated_at_v5_section_header_rejected() {
+    let mut buf = minimal_valid_header_bytes();
+    // Append a zeroed CallGraphHeader but *not* the V5SectionHeader.
+    buf.resize(Header::SIZE + CallGraphHeader::SIZE, 0);
+    let f = write_tmp(&buf);
+    let result = IndexReader::open(f.path());
+    assert!(
+        result.is_err(),
+        "expected Err for v5 file missing V5SectionHeader bytes, got Ok",
+    );
+}
+
+/// A v5 file with `V5SectionHeader.ref_edges_offset + ref_edges_len`
+/// past EOF must be rejected. The V5SectionHeader bytes themselves fit;
+/// only the section payload exceeds the file size.
+#[test]
+fn v5_ref_edges_section_past_eof_rejected() {
+    let mut buf = minimal_valid_header_bytes();
+    buf.resize(
+        Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE,
+        0,
+    );
+    // V5SectionHeader sits at Header::SIZE + CallGraphHeader::SIZE.
+    // Its first field is `ref_edges_offset` (u64 at offset 0), and the
+    // second is `ref_edges_len` (u64 at offset 8). Point past the file
+    // end.
+    let v5_off = Header::SIZE + CallGraphHeader::SIZE;
+    write_u64_le(&mut buf, v5_off, Header::SIZE as u64);
+    write_u64_le(&mut buf, v5_off + 8, 1_234_567);
+    let f = write_tmp(&buf);
+    let result = IndexReader::open(f.path());
+    assert!(
+        result.is_err(),
+        "expected Err when ref_edges section exceeds file size, got Ok",
+    );
+}
+
+/// Sanity check: the V5SectionHeader is non-zero size so empty-section
+/// validation is meaningful.
+/// Compile-time guard: `V5SectionHeader` must define at least one
+/// field. A zero-sized header would let a corrupt index skip the
+/// V5SectionHeader bytes entirely without the reader noticing.
+#[test]
+fn v5_section_header_has_nonzero_size() {
+    const _: () = assert!(V5SectionHeader::SIZE > 0);
 }
