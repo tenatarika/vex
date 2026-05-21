@@ -1748,7 +1748,7 @@ fn cmd_outline(file: &std::path::Path, kind: Option<&str>, format: &OutputFormat
         .with_context(|| format!("unsupported language: .{ext}"))?;
 
     if let Err(e) = crate::parse::queries::try_get_query(lang) {
-        bail!("failed to load grammar for .{ext}: {e}");
+        bail!("failed to load grammar for {lang:?} (.{ext}): {e}");
     }
 
     let rel = file.to_string_lossy().to_string();

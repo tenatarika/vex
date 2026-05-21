@@ -384,6 +384,34 @@ Linux:   $XDG_CACHE_HOME/vex/<hash>/index.vex
 
 Each project gets its own index based on a hash of the project root path.
 
+## Troubleshooting
+
+### Surfacing internal warnings
+
+Vex emits structured logs via the `tracing` crate at `parse`/`store`
+boundaries — failed grammar loads, mmap reopens, manifest mismatches,
+and so on. By default `RUST_LOG` is unset, so only the most critical
+diagnostics make it to stderr.
+
+When a search returns surprising results or an index command behaves
+oddly, raise the log level:
+
+```bash
+RUST_LOG=vex=warn vex search Foo
+RUST_LOG=vex=info vex index   # noisier — file-level progress
+```
+
+For *what the search engine actually did* (per-channel hit counts,
+fuzzy fallback engagement, applied filters), use the structured trace
+instead:
+
+```bash
+vex search Foo --why 2>trace.json   # trace lands on stderr as JSON
+```
+
+See [`docs/MCP-SCHEMA.md`](docs/MCP-SCHEMA.md) for the `--why` /
+`why: true` JSON shape.
+
 ## Integration
 
 ### Claude Code (CLI Integration)

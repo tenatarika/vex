@@ -128,8 +128,28 @@ fn handle_tool_call(params: &Option<Value>) -> Result<Value> {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if !output.status.success() {
+        // Surface stdout alongside stderr — for many vex error paths the
+        // JSON-error body is on stdout and stderr only carries the
+        // `Error:` prefix line. Truncate so a runaway message can't
+        // explode the JSON-RPC response. Char-boundary slicing avoids
+        // chopping a multi-byte UTF-8 codepoint.
+        let stdout_snippet = if stdout.is_empty() {
+            String::new()
+        } else {
+            let trimmed = stdout.trim();
+            const CAP: usize = 512;
+            if trimmed.len() > CAP {
+                let mut end = CAP;
+                while end > 0 && !trimmed.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!(" stdout: {}…(truncated)", &trimmed[..end])
+            } else {
+                format!(" stdout: {trimmed}")
+            }
+        };
         anyhow::bail!(
-            "vex {sub} failed ({}): {stderr}",
+            "vex {sub} failed ({}): {stderr}{stdout_snippet}",
             output.status,
             sub = built.subcommand
         );
