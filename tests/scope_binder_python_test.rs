@@ -95,6 +95,61 @@ fn sibling_fns_do_not_share_locals() {
     );
 }
 
+// --- Python imports ---
+
+fn imported_path(refs: &[BoundRef], name: &str, line: usize) -> Vec<String> {
+    let r = find_ref(refs, name, line);
+    match &r.target {
+        BindTarget::Imported(p) => p.segments.clone(),
+        other => panic!("expected Imported for `{name}` line {line}, got {other:?}"),
+    }
+}
+
+#[test]
+fn from_import_binds_imported_name() {
+    let src = "from external_pkg import Some_Type\nclass Holder:\n    def use(self):\n        return Some_Type()\n";
+    let (_syms, refs) = bind(src);
+    let path = imported_path(&refs, "Some_Type", 4);
+    assert_eq!(path, vec!["external_pkg", "Some_Type"]);
+}
+
+#[test]
+fn from_import_alias_uses_alias_name() {
+    let src = "from external_pkg import Some_Type as Aliased_Name\nclass Holder:\n    def use(self):\n        return Aliased_Name()\n";
+    let (_syms, refs) = bind(src);
+    let path = imported_path(&refs, "Aliased_Name", 4);
+    assert_eq!(path, vec!["external_pkg", "Some_Type"]);
+}
+
+#[test]
+fn plain_import_binds_top_level_name() {
+    let src = "import external_pkg\nclass Holder:\n    def use(self):\n        return external_pkg.thing()\n";
+    let (_syms, refs) = bind(src);
+    let path = imported_path(&refs, "external_pkg", 4);
+    // `import x` binds only `x`; the dotted path here is just ["x"].
+    assert_eq!(path, vec!["external_pkg"]);
+}
+
+#[test]
+fn import_alias_uses_alias_name() {
+    let src = "import external_pkg as Pkg_Alias\nclass Holder:\n    def use(self):\n        return Pkg_Alias.thing()\n";
+    let (_syms, refs) = bind(src);
+    let path = imported_path(&refs, "Pkg_Alias", 4);
+    assert_eq!(path, vec!["external_pkg"]);
+}
+
+#[test]
+fn from_import_star_leaves_names_unresolved() {
+    let src = "from external_pkg import *\nclass Holder:\n    def use(self):\n        return Mystery_Name()\n";
+    let (_syms, refs) = bind(src);
+    let r = find_ref(&refs, "Mystery_Name", 4);
+    assert!(
+        matches!(r.target, BindTarget::Unresolved),
+        "wildcard import must not bind unseen names; got {:?}",
+        r.target
+    );
+}
+
 #[test]
 fn refs_skip_comment_and_docstring_noise() {
     // 11.1.1 already filters # comments and string literals (docstrings

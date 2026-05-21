@@ -1,8 +1,8 @@
 //! Python scope binder (11.1.5).
 //!
 //! Walks the tree-sitter-python AST building a [`ScopeTree`] and emits
-//! a [`BoundRef`] per identifier reference. In-file resolution only —
-//! `import` / `from x import y` resolution is a follow-up.
+//! a [`BoundRef`] per identifier reference, including cross-file
+//! `import` resolution.
 //!
 //! ## What's handled
 //!
@@ -16,11 +16,13 @@
 //! - `block` — does NOT introduce a new scope; Python statement blocks
 //!   share the enclosing function/module scope by language design.
 //! - `decorated_definition` — descends into the inner def/class.
+//! - `import_statement` / `import_from_statement` — binds the imported
+//!   names (or aliases) tagged `DefKind::Import` so the writer's Pass-2
+//!   resolves `BindTarget::Imported` cross-file. `from x import *`
+//!   intentionally adds no bindings.
 //!
 //! ## What's deferred
 //!
-//! - `import` / `from x import y` — needs cross-file resolution like
-//!   `use` in Rust (11.1.2c).
 //! - `for` / `with` target bindings.
 //! - Comprehension scope isolation (`[x for x in y]` in Py3 introduces
 //!   an isolated scope — this binder treats it as the enclosing scope).
@@ -34,6 +36,7 @@ use anyhow::{Context, Result};
 
 use super::{
     BindTarget, BoundRef, DefKind, LocalDef, RefKind, ScopeBinder, ScopeId, ScopeKind, ScopeTree,
+    UsePath,
 };
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::extractor::is_meaningful_identifier;
@@ -101,8 +104,149 @@ impl<'a> Walker<'a> {
             "lambda" => self.walk_lambda(node, scope),
             "class_definition" => self.walk_class(node, scope),
             "assignment" => self.walk_assignment(node, scope),
+            "import_statement" => self.walk_import_statement(node, scope),
+            "import_from_statement" => self.walk_import_from(node, scope),
             "identifier" => self.emit_ref(node, scope),
             _ => self.walk_children(node, scope),
+        }
+    }
+
+    /// `import x`, `import x.y`, `import x as y`. Children are NOT
+    /// emitted as refs — the binding lives at the top-level name (or
+    /// the alias) and the dotted path is preserved so the writer's
+    /// Pass-2 cross-file resolution can look up `segments.last()`.
+    fn walk_import_statement(&mut self, node: tree_sitter::Node, scope: ScopeId) {
+        let line = node.start_position().row + 1;
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return;
+        }
+        loop {
+            if cursor.field_name() == Some("name") {
+                let n = cursor.node();
+                match n.kind() {
+                    "dotted_name" => {
+                        let segs = dotted_name_segments(n, self.content);
+                        if let Some(top) = segs.first().cloned() {
+                            // `import os.path` binds only `os`. Keep
+                            // the bound name as the sole segment —
+                            // dotted access (`os.path.X`) is property
+                            // lookup, not a separate binding.
+                            self.tree.add_binding(
+                                scope,
+                                top.clone(),
+                                LocalDef {
+                                    line,
+                                    kind: DefKind::Import,
+                                    import_path: Some(UsePath {
+                                        segments: vec![top],
+                                    }),
+                                },
+                            );
+                        }
+                    }
+                    "aliased_import" => {
+                        let dotted = n.child_by_field_name("name");
+                        let alias = n.child_by_field_name("alias");
+                        let segs = dotted
+                            .map(|d| dotted_name_segments(d, self.content))
+                            .unwrap_or_default();
+                        if let Some(a) = alias {
+                            let alias_text = a
+                                .utf8_text(self.content.as_bytes())
+                                .unwrap_or("")
+                                .to_string();
+                            if !alias_text.is_empty() && !segs.is_empty() {
+                                self.tree.add_binding(
+                                    scope,
+                                    alias_text,
+                                    LocalDef {
+                                        line,
+                                        kind: DefKind::Import,
+                                        import_path: Some(UsePath { segments: segs }),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+
+    /// `from x import y`, `from x import y as z`, `from x import *`.
+    /// Star imports are recorded as no-binding (the names they bring
+    /// in cannot be enumerated without parsing the target module).
+    fn walk_import_from(&mut self, node: tree_sitter::Node, scope: ScopeId) {
+        let line = node.start_position().row + 1;
+        let module_segs = node
+            .child_by_field_name("module_name")
+            .map(|m| dotted_name_segments(m, self.content))
+            .unwrap_or_default();
+        if module_segs.is_empty() {
+            return;
+        }
+
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return;
+        }
+        loop {
+            if cursor.field_name() == Some("name") {
+                let n = cursor.node();
+                match n.kind() {
+                    "dotted_name" => {
+                        let local_segs = dotted_name_segments(n, self.content);
+                        if let Some(local_name) = local_segs.first().cloned() {
+                            let mut full = module_segs.clone();
+                            full.push(local_name.clone());
+                            self.tree.add_binding(
+                                scope,
+                                local_name,
+                                LocalDef {
+                                    line,
+                                    kind: DefKind::Import,
+                                    import_path: Some(UsePath { segments: full }),
+                                },
+                            );
+                        }
+                    }
+                    "aliased_import" => {
+                        let dotted = n.child_by_field_name("name");
+                        let alias = n.child_by_field_name("alias");
+                        let local_segs = dotted
+                            .map(|d| dotted_name_segments(d, self.content))
+                            .unwrap_or_default();
+                        if let (Some(a), Some(orig)) = (alias, local_segs.first().cloned()) {
+                            let alias_text = a
+                                .utf8_text(self.content.as_bytes())
+                                .unwrap_or("")
+                                .to_string();
+                            if !alias_text.is_empty() {
+                                let mut full = module_segs.clone();
+                                full.push(orig);
+                                self.tree.add_binding(
+                                    scope,
+                                    alias_text,
+                                    LocalDef {
+                                        line,
+                                        kind: DefKind::Import,
+                                        import_path: Some(UsePath { segments: full }),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    _ => {} // wildcard_import has no `name:` field
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
         }
     }
 
@@ -293,4 +437,19 @@ impl<'a> Walker<'a> {
 
 fn is_py_comment_kind(kind: &str) -> bool {
     kind == "comment"
+}
+
+/// Flatten a `dotted_name` node (`a.b.c`) into its constituent segments.
+fn dotted_name_segments(node: tree_sitter::Node, content: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "identifier" {
+            let text = child.utf8_text(content.as_bytes()).unwrap_or("");
+            if !text.is_empty() {
+                out.push(text.to_string());
+            }
+        }
+    }
+    out
 }

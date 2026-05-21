@@ -111,6 +111,56 @@ fn inner_block_shadow_wins_for_inner_ref() {
     assert_ne!(resolved_scope, 0, "must not resolve to file root");
 }
 
+// --- 11.1.6: ES module imports ---
+
+fn imported_path(refs: &[BoundRef], name: &str, line: usize) -> Vec<String> {
+    let r = find_ref(refs, name, line);
+    match &r.target {
+        BindTarget::Imported(p) => p.segments.clone(),
+        other => panic!("expected Imported for `{name}` line {line}, got {other:?}"),
+    }
+}
+
+#[test]
+fn import_named_binds_to_imported() {
+    let src = "import { someExtFn } from './ext';\nfunction run() { someExtFn(); }\n";
+    let (_syms, refs) = bind(src);
+    let path = imported_path(&refs, "someExtFn", 2);
+    assert_eq!(path, vec!["./ext", "someExtFn"]);
+}
+
+#[test]
+fn import_named_alias_records_original_path_under_alias() {
+    let src = "import { someExtFn as renamedFn } from './ext';\nfunction run() { renamedFn(); }\n";
+    let (_syms, refs) = bind(src);
+    let path = imported_path(&refs, "renamedFn", 2);
+    assert_eq!(path, vec!["./ext", "someExtFn"]);
+}
+
+#[test]
+fn import_default_binds_local_name_with_module_path() {
+    let src = "import defaultExport from './ext';\nfunction run() { defaultExport(); }\n";
+    let (_syms, refs) = bind(src);
+    let path = imported_path(&refs, "defaultExport", 2);
+    assert_eq!(path, vec!["./ext"]);
+}
+
+#[test]
+fn import_namespace_alias_binds() {
+    let src = "import * as nsModule from './ext';\nfunction run() { nsModule.foo(); }\n";
+    let (_syms, refs) = bind(src);
+    let path = imported_path(&refs, "nsModule", 2);
+    assert_eq!(path, vec!["./ext"]);
+}
+
+#[test]
+fn import_type_only_behaves_like_import() {
+    let src = "import type { TypeOne } from './ext';\nfunction run(p: TypeOne) {}\n";
+    let (_syms, refs) = bind(src);
+    let path = imported_path(&refs, "TypeOne", 2);
+    assert_eq!(path, vec!["./ext", "TypeOne"]);
+}
+
 #[test]
 fn sibling_fns_do_not_share_locals() {
     let src = "function firstFn() { const onlyInFirst = 1; const _x = onlyInFirst; }\nfunction secondFn() { onlyInFirst; }\n";

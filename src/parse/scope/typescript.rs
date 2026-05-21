@@ -31,6 +31,7 @@ use anyhow::{Context, Result};
 
 use super::{
     BindTarget, BoundRef, DefKind, LocalDef, RefKind, ScopeBinder, ScopeId, ScopeKind, ScopeTree,
+    UsePath,
 };
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::extractor::is_meaningful_identifier;
@@ -99,6 +100,7 @@ impl<'a> Walker<'a> {
             }
             "type_alias_declaration" => self.bind_named_decl(node, scope, DefKind::Type),
             "enum_declaration" => self.bind_named_decl(node, scope, DefKind::Type),
+            "import_statement" => self.walk_import_statement(node, scope),
             "statement_block" => {
                 let s = self.tree.push_scope(ScopeKind::Block, scope);
                 self.walk_children(node, s);
@@ -195,6 +197,113 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// Process an `import_statement`. Children are NOT emitted as refs
+    /// (the import path is a binding site). Bindings get tagged
+    /// `DefKind::Import` with the dotted module path so Pass-2
+    /// cross-file resolution can rewrite them into `to_sym_idx`.
+    fn walk_import_statement(&mut self, node: tree_sitter::Node, scope: ScopeId) {
+        let line = node.start_position().row + 1;
+        let Some(source) = node
+            .child_by_field_name("source")
+            .and_then(|s| extract_string_text(s, self.content))
+        else {
+            return;
+        };
+        if source.is_empty() {
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "import_clause" {
+                self.walk_import_clause(child, scope, line, &source);
+            }
+        }
+    }
+
+    fn walk_import_clause(
+        &mut self,
+        clause: tree_sitter::Node,
+        scope: ScopeId,
+        line: usize,
+        source: &str,
+    ) {
+        let mut cursor = clause.walk();
+        for child in clause.children(&mut cursor) {
+            match child.kind() {
+                "identifier" => {
+                    let name = child.utf8_text(self.content.as_bytes()).unwrap_or("");
+                    if !name.is_empty() {
+                        self.tree.add_binding(
+                            scope,
+                            name.to_string(),
+                            LocalDef {
+                                line,
+                                kind: DefKind::Import,
+                                import_path: Some(UsePath {
+                                    segments: vec![source.to_string()],
+                                }),
+                            },
+                        );
+                    }
+                }
+                "namespace_import" => {
+                    let mut inner = child.walk();
+                    for grand in child.children(&mut inner) {
+                        if grand.kind() == "identifier" {
+                            let alias = grand.utf8_text(self.content.as_bytes()).unwrap_or("");
+                            if !alias.is_empty() {
+                                self.tree.add_binding(
+                                    scope,
+                                    alias.to_string(),
+                                    LocalDef {
+                                        line,
+                                        kind: DefKind::Import,
+                                        import_path: Some(UsePath {
+                                            segments: vec![source.to_string()],
+                                        }),
+                                    },
+                                );
+                            }
+                            break;
+                        }
+                    }
+                }
+                "named_imports" => {
+                    let mut inner = child.walk();
+                    for grand in child.children(&mut inner) {
+                        if grand.kind() == "import_specifier" {
+                            let original = grand
+                                .child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(self.content.as_bytes()).ok())
+                                .unwrap_or("");
+                            let local = grand
+                                .child_by_field_name("alias")
+                                .and_then(|n| n.utf8_text(self.content.as_bytes()).ok())
+                                .unwrap_or(original);
+                            if !original.is_empty() && !local.is_empty() {
+                                self.tree.add_binding(
+                                    scope,
+                                    local.to_string(),
+                                    LocalDef {
+                                        line,
+                                        kind: DefKind::Import,
+                                        import_path: Some(UsePath {
+                                            segments: vec![
+                                                source.to_string(),
+                                                original.to_string(),
+                                            ],
+                                        }),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn bind_pattern(&mut self, pat: tree_sitter::Node, scope: ScopeId, kind: DefKind) {
         if pat.kind() == "identifier" {
             self.add_binding(scope, pat, kind);
@@ -276,4 +385,16 @@ fn is_ts_comment_kind(kind: &str) -> bool {
 
 fn is_ts_plain_string_kind(kind: &str) -> bool {
     matches!(kind, "string" | "regex")
+}
+
+/// Return the textual content of a TypeScript `string` node — the
+/// `string_fragment` child without the surrounding quote tokens.
+fn extract_string_text(node: tree_sitter::Node, content: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "string_fragment" {
+            return child.utf8_text(content.as_bytes()).ok().map(String::from);
+        }
+    }
+    None
 }
