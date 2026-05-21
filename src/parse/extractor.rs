@@ -479,7 +479,9 @@ fn walk_for_refs(
 fn is_comment_kind(kind: &str, lang: Language) -> bool {
     match lang {
         Language::Rust => matches!(kind, "line_comment" | "block_comment"),
-        Language::TypeScript | Language::Python => kind == "comment",
+        Language::TypeScript | Language::Python | Language::CSharp | Language::Cpp => {
+            kind == "comment"
+        }
         _ => false,
     }
 }
@@ -508,6 +510,7 @@ fn interpolation_child_kind(kind: &str, lang: Language) -> Option<&'static str> 
     match (lang, kind) {
         (Language::TypeScript, "template_string") => Some("template_substitution"),
         (Language::Python, "string") => Some("interpolation"),
+        (Language::CSharp, "interpolated_string_expression") => Some("interpolation"),
         _ => None,
     }
 }

@@ -90,7 +90,10 @@ impl Language {
     /// a higher false-positive rate but covers grammars without a
     /// scope-binder yet.
     pub fn has_ast_ref_filter(&self) -> bool {
-        matches!(self, Self::Rust | Self::TypeScript | Self::Python)
+        matches!(
+            self,
+            Self::Rust | Self::TypeScript | Self::Python | Self::CSharp | Self::Cpp
+        )
     }
 
     #[allow(dead_code)]

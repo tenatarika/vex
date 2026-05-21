@@ -25,6 +25,8 @@ use anyhow::Result;
 use super::language::Language;
 use crate::index::symbols::ParsedSymbol;
 
+pub mod cpp;
+pub mod csharp;
 pub mod rust;
 pub mod typescript;
 
@@ -210,6 +212,8 @@ pub fn bind_refs(
     match lang {
         Language::Rust => rust::RustBinder.bind(content, file_symbols),
         Language::TypeScript => typescript::TypeScriptBinder.bind(content, file_symbols),
+        Language::CSharp => csharp::CSharpBinder.bind(content, file_symbols),
+        Language::Cpp => cpp::CppBinder.bind(content, file_symbols),
         _ => Ok(Vec::new()),
     }
 }
