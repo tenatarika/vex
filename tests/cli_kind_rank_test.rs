@@ -48,8 +48,9 @@ fn function_outranks_heading_by_default() {
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let first_line = stdout.lines().next().unwrap_or("");
+    let normalized = first_line.replace('\\', "/");
     assert!(
-        first_line.contains("src/api.rs"),
+        normalized.contains("src/api.rs"),
         "expected function to outrank heading by default, first line was: {first_line}"
     );
 }
