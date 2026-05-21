@@ -95,3 +95,54 @@ fn csharp_property() {
         "expected property Name, got {s:?}"
     );
 }
+
+// --- 11.1.1: AST-aware ref extraction (no comment/string noise) ---
+
+fn refs(src: &str) -> Vec<String> {
+    vex::parse::parse_file("test.cs", src, Language::CSharp)
+        .expect("c# grammar must load")
+        .refs
+        .into_iter()
+        .map(|r| r.name)
+        .collect()
+}
+
+#[test]
+fn csharp_refs_skip_line_comment() {
+    let src =
+        "class Holder {\n    // CommentedSymbol here\n    void Run() { real_function(); }\n}\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"CommentedSymbol".to_string()),
+        "line-comment ident leaked: {r:?}"
+    );
+    assert!(
+        r.contains(&"real_function".to_string()),
+        "real ident missing: {r:?}"
+    );
+}
+
+#[test]
+fn csharp_refs_skip_string_literal() {
+    let src =
+        "class Holder {\n    void Run() { var s = \"StringSymbol here\"; real_function(); }\n}\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"StringSymbol".to_string()),
+        "string-literal ident leaked: {r:?}"
+    );
+    assert!(
+        r.contains(&"real_function".to_string()),
+        "real ident missing: {r:?}"
+    );
+}
+
+#[test]
+fn csharp_refs_skip_verbatim_string_literal() {
+    let src = "class Holder {\n    void Run() { var s = @\"VerbatimSymbol here\"; real_function(); }\n}\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"VerbatimSymbol".to_string()),
+        "verbatim-string ident leaked: {r:?}"
+    );
+}

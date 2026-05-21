@@ -171,8 +171,11 @@ impl<'a> Walker<'a> {
         // tree-sitter-c-sharp 0.23 uses `body: declaration_list`. Walk
         // every child under the class scope EXCEPT the `name` field
         // (already bound — re-emitting it would produce a phantom
-        // self-ref) and the heritage list (whose refs live in the
-        // parent scope, not inside the class).
+        // self-ref), the heritage list (whose refs live in the
+        // parent scope), and attribute lists (`[Serializable]`,
+        // `[JsonProperty("x")]` etc. — those identifiers are
+        // annotation labels rather than type or value refs and bloat
+        // the ref table without resolving to anything useful).
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if Some(child.id()) == name_node.map(|n| n.id()) {
@@ -182,6 +185,7 @@ impl<'a> Walker<'a> {
                 "base_list" | "type_parameter_constraints_clause" => {
                     self.walk(child, parent);
                 }
+                "attribute_list" => {}
                 _ => self.walk(child, class_scope),
             }
         }

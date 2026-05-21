@@ -254,7 +254,15 @@ fn extract_inner_identifier(node: tree_sitter::Node) -> Option<tree_sitter::Node
     for _ in 0..32 {
         match cur.kind() {
             "identifier" | "type_identifier" | "field_identifier" => return Some(cur),
-            "qualified_identifier" => return cur.child_by_field_name("name"),
+            "qualified_identifier" => {
+                // `Outer::Inner::name` parses as nested
+                // `qualified_identifier` nodes whose `name` field is
+                // itself another `qualified_identifier`. Peel and
+                // re-enter the loop until we reach the terminal
+                // identifier — a single `child_by_field_name("name")`
+                // call only handles one level of qualification.
+                cur = cur.child_by_field_name("name")?;
+            }
             _ => {
                 cur = cur.child_by_field_name("declarator")?;
             }

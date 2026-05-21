@@ -498,6 +498,19 @@ fn is_plain_string_kind(kind: &str, lang: Language) -> bool {
         // Python `string` is handled below via `interpolation_child_kind`
         // because f-strings carry real refs inside `{...}`.
         Language::Python => false,
+        // C# `interpolated_string_expression` is handled below — every
+        // other string-shaped literal kind is dropped wholesale.
+        Language::CSharp => matches!(
+            kind,
+            "string_literal"
+                | "verbatim_string_literal"
+                | "raw_string_literal"
+                | "character_literal"
+        ),
+        Language::Cpp => matches!(
+            kind,
+            "string_literal" | "raw_string_literal" | "char_literal"
+        ),
         _ => false,
     }
 }

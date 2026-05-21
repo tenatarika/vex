@@ -185,3 +185,42 @@ fn cpp_hierarchy_multiple_bases_all_matched() {
         from_b
     );
 }
+
+// --- 11.1.1: AST-aware ref extraction (no comment/string noise) ---
+
+fn refs(src: &str) -> Vec<String> {
+    vex::parse::parse_file("test.cpp", src, Language::Cpp)
+        .expect("c++ grammar must load")
+        .refs
+        .into_iter()
+        .map(|r| r.name)
+        .collect()
+}
+
+#[test]
+fn cpp_refs_skip_line_comment() {
+    let src = "class Holder {\npublic:\n    // CommentedSymbol here\n    void Run() { real_function(); }\n};\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"CommentedSymbol".to_string()),
+        "line-comment ident leaked: {r:?}"
+    );
+    assert!(
+        r.contains(&"real_function".to_string()),
+        "real ident missing: {r:?}"
+    );
+}
+
+#[test]
+fn cpp_refs_skip_string_literal() {
+    let src = "class Holder {\npublic:\n    void Run() { const char* s = \"StringSymbol here\"; real_function(); }\n};\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"StringSymbol".to_string()),
+        "string-literal ident leaked: {r:?}"
+    );
+    assert!(
+        r.contains(&"real_function".to_string()),
+        "real ident missing: {r:?}"
+    );
+}

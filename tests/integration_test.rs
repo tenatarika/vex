@@ -1210,6 +1210,148 @@ fn ref_edges_drop_imported_when_use_path_unresolvable() {
     );
 }
 
+#[test]
+fn ref_edges_ts_imported_cross_file() {
+    // Pass-2 cross-file resolution must work for TypeScript named
+    // imports the same way it works for Rust `use`. A regression in
+    // the writer that breaks the Rust path would surface there; this
+    // pins the TS path independently.
+    use vex::parse::scope::{BindTarget, BoundRef, RefKind, UsePath};
+
+    let tmp = TempDir::new().unwrap();
+    let index_path = tmp.path().join("index.vex");
+
+    let files = vec![
+        ParsedFile {
+            path: "ext.ts".into(),
+            symbols: vec![make_symbol("someExtFn", SymbolKind::Function, 1)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![],
+        },
+        ParsedFile {
+            path: "user.ts".into(),
+            symbols: vec![make_symbol("caller_fn", SymbolKind::Function, 3)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![BoundRef {
+                name: "someExtFn".into(),
+                line: 5,
+                col: 11,
+                target: BindTarget::Imported(UsePath {
+                    segments: vec!["./ext".into(), "someExtFn".into()],
+                }),
+                kind: RefKind::Value,
+            }],
+        },
+    ];
+
+    vex::store::writer::write_index(&files, &index_path).unwrap();
+    let reader = vex::store::reader::IndexReader::open(&index_path).unwrap();
+    let edges = reader.find_ref_edges_by_symbol(0);
+    assert_eq!(
+        edges.len(),
+        1,
+        "TS named import must resolve to ext.ts's someExtFn",
+    );
+    assert_eq!(edges[0].line, 5);
+}
+
+#[test]
+fn ref_edges_python_imported_cross_file() {
+    // Same shape as the TS test, for `from external_pkg import
+    // Some_Type`. The Python binder emits segments=["external_pkg",
+    // "Some_Type"]; Pass-2 looks up "Some_Type" and finds the file-A
+    // definition.
+    use vex::parse::scope::{BindTarget, BoundRef, RefKind, UsePath};
+
+    let tmp = TempDir::new().unwrap();
+    let index_path = tmp.path().join("index.vex");
+
+    let files = vec![
+        ParsedFile {
+            path: "a.py".into(),
+            symbols: vec![make_symbol("Some_Type", SymbolKind::Class, 1)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![],
+        },
+        ParsedFile {
+            path: "b.py".into(),
+            symbols: vec![make_symbol("caller_fn", SymbolKind::Function, 3)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![BoundRef {
+                name: "Some_Type".into(),
+                line: 4,
+                col: 12,
+                target: BindTarget::Imported(UsePath {
+                    segments: vec!["external_pkg".into(), "Some_Type".into()],
+                }),
+                kind: RefKind::Type,
+            }],
+        },
+    ];
+
+    vex::store::writer::write_index(&files, &index_path).unwrap();
+    let reader = vex::store::reader::IndexReader::open(&index_path).unwrap();
+    let edges = reader.find_ref_edges_by_symbol(0);
+    assert_eq!(
+        edges.len(),
+        1,
+        "Python `from x import Y` must resolve to file-A's Y",
+    );
+    assert_eq!(edges[0].line, 4);
+}
+
+#[test]
+fn ref_edges_ts_default_import_does_not_resolve_cross_file() {
+    // `import Foo from './x';` binds with segments=["./x"]. Pass-2
+    // looks up `segments.last()` = "./x" in name_to_global, which
+    // will never match a real symbol name. This pins the documented
+    // honest-failure behaviour: default imports DO NOT cross-file
+    // resolve. A future writer change that accidentally normalized
+    // path strings and let them match a file path would be caught
+    // here.
+    use vex::parse::scope::{BindTarget, BoundRef, RefKind, UsePath};
+
+    let tmp = TempDir::new().unwrap();
+    let index_path = tmp.path().join("index.vex");
+
+    let files = vec![
+        ParsedFile {
+            path: "x.ts".into(),
+            symbols: vec![make_symbol("defaultExport", SymbolKind::Function, 1)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![],
+        },
+        ParsedFile {
+            path: "y.ts".into(),
+            symbols: vec![make_symbol("caller_fn", SymbolKind::Function, 3)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![BoundRef {
+                name: "defaultExport".into(),
+                line: 5,
+                col: 1,
+                target: BindTarget::Imported(UsePath {
+                    segments: vec!["./x".into()],
+                }),
+                kind: RefKind::Value,
+            }],
+        },
+    ];
+
+    vex::store::writer::write_index(&files, &index_path).unwrap();
+    let reader = vex::store::reader::IndexReader::open(&index_path).unwrap();
+    let edges = reader.find_ref_edges_by_symbol(0);
+    assert!(
+        edges.is_empty(),
+        "default-import path segments=[source] must not match file-level symbols",
+    );
+}
+
 // --- Empty index ---
 
 #[test]
