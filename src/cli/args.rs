@@ -129,6 +129,14 @@ pub enum Commands {
         #[arg(long)]
         no_bm25: bool,
 
+        /// Append a JSON trace to stderr after the result list:
+        /// normalized query, per-channel hit counts (FST / BM25 /
+        /// semantic / fuzzy fallback), and the filter snapshot. Useful
+        /// when results look wrong and you want to know what was
+        /// actually searched.
+        #[arg(long)]
+        why: bool,
+
         #[command(flatten)]
         scope: ScopeArgs,
     },

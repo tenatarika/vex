@@ -81,37 +81,40 @@ fn unified_diff(a: &str, b: &str, max_lines: usize) -> (String, usize, usize) {
     use similar::{ChangeTag, TextDiff};
 
     let diff = TextDiff::from_lines(a, b);
-    let changes: Vec<_> = diff.iter_all_changes().collect();
 
-    let mut added = 0;
-    let mut removed = 0;
-    for change in &changes {
+    // Single pass: accumulate added/removed counts while rendering the
+    // truncated text. Avoids materialising a `Vec` of all changes for the
+    // typical case where bodies are small.
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    let mut total = 0usize;
+    let mut rendered = 0usize;
+    let mut out = String::new();
+    for change in diff.iter_all_changes() {
+        total += 1;
         match change.tag() {
             ChangeTag::Insert => added += 1,
             ChangeTag::Delete => removed += 1,
             ChangeTag::Equal => {}
+        }
+        if rendered < max_lines {
+            let sign = match change.tag() {
+                ChangeTag::Insert => '+',
+                ChangeTag::Delete => '-',
+                ChangeTag::Equal => ' ',
+            };
+            out.push(sign);
+            out.push_str(change.value().trim_end_matches('\n'));
+            out.push('\n');
+            rendered += 1;
         }
     }
 
     if added == 0 && removed == 0 {
         return (String::new(), 0, 0);
     }
-
-    let mut out = String::new();
-    let total = changes.len();
-    let take = max_lines.min(total);
-    for change in changes.iter().take(take) {
-        let sign = match change.tag() {
-            ChangeTag::Insert => '+',
-            ChangeTag::Delete => '-',
-            ChangeTag::Equal => ' ',
-        };
-        out.push(sign);
-        out.push_str(change.value().trim_end_matches('\n'));
-        out.push('\n');
-    }
-    if total > take {
-        let remaining = total - take;
+    if total > rendered {
+        let remaining = total - rendered;
         out.push_str(&format!("... ({remaining} more lines truncated)\n"));
     }
 

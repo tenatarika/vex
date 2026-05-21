@@ -6,6 +6,7 @@ pub mod rerank;
 pub mod semantic;
 pub mod similar;
 pub mod structural;
+pub mod trace;
 
 use serde::{Deserialize, Serialize};
 

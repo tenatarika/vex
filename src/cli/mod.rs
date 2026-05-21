@@ -486,6 +486,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             auto_update,
             no_stale_check,
             no_bm25,
+            why,
             scope,
         } => {
             let semantic = resolve_semantic(semantic, no_semantic, &cfg);
@@ -524,6 +525,20 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 Vec::new()
             };
 
+            // Capture pre-fusion channel snapshots for `--why`. Clone only
+            // when the flag is set so the fast path stays allocation-free.
+            let trace_structural = if why {
+                structural_results.clone()
+            } else {
+                Vec::new()
+            };
+            let trace_bm25 = if why {
+                bm25_results.clone()
+            } else {
+                Vec::new()
+            };
+            let mut trace_semantic: Vec<crate::search::SearchResult> = Vec::new();
+
             let results = if semantic && reader.has_vectors() {
                 let embedder_id = resolve_embedder(None, &cfg);
                 // Warn (but don't fail) when the manifest doesn't record an
@@ -553,6 +568,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     fetch_limit,
                     &hnsw_path,
                 )?;
+                if why {
+                    trace_semantic = semantic_results.clone();
+                }
                 fusion::fuse3(structural_results, bm25_results, semantic_results, limit)
             } else {
                 if semantic && !reader.has_vectors() {
@@ -575,6 +593,26 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 .into_iter()
                 .take(limit)
                 .collect();
+
+            if why {
+                let filter = crate::search::trace::FilterSnapshot {
+                    filter: filter_path.clone(),
+                    include: scope.include.clone(),
+                    exclude: scope.exclude.clone(),
+                    kind: kind.clone(),
+                };
+                let trace = crate::search::trace::SearchTrace::from_channels(
+                    &query,
+                    &trace_structural,
+                    &trace_bm25,
+                    &trace_semantic,
+                    &results,
+                    filter,
+                );
+                // stderr so `vex search Foo --why | jq` keeps working —
+                // stdout stays a pure result list.
+                eprintln!("{}", serde_json::to_string(&trace)?);
+            }
 
             if results.is_empty() {
                 match &format {
@@ -1357,9 +1395,21 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             // the same symbol-FST lookup `find_similar` already ran —
             // sharing the entry point keeps both paths in sync.
             let explanations: Option<Vec<_>> = if explain && !matches.is_empty() {
-                let seed_body = crate::search::similar::resolve_seed_match(&reader, &name)
-                    .map(|s| fetch_symbol_body(&s.path, s.line, &s.kind))
-                    .unwrap_or_default();
+                let seed_body = match crate::search::similar::resolve_seed_match(&reader, &name) {
+                    Some(s) => fetch_symbol_body(&s.path, s.line, &s.kind),
+                    None => {
+                        // Should not happen — `find_similar` already
+                        // resolved the seed seconds ago. If it does
+                        // (e.g. index mutated between calls), surface
+                        // it so the empty `jaccard 0.00 +N -0` rows
+                        // aren't misread as a real result.
+                        eprintln!(
+                            "warning: --explain could not resolve seed symbol `{name}` \
+                             after find_similar succeeded; reasoning will be incomplete"
+                        );
+                        String::new()
+                    }
+                };
                 Some(
                     matches
                         .iter()
