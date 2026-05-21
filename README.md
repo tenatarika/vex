@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 [![Commands](https://img.shields.io/badge/commands-19-blue.svg)]()
 [![Languages](https://img.shields.io/badge/languages-19-blueviolet.svg)]()
-[![Tests](https://img.shields.io/badge/tests-649-green.svg)]()
+[![Tests](https://img.shields.io/badge/tests-640-green.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
@@ -581,7 +581,7 @@ All commands support `--filter "path/"` to narrow results to a directory.
 ### Unit & Integration Tests
 
 ```bash
-cargo test                    # 649 tests — unit, integration, property-based, adversarial
+cargo test                    # 640 tests — unit, integration, property-based, adversarial
 cargo clippy -- -D warnings   # zero warnings policy
 ```
 
