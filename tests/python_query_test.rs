@@ -82,3 +82,56 @@ fn python_imports() {
         "missing 'collections' in {imp:?}"
     );
 }
+
+// --- 11.1.1: AST-aware ref extraction (no comment/string noise) ---
+
+fn refs(src: &str) -> Vec<String> {
+    vex::parse::parse_file("test.py", src, Language::Python)
+        .expect("python grammar must load")
+        .refs
+        .into_iter()
+        .map(|r| r.name)
+        .collect()
+}
+
+#[test]
+fn python_refs_skip_hash_comment() {
+    let src = "# CommentedSymbol here\ndef run():\n    real_function()\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"CommentedSymbol".to_string()),
+        "hash-comment ident leaked into refs: {r:?}"
+    );
+    assert!(
+        r.contains(&"real_function".to_string()),
+        "real ident missing from refs: {r:?}"
+    );
+}
+
+#[test]
+fn python_refs_skip_docstring() {
+    let src = "\"\"\"DocSymbol here\"\"\"\ndef run():\n    real_function()\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"DocSymbol".to_string()),
+        "docstring ident leaked into refs: {r:?}"
+    );
+    assert!(
+        r.contains(&"real_function".to_string()),
+        "real ident missing from refs: {r:?}"
+    );
+}
+
+#[test]
+fn python_refs_skip_string_literal() {
+    let src = "def run():\n    s = 'StringSymbol here'\n    real_function()\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"StringSymbol".to_string()),
+        "string-literal ident leaked into refs: {r:?}"
+    );
+    assert!(
+        r.contains(&"real_function".to_string()),
+        "real ident missing from refs: {r:?}"
+    );
+}

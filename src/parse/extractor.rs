@@ -395,6 +395,136 @@ pub fn extract_references(content: &str) -> Vec<ParsedRef> {
     refs
 }
 
+/// Extract references via an AST walk, skipping identifiers that live
+/// inside comment or string-literal nodes. For languages without an AST
+/// filter (see [`Language::has_ast_ref_filter`]) this falls back to the
+/// line-based scanner so the rest of the indexer is unchanged.
+///
+/// This is the 11.1.1 entry point — it deletes the loudest class of
+/// false positives from `vex usages` (idents matched inside doc
+/// comments and string literals) without touching the binary format.
+/// Performance cost on the binder languages is one extra tree-sitter
+/// parse per file; 11.1.2 will fuse the parses.
+pub fn extract_references_ast(content: &str, lang: Language) -> Result<Vec<ParsedRef>> {
+    if !lang.has_ast_ref_filter() {
+        return Ok(extract_references(content));
+    }
+
+    let mut parser = Parser::new();
+    let ts_lang = lang.ts_language();
+    parser.set_language(&ts_lang).context("set language")?;
+
+    let tree = parser
+        .parse(content, None)
+        .context("tree-sitter parse failed")?;
+
+    let mut refs = Vec::new();
+    walk_for_refs(tree.root_node(), content, lang, &mut refs);
+    Ok(refs)
+}
+
+fn walk_for_refs(
+    node: tree_sitter::Node,
+    content: &str,
+    lang: Language,
+    refs: &mut Vec<ParsedRef>,
+) {
+    let kind = node.kind();
+
+    // Comments — drop the whole subtree.
+    if is_comment_kind(kind, lang) {
+        return;
+    }
+
+    // Plain strings — drop the whole subtree. Anything that looks like
+    // an identifier inside a string is prose, not a real usage.
+    if is_plain_string_kind(kind, lang) {
+        return;
+    }
+
+    // Interpolatable strings (TS template literals, Python f-strings):
+    // descend only into the interpolation child kind so real code refs
+    // inside `${...}` / `{...}` survive while the literal text around
+    // them does not.
+    if let Some(interp_kind) = interpolation_child_kind(kind, lang) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == interp_kind {
+                walk_for_refs(child, content, lang, refs);
+            }
+        }
+        return;
+    }
+
+    if is_identifier_kind(kind) {
+        let text = node.utf8_text(content.as_bytes()).unwrap_or_default();
+        if is_meaningful_identifier(text) {
+            let line = node.start_position().row + 1;
+            let context = content
+                .lines()
+                .nth(line - 1)
+                .map(|l| l.trim().to_string());
+            refs.push(ParsedRef {
+                name: text.to_string(),
+                line,
+                context,
+            });
+        }
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_for_refs(child, content, lang, refs);
+    }
+}
+
+fn is_comment_kind(kind: &str, lang: Language) -> bool {
+    match lang {
+        Language::Rust => matches!(kind, "line_comment" | "block_comment"),
+        Language::TypeScript | Language::Python => kind == "comment",
+        _ => false,
+    }
+}
+
+fn is_plain_string_kind(kind: &str, lang: Language) -> bool {
+    match lang {
+        Language::Rust => matches!(
+            kind,
+            "string_literal" | "raw_string_literal" | "char_literal" | "byte_string_literal"
+        ),
+        Language::TypeScript => matches!(kind, "string" | "regex"),
+        // Python `string` is handled below via `interpolation_child_kind`
+        // because f-strings carry real refs inside `{...}`.
+        Language::Python => false,
+        _ => false,
+    }
+}
+
+/// If `kind` is a string node whose subtree may contain interpolated
+/// code (TS template literals, Python f-strings), return the child kind
+/// representing the interpolated code so the walker can descend into
+/// only those children.
+fn interpolation_child_kind(kind: &str, lang: Language) -> Option<&'static str> {
+    match (lang, kind) {
+        (Language::TypeScript, "template_string") => Some("template_substitution"),
+        (Language::Python, "string") => Some("interpolation"),
+        _ => None,
+    }
+}
+
+fn is_identifier_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "identifier"
+            | "type_identifier"
+            | "field_identifier"
+            | "shorthand_field_identifier"
+            | "property_identifier"
+            | "shorthand_property_identifier"
+    )
+}
+
 /// Scan a single line for identifier tokens that look like deliberate
 /// symbol names rather than incidental words.
 ///

@@ -110,6 +110,59 @@ fn rust_const_item() {
     );
 }
 
+// --- 11.1.1: AST-aware ref extraction (no comment/string noise) ---
+
+fn refs(src: &str) -> Vec<String> {
+    vex::parse::parse_file("test.rs", src, Language::Rust)
+        .expect("rust grammar must load")
+        .refs
+        .into_iter()
+        .map(|r| r.name)
+        .collect()
+}
+
+#[test]
+fn rust_refs_skip_line_comment() {
+    let src = "// CommentedSymbol here\nfn run() { real_function(); }\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"CommentedSymbol".to_string()),
+        "line-comment ident leaked into refs: {r:?}"
+    );
+    assert!(
+        r.contains(&"real_function".to_string()),
+        "real ident missing from refs: {r:?}"
+    );
+}
+
+#[test]
+fn rust_refs_skip_block_comment() {
+    let src = "/* BlockSymbol here */\nfn run() { real_function(); }\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"BlockSymbol".to_string()),
+        "block-comment ident leaked into refs: {r:?}"
+    );
+    assert!(
+        r.contains(&"real_function".to_string()),
+        "real ident missing from refs: {r:?}"
+    );
+}
+
+#[test]
+fn rust_refs_skip_string_literal() {
+    let src = "fn run() { let _s = \"StringSymbol here\"; real_function(); }\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"StringSymbol".to_string()),
+        "string-literal ident leaked into refs: {r:?}"
+    );
+    assert!(
+        r.contains(&"real_function".to_string()),
+        "real ident missing from refs: {r:?}"
+    );
+}
+
 #[test]
 fn rust_impl_method_captured() {
     let src = r#"

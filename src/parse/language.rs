@@ -79,6 +79,20 @@ impl Language {
         }
     }
 
+    /// Languages that participate in AST-aware reference extraction
+    /// (11.1.1). For these languages, `parse_file` walks the tree-sitter
+    /// AST to collect identifier refs, skipping subtrees rooted at
+    /// comment / string nodes so that names mentioned only in prose or
+    /// string literals don't pollute `vex usages`.
+    ///
+    /// All other languages keep using the line-based scanner from
+    /// [`crate::parse::extractor::extract_references`], which still has
+    /// a higher false-positive rate but covers grammars without a
+    /// scope-binder yet.
+    pub fn has_ast_ref_filter(&self) -> bool {
+        matches!(self, Self::Rust | Self::TypeScript | Self::Python)
+    }
+
     #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {

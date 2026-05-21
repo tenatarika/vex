@@ -11,7 +11,7 @@ use crate::index::symbols::{ParsedFile, RawCallEdge};
 /// Parse a single file and extract symbols + references + call edges.
 pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFile> {
     let (symbols, imports) = extractor::extract_symbols_and_imports(content, lang)?;
-    let mut refs = extractor::extract_references(content);
+    let mut refs = extractor::extract_references_ast(content, lang)?;
     refs.extend(imports);
     // Call-edge extraction is cheap (one extra tree-sitter query pass) and
     // gives the persistent call graph the data it needs. Languages without

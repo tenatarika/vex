@@ -109,3 +109,56 @@ fn typescript_named_default_namespace_imports() {
         "namespace import not captured: {imp:?}"
     );
 }
+
+// --- 11.1.1: AST-aware ref extraction (no comment/string noise) ---
+
+fn refs(src: &str) -> Vec<String> {
+    vex::parse::parse_file("test.ts", src, Language::TypeScript)
+        .expect("typescript grammar must load")
+        .refs
+        .into_iter()
+        .map(|r| r.name)
+        .collect()
+}
+
+#[test]
+fn typescript_refs_skip_line_comment() {
+    let src = "// CommentedSymbol here\nfunction run() { realFunction(); }\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"CommentedSymbol".to_string()),
+        "line-comment ident leaked into refs: {r:?}"
+    );
+    assert!(
+        r.contains(&"realFunction".to_string()),
+        "real ident missing from refs: {r:?}"
+    );
+}
+
+#[test]
+fn typescript_refs_skip_block_comment() {
+    let src = "/* BlockSymbol here */\nfunction run() { realFunction(); }\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"BlockSymbol".to_string()),
+        "block-comment ident leaked into refs: {r:?}"
+    );
+    assert!(
+        r.contains(&"realFunction".to_string()),
+        "real ident missing from refs: {r:?}"
+    );
+}
+
+#[test]
+fn typescript_refs_skip_string_literal() {
+    let src = "function run() { const s = \"StringSymbol here\"; realFunction(); }\n";
+    let r = refs(src);
+    assert!(
+        !r.contains(&"StringSymbol".to_string()),
+        "string-literal ident leaked into refs: {r:?}"
+    );
+    assert!(
+        r.contains(&"realFunction".to_string()),
+        "real ident missing from refs: {r:?}"
+    );
+}
