@@ -27,6 +27,7 @@ use crate::index::symbols::ParsedSymbol;
 
 pub mod cpp;
 pub mod csharp;
+pub mod python;
 pub mod rust;
 pub mod typescript;
 
@@ -214,6 +215,7 @@ pub fn bind_refs(
         Language::TypeScript => typescript::TypeScriptBinder.bind(content, file_symbols),
         Language::CSharp => csharp::CSharpBinder.bind(content, file_symbols),
         Language::Cpp => cpp::CppBinder.bind(content, file_symbols),
+        Language::Python => python::PythonBinder.bind(content, file_symbols),
         _ => Ok(Vec::new()),
     }
 }
