@@ -80,6 +80,64 @@ fn no_strict_does_not_print_warning() {
 }
 
 #[test]
+fn strict_bails_when_index_has_no_ref_edges() {
+    // A project with no Rust files (only a stray Go file) → binder
+    // never runs → reference_edges section is empty → has_ref_edges()
+    // is false → `--strict` must bail with the rebuild message.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("a.go"),
+        "package main\nfunc payment_processor() {}\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let assert = vex_in(tmp.path())
+        .args(["usages", "payment_processor", "--strict"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains("--strict") && stderr.contains("Re-run `vex index`"),
+        "expected rebuild bail message for index without ref_edges, got: {stderr}"
+    );
+}
+
+#[test]
+fn strict_prints_no_usages_when_symbol_has_zero_refs() {
+    // Two top-level symbols; only one is referenced from a call site.
+    // The unreferenced one should produce "No usages found" under
+    // --strict instead of an empty result that looks like a crash.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("lib.rs"),
+        "pub fn alpha_fn() {}\n\
+         pub fn beta_fn() {}\n\
+         \n\
+         fn caller_fn() {\n\
+         \x20\x20\x20\x20alpha_fn();\n\
+         }\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    // alpha_fn has one ref (from caller_fn); beta_fn has zero.
+    let assert = vex_in(tmp.path())
+        .args(["usages", "beta_fn", "--strict"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("No usages found"),
+        "expected the 'No usages found' summary for an unreferenced symbol, got: {stdout}"
+    );
+}
+
+#[test]
 fn strict_filters_out_string_literal_noise_that_legacy_fst_keeps() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();

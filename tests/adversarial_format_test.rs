@@ -559,3 +559,47 @@ fn v5_ref_edges_section_past_eof_rejected() {
 fn v5_section_header_has_nonzero_size() {
     const _: () = assert!(V5SectionHeader::SIZE > 0);
 }
+
+/// V5SectionHeader.ref_edges_fst_offset + ref_edges_fst_len past EOF —
+/// independent bounds arm from `ref_edges_*` (covered above). Each
+/// sub-section is checked separately in the reader; if a refactor
+/// collapses them this test catches it.
+#[test]
+fn v5_ref_edges_fst_past_eof_rejected() {
+    let mut buf = minimal_valid_header_bytes();
+    buf.resize(
+        Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE,
+        0,
+    );
+    let v5_off = Header::SIZE + CallGraphHeader::SIZE;
+    // ref_edges_fst_offset at v5_off + 16, ref_edges_fst_len at v5_off + 24.
+    write_u64_le(&mut buf, v5_off + 16, Header::SIZE as u64);
+    write_u64_le(&mut buf, v5_off + 24, 1_234_567);
+    let f = write_tmp(&buf);
+    let result = IndexReader::open(f.path());
+    assert!(
+        result.is_err(),
+        "expected Err when ref_edges_fst exceeds file size, got Ok",
+    );
+}
+
+/// V5SectionHeader.ref_edges_postings_offset + ref_edges_postings_len
+/// past EOF — third independent bounds arm.
+#[test]
+fn v5_ref_edges_postings_past_eof_rejected() {
+    let mut buf = minimal_valid_header_bytes();
+    buf.resize(
+        Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE,
+        0,
+    );
+    let v5_off = Header::SIZE + CallGraphHeader::SIZE;
+    // ref_edges_postings_offset at v5_off + 32, ref_edges_postings_len at v5_off + 40.
+    write_u64_le(&mut buf, v5_off + 32, Header::SIZE as u64);
+    write_u64_le(&mut buf, v5_off + 40, 1_234_567);
+    let f = write_tmp(&buf);
+    let result = IndexReader::open(f.path());
+    assert!(
+        result.is_err(),
+        "expected Err when ref_edges_postings exceeds file size, got Ok",
+    );
+}

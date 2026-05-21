@@ -235,7 +235,16 @@ fn write_index_to(
                 .expect("file_id must exist");
             for r in &file.bound_refs {
                 let to_sym_idx = match &r.target {
-                    BindTarget::ModuleSymbol(local) => Some(base_idx.saturating_add(*local)),
+                    BindTarget::ModuleSymbol(local) => {
+                        // `checked_add` would let an overflowing index
+                        // silently disappear; we'd rather notice in
+                        // tests and crash than ship a corrupt edge.
+                        debug_assert!(
+                            base_idx.checked_add(*local).is_some(),
+                            "global symbol idx overflow at base_idx={base_idx} + local={local}",
+                        );
+                        Some(base_idx.wrapping_add(*local))
+                    }
                     BindTarget::Imported(use_path) => use_path
                         .segments
                         .last()
@@ -253,7 +262,18 @@ fn write_index_to(
                     });
                 }
             }
-            base_idx = base_idx.saturating_add(file.symbols.len() as u32);
+            // Same loudness rule as the ModuleSymbol path: if a file's
+            // symbol count would push the running base past `u32::MAX`
+            // we fail tests rather than silently corrupt subsequent
+            // resolutions. Unreachable in any realistic repo (the
+            // SymbolRecord array would be ~68 GB before this fires).
+            debug_assert!(
+                base_idx.checked_add(file.symbols.len() as u32).is_some(),
+                "base_idx overflow accumulating {} symbols from {}",
+                file.symbols.len(),
+                file.path,
+            );
+            base_idx = base_idx.wrapping_add(file.symbols.len() as u32);
         }
     }
     let (ref_edge_bytes, ref_edge_fst_bytes, ref_edge_post_bytes) =

@@ -49,6 +49,15 @@ pub fn build_ref_edges_section(edges: &[RefEdgeBuilder]) -> Result<(Vec<u8>, Vec
     let mut grouped: BTreeMap<String, Vec<u32>> = BTreeMap::new();
 
     for (idx, e) in sorted.iter().enumerate() {
+        // 24-bit column ceiling — unreachable in real source files (no
+        // line is 16 M columns wide) but a future caller could pass an
+        // arbitrary `u32`. Catch it loudly in tests rather than silently
+        // truncating to garbage in production.
+        debug_assert!(
+            e.col <= 0x00FF_FFFF,
+            "column {} exceeds the 24-bit RefEdge encoding",
+            e.col
+        );
         let col_and_kind = (u32::from(e.kind) << 24) | (e.col & 0x00FF_FFFF);
         let rec = RefEdge {
             to_sym_idx: e.to_sym_idx,
@@ -170,5 +179,43 @@ impl<'a> RefEdgeReader<'a> {
             pos += 4;
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A posting list that names an edge_idx pointing past the end of
+    /// the records array must NOT panic and must NOT return garbage —
+    /// the `idx_usize >= edge_count` guard in `find_by_symbol_idx`
+    /// silently skips the OOB entry. This pins the defensive read
+    /// path so a refactor that drops the guard fails loudly.
+    #[test]
+    fn read_skips_out_of_range_edge_idx() {
+        // Build a single real edge so `edge_count` == 1.
+        let edges = vec![RefEdgeBuilder {
+            to_sym_idx: 7,
+            from_file_id: 0,
+            line: 1,
+            col: 1,
+            kind: 0,
+        }];
+        let (edge_bytes, fst_bytes, mut post_bytes) =
+            build_ref_edges_section(&edges).expect("build");
+
+        // The posting list for symbol 7 currently contains the single
+        // valid edge_idx 0. Overwrite it with 999 — past the one-edge
+        // section. We know the layout: [u32 count = 1][u32 idx]; the
+        // idx lives at offset 4..8 of the posting blob.
+        assert!(post_bytes.len() >= 8);
+        post_bytes[4..8].copy_from_slice(&999u32.to_le_bytes());
+
+        let reader = RefEdgeReader::new(&fst_bytes, &post_bytes, &edge_bytes).expect("reader");
+        let hits = reader.find_by_symbol_idx(7);
+        assert!(
+            hits.is_empty(),
+            "out-of-range edge_idx must skip silently, got {hits:?}"
+        );
     }
 }

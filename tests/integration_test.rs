@@ -1106,6 +1106,75 @@ fn ref_edges_resolve_imported_use_path_cross_file() {
 }
 
 #[test]
+fn ref_edges_same_name_three_files_first_wins() {
+    use vex::parse::scope::{BindTarget, BoundRef, RefKind, UsePath};
+
+    // Pin the documented "first hit on ambiguity" behaviour. Three
+    // files all define `Common_Name`; a fourth has an Imported ref
+    // whose use_path ends in `Common_Name`. The writer must resolve
+    // to the FIRST defining file's symbol idx — anything else would
+    // be load-order-sensitive corruption.
+    let tmp = TempDir::new().unwrap();
+    let index_path = tmp.path().join("index.vex");
+
+    let files = vec![
+        ParsedFile {
+            path: "a.rs".into(),
+            symbols: vec![make_symbol("Common_Name", SymbolKind::Struct, 1)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![],
+        },
+        ParsedFile {
+            path: "b.rs".into(),
+            symbols: vec![make_symbol("Common_Name", SymbolKind::Struct, 1)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![],
+        },
+        ParsedFile {
+            path: "c.rs".into(),
+            symbols: vec![make_symbol("Common_Name", SymbolKind::Struct, 1)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![],
+        },
+        ParsedFile {
+            path: "user.rs".into(),
+            symbols: vec![make_symbol("user_fn", SymbolKind::Function, 1)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![BoundRef {
+                name: "Common_Name".into(),
+                line: 5,
+                col: 1,
+                target: BindTarget::Imported(UsePath {
+                    segments: vec!["crate".into(), "Common_Name".into()],
+                }),
+                kind: RefKind::Type,
+            }],
+        },
+    ];
+
+    vex::store::writer::write_index(&files, &index_path).unwrap();
+    let reader = vex::store::reader::IndexReader::open(&index_path).unwrap();
+
+    // Global symbol order: a.rs:Common_Name=0, b.rs:Common_Name=1,
+    // c.rs:Common_Name=2, user.rs:user_fn=3. Pass-2 takes the first
+    // hit, so the import resolves to idx 0 (a.rs).
+    let to_0 = reader.find_ref_edges_by_symbol(0);
+    let to_1 = reader.find_ref_edges_by_symbol(1);
+    let to_2 = reader.find_ref_edges_by_symbol(2);
+    assert_eq!(to_0.len(), 1, "first-defining file must capture the edge");
+    assert!(
+        to_1.is_empty(),
+        "second file must not see the ambiguous ref"
+    );
+    assert!(to_2.is_empty(), "third file must not see the ambiguous ref");
+    assert_eq!(to_0[0].line, 5);
+}
+
+#[test]
 fn ref_edges_drop_imported_when_use_path_unresolvable() {
     use vex::parse::scope::{BindTarget, BoundRef, RefKind, UsePath};
 
