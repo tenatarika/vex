@@ -128,6 +128,10 @@ fn inheritance_query(lang: Language) -> Option<&'static str> {
             ; 11.3: generic-parameterised bases — `: Repository<T>`,
             ; `: IRepository<T>`. The grammar wraps the identifier in
             ; `generic_name` when type arguments are present.
+            ;
+            ; TODO(11.4 follow-up): qualified+generic combo — `: Namespace.Repo<T>`
+            ; — needs a `(qualified_name ... (generic_name (identifier)))`
+            ; pattern. Common in EF Core / DI-heavy .NET codebases.
             (class_declaration
               name: (identifier) @child
               (base_list (generic_name (identifier) @base))) @def
@@ -628,7 +632,7 @@ class OrderRepo extends Repository<Order> {}
     }
 
     #[test]
-    #[ignore = "debug helper — uncomment with `cargo test -- --include-ignored kotlin_ast` to dump"]
+    #[ignore = "debug helper — run with `cargo test -- --include-ignored kotlin_ast` to dump"]
     fn kotlin_ast_dump_for_inheritance() {
         use tree_sitter::{Node, Parser};
         let src = "class UserRepo : Repository<User>()\nclass NoArgs : Other\nclass Plain : Bar";
@@ -654,10 +658,25 @@ class OrderRepo extends Repository<Order> {}
                 snip
             );
             for i in 0..n.child_count() {
-                dump(n.child(i as u32).unwrap(), depth + 2, src);
+                dump(n.child(u32::try_from(i).unwrap()).unwrap(), depth + 2, src);
             }
         }
         dump(tree.root_node(), 0, src);
+    }
+
+    #[test]
+    fn kotlin_plain_extends_without_args() {
+        // Covers the bare `(user_type (identifier) @base)` branch of
+        // the rewritten Kotlin inheritance query — i.e. `class Foo :
+        // Bar` with no `()` constructor invocation. The 11.3 generic
+        // tests only exercise the `constructor_invocation` branch via
+        // `Repository<T>()` forms, so this guards the other half from
+        // silent breakage on a future grammar bump.
+        let src = "open class Animal\nclass Dog : Animal\nclass Cat : Animal\n";
+        let matches = find(src, Language::Kotlin, "Animal");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"Dog"), "Kotlin plain extends: {matches:?}");
+        assert!(names.contains(&"Cat"), "Kotlin plain extends: {matches:?}");
     }
 
     #[test]

@@ -49,6 +49,16 @@ const SKIP_ENV_VAR: &str = "VEX_EMBEDDER_SKIP_CHECK";
 /// `VEX_EMBEDDER_SKIP_CHECK=1` as an explicit bypass.
 pub fn verify_file_sha256(path: &Path, expected_hex: &str) -> Result<()> {
     if skip_check() {
+        // `tracing::warn!` alone disappears when RUST_LOG is unset
+        // (the default for end users), so a CI-injected SKIP env var
+        // would silently disable integrity checks with no visible
+        // signal. `eprintln!` is unconditional and shows up in any
+        // captured stderr — mirrors how Cargo / rustup surface
+        // bypass warnings.
+        eprintln!(
+            "warning: {SKIP_ENV_VAR}=1 is set; embedding model integrity check bypassed for {}",
+            path.display()
+        );
         tracing::warn!(
             path = %path.display(),
             "{SKIP_ENV_VAR}=1 set; bypassing embedding model integrity check"
@@ -108,8 +118,18 @@ pub fn find_minilm_onnx(cache_dir: &Path) -> Option<PathBuf> {
     if !snapshots_root.is_dir() {
         return None;
     }
-    let entries = std::fs::read_dir(&snapshots_root).ok()?;
-    for entry in entries.flatten() {
+    // Collect and sort by directory name so the pick is deterministic
+    // when fastembed has more than one snapshot cached side-by-side
+    // (e.g. after a dependency bump). `read_dir` ordering is
+    // filesystem-dependent; without the sort, two machines with the
+    // same cache could disagree on which snapshot we hash. Lexically
+    // sorting commit-hash-shaped names is arbitrary but stable.
+    let mut entries: Vec<_> = std::fs::read_dir(&snapshots_root)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
         let candidate = entry.path().join("model.onnx");
         if candidate.is_file() {
             return Some(candidate);
@@ -219,5 +239,29 @@ mod tests {
         let mut f = std::fs::File::create(&onnx).unwrap();
         f.write_all(b"fake onnx").unwrap();
         assert_eq!(find_minilm_onnx(tmp.path()), Some(onnx));
+    }
+
+    #[test]
+    fn find_minilm_onnx_picks_first_lex_sorted_snapshot() {
+        // Two snapshots side-by-side — fastembed cache after a
+        // dependency bump. Without the sort the choice would be
+        // filesystem-dependent; with it we lock in lexical ordering
+        // so two machines hash the same file.
+        let tmp = TempDir::new().unwrap();
+        let snaps = tmp
+            .path()
+            .join("models--Qdrant--all-MiniLM-L6-v2-onnx")
+            .join("snapshots");
+        let snap_a = snaps.join("aaaa11111111111111111111111111111111aaaa");
+        let snap_b = snaps.join("ffff99999999999999999999999999999999ffff");
+        std::fs::create_dir_all(&snap_a).unwrap();
+        std::fs::create_dir_all(&snap_b).unwrap();
+        std::fs::write(snap_a.join("model.onnx"), b"a").unwrap();
+        std::fs::write(snap_b.join("model.onnx"), b"b").unwrap();
+        let found = find_minilm_onnx(tmp.path()).expect("should locate");
+        assert!(
+            found.starts_with(&snap_a),
+            "expected the lex-first snapshot to win, got: {found:?}"
+        );
     }
 }

@@ -121,6 +121,82 @@ fn diff_missing_base_fails_with_helpful_error() {
 }
 
 #[test]
+fn renamed_file_appears_as_remove_plus_add() {
+    // Documented limitation: 11.2 doesn't detect renames yet. Pin the
+    // actual observed behaviour so it doesn't silently change.
+    let tmp = TempDir::new().unwrap();
+    git(tmp.path(), &["init", "-q", "--initial-branch=main"]);
+    git(tmp.path(), &["config", "user.email", "test@example.com"]);
+    git(tmp.path(), &["config", "user.name", "test"]);
+    git(tmp.path(), &["config", "commit.gpgsign", "false"]);
+    std::fs::write(tmp.path().join("old.rs"), "fn moved() {}\n").unwrap();
+    git(tmp.path(), &["add", "old.rs"]);
+    git(tmp.path(), &["commit", "-q", "-m", "baseline"]);
+
+    // `git mv` the same content under a new path.
+    git(tmp.path(), &["mv", "old.rs", "new.rs"]);
+
+    let assert = vex_in(tmp.path())
+        .args(["diff", "--base", "main", "--format", "json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let changes = json.as_array().expect("array");
+    // Each side of the rename surfaces independently — one removed
+    // from old.rs and one added to new.rs.
+    let removed = changes
+        .iter()
+        .find(|c| c["kind"] == "removed" && c["path"] == "old.rs")
+        .unwrap_or_else(|| panic!("expected removed entry: {stdout}"));
+    let added = changes
+        .iter()
+        .find(|c| c["kind"] == "added" && c["path"] == "new.rs")
+        .unwrap_or_else(|| panic!("expected added entry: {stdout}"));
+    assert_eq!(removed["name"], "moved");
+    assert_eq!(added["name"], "moved");
+}
+
+#[test]
+fn binary_file_is_silently_skipped() {
+    // A changed binary file produces no source-level changes — the
+    // parser refuses non-UTF-8, the `.ok()` in the handler swallows
+    // the read error, and the diff output is empty rather than
+    // erroring out the whole run.
+    let tmp = TempDir::new().unwrap();
+    git(tmp.path(), &["init", "-q", "--initial-branch=main"]);
+    git(tmp.path(), &["config", "user.email", "test@example.com"]);
+    git(tmp.path(), &["config", "user.name", "test"]);
+    git(tmp.path(), &["config", "commit.gpgsign", "false"]);
+    // Use a known source extension so language detection runs; the
+    // file body is non-UTF-8 bytes the parser will reject.
+    std::fs::write(tmp.path().join("blob.rs"), b"// baseline\nfn keep() {}\n").unwrap();
+    git(tmp.path(), &["add", "blob.rs"]);
+    git(tmp.path(), &["commit", "-q", "-m", "baseline"]);
+    std::fs::write(tmp.path().join("blob.rs"), b"\xff\xfe\x00\x01\x02").unwrap();
+
+    let assert = vex_in(tmp.path())
+        .args(["diff", "--base", "main", "--format", "json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    // The old side had `keep`; the new side parsed as empty, so the
+    // change registers as a removal — but the command must not error
+    // out on the binary content.
+    let kinds: Vec<&str> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["kind"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        kinds.iter().all(|k| !k.is_empty()),
+        "binary file should not panic the run: {stdout}"
+    );
+}
+
+#[test]
 fn diff_respects_include_glob_scope() {
     let tmp = TempDir::new().unwrap();
     git(tmp.path(), &["init", "-q", "--initial-branch=main"]);

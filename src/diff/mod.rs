@@ -76,6 +76,13 @@ pub fn diff_against_base(
     excludes: &[String],
     limit: usize,
 ) -> Result<Vec<SymbolChange>> {
+    // Asymmetry note: `excludes` (substring) gates the per-file work
+    // *before* the `git show` round-trip below; `--include` glob from
+    // the CLI runs as a post-filter on the result list, so a wide
+    // `--include 'src/**'` on a 500-file PR still pays the spawn cost
+    // for the 490 excluded files. Worth threading the include set
+    // through here later — for v1 the cost is small enough and the
+    // semantics are clear in the help text.
     let root = root.canonicalize().context("canonicalize root")?;
     let files = git_changed_files(&root, base)
         .with_context(|| format!("list files changed between `{base}` and the working tree"))?;
@@ -87,8 +94,15 @@ pub fn diff_against_base(
         let Some(lang) = path_to_lang(rel) else {
             continue;
         };
-        let old_content = git_show_at(&root, base, rel).ok();
+        // Only swallow the well-defined "file did not exist at base"
+        // signal; bubble every other git failure up so the caller sees
+        // it instead of misclassifying every symbol as Added.
+        let old_content = git_show_at(&root, base, rel)?;
         let abs_path = root.join(rel);
+        // Binary files / non-UTF-8 content also fail read_to_string —
+        // we treat that as "no source-level symbols on the new side"
+        // rather than aborting, which mirrors how the parser would
+        // bail out on the same input.
         let new_content = std::fs::read_to_string(&abs_path).ok();
         diff_one_file(
             rel,
@@ -281,6 +295,12 @@ fn group_by_name_kind(
             .unwrap_or(total_lines + 1)
     };
 
+    // TODO(v2): tighten body identity to tree-sitter node byte_range
+    // instead of line-range-to-next-symbol. Today's heuristic produces
+    // BodyChanged false-positives when a comment or blank line is
+    // edited between two symbols — the change is attributed to the
+    // earlier symbol. Acceptable for v1 (call it "did anything around
+    // this symbol change"), but a node-bounded hash would be tighter.
     let lines: Vec<&str> = content.lines().collect();
     let mut out: HashMap<(String, String), Vec<SymbolEntry>> = HashMap::new();
     for sym in symbols {
@@ -303,8 +323,14 @@ fn group_by_name_kind(
 /// Files that differ between `<base>` and the working tree, returned
 /// as repo-relative POSIX-style paths.
 fn git_changed_files(root: &Path, base: &str) -> Result<Vec<String>> {
+    // `--no-renames` keeps both sides of a `git mv` in the output so
+    // the diff surfaces as remove-from-old + add-to-new, matching the
+    // module doc's documented behaviour. With git's default rename
+    // detection, a moved file would silently appear under only the
+    // new path and the user would lose the "remove" half of the
+    // change entirely.
     let output = std::process::Command::new("git")
-        .args(["diff", "--name-only", base])
+        .args(["diff", "--no-renames", "--name-only", base])
         .current_dir(root)
         .output()
         .context("invoke git diff --name-only")?;
@@ -323,18 +349,41 @@ fn git_changed_files(root: &Path, base: &str) -> Result<Vec<String>> {
 /// Read the contents of `path` at git revision `base`. Returns Err
 /// when the file did not exist at that revision (caller treats this
 /// as "file is new in working tree").
-fn git_show_at(root: &Path, base: &str, path: &str) -> Result<String> {
+///
+/// `git show` exits non-zero for two qualitatively different reasons —
+/// "this object doesn't exist at this revision" (exit 128, stderr
+/// contains `does not exist in`) and unexpected failures (corrupt
+/// object store, permission denied, OOM). The former is a normal "new
+/// file" signal that callers want to treat as `None`; the latter must
+/// bubble up with the stderr context attached so an agent or CI
+/// pipeline doesn't silently misclassify every symbol in a corrupt
+/// repo as Added. We capture stderr and inspect it before deciding.
+fn git_show_at(root: &Path, base: &str, path: &str) -> Result<Option<String>> {
     let spec = format!("{base}:{path}");
     let output = std::process::Command::new("git")
         .args(["show", &spec])
         .current_dir(root)
-        .stderr(std::process::Stdio::null())
         .output()
         .context("invoke git show")?;
-    if !output.status.success() {
-        anyhow::bail!("file {path} did not exist at {base}");
+    if output.status.success() {
+        return Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Git's missing-object phrasings: "does not exist in" / "exists on
+    // disk, but not in" / "Path '...' does not exist in" — all mean
+    // the same thing here. Everything else (corrupt object store,
+    // permission denied, OOM, …) must propagate so a broken repo
+    // doesn't silently get reported as "every symbol was added".
+    let is_missing =
+        stderr.contains("does not exist in") || stderr.contains("exists on disk, but not in");
+    if is_missing {
+        return Ok(None);
+    }
+    anyhow::bail!(
+        "git show {spec} failed ({}): {}",
+        output.status,
+        stderr.trim()
+    );
 }
 
 #[cfg(test)]
@@ -460,6 +509,22 @@ mod tests {
             kinds.contains(&"added"),
             "expected at least one added: {out:?}"
         );
+    }
+
+    #[test]
+    fn whitespace_only_edit_inside_body_changes_hash() {
+        // Adding a blank line to a body changes the hash, so the
+        // symbol registers as BodyChanged. This is the documented
+        // "any line around the symbol counts as a change" trade-off —
+        // worth pinning so a future tightening to byte_range-based
+        // hashing is a visible behaviour change rather than a silent
+        // one.
+        let old = "fn a() {\n    1\n}\n";
+        let new = "fn a() {\n\n    1\n}\n";
+        let mut out = Vec::new();
+        diff_one_file("lib.rs", Language::Rust, Some(old), Some(new), &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].kind, ChangeKind::BodyChanged);
     }
 
     #[test]

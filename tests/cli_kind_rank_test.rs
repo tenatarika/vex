@@ -89,6 +89,89 @@ fn kind_accepts_repeated_and_comma_values() {
 }
 
 #[test]
+fn explicit_kind_overrides_query_shape_default() {
+    // `payment_processor` is FunctionLike by query shape — without
+    // --kind, the function-shaped boost would dominate. With
+    // `--kind class`, the class result must rise to the top instead.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::write(
+        tmp.path().join("lib.rs"),
+        "pub fn payment_processor() {}\nstruct payment_processor;\n",
+    )
+    .unwrap();
+    // Add a class via a different language to make sure the kind is
+    // visibly distinct (Rust has no `class`, so add an explicit one
+    // via a TS file).
+    std::fs::write(tmp.path().join("svc.ts"), "class payment_processor {}\n").unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let assert = vex_in(tmp.path())
+        .args([
+            "search",
+            "payment_processor",
+            "--kind",
+            "class",
+            "--format",
+            "compact",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let first_line = stdout.lines().next().unwrap_or("");
+    assert!(
+        first_line.contains("svc.ts"),
+        "expected class match first with --kind class, got: {first_line}"
+    );
+}
+
+#[test]
+fn every_canonical_kind_alias_parses() {
+    // Guards against typos in the SymbolKind::from_str alias table.
+    // Each canonical name + its documented short alias must parse
+    // without error.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::write(tmp.path().join("lib.rs"), "fn foo() {}\n").unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let canonical_and_aliases = [
+        "function",
+        "fn",
+        "method",
+        "struct",
+        "class",
+        "interface",
+        "trait",
+        "enum",
+        "type_alias",
+        "type",
+        "impl",
+        "constant",
+        "const",
+        "property",
+        "prop",
+        "package",
+        "pkg",
+        "heading",
+        "h",
+        // 11.9 meta-selectors
+        "def",
+        "definition",
+        "comment",
+        "test",
+        "ref",
+        "reference",
+    ];
+    for k in canonical_and_aliases {
+        vex_in(tmp.path())
+            .args(["search", "foo", "--kind", k])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
 fn unknown_kind_value_returns_helpful_error() {
     let tmp = TempDir::new().unwrap();
     write_mixed_project(tmp.path());
