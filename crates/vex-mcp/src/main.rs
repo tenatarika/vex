@@ -352,6 +352,9 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
             if let Some(filter) = args["filter"].as_str() {
                 extra.extend(["--filter".into(), filter.to_string()]);
             }
+            if args["explain"].as_bool().unwrap_or(false) {
+                extra.push("--explain".into());
+            }
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
             Ok(("similar".into(), extra))
@@ -372,6 +375,9 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
             ];
             if let Some(filter) = args["filter"].as_str() {
                 extra.extend(["--filter".into(), filter.to_string()]);
+            }
+            if args["explain"].as_bool().unwrap_or(false) {
+                extra.push("--explain".into());
             }
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
@@ -594,6 +600,7 @@ fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 10 },
                     "threshold": { "type": "number", "description": "Minimum cosine similarity (0.0..1.0)", "default": 0.5 },
                     "filter": { "type": "string", "description": "Filter results by path substring" },
+                    "explain": { "type": "boolean", "description": "Include reasoning per match: identifier-set Jaccard overlap + truncated unified diff between bodies", "default": false },
                     "project_root": { "type": "string", "description": "Project root path" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
@@ -612,6 +619,7 @@ fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max pairs to return", "default": 50 },
                     "min_body_lines": { "type": "integer", "description": "Skip symbols with body shorter than this many lines", "default": 5 },
                     "filter": { "type": "string", "description": "Restrict to pairs where at least one symbol's path contains this substring" },
+                    "explain": { "type": "boolean", "description": "Include reasoning per pair: identifier-set Jaccard overlap + truncated unified diff between the two bodies", "default": false },
                     "project_root": { "type": "string", "description": "Project root path" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist pairs by path glob — a pair is kept when at least one side matches" },

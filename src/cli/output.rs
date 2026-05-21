@@ -1,3 +1,4 @@
+use crate::search::explain::Explanation;
 use crate::search::similar::SimilarMatch;
 use crate::search::SearchResult;
 
@@ -39,20 +40,30 @@ pub fn print_results(results: &[SearchResult], format: &super::args::OutputForma
     }
 }
 
-pub fn print_similar(matches: &[SimilarMatch], target: &str, format: &super::args::OutputFormat) {
+pub fn print_similar(
+    matches: &[SimilarMatch],
+    target: &str,
+    explanations: Option<&[Explanation]>,
+    format: &super::args::OutputFormat,
+) {
     match format {
         super::args::OutputFormat::Json => {
             let json: Vec<serde_json::Value> = matches
                 .iter()
-                .map(|m| {
-                    serde_json::json!({
+                .enumerate()
+                .map(|(i, m)| {
+                    let mut obj = serde_json::json!({
                         "name": m.name,
                         "kind": m.kind,
                         "path": m.path,
                         "line": m.line,
                         "similarity": m.similarity,
                         "signature": m.signature,
-                    })
+                    });
+                    if let Some(ex) = explanations.and_then(|e| e.get(i)) {
+                        obj["explanation"] = explanation_json(ex);
+                    }
+                    obj
                 })
                 .collect();
             // unwrap: serializing simple JSON values cannot fail
@@ -64,7 +75,7 @@ pub fn print_similar(matches: &[SimilarMatch], target: &str, format: &super::arg
                 return;
             }
             println!("Similar to \"{target}\":");
-            for m in matches {
+            for (i, m) in matches.iter().enumerate() {
                 println!(
                     " {sim:>5.3}  {kind:<10} {name:<40} {path}:{line}",
                     sim = m.similarity,
@@ -73,18 +84,25 @@ pub fn print_similar(matches: &[SimilarMatch], target: &str, format: &super::arg
                     path = m.path,
                     line = m.line
                 );
+                if let Some(ex) = explanations.and_then(|e| e.get(i)) {
+                    print_explanation_text(ex);
+                }
             }
         }
         super::args::OutputFormat::Compact => {
-            for m in matches {
+            for (i, m) in matches.iter().enumerate() {
                 let kind = compact_kind(&m.kind);
-                println!(
+                print!(
                     "{sim:.3} {kind} {name} {path}:{line}",
                     sim = m.similarity,
                     name = m.name,
                     path = m.path,
                     line = m.line
                 );
+                if let Some(ex) = explanations.and_then(|e| e.get(i)) {
+                    print_explanation_compact(ex);
+                }
+                println!();
             }
         }
     }
@@ -92,14 +110,16 @@ pub fn print_similar(matches: &[SimilarMatch], target: &str, format: &super::arg
 
 pub fn print_duplicates(
     pairs: &[(SimilarMatch, SimilarMatch)],
+    explanations: Option<&[Explanation]>,
     format: &super::args::OutputFormat,
 ) {
     match format {
         super::args::OutputFormat::Json => {
             let json: Vec<serde_json::Value> = pairs
                 .iter()
-                .map(|(a, b)| {
-                    serde_json::json!({
+                .enumerate()
+                .map(|(i, (a, b))| {
+                    let mut obj = serde_json::json!({
                         "similarity": a.similarity,
                         "a": {
                             "name": a.name,
@@ -113,7 +133,11 @@ pub fn print_duplicates(
                             "path": b.path,
                             "line": b.line,
                         },
-                    })
+                    });
+                    if let Some(ex) = explanations.and_then(|e| e.get(i)) {
+                        obj["explanation"] = explanation_json(ex);
+                    }
+                    obj
                 })
                 .collect();
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
@@ -123,7 +147,7 @@ pub fn print_duplicates(
                 println!("No duplicates found");
                 return;
             }
-            for (a, b) in pairs {
+            for (i, (a, b)) in pairs.iter().enumerate() {
                 println!(
                     " {sim:>5.3}  {name}  {path}:{line}",
                     sim = a.similarity,
@@ -137,13 +161,16 @@ pub fn print_duplicates(
                     path = b.path,
                     line = b.line
                 );
+                if let Some(ex) = explanations.and_then(|e| e.get(i)) {
+                    print_explanation_text(ex);
+                }
             }
         }
         super::args::OutputFormat::Compact => {
-            for (a, b) in pairs {
+            for (i, (a, b)) in pairs.iter().enumerate() {
                 let ak = compact_kind(&a.kind);
                 let bk = compact_kind(&b.kind);
-                println!(
+                print!(
                     "{sim:.3} {ak} {an} {ap}:{al} | {bk} {bn} {bp}:{bl}",
                     sim = a.similarity,
                     an = a.name,
@@ -153,9 +180,46 @@ pub fn print_duplicates(
                     bp = b.path,
                     bl = b.line
                 );
+                if let Some(ex) = explanations.and_then(|e| e.get(i)) {
+                    print_explanation_compact(ex);
+                }
+                println!();
             }
         }
     }
+}
+
+fn explanation_json(ex: &Explanation) -> serde_json::Value {
+    serde_json::json!({
+        "identifier_jaccard": ex.identifier_jaccard,
+        "diff_added": ex.added,
+        "diff_removed": ex.removed,
+        "diff": ex.diff,
+    })
+}
+
+fn print_explanation_text(ex: &Explanation) {
+    println!(
+        "         jaccard {jac:.2}  diff +{add} -{rem}",
+        jac = ex.identifier_jaccard,
+        add = ex.added,
+        rem = ex.removed,
+    );
+    for line in ex.diff.lines() {
+        println!("           {line}");
+    }
+}
+
+fn print_explanation_compact(ex: &Explanation) {
+    // Compact format already uses ` | ` as the a/b separator in
+    // `print_duplicates`; using `;` here keeps `--explain --format compact`
+    // unambiguous for ` | `-splitting consumers.
+    print!(
+        " ; jac {jac:.2} +{add} -{rem}",
+        jac = ex.identifier_jaccard,
+        add = ex.added,
+        rem = ex.removed,
+    );
 }
 
 /// Single-char kind code for compact output.

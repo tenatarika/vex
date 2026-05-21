@@ -430,13 +430,18 @@ pub enum Commands {
         #[arg(short, long, default_value = "10")]
         limit: usize,
 
-        /// Minimum cosine similarity in 0.0..=1.0
-        #[arg(short, long, default_value = "0.5")]
+        /// Minimum cosine similarity in 0.0..=1.0. Alias: `--min-score`.
+        #[arg(short, long, alias = "min-score", default_value = "0.5")]
         threshold: f32,
 
         /// Filter results by path substring (e.g. "src/api/" or "tests/")
         #[arg(short = 'f', long = "filter")]
         filter_path: Option<String>,
+
+        /// Show reasoning per result: identifier-set Jaccard overlap +
+        /// truncated unified diff between the seed and each match.
+        #[arg(long)]
+        explain: bool,
 
         /// Auto-update index if stale
         #[arg(long)]
@@ -456,8 +461,9 @@ pub enum Commands {
         #[arg(short, long)]
         path: Option<PathBuf>,
 
-        /// Minimum cosine similarity to consider a duplicate (0.0..=1.0)
-        #[arg(short, long, default_value = "0.9")]
+        /// Minimum cosine similarity to consider a duplicate (0.0..=1.0).
+        /// Alias: `--min-score`.
+        #[arg(short, long, alias = "min-score", default_value = "0.9")]
         threshold: f32,
 
         /// Max pairs to return
@@ -471,6 +477,11 @@ pub enum Commands {
         /// Filter pairs to those involving this path substring
         #[arg(short = 'f', long = "filter")]
         filter_path: Option<String>,
+
+        /// Show reasoning per pair: identifier-set Jaccard overlap +
+        /// truncated unified diff between the two symbol bodies.
+        #[arg(long)]
+        explain: bool,
 
         /// Auto-update index if stale
         #[arg(long)]

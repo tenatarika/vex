@@ -93,6 +93,9 @@ ignore = "0.4"
 # Path globs for per-query --include/--exclude scope filters
 globset = "0.4"
 
+# Text diffing for `vex similar --explain` / `vex duplicates --explain`
+similar = "2"
+
 # File locking
 fs2 = "0.4"
 

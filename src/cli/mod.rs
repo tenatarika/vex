@@ -331,6 +331,52 @@ fn ensure_index_ready(
     Ok(avail.path)
 }
 
+/// Extract the body of a symbol at `(path, line)` for `--explain` output.
+/// Returns an empty string on any failure — `--explain` is a UX nicety
+/// and should never abort the surrounding `similar` / `duplicates` run
+/// just because one file is missing or unparseable. We surface a
+/// one-line stderr warning so a regression (file deleted under the
+/// index, language detection broken) is visible instead of silently
+/// degrading the explanation to `jaccard 0.00`.
+fn fetch_symbol_body(path: &str, line: usize, kind: &str) -> String {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "warning: could not read {path}:{line} for --explain ({e}); \
+                 reasoning will be incomplete for this match"
+            );
+            return String::new();
+        }
+    };
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    let body = if kind == "heading" {
+        crate::parse::body::extract_heading_body(&content, line, 0)
+    } else if let Some(lang) = crate::parse::language::Language::from_extension(ext) {
+        crate::parse::body::extract_symbol_body_ts(&content, line, lang, 0)
+    } else {
+        crate::parse::body::extract_symbol_body(&content, line, 0)
+    };
+    match body {
+        Ok(b) => b.body,
+        Err(e) => {
+            eprintln!(
+                "warning: could not extract body for {path}:{line} ({e}); \
+                 reasoning will be incomplete for this match"
+            );
+            String::new()
+        }
+    }
+}
+
+/// Diff lines beyond this cap are summarised as
+/// `... (N more lines truncated)`. Picked to fit a single terminal
+/// screenful without overwhelming compact output.
+const EXPLAIN_MAX_DIFF_LINES: usize = 30;
+
 fn apply_path_filters(
     results: Vec<crate::search::SearchResult>,
     filter: Option<&str>,
@@ -1261,6 +1307,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             limit,
             threshold,
             filter_path,
+            explain,
             auto_update,
             no_stale_check,
             scope,
@@ -1305,7 +1352,32 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 .take(limit)
                 .collect();
 
-            output::print_similar(&matches, &name, &format);
+            // Build per-result explanations on demand. The seed body is
+            // resolved once via `similar::resolve_seed_match`, which uses
+            // the same symbol-FST lookup `find_similar` already ran —
+            // sharing the entry point keeps both paths in sync.
+            let explanations: Option<Vec<_>> = if explain && !matches.is_empty() {
+                let seed_body = crate::search::similar::resolve_seed_match(&reader, &name)
+                    .map(|s| fetch_symbol_body(&s.path, s.line, &s.kind))
+                    .unwrap_or_default();
+                Some(
+                    matches
+                        .iter()
+                        .map(|m| {
+                            let body = fetch_symbol_body(&m.path, m.line, &m.kind);
+                            crate::search::explain::explain_pair(
+                                &seed_body,
+                                &body,
+                                EXPLAIN_MAX_DIFF_LINES,
+                            )
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
+
+            output::print_similar(&matches, &name, explanations.as_deref(), &format);
             Ok(())
         }
         Commands::Duplicates {
@@ -1314,6 +1386,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             limit,
             min_body_lines,
             filter_path,
+            explain,
             auto_update,
             no_stale_check,
             scope,
@@ -1364,7 +1437,26 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 .take(limit)
                 .collect();
 
-            output::print_duplicates(&pairs, &format);
+            let explanations: Option<Vec<_>> = if explain && !pairs.is_empty() {
+                Some(
+                    pairs
+                        .iter()
+                        .map(|(a, b)| {
+                            let a_body = fetch_symbol_body(&a.path, a.line, &a.kind);
+                            let b_body = fetch_symbol_body(&b.path, b.line, &b.kind);
+                            crate::search::explain::explain_pair(
+                                &a_body,
+                                &b_body,
+                                EXPLAIN_MAX_DIFF_LINES,
+                            )
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
+
+            output::print_duplicates(&pairs, explanations.as_deref(), &format);
             Ok(())
         }
 

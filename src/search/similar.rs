@@ -264,6 +264,19 @@ fn compute_body_lines(reader: &IndexReader) -> Vec<usize> {
     body_lines
 }
 
+/// Resolve `target_name` to a `SimilarMatch` record (the *seed* of a
+/// `vex similar` call). Lets `--explain` extract the seed body without a
+/// second FST round-trip through `structural::search_with_fuzzy` — both
+/// would resolve the same record, but going through this entry point
+/// keeps the two paths in sync and clearly signals intent.
+///
+/// `similarity` is set to `1.0` — the seed is identical to itself, so any
+/// downstream consumer that displays the score sees the expected value.
+pub fn resolve_seed_match(reader: &IndexReader, target_name: &str) -> Option<SimilarMatch> {
+    let idx = resolve_symbol_idx(reader, target_name).ok()?;
+    build_match(reader, idx, 1.0)
+}
+
 /// Resolve a symbol name to its symbol index via the symbol FST.
 /// Returns the first matching index (FST ordering — typically the most relevant).
 pub(crate) fn resolve_symbol_idx(reader: &IndexReader, target_name: &str) -> Result<usize> {
