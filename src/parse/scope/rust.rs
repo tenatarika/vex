@@ -37,7 +37,10 @@
 
 use anyhow::{Context, Result};
 
-use super::{BindTarget, BoundRef, DefKind, LocalDef, RefKind, ScopeBinder, ScopeId, ScopeKind, ScopeTree};
+use super::{
+    BindTarget, BoundRef, DefKind, LocalDef, RefKind, ScopeBinder, ScopeId, ScopeKind, ScopeTree,
+    UsePath,
+};
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::extractor::is_meaningful_identifier;
 use crate::parse::language::Language;
@@ -92,6 +95,7 @@ impl<'a> Walker<'a> {
             "const_item" | "static_item" => self.walk_const_like(node, scope),
             "mod_item" => self.walk_mod(node, scope),
             "impl_item" => self.walk_impl(node, scope),
+            "use_declaration" => self.walk_use(node, scope),
             "block" => {
                 let s = self.tree.push_scope(ScopeKind::Block, scope);
                 self.walk_children(node, s);
@@ -222,8 +226,43 @@ impl<'a> Walker<'a> {
             return;
         }
         let line = name_node.start_position().row + 1;
-        self.tree
-            .add_binding(scope, name.to_string(), LocalDef { line, kind });
+        self.tree.add_binding(
+            scope,
+            name.to_string(),
+            LocalDef {
+                line,
+                kind,
+                import_path: None,
+            },
+        );
+    }
+
+    /// Process a `use_declaration` node. Children are *not* emitted as
+    /// refs (the use path is a binding site, not a reference site) —
+    /// instead we collect `(local_name, UsePath)` pairs and stamp them
+    /// into the current scope as `DefKind::Import` bindings carrying
+    /// their original path.
+    fn walk_use(&mut self, node: tree_sitter::Node, scope: ScopeId) {
+        let line = node.start_position().row + 1;
+        let mut imports: Vec<(String, UsePath)> = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "use" | ";" | "visibility_modifier" => continue,
+                _ => collect_use_imports(child, &[], self.content, &mut imports),
+            }
+        }
+        for (name, path) in imports {
+            self.tree.add_binding(
+                scope,
+                name,
+                LocalDef {
+                    line,
+                    kind: DefKind::Import,
+                    import_path: Some(path),
+                },
+            );
+        }
     }
 
     fn emit_ref(&mut self, node: tree_sitter::Node, scope: ScopeId) {
@@ -250,16 +289,17 @@ impl<'a> Walker<'a> {
 
     fn resolve(&self, scope: ScopeId, name: &str) -> BindTarget {
         match self.tree.resolve(scope, name) {
-            Some((sid, _)) => {
+            Some((sid, def)) => {
+                if def.kind == DefKind::Import {
+                    if let Some(path) = &def.import_path {
+                        return BindTarget::Imported(path.clone());
+                    }
+                }
                 if sid == self.tree.root() {
                     // Prefer ModuleSymbol when the file-level resolution
                     // also matches a ParsedSymbol entry — 11.1.3 will use
                     // the idx to look up the global symbol id.
-                    if let Some(idx) = self
-                        .file_symbols
-                        .iter()
-                        .position(|s| s.name == name)
-                    {
+                    if let Some(idx) = self.file_symbols.iter().position(|s| s.name == name) {
                         return BindTarget::ModuleSymbol(idx as u32);
                     }
                     BindTarget::Local(sid)
@@ -281,4 +321,103 @@ fn is_rust_string_kind(kind: &str) -> bool {
         kind,
         "string_literal" | "raw_string_literal" | "char_literal" | "byte_string_literal"
     )
+}
+
+/// Recursively flatten the path argument of a `use_declaration` into a
+/// list of `(local_name, full_use_path)` pairs. `prefix` accumulates
+/// segments while we descend through `scoped_use_list` / nested forms.
+///
+/// Handled shapes:
+///   `use a;`                          → `[(a, [a])]`
+///   `use a::b;`                       → `[(b, [a, b])]`
+///   `use a::b::C;`                    → `[(C, [a, b, C])]`
+///   `use a::{b, c};`                  → `[(b, [a, b]), (c, [a, c])]`
+///   `use a::{b::C, d as E};`          → `[(C, [a, b, C]), (E, [a, d])]`
+///   `use a as alias;`                 → `[(alias, [a])]`
+///   `use a::*;`                       → no bindings (glob deferred to 11.1.3 cross-file pass).
+fn collect_use_imports(
+    node: tree_sitter::Node,
+    prefix: &[String],
+    content: &str,
+    output: &mut Vec<(String, UsePath)>,
+) {
+    match node.kind() {
+        "identifier" => {
+            let name = node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
+            if name.is_empty() {
+                return;
+            }
+            let mut segments = prefix.to_vec();
+            segments.push(name.clone());
+            output.push((name, UsePath { segments }));
+        }
+        "scoped_identifier" => {
+            // Get the raw `a::b::c` text and split — robust against
+            // minor grammar shape differences for nested scoped paths.
+            let text = node.utf8_text(content.as_bytes()).unwrap_or("");
+            let mut segments = prefix.to_vec();
+            segments.extend(
+                text.split("::")
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
+            );
+            if let Some(last) = segments.last().cloned() {
+                output.push((last, UsePath { segments }));
+            }
+        }
+        "use_as_clause" => {
+            let path_node = node.child_by_field_name("path");
+            let alias_node = node.child_by_field_name("alias");
+            let path_text = path_node
+                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                .unwrap_or("");
+            let mut segments = prefix.to_vec();
+            segments.extend(
+                path_text
+                    .split("::")
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
+            );
+            if let Some(alias) = alias_node {
+                let alias_name = alias
+                    .utf8_text(content.as_bytes())
+                    .unwrap_or("")
+                    .to_string();
+                if !alias_name.is_empty() {
+                    output.push((alias_name, UsePath { segments }));
+                }
+            }
+        }
+        "scoped_use_list" => {
+            let path_node = node.child_by_field_name("path");
+            let list_node = node.child_by_field_name("list");
+            let path_text = path_node
+                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                .unwrap_or("");
+            let mut new_prefix = prefix.to_vec();
+            new_prefix.extend(
+                path_text
+                    .split("::")
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
+            );
+            if let Some(list) = list_node {
+                let mut cursor = list.walk();
+                for child in list.children(&mut cursor) {
+                    collect_use_imports(child, &new_prefix, content, output);
+                }
+            }
+        }
+        "use_list" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                collect_use_imports(child, prefix, content, output);
+            }
+        }
+        // `use a::*;` — glob. We deliberately emit no binding here; the
+        // 11.1.3 cross-file pass will follow the prefix and pull the
+        // exported names from the target module's symbol FST.
+        "use_wildcard" => {}
+        _ => {}
+    }
 }

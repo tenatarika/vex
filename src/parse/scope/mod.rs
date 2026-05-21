@@ -63,6 +63,11 @@ pub enum DefKind {
 pub struct LocalDef {
     pub line: usize,
     pub kind: DefKind,
+    /// Populated only when `kind == DefKind::Import` — captures the
+    /// dotted path the `use` statement pulls the name from so the
+    /// resolver can return `BindTarget::Imported`. Cross-file
+    /// resolution from path to global symbol idx is 11.1.3.
+    pub import_path: Option<UsePath>,
 }
 
 #[derive(Debug, Clone)]
@@ -209,7 +214,11 @@ mod tests {
     use super::*;
 
     fn def(line: usize, kind: DefKind) -> LocalDef {
-        LocalDef { line, kind }
+        LocalDef {
+            line,
+            kind,
+            import_path: None,
+        }
     }
 
     #[test]

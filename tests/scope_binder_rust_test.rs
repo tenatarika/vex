@@ -93,6 +93,62 @@ fn inner_block_shadow_wins_for_inner_ref() {
     let _ = inner;
 }
 
+// --- 11.1.2c: `use`-graph ---
+
+fn imported_path(refs: &[BoundRef], name: &str, line: usize) -> Vec<String> {
+    let r = find_ref(refs, name, line);
+    match &r.target {
+        BindTarget::Imported(p) => p.segments.clone(),
+        other => panic!("expected Imported for `{name}` line {line}, got {other:?}"),
+    }
+}
+
+#[test]
+fn use_brings_external_name_into_scope() {
+    let src = "use external_crate::Some_Type;\nfn run(_p: Some_Type) {}\n";
+    let (_syms, refs) = bind(src);
+    let path = imported_path(&refs, "Some_Type", 2);
+    assert_eq!(path, vec!["external_crate", "Some_Type"]);
+}
+
+#[test]
+fn use_list_brings_multiple_names() {
+    let src = "use external_crate::{First_Item, Second_Item};\nfn run() {\n    let _a = First_Item;\n    let _b = Second_Item;\n}\n";
+    let (_syms, refs) = bind(src);
+    let p1 = imported_path(&refs, "First_Item", 3);
+    let p2 = imported_path(&refs, "Second_Item", 4);
+    assert_eq!(p1, vec!["external_crate", "First_Item"]);
+    assert_eq!(p2, vec!["external_crate", "Second_Item"]);
+}
+
+#[test]
+fn use_as_alias_records_original_path_under_alias_name() {
+    let src = "use external_crate::Long_Original_Name as Short_Alias;\nfn run(_p: Short_Alias) {}\n";
+    let (_syms, refs) = bind(src);
+    let path = imported_path(&refs, "Short_Alias", 2);
+    assert_eq!(path, vec!["external_crate", "Long_Original_Name"]);
+}
+
+#[test]
+fn use_glob_does_not_bind_individual_names() {
+    let src = "use external_crate::*;\nfn run() { let _x = Mystery_Name; }\n";
+    let (_syms, refs) = bind(src);
+    let r = find_ref(&refs, "Mystery_Name", 2);
+    assert!(
+        matches!(r.target, BindTarget::Unresolved),
+        "glob must not bind unseen names; got {:?}",
+        r.target
+    );
+}
+
+#[test]
+fn pub_use_behaves_like_use() {
+    let src = "pub use external_crate::Reexported_Type;\nfn run(_p: Reexported_Type) {}\n";
+    let (_syms, refs) = bind(src);
+    let path = imported_path(&refs, "Reexported_Type", 2);
+    assert_eq!(path, vec!["external_crate", "Reexported_Type"]);
+}
+
 #[test]
 fn sibling_fns_do_not_share_locals() {
     let src = "fn first_fn() { let only_in_first = 1; let _x = only_in_first; }\nfn second_fn() { only_in_first }\n";
