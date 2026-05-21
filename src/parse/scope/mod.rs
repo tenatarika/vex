@@ -26,6 +26,7 @@ use super::language::Language;
 use crate::index::symbols::ParsedSymbol;
 
 pub mod rust;
+pub mod typescript;
 
 /// Arena index into [`ScopeTree::scopes`]. `0` is always the file root.
 pub type ScopeId = u32;
@@ -208,6 +209,7 @@ pub fn bind_refs(
 ) -> Result<Vec<BoundRef>> {
     match lang {
         Language::Rust => rust::RustBinder.bind(content, file_symbols),
+        Language::TypeScript => typescript::TypeScriptBinder.bind(content, file_symbols),
         _ => Ok(Vec::new()),
     }
 }
