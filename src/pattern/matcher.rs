@@ -32,6 +32,12 @@ enum Segment {
 
 /// Parse the pattern string into segments.
 pub fn parse_pattern(pattern: &str, lang: Language) -> Result<PatternTree> {
+    if pattern.trim().is_empty() {
+        anyhow::bail!(
+            "empty pattern — supply at least one literal token or metavar \
+             (e.g. `fn $NAME($$$)`, `$X.then($X)`)"
+        );
+    }
     let mut segments = Vec::new();
     let mut chars = pattern.chars().peekable();
     let mut literal = String::new();
@@ -165,10 +171,18 @@ fn visit_all(
 }
 
 /// Try to match text against pattern segments. Returns captures on success.
+///
+/// Metavar back-references: when the same `$NAME` appears more than once
+/// in a pattern, every later occurrence must capture the *same* text as
+/// the first occurrence — otherwise the match fails. The returned
+/// `captures` vector preserves the original-order list of (name, value)
+/// pairs so downstream output (`vex pattern --format compact`) shows
+/// every binding site, not just the first.
 fn try_match(text: &str, segments: &[Segment]) -> Option<Vec<(String, String)>> {
     let text = text.trim();
     let mut pos = 0;
-    let mut captures = Vec::new();
+    let mut captures: Vec<(String, String)> = Vec::new();
+    let mut bound: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     for (i, seg) in segments.iter().enumerate() {
         match seg {
@@ -201,6 +215,16 @@ fn try_match(text: &str, segments: &[Segment]) -> Option<Vec<(String, String)>> 
                 let word = extract_word(&text[pos..]);
                 if word.is_empty() {
                     return None;
+                }
+                // 11.4: back-reference enforcement. Second-and-later
+                // occurrences of `$NAME` in the same pattern must
+                // capture the same text the first occurrence did.
+                if let Some(prev) = bound.get(name) {
+                    if prev != word {
+                        return None;
+                    }
+                } else {
+                    bound.insert(name.clone(), word.to_string());
                 }
                 captures.push((name.clone(), word.to_string()));
                 pos += word.len();
@@ -416,6 +440,75 @@ func main() {}
         let matches = find_matches(source, &pattern, "test.rs");
         assert!(!matches.is_empty());
         assert_eq!(matches[0].line, 2);
+    }
+
+    // --- 11.4 metavar back-references ---
+
+    #[test]
+    fn back_reference_requires_same_value_in_both_occurrences() {
+        // `$NAME($NAME)` is the canonical "function that calls itself
+        // with the same name as the first argument" pattern. Should
+        // match `foo(foo)` and reject `foo(bar)`.
+        let source = "fn caller() { foo(foo); bar(baz); }\n";
+        let pattern = parse_pattern("$NAME($NAME)", Language::Rust).unwrap();
+        let matches = find_matches(source, &pattern, "test.rs");
+        // Only `foo(foo)` is a self-pass; `bar(baz)` must not match
+        // because the second `$NAME` would have to capture `baz` while
+        // the first captured `bar`.
+        let names: Vec<String> = matches
+            .iter()
+            .filter_map(|m| m.captures.first().map(|(_, v)| v.clone()))
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "foo"),
+            "expected foo(foo) to match, got: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n == "bar"),
+            "bar(baz) must not match — back-ref mismatch: {names:?}"
+        );
+    }
+
+    #[test]
+    fn back_reference_captures_both_binding_sites() {
+        // Even though the value is the same, the captures list keeps
+        // every binding site so output shows where each occurrence
+        // landed in the matched text.
+        let source = "fn use_twice() { record(state, state); }\n";
+        let pattern = parse_pattern("record($NAME, $NAME)", Language::Rust).unwrap();
+        let matches = find_matches(source, &pattern, "test.rs");
+        let m = matches
+            .iter()
+            .find(|m| m.matched_text.contains("record"))
+            .unwrap_or_else(|| panic!("expected back-ref match: {matches:?}"));
+        let name_captures: Vec<&str> = m
+            .captures
+            .iter()
+            .filter(|(n, _)| n == "NAME")
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(name_captures, vec!["state", "state"]);
+    }
+
+    #[test]
+    fn distinct_metavar_names_remain_independent() {
+        // `$A` and `$B` are different binders; they don't constrain
+        // each other. Make sure the back-ref logic doesn't accidentally
+        // collapse distinct names.
+        let source = "fn pair() { connect(client, server); }\n";
+        let pattern = parse_pattern("connect($A, $B)", Language::Rust).unwrap();
+        let matches = find_matches(source, &pattern, "test.rs");
+        let m = matches
+            .iter()
+            .find(|m| m.matched_text.contains("connect"))
+            .unwrap_or_else(|| panic!("expected $A/$B match: {matches:?}"));
+        let by_name: std::collections::HashMap<&str, &str> = m
+            .captures
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(by_name.get("A"), Some(&"client"));
+        assert_eq!(by_name.get("B"), Some(&"server"));
     }
 
     #[test]

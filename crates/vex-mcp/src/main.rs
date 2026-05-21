@@ -443,6 +443,22 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             push_scope(&mut extra, args);
             ("callees".to_string(), extra)
         }
+        "pattern" => {
+            let pattern = args["pattern"].as_str().context("missing pattern")?;
+            let lang = args["lang"].as_str().context("missing lang")?;
+            let limit = args["limit"].as_u64().unwrap_or(50);
+            let mut extra = vec![
+                pattern.to_string(),
+                "--lang".into(),
+                lang.to_string(),
+                "--path".into(),
+                project_root.to_string(),
+                "--limit".into(),
+                limit.to_string(),
+            ];
+            push_scope(&mut extra, args);
+            ("pattern".to_string(), extra)
+        }
         "diff" => {
             let base = args["base"].as_str().context("missing base")?;
             let limit = args["limit"].as_u64().unwrap_or(500);
@@ -765,6 +781,22 @@ fn tool_descriptors() -> Value {
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["symbol"]
+            }
+        },
+        {
+            "name": "pattern",
+            "description": "Structural AST pattern matching. Match code by shape rather than text: `$NAME` captures an identifier or balanced expression, `$$$` matches anything (ellipsis), repeated `$NAME` is a back-reference that requires the same capture across occurrences. Live-scan over source files (no index needed) using the per-language tree-sitter grammar.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Structural pattern (e.g. `fn $NAME($$$) -> Result`, `$X.then($X)`)" },
+                    "lang": { "type": "string", "description": "Language: rust, python, typescript, go, java, csharp, ruby, kotlin, swift, cpp, php, sql, markdown" },
+                    "limit": { "type": "integer", "description": "Max matches to return", "default": 50 },
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
+                },
+                "required": ["pattern", "lang"]
             }
         },
         {
