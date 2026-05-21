@@ -521,7 +521,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             };
 
             let rerank_ctx = crate::search::rerank::RerankContext {
-                kind_hint: kind.as_deref().map(|k| k.parse()).transpose()?,
+                kind_hints: crate::search::rerank::KindSelector::parse_many(&kind)?,
                 context_path: context_path.as_deref(),
             };
             let results = crate::search::rerank::rerank(&query, &rerank_ctx, results);
@@ -855,7 +855,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let mut printed = 0usize;
 
             let rerank_ctx = crate::search::rerank::RerankContext {
-                kind_hint: kind.as_deref().map(|k| k.parse()).transpose()?,
+                kind_hints: crate::search::rerank::KindSelector::parse_many(&kind)?,
                 context_path: context_path.as_deref(),
             };
 

@@ -121,7 +121,7 @@ fn rerank_absolute_vs_relative_context_path() {
 
     // Absolute context path — must not panic.
     let ctx_absolute = RerankContext {
-        kind_hint: None,
+        kind_hints: Vec::new(),
         context_path: Some("/absolute/src/billing/gateway.rs"),
     };
     let ranked_absolute = rerank("Config", &ctx_absolute, relative_result.clone());
@@ -133,7 +133,7 @@ fn rerank_absolute_vs_relative_context_path() {
 
     // Relative context path — shares "src/billing" directory → expects a higher score.
     let ctx_relative = RerankContext {
-        kind_hint: None,
+        kind_hints: Vec::new(),
         context_path: Some("src/billing/gateway.rs"),
     };
     let ranked_relative = rerank("Config", &ctx_relative, relative_result);
@@ -159,7 +159,7 @@ fn rerank_windows_backslash_path() {
     let results = vec![make_result("Config", "struct", "src/billing/config.rs")];
 
     let ctx = RerankContext {
-        kind_hint: None,
+        kind_hints: Vec::new(),
         context_path: Some("src\\billing\\gateway.rs"),
     };
 

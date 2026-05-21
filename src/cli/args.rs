@@ -105,9 +105,13 @@ pub enum Commands {
         #[arg(short = 'f', long = "filter")]
         filter_path: Option<String>,
 
-        /// Boost results matching this symbol kind (e.g. fn, struct, trait)
-        #[arg(short = 'k', long)]
-        kind: Option<String>,
+        /// Boost results matching one or more kinds. Repeatable and
+        /// comma-separated: `--kind fn,method` or `--kind fn --kind struct`.
+        /// Accepts canonical kind names (function, struct, class, …) plus
+        /// aliases: def (all definitions), comment (headings), test
+        /// (test-path), ref (reserved for vex usages, no-op here).
+        #[arg(short = 'k', long, value_name = "KIND")]
+        kind: Vec<String>,
 
         /// Boost results near this file path (e.g. your current editor file)
         #[arg(long = "context-path")]
@@ -273,9 +277,11 @@ pub enum Commands {
         #[arg(short = 'f', long = "filter")]
         filter_path: Option<String>,
 
-        /// Boost results matching this symbol kind (e.g. fn, struct, trait)
-        #[arg(short = 'k', long)]
-        kind: Option<String>,
+        /// Boost results matching one or more kinds (repeatable,
+        /// comma-separated). Accepts canonical kind names plus aliases:
+        /// def, comment, test, ref. See `vex search --help` for details.
+        #[arg(short = 'k', long, value_name = "KIND")]
+        kind: Vec<String>,
 
         /// Boost results near this file path (e.g. your current editor file)
         #[arg(long = "context-path")]

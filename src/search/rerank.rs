@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use crate::index::symbols::SymbolKind;
 
 use super::SearchResult;
@@ -7,23 +9,88 @@ const KIND_BOOST_TYPE: f64 = 1.3; // class, struct, interface, trait, enum
 const KIND_BOOST_FUNC: f64 = 1.2; // function, method
 const KIND_BOOST_CONST: f64 = 1.1; // constant
 const KIND_DEMOTE_IMPL: f64 = 0.7; // impl blocks (usually noise)
+const KIND_DEMOTE_HEADING: f64 = 0.6; // Markdown headings demoted unconditionally — defs-first default
 const EXACT_NAME_BOOST: f64 = 1.5; // exact name match
 const TEST_PATH_DEMOTE: f64 = 0.8; // results from test directories
 const DEPTH_PENALTY_PER_LEVEL: f64 = 0.02; // per extra '/' in path
 
 // Context-aware boost factors (--kind, --context-path)
 const KIND_HINT_MATCH: f64 = 1.4; // explicit --kind match
-const KIND_HINT_MISMATCH: f64 = 1.0; // no penalty for mismatch (hint, not filter)
 const PATH_OVERLAP_PER_COMPONENT: f64 = 0.08; // per shared path component
 const PATH_OVERLAP_MAX: f64 = 1.4; // cap path overlap boost
 const MODULE_SAME_DIR: f64 = 1.15; // result in same directory as context
 const MODULE_SIBLING: f64 = 1.05; // result shares parent directory
 
+/// One value parsed from `--kind`. Multiple selectors are unioned (any
+/// match boosts the result). Canonical SymbolKind names route through
+/// `Symbol`; the four meta-selectors are convenience aliases the user
+/// asked for in the 11.x trust-gap audit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KindSelector {
+    /// Specific symbol kind (function, struct, class, …).
+    Symbol(SymbolKind),
+    /// Any definition kind — i.e. anything except Markdown headings.
+    Def,
+    /// Markdown-style heading symbol.
+    Comment,
+    /// Result whose path is in a test directory (uses `is_test_path`).
+    Test,
+    /// Reserved alias for `vex usages` (refs only). On search/show this is
+    /// silently accepted as a no-op so forward-compat clients don't fail.
+    Ref,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "unknown --kind value: \"{0}\". Accepts canonical kind names (function, struct, class, …) \
+     plus aliases: def (all definitions), comment (headings), test (test-path results), \
+     ref (reserved for vex usages)"
+)]
+pub struct ParseKindSelectorError(String);
+
+impl FromStr for KindSelector {
+    type Err = ParseKindSelectorError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "def" | "definition" => Ok(Self::Def),
+            "comment" => Ok(Self::Comment),
+            "test" => Ok(Self::Test),
+            "ref" | "reference" => Ok(Self::Ref),
+            other => SymbolKind::from_str(other)
+                .map(Self::Symbol)
+                .map_err(|_| ParseKindSelectorError(other.to_owned())),
+        }
+    }
+}
+
+impl KindSelector {
+    /// Parse a list of `--kind` values from the CLI; comma-separated and
+    /// repeated invocations both flatten into the returned vector.
+    pub fn parse_many(raw: &[String]) -> Result<Vec<Self>, ParseKindSelectorError> {
+        raw.iter()
+            .flat_map(|s| s.split(',').map(str::trim).filter(|p| !p.is_empty()))
+            .map(Self::from_str)
+            .collect()
+    }
+
+    fn matches(&self, result_kind: &str, path: &str) -> bool {
+        match self {
+            Self::Symbol(k) => result_kind == k.as_str(),
+            Self::Def => result_kind != "heading",
+            Self::Comment => result_kind == "heading",
+            Self::Test => is_test_path(path),
+            Self::Ref => false,
+        }
+    }
+}
+
 /// Optional context for metadata-aware reranking.
 #[derive(Debug, Default)]
 pub struct RerankContext<'a> {
-    /// Explicit kind filter (e.g., user passed `--kind fn`).
-    pub kind_hint: Option<SymbolKind>,
+    /// Zero or more `--kind` selectors. Multiple values are unioned —
+    /// the boost applies when **any** selector matches.
+    pub kind_hints: Vec<KindSelector>,
     /// Path of the file the user is currently editing.
     pub context_path: Option<&'a str>,
 }
@@ -78,12 +145,24 @@ pub fn rerank(
 
     let shape = query_shape(query);
     let query_lower = query.to_lowercase();
+    // Defs-first default: demote Markdown headings unless the user
+    // explicitly asked for them via `--kind comment` or `--kind heading`.
+    let user_wants_headings = ctx.kind_hints.iter().any(|h| {
+        matches!(
+            h,
+            KindSelector::Comment | KindSelector::Symbol(SymbolKind::Heading)
+        )
+    });
 
     for result in &mut results {
         let mut boost = 1.0;
 
         // Kind affinity (heuristic from query shape)
         boost *= kind_boost(&result.kind, &shape);
+
+        if result.kind == "heading" && !user_wants_headings {
+            boost *= KIND_DEMOTE_HEADING;
+        }
 
         // Exact name match
         if result.name.to_lowercase() == query_lower {
@@ -101,9 +180,15 @@ pub fn rerank(
             boost *= TEST_PATH_DEMOTE;
         }
 
-        // Explicit kind hint (--kind fn)
-        if let Some(hint) = ctx.kind_hint {
-            boost *= kind_hint_boost(&result.kind, hint);
+        // Explicit kind hint (--kind …). Multi-value: boost if ANY hint
+        // matches. Empty hints vector → no-op.
+        if !ctx.kind_hints.is_empty()
+            && ctx
+                .kind_hints
+                .iter()
+                .any(|h| h.matches(&result.kind, &result.path))
+        {
+            boost *= KIND_HINT_MATCH;
         }
 
         // Path overlap + module proximity (--context-path)
@@ -148,14 +233,6 @@ fn kind_boost(kind: &str, shape: &QueryShape) -> f64 {
             "impl" => KIND_DEMOTE_IMPL,
             _ => 1.0,
         },
-    }
-}
-
-fn kind_hint_boost(result_kind: &str, hint: SymbolKind) -> f64 {
-    if result_kind == hint.as_str() {
-        KIND_HINT_MATCH
-    } else {
-        KIND_HINT_MISMATCH
     }
 }
 
@@ -337,17 +414,21 @@ mod tests {
 
     // --- Kind hint tests ---
 
+    fn ctx_with_kind(raw: &[&str]) -> RerankContext<'static> {
+        let owned: Vec<String> = raw.iter().map(|s| (*s).into()).collect();
+        RerankContext {
+            kind_hints: KindSelector::parse_many(&owned).expect("parse_many"),
+            context_path: None,
+        }
+    }
+
     #[test]
     fn kind_hint_boosts_matching_kind() {
         let results = vec![
             make("process", "class", "src/a.rs"),
             make("process", "function", "src/b.rs"),
         ];
-        let c = RerankContext {
-            kind_hint: Some(SymbolKind::Function),
-            ..Default::default()
-        };
-        let ranked = rerank("process", &c, results);
+        let ranked = rerank("process", &ctx_with_kind(&["function"]), results);
         assert_eq!(ranked[0].kind, "function");
     }
 
@@ -357,12 +438,112 @@ mod tests {
             make("Config", "function", "src/a.rs"),
             make("Config", "struct", "src/b.rs"),
         ];
-        let c = RerankContext {
-            kind_hint: Some(SymbolKind::Struct),
-            ..Default::default()
-        };
-        let ranked = rerank("Config", &c, results);
+        let ranked = rerank("Config", &ctx_with_kind(&["struct"]), results);
         assert_eq!(ranked[0].kind, "struct");
+    }
+
+    #[test]
+    fn multi_value_kind_boosts_any_match() {
+        // Both `function` and `struct` are hinted — both should outrank `class`.
+        let results = vec![
+            make("Foo", "class", "src/a.rs"),
+            make("Foo", "function", "src/b.rs"),
+            make("Foo", "struct", "src/c.rs"),
+        ];
+        let ranked = rerank("Foo", &ctx_with_kind(&["function", "struct"]), results);
+        assert!(
+            ranked[0].kind == "function" || ranked[0].kind == "struct",
+            "expected fn or struct at top, got: {:?}",
+            ranked[0].kind
+        );
+        assert_eq!(ranked[2].kind, "class", "class should be last (not hinted)");
+    }
+
+    #[test]
+    fn comma_separated_kind_values_parse() {
+        // `--kind fn,struct` is equivalent to `--kind fn --kind struct`.
+        let hints = KindSelector::parse_many(&["fn,struct".into()]).expect("parse comma list");
+        assert_eq!(hints.len(), 2);
+    }
+
+    #[test]
+    fn def_alias_boosts_all_non_heading_kinds() {
+        let results = vec![
+            make("Section", "heading", "README.md"),
+            make("payment_processor", "function", "src/api.rs"),
+        ];
+        let ranked = rerank("payment_processor", &ctx_with_kind(&["def"]), results);
+        assert_eq!(ranked[0].kind, "function");
+    }
+
+    #[test]
+    fn comment_alias_boosts_headings() {
+        let results = vec![
+            make("Section", "heading", "README.md"),
+            make("payment_processor", "function", "src/api.rs"),
+        ];
+        let ranked = rerank("payment", &ctx_with_kind(&["comment"]), results);
+        assert_eq!(ranked[0].kind, "heading");
+    }
+
+    #[test]
+    fn test_alias_boosts_test_paths() {
+        let results = vec![
+            make("Foo", "function", "src/foo.rs"),
+            make("Foo", "function", "tests/it.rs"),
+        ];
+        let ranked = rerank("Foo", &ctx_with_kind(&["test"]), results);
+        assert_eq!(ranked[0].path, "tests/it.rs");
+    }
+
+    #[test]
+    fn ref_alias_is_no_op_for_search() {
+        // `ref` is reserved for `vex usages`; on search/show it parses but
+        // never boosts. Result of seeding a function vs a class should
+        // therefore depend only on the query-shape default (FunctionLike
+        // wins). This guards against `ref` accidentally engaging.
+        let results = vec![
+            make("get_user", "class", "src/a.rs"),
+            make("get_user", "function", "src/b.rs"),
+        ];
+        let with_ref = rerank("get_user", &ctx_with_kind(&["ref"]), results.clone());
+        let without_ref = rerank("get_user", &ctx(), results);
+        assert_eq!(with_ref[0].kind, without_ref[0].kind);
+    }
+
+    #[test]
+    fn heading_demoted_by_default_for_defs_first_ordering() {
+        // Without any --kind hint, a function should outrank a heading even
+        // when they have the same exact name — the defs-first invariant.
+        let results = vec![
+            make("payment_processor", "heading", "docs/spec.md"),
+            make("payment_processor", "function", "src/api.rs"),
+        ];
+        let ranked = rerank("payment_processor", &ctx(), results);
+        assert_eq!(ranked[0].kind, "function");
+    }
+
+    #[test]
+    fn unknown_kind_value_is_rejected() {
+        let err = KindSelector::parse_many(&["banana".into()]).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("banana"),
+            "expected offending value in error: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_or_whitespace_kind_values_yield_empty_vec() {
+        // Boundary: trailing commas, only-whitespace tokens, and an empty
+        // input slice all collapse to the no-op vector. Locks in the
+        // contract that `--kind ',,,'` / `--kind ' '` don't fail parsing
+        // and don't accidentally engage a boost branch.
+        assert!(KindSelector::parse_many(&[",,, ".into()])
+            .unwrap()
+            .is_empty());
+        assert!(KindSelector::parse_many(&[" ".into()]).unwrap().is_empty());
+        assert!(KindSelector::parse_many(&[]).unwrap().is_empty());
     }
 
     // --- Path overlap tests ---

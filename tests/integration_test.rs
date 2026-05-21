@@ -437,7 +437,9 @@ fn rerank_kind_hint_and_context_path() {
     ];
 
     let ctx = vex::search::rerank::RerankContext {
-        kind_hint: Some(vex::index::symbols::SymbolKind::Struct),
+        kind_hints: vec![vex::search::rerank::KindSelector::Symbol(
+            vex::index::symbols::SymbolKind::Struct,
+        )],
         context_path: Some("src/billing/gateway.rs"),
     };
     let ranked = vex::search::rerank::rerank("Config", &ctx, results);
@@ -571,7 +573,9 @@ fn rerank_score_max_no_infinity() {
 
     // Full context to exercise all boost paths
     let ctx = RerankContext {
-        kind_hint: Some(SymbolKind::Function),
+        kind_hints: vec![vex::search::rerank::KindSelector::Symbol(
+            SymbolKind::Function,
+        )],
         context_path: Some("src/a.rs"),
     };
     let ranked = vex::search::rerank::rerank("Overflow", &ctx, results);
@@ -636,7 +640,7 @@ fn rerank_empty_context_path() {
 
     // context_path: Some("") — dir_of("") returns "" — should not panic
     let ctx = RerankContext {
-        kind_hint: None,
+        kind_hints: Vec::new(),
         context_path: Some(""),
     };
     let ranked = vex::search::rerank::rerank("Foo", &ctx, results);
@@ -668,7 +672,7 @@ fn rerank_root_context_path() {
 
     // context_path: Some("/") — splits to ["", ""] — should not panic
     let ctx = RerankContext {
-        kind_hint: None,
+        kind_hints: Vec::new(),
         context_path: Some("/"),
     };
     let ranked = vex::search::rerank::rerank("Foo", &ctx, results);
@@ -700,7 +704,7 @@ fn rerank_single_component_path() {
 
     // context_path: Some("file.rs") — no directory separator — dir_of returns "" — no crash
     let ctx = RerankContext {
-        kind_hint: None,
+        kind_hints: Vec::new(),
         context_path: Some("file.rs"),
     };
     let ranked = vex::search::rerank::rerank("Foo", &ctx, results);
