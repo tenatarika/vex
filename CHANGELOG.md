@@ -6,6 +6,161 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-05-21
+
+The "search ergonomics + trust gaps" release. Built around an honest
+audit of where users still had to cross-check vex with `ast-index` or
+`Grep` — nine point features across the three pain clusters (filter
+power, structural understanding, agent ergonomics) plus security
+hardening on the embedding pipeline. No format change; all v1.6.x
+indexes continue to open.
+
+### Added — filter power
+
+- **`--include <glob>` / `--exclude <glob>`** on every search-shaped
+  command (`search`, `usages`, `pattern`, `show`, `grep`,
+  `implementations`, `callers`, `callees`, `similar`, `duplicates`).
+  Repeatable, gitignore-style semantics via `globset`
+  (`literal_separator(true)` — `*` stays within a segment, `**`
+  crosses `/`). Per-call scoping that doesn't require re-indexing;
+  composes AND with the existing `--filter <substring>`. MCP tools
+  carry the matching `include` / `exclude` arrays. Hardened against
+  CPU exhaustion with a 64-pattern / 256-char-per-pattern cap. (11.7)
+- **Multi-value `--kind`** with comma + repeated values:
+  `--kind fn --kind struct` or `--kind fn,struct`. Four new
+  meta-selectors (`def`, `comment`, `test`, `ref`) join the
+  canonical SymbolKind names. Default ranking now demotes Markdown
+  headings unless the user explicitly opts in via `--kind comment` —
+  defs-first ordering in mixed result sets. (11.9)
+- **Symbol metadata post-filters**: `--visibility public|private|
+  protected|internal`, `--async-only` / `--no-async`,
+  `--static-only`, `--sealed-only` on `vex search` / `vex show`.
+  Lexical match against the symbol's captured signature line — no
+  format bump, no re-parsing. Per-language alias coverage: `pub` /
+  `public` / `export`; `async` and Kotlin `suspend`; `sealed`
+  (Kotlin/C#) and Java `final class` (gated on co-occurring type
+  keyword so method parameters don't false-positive). Default-
+  visibility inference is deliberately not done — only explicit
+  keywords match. (11.6)
+
+### Added — structural understanding
+
+- **`vex paths <from> <to>`** enumerates all caller chains over the
+  v4 persistent call graph from 1.5.0. DFS-backward from `to` with
+  per-chain cycle prevention, bounded by `--max-hops` (default 6)
+  and `--max-paths` (default 50). Output reverses to natural
+  `A → … → B` reading order. (11.5)
+- **`vex reachable <target>`** returns the transitive set of
+  symbols whose callees reach `target`, with the BFS depth label
+  per row. Same call-graph fast path, bounded by `--max-hops` and
+  `--limit`. Both commands warn loudly when a node hits the
+  per-step fetch cap (1024 callers) so wide-fan-in saturation is
+  visible. (11.5)
+- **`vex diff --base <rev>`** lists symbol-level changes between
+  an arbitrary git revision and the working tree: added / removed /
+  moved-within-file / body-changed entries. Per-file pairing by
+  `(name, kind)` with a coarse line-range body hash; deliberately
+  uses `git diff --no-renames` so a `git mv` surfaces both halves
+  of the move. Available as MCP tool too. (11.2)
+- **Generic-parameterised `implementations`** for Java
+  (`extends Repository<T>`), C# (`: Repository<T>`), and Kotlin
+  (`class Foo : Repository<T>()`). The Kotlin inheritance query
+  was rewritten end-to-end — the v1.4.x version used wrong node
+  names (`type_identifier` vs the actual `identifier`,
+  `delegation_specifier_list` vs `delegation_specifiers`) and
+  silently matched nothing on `tree-sitter-kotlin-ng`. (11.3)
+- **`vex pattern` metavar back-references**: a repeated `$NAME` in
+  a pattern now requires the same capture across occurrences.
+  `record($X, $X)` matches `record(state, state)` and rejects
+  `record(state, other)`. Whitespace-normalised on the back-ref
+  comparison so `assertEqual((a + b), (a+b))` unifies on
+  formatting differences. New MCP tool exposes the command. (11.4)
+
+### Added — agent ergonomics
+
+- **`--explain` on `vex similar` / `vex duplicates`**: emits an
+  identifier-set Jaccard overlap plus a truncated unified diff
+  (via `similar` crate) between the seed and each match. Cosine
+  scores already surfaced; the diff + jaccard close the
+  "I never act on these blind" gap. `--min-score` alias for
+  `--threshold` for discoverability. (11.8)
+- **`--why` / MCP `why: true`** on `vex search` appends a JSON
+  trace to stderr: normalised query, per-channel hit counts
+  (FST / BM25 / semantic), fallbacks engaged (e.g. fuzzy),
+  and the active filter snapshot. Useful when results look wrong
+  and you want to know what was actually searched. (11.10)
+- **MCP schema canonical vocabulary**: `query` / `symbol` /
+  `symbols` / `path` / `pattern` / `filter` / `include` / `exclude`
+  across all tools. Renames with back-compat — old `name` /
+  `file` / `names` aliases still work and emit a
+  `_meta.deprecated_args: [...]` notice in the JSON-RPC response.
+  New `docs/MCP-SCHEMA.md` documents the vocabulary and back-compat
+  policy. (11.10)
+
+### Fixed / Hardened
+
+- **Pinned SHA-256 integrity check on the MiniLM ONNX model**.
+  `fastembed` / `hf_hub` previously downloaded the ~86 MB ONNX
+  with no signature in the supply chain; a poisoned CDN entry or
+  compromised HF host would have landed arbitrary ONNX into a
+  process that executes it. The expected digest
+  (`bbd7b466…46f0c5` at fastembed snapshot
+  `5f1b8cd7…3af89a079`) is now verified after fastembed init.
+  `VEX_EMBEDDER_SKIP_CHECK=1` escape hatch with both an
+  `eprintln!` and `tracing::warn!` on bypass so it's visible
+  regardless of `RUST_LOG`. Multi-snapshot caches pick
+  deterministically by lex-sorted directory name. (10.4)
+- **MCP `vex {sub} failed` error now includes a truncated stdout
+  snippet**. The vex CLI emits its structured JSON-error body on
+  stdout, not stderr — the previous wrapper was silently dropping
+  the actual reason in the JSON-RPC response. Capped at 512 bytes
+  with `floor_char_boundary` UTF-8-safe slicing. (10.6 Pass 2)
+- **`vex outline` grammar-load failure** now includes the language
+  variant alongside the file extension
+  (`failed to load grammar for csharp (.cs): …`). (10.6 Pass 2)
+- **README troubleshooting section** documents `RUST_LOG=vex=warn`
+  for surfacing parse/store warnings, points at
+  `vex search Foo --why 2>trace.json` and `docs/MCP-SCHEMA.md`.
+  (10.6 Pass 2)
+- **`vex diff` distinguishes "file did not exist at base" from
+  real git failures** (corrupt object store, permission denied).
+  The previous handler `.ok()`-swallowed every non-zero exit code,
+  so a broken repo silently reported every symbol as `Added`. Now
+  the missing-object path returns `Ok(None)` and everything else
+  bubbles up with stderr context. (11.2 fixup)
+- **Java's `final` keyword on method parameters** no longer
+  false-positives into `--sealed-only`. The metadata filter now
+  requires a type-introducing keyword (`class`, `interface`,
+  `enum`, `record`) to co-occur with `final` before treating the
+  signature as sealed. (11.6 fixup)
+- **MCP `async_only` + `no_async`** sent together previously
+  surfaced clap's generic `conflicts_with` error template in the
+  JSON-RPC response. Explicit `bail!` guard in `push_metadata`
+  produces an intent-aware error instead. (11.6 fixup)
+
+### Internal / Docs
+
+- New `docs/MCP-SCHEMA.md` — canonical vocabulary, alias table,
+  `_meta.deprecated_args` contract, and the `--why` trace shape.
+- New modules: `src/search/explain.rs` (jaccard + truncated
+  unified diff), `src/search/metadata.rs` (signature-line filter),
+  `src/search/trace.rs` (post-hoc search trace builder),
+  `src/callgraph/bfs.rs` (closure-abstracted multi-hop layer),
+  `src/cli/scope.rs` (glob compilation with caps),
+  `src/diff/mod.rs` (symbol-level diff against a git revision),
+  `src/embed/integrity.rs` (SHA-256 verification + cache walker).
+- 5 rust-reviewer passes + 1 security-reviewer pass + 1 aqa-agent
+  pass across the train; ~30 reviewer-flagged items applied as
+  in-line fixes or new regression tests. Two fixup commits
+  (`ed92f7a`, `a7295d2`) bundle the cross-cutting polish.
+- New runtime dependencies: `globset = "0.4"` (was transitive via
+  `ignore`), `similar = "2"` (was transitive via `insta` dev-dep),
+  `sha2 = "0.10"` (was transitive). All small, leak-clean,
+  audited crates.
+- ~120 new tests across the train (unit + integration). Full
+  workspace ~360 tests; clippy clean under `-D warnings`;
+  fmt clean; rust-version 1.80 MSRV preserved.
+
 ## [1.6.4] - 2026-05-19
 
 Feature + UX polish release. Headline change is the new indexing-time
