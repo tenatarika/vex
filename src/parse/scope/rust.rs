@@ -64,7 +64,7 @@ fn dispatch(w: &mut Walker, node: Node, scope: ScopeId) {
         "impl_item" => walk_impl(w, node, scope),
         "use_declaration" => walk_use(w, node, scope),
         "block" => {
-            let s = w.tree.push_scope(ScopeKind::Block, scope);
+            let s = w.push_scope(ScopeKind::Block, scope);
             w.walk_children(node, s);
         }
         "identifier" => w.emit_ref(node, scope, RefKind::Value),
@@ -77,7 +77,7 @@ fn walk_fn(w: &mut Walker, node: Node, parent: ScopeId) {
     if let Some(name_node) = node.child_by_field_name("name") {
         w.add_binding(parent, name_node, DefKind::Function);
     }
-    let fn_scope = w.tree.push_scope(ScopeKind::Function, parent);
+    let fn_scope = w.push_scope(ScopeKind::Function, parent);
 
     if let Some(params) = node.child_by_field_name("parameters") {
         let mut cursor = params.walk();
@@ -135,14 +135,14 @@ fn walk_mod(w: &mut Walker, node: Node, parent: ScopeId) {
     if let Some(name_node) = node.child_by_field_name("name") {
         w.add_binding(parent, name_node, DefKind::Module);
     }
-    let mod_scope = w.tree.push_scope(ScopeKind::Module, parent);
+    let mod_scope = w.push_scope(ScopeKind::Module, parent);
     if let Some(body) = node.child_by_field_name("body") {
         w.walk_children(body, mod_scope);
     }
 }
 
 fn walk_impl(w: &mut Walker, node: Node, parent: ScopeId) {
-    let impl_scope = w.tree.push_scope(ScopeKind::Impl, parent);
+    let impl_scope = w.push_scope(ScopeKind::Impl, parent);
     if let Some(ty) = node.child_by_field_name("type") {
         w.walk(ty, parent);
     }

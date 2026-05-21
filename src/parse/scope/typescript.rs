@@ -64,7 +64,7 @@ fn dispatch(w: &mut Walker, node: Node, scope: ScopeId) {
         "type_alias_declaration" | "enum_declaration" => bind_named_decl(w, node, scope),
         "import_statement" => walk_import_statement(w, node, scope),
         "statement_block" => {
-            let s = w.tree.push_scope(ScopeKind::Block, scope);
+            let s = w.push_scope(ScopeKind::Block, scope);
             w.walk_children(node, s);
         }
         "identifier" => w.emit_ref(node, scope, RefKind::Value),
@@ -77,7 +77,7 @@ fn walk_named_fn(w: &mut Walker, node: Node, parent: ScopeId) {
     if let Some(name_node) = node.child_by_field_name("name") {
         w.add_binding(parent, name_node, DefKind::Function);
     }
-    let fn_scope = w.tree.push_scope(ScopeKind::Function, parent);
+    let fn_scope = w.push_scope(ScopeKind::Function, parent);
     walk_fn_params(w, node, fn_scope);
     if let Some(ret) = node.child_by_field_name("return_type") {
         w.walk(ret, fn_scope);
@@ -88,7 +88,7 @@ fn walk_named_fn(w: &mut Walker, node: Node, parent: ScopeId) {
 }
 
 fn walk_anonymous_fn(w: &mut Walker, node: Node, parent: ScopeId) {
-    let fn_scope = w.tree.push_scope(ScopeKind::Function, parent);
+    let fn_scope = w.push_scope(ScopeKind::Function, parent);
     walk_fn_params(w, node, fn_scope);
     if let Some(ret) = node.child_by_field_name("return_type") {
         w.walk(ret, fn_scope);
@@ -137,7 +137,7 @@ fn walk_class_like(w: &mut Walker, node: Node, parent: ScopeId) {
     if let Some(name_node) = node.child_by_field_name("name") {
         w.add_binding(parent, name_node, DefKind::Type);
     }
-    let class_scope = w.tree.push_scope(ScopeKind::Class, parent);
+    let class_scope = w.push_scope(ScopeKind::Class, parent);
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {

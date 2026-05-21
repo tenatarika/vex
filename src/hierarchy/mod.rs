@@ -61,6 +61,12 @@ fn inheritance_query(lang: Language) -> Option<&'static str> {
 
             ; 11.1.6: generic-parameterised trait — `impl Iterator<T> for Foo`.
             ; tree-sitter-rust wraps the trait field in `generic_type`.
+            ;
+            ; NOTE: scoped generic traits (`impl path::Trait<T> for Foo`)
+            ; are not matched — the `type:` field becomes
+            ; `scoped_identifier`, not `type_identifier`. Same gap on
+            ; the `@child` side when the impl type is itself generic
+            ; (`impl Trait<T> for Container<T>`).
             (impl_item
               trait: (generic_type type: (type_identifier) @base)
               type: (type_identifier) @child) @def
@@ -76,6 +82,10 @@ fn inheritance_query(lang: Language) -> Option<&'static str> {
             ; 11.1.6: typing.Generic[T]-style parameterised base —
             ; `class IntBox(Container[int])`. The base is wrapped in a
             ; `subscript` node whose `value:` field is the identifier.
+            ;
+            ; NOTE: PEP 604 union bases (`Container[int] | None`) are
+            ; not matched — they parse as a `binary_operator` at the
+            ; argument_list level rather than a direct subscript.
             (class_definition
               name: (identifier) @child
               superclasses: (argument_list
@@ -743,6 +753,48 @@ class OrderRepo : public Repository<Order> {};
         assert!(
             names.contains(&"OrderRepo"),
             "C++ template inheritance: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn rust_inherent_generic_impl_does_not_match() {
+        // `impl Foo<T> { ... }` has no `trait:` field — it's an
+        // inherent impl, not an `impl Trait for Type`. The new
+        // `trait: (generic_type ...)` pattern must NOT fire here,
+        // otherwise `vex implementations Foo` would over-report every
+        // inherent impl as a subclass.
+        let src = "struct Foo;\nimpl Foo<u32> {\n    fn build() -> Self { Foo }\n}\n";
+        let matches = find(src, Language::Rust, "Foo");
+        assert!(
+            matches.is_empty(),
+            "inherent generic impl must not match: {matches:?}",
+        );
+    }
+
+    #[test]
+    fn python_mixed_plain_and_subscript_inheritance() {
+        // The 11.1.6 `subscript` pattern is additive — it must not
+        // shadow or short-circuit the plain `identifier` pattern. A
+        // file with both forms must return matches for both.
+        let src = r#"
+class Container:
+    pass
+
+class Plain(Container):
+    pass
+
+class Generic(Container[int]):
+    pass
+"#;
+        let matches = find(src, Language::Python, "Container");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"Plain"),
+            "plain inheritance lost after subscript pattern added: {matches:?}",
+        );
+        assert!(
+            names.contains(&"Generic"),
+            "subscript inheritance missing: {matches:?}",
         );
     }
 

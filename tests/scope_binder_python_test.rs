@@ -151,6 +151,23 @@ fn from_import_star_leaves_names_unresolved() {
 }
 
 #[test]
+fn assignment_rhs_resolved_before_lhs_binding() {
+    // `walk_assignment` walks `right` before binding `left` so a
+    // self-referential `x = x + 1` sees the OUTER `x` rather than the
+    // about-to-bind one. With no prior `x` in scope the RHS ref must
+    // stay `Unresolved`. A regression that flipped the order would
+    // produce `BindTarget::Local` and silently change the semantics.
+    let src = "def run():\n    self_ref_var = self_ref_var + 1\n";
+    let (_syms, refs) = bind(src);
+    let r = find_ref(&refs, "self_ref_var", 2);
+    assert!(
+        matches!(r.target, BindTarget::Unresolved),
+        "RHS ref must see pre-binding scope, got {:?}",
+        r.target
+    );
+}
+
+#[test]
 fn refs_skip_comment_and_docstring_noise() {
     // 11.1.1 already filters # comments and string literals (docstrings
     // are bare strings inside the body). The binder must keep that

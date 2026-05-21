@@ -77,7 +77,7 @@ fn walk_fn(w: &mut Walker, node: Node, parent: ScopeId) {
     if let Some(name_node) = node.child_by_field_name("name") {
         w.add_binding(parent, name_node, DefKind::Function);
     }
-    let fn_scope = w.tree.push_scope(ScopeKind::Function, parent);
+    let fn_scope = w.push_scope(ScopeKind::Function, parent);
     if let Some(params) = node.child_by_field_name("parameters") {
         walk_param_list(w, params, fn_scope);
     }
@@ -90,7 +90,7 @@ fn walk_fn(w: &mut Walker, node: Node, parent: ScopeId) {
 }
 
 fn walk_lambda(w: &mut Walker, node: Node, parent: ScopeId) {
-    let fn_scope = w.tree.push_scope(ScopeKind::Function, parent);
+    let fn_scope = w.push_scope(ScopeKind::Function, parent);
     if let Some(params) = node.child_by_field_name("parameters") {
         walk_param_list(w, params, fn_scope);
     }
@@ -150,7 +150,7 @@ fn walk_class(w: &mut Walker, node: Node, parent: ScopeId) {
     if let Some(supers) = node.child_by_field_name("superclasses") {
         w.walk(supers, parent);
     }
-    let class_scope = w.tree.push_scope(ScopeKind::Class, parent);
+    let class_scope = w.push_scope(ScopeKind::Class, parent);
     if let Some(body) = node.child_by_field_name("body") {
         w.walk_children(body, class_scope);
     }

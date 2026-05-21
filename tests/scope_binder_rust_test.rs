@@ -151,6 +151,20 @@ fn pub_use_behaves_like_use() {
 }
 
 #[test]
+fn let_else_alternative_block_walked_for_refs() {
+    // `let Ok(x) = foo() else { return Default_Type; };` — the `else`
+    // block sits behind the `alternative` field. The Default_Type ref
+    // inside the early-return must survive; a regression that dropped
+    // the field walk would silently lose every let-else fallback ref.
+    let src = "fn run() -> Option<Default_Inner> {\n    let some_value = call_fn() else {\n        return Default_Inner::from(Default_Type);\n    };\n    Some(some_value)\n}\n";
+    let (_syms, refs) = bind(src);
+    assert!(
+        refs.iter().any(|r| r.name == "Default_Type"),
+        "Default_Type ref from let-else else block missing: {refs:?}"
+    );
+}
+
+#[test]
 fn sibling_fns_do_not_share_locals() {
     let src = "fn first_fn() { let only_in_first = 1; let _x = only_in_first; }\nfn second_fn() { only_in_first }\n";
     let (_syms, refs) = bind(src);

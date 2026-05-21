@@ -22,6 +22,11 @@ use crate::parse::language::Language;
 
 /// Per-language tree dispatch — matches on node kind, recurses via
 /// `Walker::walk_children`, and emits bindings + refs.
+///
+/// Stateless — per-binder mutable state must be stored on the
+/// [`Walker`] directly, not captured. Function pointers can't close
+/// over environments, which is the deliberate trade for avoiding
+/// trait-object dispatch or per-binder generics.
 pub(super) type DispatchFn = fn(&mut Walker<'_>, Node, ScopeId);
 
 pub(super) struct Walker<'a> {
@@ -73,7 +78,20 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// Thin forwarder onto the underlying `ScopeTree`. Keeps binders
+    /// from reaching into `Walker::tree` directly.
+    pub(super) fn push_scope(&mut self, kind: super::ScopeKind, parent: ScopeId) -> ScopeId {
+        self.tree.push_scope(kind, parent)
+    }
+
+    pub(super) fn root_scope(&self) -> ScopeId {
+        self.tree.root()
+    }
+
     pub(super) fn add_binding(&mut self, scope: ScopeId, name_node: Node, kind: DefKind) {
+        // `unwrap_or("")` guards against the rare case where a
+        // tree-sitter node spans a BOM-shifted or truncated byte range;
+        // we'd rather silently drop the binding than panic the indexer.
         let name = name_node.utf8_text(self.content.as_bytes()).unwrap_or("");
         if name.is_empty() {
             return;
@@ -113,6 +131,8 @@ impl<'a> Walker<'a> {
     }
 
     pub(super) fn emit_ref(&mut self, node: Node, scope: ScopeId, kind: RefKind) {
+        // See add_binding — same defensive fallback for the rare
+        // BOM/truncation edge.
         let text = node.utf8_text(self.content.as_bytes()).unwrap_or("");
         if !is_meaningful_identifier(text) {
             return;
@@ -142,6 +162,9 @@ impl<'a> Walker<'a> {
                     }
                 }
                 if sid == self.tree.root() {
+                    // ModuleSymbol promotion is gated on the file root:
+                    // a local def in a nested scope that shadows a
+                    // module-level name wins lexically and stays Local.
                     if let Some(&idx) = self.file_symbols_by_name.get(name) {
                         return BindTarget::ModuleSymbol(idx);
                     }

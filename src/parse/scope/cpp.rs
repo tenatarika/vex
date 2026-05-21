@@ -56,7 +56,7 @@ fn dispatch(w: &mut Walker, node: Node, scope: ScopeId) {
         "init_declarator" => walk_init_declarator(w, node, scope),
         "parameter_declaration" => walk_parameter(w, node, scope),
         "compound_statement" => {
-            let s = w.tree.push_scope(ScopeKind::Block, scope);
+            let s = w.push_scope(ScopeKind::Block, scope);
             w.walk_children(node, s);
         }
         "identifier" | "field_identifier" => w.emit_ref(node, scope, RefKind::Value),
@@ -71,7 +71,7 @@ fn walk_fn_def(w: &mut Walker, node: Node, parent: ScopeId) {
     if let Some(n) = name_node {
         w.add_binding(parent, n, DefKind::Function);
     }
-    let fn_scope = w.tree.push_scope(ScopeKind::Function, parent);
+    let fn_scope = w.push_scope(ScopeKind::Function, parent);
     if let Some(t) = node.child_by_field_name("type") {
         w.walk(t, fn_scope);
     }
@@ -89,7 +89,7 @@ fn walk_namespace(w: &mut Walker, node: Node, parent: ScopeId) {
     if let Some(name_node) = node.child_by_field_name("name") {
         w.add_binding(parent, name_node, DefKind::Module);
     }
-    let ns_scope = w.tree.push_scope(ScopeKind::Module, parent);
+    let ns_scope = w.push_scope(ScopeKind::Module, parent);
     if let Some(body) = node.child_by_field_name("body") {
         w.walk_children(body, ns_scope);
     }
@@ -100,7 +100,7 @@ fn walk_class_like(w: &mut Walker, node: Node, parent: ScopeId) {
     if let Some(n) = name_node {
         w.add_binding(parent, n, DefKind::Type);
     }
-    let class_scope = w.tree.push_scope(ScopeKind::Class, parent);
+    let class_scope = w.push_scope(ScopeKind::Class, parent);
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if Some(child.id()) == name_node.map(|n| n.id()) {

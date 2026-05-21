@@ -66,7 +66,7 @@ fn dispatch(w: &mut Walker, node: Node, scope: ScopeId) {
         | "record_declaration" => walk_class_like(w, node, scope),
         "delegate_declaration" => bind_named_decl(w, node, scope),
         "block" => {
-            let s = w.tree.push_scope(ScopeKind::Block, scope);
+            let s = w.push_scope(ScopeKind::Block, scope);
             w.walk_children(node, s);
         }
         "identifier" => w.emit_ref(node, scope, RefKind::Value),
@@ -78,7 +78,7 @@ fn walk_named_fn(w: &mut Walker, node: Node, parent: ScopeId) {
     if let Some(name_node) = node.child_by_field_name("name") {
         w.add_binding(parent, name_node, DefKind::Function);
     }
-    let fn_scope = w.tree.push_scope(ScopeKind::Function, parent);
+    let fn_scope = w.push_scope(ScopeKind::Function, parent);
     if let Some(params) = node.child_by_field_name("parameters") {
         let mut cursor = params.walk();
         for child in params.children(&mut cursor) {
@@ -125,7 +125,7 @@ fn walk_class_like(w: &mut Walker, node: Node, parent: ScopeId) {
     if let Some(n) = name_node {
         w.add_binding(parent, n, DefKind::Type);
     }
-    let class_scope = w.tree.push_scope(ScopeKind::Class, parent);
+    let class_scope = w.push_scope(ScopeKind::Class, parent);
     // Walk every child under the class scope EXCEPT the `name` field
     // (already bound — re-emitting it would produce a phantom
     // self-ref), the heritage list (whose refs live in the parent
