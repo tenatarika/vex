@@ -108,11 +108,24 @@ vex implementations "Iterator"
 vex callers "process_event"
 vex callees "process_event"
 
-# Semantic similarity by existing symbol (requires --semantic index)
-vex similar "PaymentService" --limit 5 --threshold 0.7
+# Multi-hop call graph (v1.7)
+vex paths "main" "process_event"          # all caller chains from main → process_event
+vex reachable "process_event"             # everything that transitively reaches it
 
-# Near-duplicate pairs (refactor / dedup helper)
-vex duplicates --threshold 0.95 --min-body-lines 5
+# Symbol-level diff against a branch (v1.7)
+vex diff --base main                      # what symbols did this branch change?
+
+# Semantic similarity by existing symbol — explain what's actually similar (v1.7)
+vex similar "PaymentService" --limit 5 --min-score 0.7 --explain
+
+# Near-duplicate pairs with reasoning (v1.7)
+vex duplicates --min-score 0.95 --min-body-lines 5 --explain
+
+# Search with per-call scope + metadata filters (v1.7)
+vex search "Repository" --include 'src/**' --exclude '**/*.gen.*' --visibility public --async-only
+
+# Why did the search return these results? (v1.7)
+vex search "Foo" --why 2>trace.json
 
 # Fast existence check
 vex check "Foo" "Bar" "Baz"
@@ -135,16 +148,19 @@ vex completions zsh > ~/.zfunc/_vex
 | Command | Description |
 |---------|-------------|
 | `vex index [--path .] [--semantic] [--embedder ID]` | Build full index. `--semantic` generates embeddings + HNSW + BM25. `--embedder` selects embedding model (default `minilm-l6-v2`). |
-| `vex search <query> [--semantic] [--no-bm25] [--limit N] [--kind fn] [--context-path p]` | Hybrid search: structural + BM25 + semantic (when `--semantic`). 3-way RRF fusion. |
-| `vex show <symbol> [--limit N] [--context N] [--kind fn]` | Extract symbol body from source (saves tokens vs full file read). |
-| `vex similar <name> [--limit N] [--threshold T]` | Find symbols semantically close to an existing one (HNSW nearest neighbors). |
-| `vex duplicates [--threshold T] [--min-body-lines N]` | List near-duplicate symbol pairs by embedding similarity. |
+| `vex search <query> [--semantic] [--no-bm25] [--limit N] [--kind def,fn,…] [--visibility V] [--async-only] [--why]` | Hybrid search: structural + BM25 + semantic (when `--semantic`). 3-way RRF fusion. Multi-value `--kind` (canonical names + meta-selectors `def`/`comment`/`test`/`ref`). Metadata post-filters narrow by signature keywords. `--why` appends a JSON trace to stderr. |
+| `vex show <symbol> [--limit N] [--context N] [--kind fn] [--visibility V] [--async-only]` | Extract symbol body from source (saves tokens vs full file read). Same metadata + kind filters as `search`. |
+| `vex similar <name> [--limit N] [--min-score T] [--explain]` | Find symbols semantically close to an existing one (HNSW nearest neighbors). `--explain` adds identifier-Jaccard + truncated unified diff per match. `--min-score` is an alias for `--threshold`. |
+| `vex duplicates [--min-score T] [--min-body-lines N] [--explain]` | List near-duplicate symbol pairs by embedding similarity. `--explain` shows what's actually different between the bodies. |
 | `vex usages <name> [--limit N]` | Find all references/usages of a symbol (FST lookup). |
-| `vex pattern '<pat>' --lang <lang>` | AST pattern matching with metavariables ($NAME, $$$). |
+| `vex pattern '<pat>' --lang <lang>` | AST pattern matching with metavariables (`$NAME`, `$$$`). Repeated `$NAME` enforces back-references: `record($X, $X)` matches `record(state, state)` and rejects `record(state, other)`. |
 | `vex outline <file> [--kind fn]` | Show file structure, optionally filter by symbol kind. |
-| `vex implementations <name>` | Find types that extend/implement a base class, trait, or interface. |
-| `vex callers <name>` | Find all functions that call a given function (fast path via persistent call graph). |
-| `vex callees <name>` | Find all functions called by a given function (fast path via persistent call graph). |
+| `vex implementations <name>` | Find types that extend/implement a base class, trait, or interface (incl. generic-parameterised: `class Foo : Repository<T>`). |
+| `vex callers <name>` | Direct callers of a function (fast path via persistent call graph; falls back to live tree-sitter scan when the index is missing). |
+| `vex callees <name>` | Direct callees of a function (same fast path). |
+| **`vex paths <from> <to> [--max-hops N]`** | **NEW.** Enumerate all caller chains from `from` to `to` over the persistent call graph. Bounded DFS with cycle prevention; default `--max-hops 6`. |
+| **`vex reachable <target> [--max-hops N] [--limit N]`** | **NEW.** Transitive set of symbols whose callees reach `target`, with the BFS depth labelled per row. Blast-radius analysis. |
+| **`vex diff --base <rev> [--limit N]`** | **NEW.** Symbol-level diff between an arbitrary git revision and the working tree: added / removed / moved-within-file / body-changed entries. `git diff --no-renames` semantics so a `git mv` surfaces both halves. |
 | `vex check <name> [name...]` | Fast existence check — which symbols exist in the index? |
 | `vex grep <pattern> [--filter path/]` | Regex content search (no index needed). |
 | `vex update [--path .] [--semantic] [--embedder ID]` | Incremental update — re-parse only changed files, reuse unchanged symbols from existing index. |
@@ -152,6 +168,24 @@ vex completions zsh > ~/.zfunc/_vex
 | `vex status [--path .]` | Show index stats: symbol count, size, embeddings, call graph, BM25. |
 | `vex completions <shell>` | Generate shell completions (bash, zsh, fish). |
 | `vex init` | Create a default `.vex.toml` config file in the project root. |
+
+### Per-query filters (every search-shaped command)
+
+All search-shaped commands (`search`, `usages`, `pattern`, `show`, `grep`, `implementations`, `callers`, `callees`, `paths`, `reachable`, `similar`, `duplicates`, `diff`) accept:
+
+- **`--include <glob>` / `--exclude <glob>`** (repeatable, gitignore syntax) — per-call path scoping that doesn't require re-indexing. `--exclude` wins over `--include`. Example: `vex search Foo --include 'src/**' --exclude '**/*.gen.*'`.
+- **`--filter <substring>`** — older path-substring filter, still supported. Composes AND with the globs.
+
+`vex search` / `vex show` additionally accept:
+
+- **`--visibility <public|private|protected|internal>`** — keep only symbols whose signature carries the explicit keyword. Defaults aren't inferred (bare Rust `fn foo()` does NOT match `--visibility private`).
+- **`--async-only`** / **`--no-async`** — keep or exclude async / Kotlin-`suspend` symbols.
+- **`--static-only`**, **`--sealed-only`** — restrict to static class members or sealed (or Java-`final`) types.
+
+### Reasoning flags
+
+- **`vex search --why`** prints a JSON trace to stderr (the result list stays on stdout): `normalized_query`, per-channel hit counts (FST / BM25 / semantic), fallbacks engaged (`fuzzy`), and the active filter snapshot.
+- **`vex similar --explain`** / **`vex duplicates --explain`** add a `jaccard` overlap score plus a truncated unified diff between the two bodies, so you can decide whether two semantically-clustered symbols are actually duplicates before acting.
 
 ## Configuration
 
@@ -459,21 +493,27 @@ cargo build --release -p vex-mcp
 }
 ```
 
-**MCP Tools (17):**
-- `search` — 3-way hybrid (structural + BM25 + semantic)
+**MCP Tools (20):**
+- `search` — 3-way hybrid (structural + BM25 + semantic); accepts `--why` trace, metadata filters
 - `find_symbol` — exact name lookup
 - `find_similar` — semantic search by free-form description
-- `similar` — nearest neighbors of an existing symbol
-- `duplicates` — near-duplicate symbol pairs
+- `similar` — nearest neighbors of an existing symbol (`explain` adds Jaccard + diff)
+- `duplicates` — near-duplicate symbol pairs (`explain` shows what differs)
 - `show` — extract symbol body from source
 - `outline` — file structure
 - `usages` — find all references to a symbol
 - `grep` — regex content search
-- `implementations` — find types extending a base class/trait
-- `callers` / `callees` — callgraph navigation (fast path via persistent index)
+- `pattern` — AST pattern matching with metavar back-references
+- `implementations` — find types extending a base class/trait/interface (incl. generics)
+- `callers` / `callees` — direct callgraph navigation (fast path via persistent index)
+- `paths` — enumerate caller chains between two functions
+- `reachable` — transitive callers of a target
+- `diff` — symbol-level diff between a git revision and the working tree
 - `check` — fast symbol existence check
 - `index` / `update` — build/rebuild index
 - `status` — index statistics
+
+The schemas follow a canonical vocabulary (`query` / `symbol` / `symbols` / `path` / `pattern` / `filter` / `include` / `exclude`); pre-v1.7 aliases (`name`, `file`, `names`, etc.) still work and emit `_meta.deprecated_args: [...]` in the JSON-RPC response. See [`docs/MCP-SCHEMA.md`](docs/MCP-SCHEMA.md).
 
 ### Shell Integration
 
