@@ -30,6 +30,7 @@ pub mod csharp;
 pub mod python;
 pub mod rust;
 pub mod typescript;
+pub(super) mod walker;
 
 /// Arena index into [`ScopeTree::scopes`]. `0` is always the file root.
 pub type ScopeId = u32;
