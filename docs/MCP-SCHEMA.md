@@ -1,7 +1,9 @@
 # MCP schema vocabulary (vex 1.7+)
 
 The vex MCP server exposes ~16 tools to LLMs and IDE-style clients via
-the Model Context Protocol. Before v1.7 the argument naming had drifted
+the Model Context Protocol. v1.8 added `strict` to `usages` (binder-
+resolved refs, see [README → Type-aware refs](../README.md#type-aware-refs)).
+Before v1.7 the argument naming had drifted
 — `name`, `symbol`, `query`, `file`, `pattern`, `filter` were all in
 play for what should have been a small canonical vocabulary. v1.7
 standardises the field names while accepting the pre-v1.7 aliases for
@@ -22,8 +24,16 @@ the JSON-RPC `_meta.deprecated_args` field on every call.
 | `exclude` | string[] | Path-glob blacklist, wins over `include` | every search-shaped tool |
 
 Other fields (`limit`, `threshold`, `semantic`, `auto_update`, `explain`,
-`min_body_lines`, `project_root`) are role-specific and were already
-consistent across tools.
+`min_body_lines`, `project_root`, `strict`) are role-specific and were
+already consistent across tools.
+
+### `strict` (v1.8+)
+
+The `usages` tool accepts `"strict": true` to opt into the v5 scope-
+binder-resolved reference edges. Default `false` keeps the legacy
+behaviour. When set on an index built before v1.8 (no
+`reference_edges` section), the call fails with a "re-run `vex index`"
+error rather than silently returning incomplete results.
 
 ## Pre-v1.7 aliases (still accepted)
 

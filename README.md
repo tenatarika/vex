@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 [![Commands](https://img.shields.io/badge/commands-19-blue.svg)]()
 [![Languages](https://img.shields.io/badge/languages-19-blueviolet.svg)]()
-[![Tests](https://img.shields.io/badge/tests-640-green.svg)]()
+[![Tests](https://img.shields.io/badge/tests-1032-green.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
@@ -277,6 +277,33 @@ When the index has all three channels (built with `--semantic`), `vex search` fu
 ### Usages (FST)
 References stored in an FST (Finite State Transducer) — zero-copy lookup from mmap with prefix search support.
 
+### Type-aware refs (`--strict`)
+
+`vex usages --strict <name>` reads the v5 `reference_edges` section
+written by an LSP-style scope binder. For the languages with a
+binder (Rust, TypeScript, Python, C#, C++) every ref is resolved at
+index time against an in-file scope chain plus an import/use graph,
+then serialised against the global symbol the user actually meant —
+not just any line that mentions the spelling.
+
+What this changes for the user:
+
+- Identifiers inside comments, doc-strings, string literals, and
+  regex bodies are dropped (this filter is on for everyone, not just
+  `--strict`).
+- A name shadowed by a `let` / `const` / fn param resolves to the
+  inner scope, not the outer.
+- A `use ext::Foo;` / `import { Foo } from './ext'` / `from ext import
+  Foo` makes a ref to `Foo` resolve cross-file to whatever defines it
+  in the index.
+- A name imported but never defined in the index stays `Unresolved`
+  and produces no edge — better than a coincidental match.
+
+Without `--strict` `vex usages` still works for every supported
+language via the legacy refs FST; `--strict` simply trades recall
+breadth for precision on the five binder languages. v3 / v4 indexes
+predating the binder bail with a "re-run `vex index`" message.
+
 ## Benchmarks
 
 Compared against [ast-index](https://github.com/defendend/Claude-ast-index-search) v3.31.0 (SQLite + FTS5) and [ripgrep](https://github.com/BurntSushi/ripgrep) 14.x.
@@ -390,20 +417,24 @@ For an agent making 10-20 code lookups per task, vex saves **5,000-20,000 tokens
 
 ## Supported Languages
 
-| Language | Extensions | Symbols | Imports |
-|----------|------------|---------|---------|
-| Rust | `.rs` | functions, structs, enums, traits, impls, types, constants | `use` declarations |
-| Python | `.py` | classes, functions (incl. async, decorated) | `import`, `from..import` |
-| Go | `.go` | functions, methods, structs, interfaces | `import` |
-| Java | `.java` | classes, interfaces, enums, methods, constructors | `import` |
-| C# | `.cs` | classes, interfaces, structs, enums, methods, properties | — |
-| Ruby | `.rb` | classes, modules, methods | — |
-| Swift | `.swift` | classes, structs, enums, actors, protocols, functions | `import` |
-| Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` |
-| TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx` | classes, interfaces, enums, functions, arrows, type aliases | `import` |
-| SQL | `.sql` | tables, views, functions, triggers, indexes, schemas, types, sequences | `ALTER TABLE` refs |
-| C/C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | classes, structs, functions, methods, templates, enums | `#include` |
-| Markdown | `.md`, `.markdown` | headings (section structure) | — |
+`Binder` shows whether `vex usages --strict` runs the LSP-style scope
+resolver for the language — see [Type-aware refs](#type-aware-refs).
+The remaining 14 languages fall back to the line-based scanner.
+
+| Language | Extensions | Symbols | Imports | Binder |
+|----------|------------|---------|---------|--------|
+| Rust | `.rs` | functions, structs, enums, traits, impls, types, constants | `use` declarations | ✓ + cross-file |
+| Python | `.py` | classes, functions (incl. async, decorated) | `import`, `from..import` | ✓ + cross-file |
+| TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx` | classes, interfaces, enums, functions, arrows, type aliases | `import` | ✓ + cross-file |
+| C# | `.cs` | classes, interfaces, structs, enums, methods, properties | — | ✓ in-file only |
+| C/C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | classes, structs, functions, methods, templates, enums | `#include` | ✓ in-file only |
+| Go | `.go` | functions, methods, structs, interfaces | `import` | — |
+| Java | `.java` | classes, interfaces, enums, methods, constructors | `import` | — |
+| Ruby | `.rb` | classes, modules, methods | — | — |
+| Swift | `.swift` | classes, structs, enums, actors, protocols, functions | `import` | — |
+| Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` | — |
+| SQL | `.sql` | tables, views, functions, triggers, indexes, schemas, types, sequences | `ALTER TABLE` refs | — |
+| Markdown | `.md`, `.markdown` | headings (section structure) | — | — |
 
 See [docs/SUPPORTED_LANGUAGES.md](docs/SUPPORTED_LANGUAGES.md) for grammar
 versions, ABI level, and the runbook for adding a language or upgrading a
@@ -581,7 +612,7 @@ All commands support `--filter "path/"` to narrow results to a directory.
 ### Unit & Integration Tests
 
 ```bash
-cargo test                    # 640 tests — unit, integration, property-based, adversarial
+cargo test                    # 1032 tests — unit, integration, property-based, adversarial
 cargo clippy -- -D warnings   # zero warnings policy
 ```
 

@@ -6,6 +6,68 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-05-21
+
+The "type-aware usages" release. Replaces `vex usages`'s token-level
+scanner with an LSP-style scope binder for five languages, and persists
+the resolved references in a new v5 index section. Default behaviour is
+unchanged; the new precision is opt-in via `vex usages --strict`.
+
+### Format change — v5
+
+- **`VERSION = 5`** with a new `V5SectionHeader` (48 bytes) immediately
+  after `CallGraphHeader`. The header carries offsets and lengths for
+  three new sub-sections: `reference_edges` (fixed-size 16-byte `RefEdge`
+  records), an FST keyed on stringified `to_sym_idx`, and posting lists
+  of edge indices. (11.1.3a–b)
+- **`MIN_SUPPORTED_VERSION` stays at 3** — v3/v4 indexes still open;
+  `vex usages --strict` bails on those with a "re-run `vex index`"
+  message. New indexes auto-rebuild on first use after upgrade.
+- **Adversarial coverage**: 4 new tests in `tests/adversarial_format_-
+  test.rs` cover the V5SectionHeader truncation arm and each of the
+  three sub-section past-EOF arms; `tests/integration_test.rs` pins
+  cross-file `Imported` resolution for Rust, TypeScript, and Python.
+
+### Added — scope binders
+
+- **AST-aware ref extraction** (11.1.1): identifiers inside line / block
+  comments, doc-strings, and string literals are filtered out before
+  they enter the refs FST for Rust, TypeScript, Python, C#, and C++.
+  Drops the loudest false-positive class from `vex usages` without
+  touching the format.
+- **Per-language scope binders** (11.1.2 through 11.1.6) for Rust,
+  TypeScript, Python, C#, and C++. Each binder builds a `ScopeTree`
+  arena and emits `BoundRef` records tagged with `BindTarget::Local`,
+  `BindTarget::ModuleSymbol`, `BindTarget::Imported`, or
+  `BindTarget::Unresolved`. Local + mod-level resolution shipped per
+  language; cross-file `use` / `import` resolution shipped for Rust /
+  TypeScript / Python. C# `using` and C++ `#include` remain deferred.
+- **Shared `Walker` scaffolding** (`src/parse/scope/walker.rs`):
+  single 169-line module that owns `Walker`, `add_binding`,
+  `add_import_binding`, `emit_ref`, `resolve`, and `walk_children`.
+  Each language file is the dispatch + grammar-specific helpers.
+
+### Added — CLI / MCP
+
+- **`vex usages --strict`** reads the persisted `reference_edges`
+  section. Without `--strict` the legacy refs FST keeps backing the
+  command (covers the 14 languages without a binder yet). MCP `usages`
+  tool schema gained `"strict": { "type": "boolean", "default": false }`.
+
+### Internal
+
+- Pass-2 cross-file resolution at index-write time. `BindTarget::-
+  Imported(use_path)` records are rewritten to `ModuleSymbol(global_-
+  idx)` via a `HashMap<&str, Vec<u32>>` built from `sym_entries` —
+  first-hit on ambiguity, matching the documented behaviour.
+- `Walker::file_symbols_by_name: HashMap<&str, u32>` replaces the
+  O(R × S) linear scan in `resolve()`. Closes a rust-reviewer MEDIUM
+  before binders ran across an entire repo at index time.
+- `debug_assert!` hardening on `RefEdge::col_and_kind` 24-bit column
+  ceiling and `base_idx` overflow in the writer's Pass-2 — silent
+  corruption in the unreachable 4 B-symbol case is now a loud failure
+  in tests.
+
 ## [1.7.0] - 2026-05-21
 
 The "search ergonomics + trust gaps" release. Built around an honest
