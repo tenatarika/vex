@@ -7,6 +7,8 @@ use tree_sitter::{Parser, Query, QueryCursor};
 
 use crate::parse::language::Language;
 
+pub mod bfs;
+
 /// A caller→callee relationship found in source code.
 #[derive(Debug, Clone)]
 pub struct CallMatch {

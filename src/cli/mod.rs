@@ -42,6 +42,8 @@ fn extract_path_hint(cmd: &Commands) -> Option<std::path::PathBuf> {
         | Commands::Implementations { path, .. }
         | Commands::Callers { path, .. }
         | Commands::Callees { path, .. }
+        | Commands::Paths { path, .. }
+        | Commands::Reachable { path, .. }
         | Commands::Check { path, .. }
         | Commands::Pattern { path, .. }
         | Commands::Similar { path, .. }
@@ -1268,6 +1270,129 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 excludes,
                 &path_scope,
             )
+        }
+        Commands::Paths {
+            from,
+            to,
+            max_hops,
+            max_paths,
+            path,
+            auto_update,
+            no_stale_check,
+            scope,
+        } => {
+            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+            let root = resolve_root(path)?.canonicalize()?;
+            let index_path = ensure_index_ready(
+                &root,
+                auto_update,
+                no_stale_check,
+                false,
+                local_cache_active,
+                &cfg,
+            )?;
+            let reader = IndexReader::open(&index_path).context("open index")?;
+            if !reader.has_call_graph() {
+                bail!(
+                    "no call graph in index — `vex paths` requires a v4 index built without \
+                     `--no-call-graph`. Rebuild with `vex index` (or `vex index --auto-update`)."
+                );
+            }
+            // Closure binds the reader so the BFS layer stays generic
+            // over an in-memory mock for unit tests. The per-step fetch
+            // cap (1024) is well above any realistic codebase fan-in;
+            // when we see a node that hits it, we surface a warning so
+            // a real saturation event is visible instead of silently
+            // dropping callers.
+            const CALLERS_FETCH_CAP: usize = 1024;
+            let callers_of = |name: &str| {
+                let callers =
+                    crate::store::call_graph::find_callers_fast(&reader, name, CALLERS_FETCH_CAP);
+                if callers.len() == CALLERS_FETCH_CAP {
+                    eprintln!(
+                        "warning: `{name}` has at least {CALLERS_FETCH_CAP} direct callers; \
+                         multi-hop traversal may have dropped some — results below this node \
+                         are incomplete"
+                    );
+                }
+                callers
+            };
+            let paths =
+                crate::callgraph::bfs::find_paths(callers_of, &from, &to, max_hops, max_paths);
+            let paths: Vec<_> = paths
+                .into_iter()
+                .filter(|p| {
+                    // Apply scope filter on the *intermediate* steps — if
+                    // every intermediate path is excluded, drop the chain.
+                    // `from`/`to` themselves have line=0 / no resolved
+                    // path, so they're exempt from the include rule.
+                    p.steps
+                        .iter()
+                        .filter(|s| !s.path.is_empty())
+                        .all(|s| path_scope.accept(&s.path))
+                })
+                .collect();
+            output::print_paths(&paths, &from, &to, &format);
+            Ok(())
+        }
+        Commands::Reachable {
+            target,
+            max_hops,
+            limit,
+            path,
+            auto_update,
+            no_stale_check,
+            scope,
+        } => {
+            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+            let root = resolve_root(path)?.canonicalize()?;
+            let index_path = ensure_index_ready(
+                &root,
+                auto_update,
+                no_stale_check,
+                false,
+                local_cache_active,
+                &cfg,
+            )?;
+            let reader = IndexReader::open(&index_path).context("open index")?;
+            if !reader.has_call_graph() {
+                bail!(
+                    "no call graph in index — `vex reachable` requires a v4 index built without \
+                     `--no-call-graph`. Rebuild with `vex index`."
+                );
+            }
+            // When a scope filter is active a 4x over-fetch is not
+            // enough — a narrow include could legitimately reject most
+            // of the BFS frontier and leave the final list short. The
+            // traversal is already bounded by `max_hops`, so we let it
+            // run unbounded internally and apply `take(limit)` after
+            // the filter.
+            let fetch_limit = if path_scope.is_empty() {
+                limit
+            } else {
+                usize::MAX
+            };
+            const CALLERS_FETCH_CAP: usize = 1024;
+            let callers_of = |name: &str| {
+                let callers =
+                    crate::store::call_graph::find_callers_fast(&reader, name, CALLERS_FETCH_CAP);
+                if callers.len() == CALLERS_FETCH_CAP {
+                    eprintln!(
+                        "warning: `{name}` has at least {CALLERS_FETCH_CAP} direct callers; \
+                         reachable set may be incomplete past this node"
+                    );
+                }
+                callers
+            };
+            let matches =
+                crate::callgraph::bfs::find_reachable(callers_of, &target, max_hops, fetch_limit);
+            let matches: Vec<_> = matches
+                .into_iter()
+                .filter(|m| path_scope.accept(&m.path))
+                .take(limit)
+                .collect();
+            output::print_reachable(&matches, &target, &format);
+            Ok(())
         }
         Commands::Check {
             names,

@@ -1,3 +1,4 @@
+use crate::callgraph::bfs::{CallPath, ReachableMatch};
 use crate::search::explain::Explanation;
 use crate::search::similar::SimilarMatch;
 use crate::search::SearchResult;
@@ -207,6 +208,122 @@ fn print_explanation_text(ex: &Explanation) {
     );
     for line in ex.diff.lines() {
         println!("           {line}");
+    }
+}
+
+pub fn print_paths(paths: &[CallPath], from: &str, to: &str, format: &super::args::OutputFormat) {
+    match format {
+        super::args::OutputFormat::Json => {
+            let json: Vec<serde_json::Value> = paths
+                .iter()
+                .map(|p| {
+                    let steps: Vec<serde_json::Value> = p
+                        .steps
+                        .iter()
+                        .map(|s| {
+                            serde_json::json!({
+                                "name": s.name,
+                                "path": s.path,
+                                "line": s.line,
+                            })
+                        })
+                        .collect();
+                    serde_json::json!({ "steps": steps })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json).unwrap_or_default()
+            );
+        }
+        super::args::OutputFormat::Text => {
+            if paths.is_empty() {
+                println!("No path from \"{from}\" to \"{to}\"");
+                return;
+            }
+            println!("{} path(s) from \"{from}\" to \"{to}\":", paths.len());
+            for (i, p) in paths.iter().enumerate() {
+                println!(" #{}:", i + 1);
+                for (j, step) in p.steps.iter().enumerate() {
+                    let arrow = if j + 1 < p.steps.len() { "→" } else { " " };
+                    let site = if step.line > 0 && !step.path.is_empty() {
+                        format!("  ({}:{})", step.path, step.line)
+                    } else {
+                        String::new()
+                    };
+                    println!("    {arrow} {name}{site}", name = step.name);
+                }
+            }
+        }
+        super::args::OutputFormat::Compact => {
+            for p in paths {
+                let parts: Vec<String> = p
+                    .steps
+                    .iter()
+                    .map(|s| {
+                        if s.line > 0 && !s.path.is_empty() {
+                            format!("{}:{}", s.name, s.line)
+                        } else {
+                            s.name.clone()
+                        }
+                    })
+                    .collect();
+                println!("{}", parts.join(" -> "));
+            }
+        }
+    }
+}
+
+pub fn print_reachable(
+    matches: &[ReachableMatch],
+    target: &str,
+    format: &super::args::OutputFormat,
+) {
+    match format {
+        super::args::OutputFormat::Json => {
+            let json: Vec<serde_json::Value> = matches
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "name": m.name,
+                        "path": m.path,
+                        "line": m.line,
+                        "depth": m.depth,
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json).unwrap_or_default()
+            );
+        }
+        super::args::OutputFormat::Text => {
+            if matches.is_empty() {
+                println!("Nothing reaches \"{target}\"");
+                return;
+            }
+            println!("{} symbol(s) reach \"{target}\":", matches.len());
+            for m in matches {
+                println!(
+                    "  [{depth}]  {name:<40} {path}:{line}",
+                    depth = m.depth,
+                    name = m.name,
+                    path = m.path,
+                    line = m.line
+                );
+            }
+        }
+        super::args::OutputFormat::Compact => {
+            for m in matches {
+                println!(
+                    "{depth} {name} {path}:{line}",
+                    depth = m.depth,
+                    name = m.name,
+                    path = m.path,
+                    line = m.line
+                );
+            }
+        }
     }
 }
 

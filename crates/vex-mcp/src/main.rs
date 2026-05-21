@@ -421,6 +421,42 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             push_scope(&mut extra, args);
             ("callees".to_string(), extra)
         }
+        "paths" => {
+            let from = args["from"].as_str().context("missing from")?;
+            let to = args["to"].as_str().context("missing to")?;
+            let max_hops = args["max_hops"].as_u64().unwrap_or(6);
+            let max_paths = args["max_paths"].as_u64().unwrap_or(50);
+            let mut extra = vec![
+                from.to_string(),
+                to.to_string(),
+                "--path".into(),
+                project_root.to_string(),
+                "--max-hops".into(),
+                max_hops.to_string(),
+                "--max-paths".into(),
+                max_paths.to_string(),
+            ];
+            push_auto_update(&mut extra, args);
+            push_scope(&mut extra, args);
+            ("paths".to_string(), extra)
+        }
+        "reachable" => {
+            let target = args["target"].as_str().context("missing target")?;
+            let max_hops = args["max_hops"].as_u64().unwrap_or(6);
+            let limit = args["limit"].as_u64().unwrap_or(200);
+            let mut extra = vec![
+                target.to_string(),
+                "--path".into(),
+                project_root.to_string(),
+                "--max-hops".into(),
+                max_hops.to_string(),
+                "--limit".into(),
+                limit.to_string(),
+            ];
+            push_auto_update(&mut extra, args);
+            push_scope(&mut extra, args);
+            ("reachable".to_string(), extra)
+        }
         "check" => {
             let arr = read_canonical_array(args, "symbols", "names", &mut deprecated)
                 .context("missing symbols array")?;
@@ -688,6 +724,41 @@ fn tool_descriptors() -> Value {
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["symbol"]
+            }
+        },
+        {
+            "name": "paths",
+            "description": "Enumerate caller chains from `from` to `to` in the persistent call graph. Multi-hop generalisation of callers — useful when investigating how a function gets reached from a known entry point. Requires a v4 index with call graph (built without `--no-call-graph`).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": "Starting function (the caller / entry point)" },
+                    "to": { "type": "string", "description": "Destination function (the callee being investigated)" },
+                    "max_hops": { "type": "integer", "description": "Maximum hops between from and to", "default": 6 },
+                    "max_paths": { "type": "integer", "description": "Maximum paths to enumerate (caps output, aborts traversal early)", "default": 50 },
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist intermediate steps by path glob (gitignore syntax)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist intermediate steps by path glob (wins over include)" }
+                },
+                "required": ["from", "to"]
+            }
+        },
+        {
+            "name": "reachable",
+            "description": "List symbols whose callees transitively reach `target` — i.e. everything that could end up calling target, directly or indirectly. Useful for blast-radius analysis. Requires a v4 index with call graph.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": { "type": "string", "description": "Symbol whose callers (direct + transitive) you want" },
+                    "max_hops": { "type": "integer", "description": "Maximum hops to walk back from target", "default": 6 },
+                    "limit": { "type": "integer", "description": "Max results", "default": 200 },
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
+                },
+                "required": ["target"]
             }
         },
         {

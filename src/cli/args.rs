@@ -406,6 +406,74 @@ pub enum Commands {
         scope: ScopeArgs,
     },
 
+    /// Enumerate all caller chains from `from` to `to` in the persistent
+    /// call graph. Multi-hop generalisation of `vex callers`.
+    Paths {
+        /// Starting function (the caller).
+        from: String,
+
+        /// Destination function (the callee).
+        to: String,
+
+        /// Maximum hops between `from` and `to`. Default 6 catches most
+        /// real chains without exploding traversal time.
+        #[arg(long, default_value = "6")]
+        max_hops: usize,
+
+        /// Maximum number of paths to enumerate. Caps output and aborts
+        /// traversal early in dense graphs.
+        #[arg(long, default_value = "50")]
+        max_paths: usize,
+
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Auto-update index if stale (or bootstrap if missing) before
+        /// searching. The call graph fast path requires a v4 index;
+        /// `paths` does not have a live-scan fallback.
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
+    },
+
+    /// Find all symbols whose callees transitively reach `target` in the
+    /// persistent call graph. Multi-hop generalisation of `vex callers`.
+    Reachable {
+        /// Symbol whose callers (direct + transitive) we want.
+        target: String,
+
+        /// Maximum hops to walk back from `target`.
+        #[arg(long, default_value = "6")]
+        max_hops: usize,
+
+        /// Max results to return
+        #[arg(short, long, default_value = "200")]
+        limit: usize,
+
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Auto-update index if stale (or bootstrap if missing) before
+        /// searching.
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
+    },
+
     /// Fast existence check: which of the given symbols exist in the index?
     Check {
         /// Symbol names to check (case-insensitive exact match)
