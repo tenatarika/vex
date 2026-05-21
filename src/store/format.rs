@@ -152,6 +152,34 @@ impl V5SectionHeader {
     pub const SIZE: usize = std::mem::size_of::<Self>();
 }
 
+/// One resolved reference edge. `to_sym_idx` is the global index into
+/// the Symbols section; `from_file_id` indexes the file table; `line`
+/// is 1-based. `col_and_kind` packs an 8-bit `RefKind` discriminant in
+/// the upper byte and a 24-bit column in the lower three bytes —
+/// sufficient for any source file under 16 MB of columns per line.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RefEdge {
+    pub to_sym_idx: u32,
+    pub from_file_id: u32,
+    pub line: u32,
+    pub col_and_kind: u32,
+}
+
+impl RefEdge {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+
+    #[allow(dead_code)] // used by `vex usages --strict` in 11.1.3d
+    pub fn ref_kind_bits(&self) -> u8 {
+        ((self.col_and_kind >> 24) & 0xFF) as u8
+    }
+
+    #[allow(dead_code)] // used by `vex usages --strict` in 11.1.3d
+    pub fn column(&self) -> u32 {
+        self.col_and_kind & 0x00FF_FFFF
+    }
+}
+
 /// One caller → callee edge. The caller is identified by `caller_sym_idx`
 /// (an index into the Symbols section, resolving to the enclosing function
 /// definition). The callee is stored as a string offset into the Strings

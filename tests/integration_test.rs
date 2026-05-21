@@ -980,6 +980,80 @@ fn string_pool_deduplicates_paths() {
     assert_eq!(reader.read_string(rec0.file_offset), "src/main.rs");
 }
 
+// --- 11.1.3b: reference_edges section ---
+
+#[test]
+fn ref_edges_roundtrip_module_symbols() {
+    use vex::parse::scope::{BindTarget, BoundRef, RefKind};
+
+    let tmp = TempDir::new().unwrap();
+    let index_path = tmp.path().join("index.vex");
+
+    // One file with two top-level symbols (`Payment_Type` at line 1,
+    // `caller_fn` at line 2) and two bound refs targeting them by
+    // file-local idx.
+    let files = vec![ParsedFile {
+        path: "main.rs".to_string(),
+        symbols: vec![
+            make_symbol("Payment_Type", SymbolKind::Struct, 1),
+            make_symbol("caller_fn", SymbolKind::Function, 2),
+        ],
+        refs: Vec::new(),
+        call_edges: Vec::new(),
+        bound_refs: vec![
+            BoundRef {
+                name: "Payment_Type".into(),
+                line: 3,
+                col: 12,
+                target: BindTarget::ModuleSymbol(0),
+                kind: RefKind::Type,
+            },
+            BoundRef {
+                name: "Payment_Type".into(),
+                line: 7,
+                col: 5,
+                target: BindTarget::ModuleSymbol(0),
+                kind: RefKind::Type,
+            },
+            BoundRef {
+                name: "caller_fn".into(),
+                line: 10,
+                col: 4,
+                target: BindTarget::ModuleSymbol(1),
+                kind: RefKind::Value,
+            },
+            // Locals & Unresolved & Imported get dropped in 11.1.3b — only
+            // ModuleSymbol survives until cross-file resolution lands in
+            // 11.1.3c.
+            BoundRef {
+                name: "ghost".into(),
+                line: 20,
+                col: 1,
+                target: BindTarget::Unresolved,
+                kind: RefKind::Value,
+            },
+        ],
+    }];
+
+    vex::store::writer::write_index(&files, &index_path).unwrap();
+    let reader = vex::store::reader::IndexReader::open(&index_path).unwrap();
+    assert!(reader.has_ref_edges(), "v5 index must carry ref edges now");
+
+    let edges_for_0 = reader.find_ref_edges_by_symbol(0);
+    assert_eq!(edges_for_0.len(), 2, "two refs target Payment_Type (idx 0)");
+    assert_eq!(edges_for_0[0].line, 3);
+    assert_eq!(edges_for_0[1].line, 7);
+
+    let edges_for_1 = reader.find_ref_edges_by_symbol(1);
+    assert_eq!(edges_for_1.len(), 1, "one ref targets caller_fn (idx 1)");
+    assert_eq!(edges_for_1[0].line, 10);
+    assert_eq!(edges_for_1[0].column(), 4);
+    assert_eq!(edges_for_1[0].ref_kind_bits(), RefKind::Value as u8);
+
+    let unknown = reader.find_ref_edges_by_symbol(99);
+    assert!(unknown.is_empty(), "missing key returns empty vec");
+}
+
 // --- Empty index ---
 
 #[test]

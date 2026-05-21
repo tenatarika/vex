@@ -8,7 +8,21 @@ use super::call_graph::{build_callees_fst, build_callers_fst, CallEdgeBuilder};
 use super::format::{
     CallEdge, CallGraphHeader, Header, SymbolRecord, V5SectionHeader, MAGIC, VECTOR_DIM, VERSION,
 };
+use super::ref_edges::{build_ref_edges_section, RefEdgeBuilder};
 use super::{refs_fst, symbol_fst};
+use crate::parse::scope::{BindTarget, BoundRef, RefKind};
+
+/// Stable on-disk encoding for `RefKind`. Kept here (not in
+/// `parse::scope`) because the bit layout is a storage concern that
+/// must not move when the in-memory enum gains new variants.
+fn ref_kind_bits(r: &BoundRef) -> u8 {
+    match r.kind {
+        RefKind::Type => 0,
+        RefKind::Value => 1,
+        RefKind::Call => 2,
+        RefKind::Macro => 3,
+    }
+}
 use crate::index::symbols::ParsedFile;
 
 /// Vector dimension to record in the Header when no vectors are written.
@@ -196,6 +210,37 @@ fn write_index_to(
     let (callers_fst_bytes, callers_post_bytes) = build_callers_fst(call_edges)?;
     let (callees_fst_bytes, callees_post_bytes) = build_callees_fst(call_edges)?;
 
+    // v5: collect resolved bound refs from every parsed file and map
+    // each file-local `BindTarget::ModuleSymbol(local_idx)` into the
+    // global symbol idx via the running per-file base. Imported targets
+    // are deferred to 11.1.3c; Local / Unresolved targets are not
+    // persisted (the legacy refs FST already covers in-file lookups).
+    let mut ref_edge_builders: Vec<RefEdgeBuilder> = Vec::new();
+    {
+        let mut base_idx: u32 = 0;
+        for file in parsed {
+            let file_id = file_ids
+                .get(&file.path)
+                .copied()
+                .expect("file_id must exist");
+            for r in &file.bound_refs {
+                if let BindTarget::ModuleSymbol(local) = r.target {
+                    let global = base_idx.saturating_add(local);
+                    ref_edge_builders.push(RefEdgeBuilder {
+                        to_sym_idx: global,
+                        from_file_id: file_id,
+                        line: r.line as u32,
+                        col: r.col as u32,
+                        kind: ref_kind_bits(r),
+                    });
+                }
+            }
+            base_idx = base_idx.saturating_add(file.symbols.len() as u32);
+        }
+    }
+    let (ref_edge_bytes, ref_edge_fst_bytes, ref_edge_post_bytes) =
+        build_ref_edges_section(&ref_edge_builders)?;
+
     // Calculate section offsets — v5 places the CallGraphHeader then
     // the V5SectionHeader immediately after the base Header, so Symbols
     // starts at Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE.
@@ -236,6 +281,15 @@ fn write_index_to(
     let bm25_fst_offset = callees_postings_offset + callees_post_bytes.len() as u64;
     let bm25_postings_offset = bm25_fst_offset + bm25_fst.len() as u64;
     let bm25_stats_offset = bm25_postings_offset + bm25_posts.len() as u64;
+
+    // v5 reference_edges sections come last. Align the edges array to
+    // 4 bytes so RefEdge (align_of == 4) can be cast from the mmap.
+    let ref_edges_unaligned = bm25_stats_offset + bm25_stats.len() as u64;
+    let ref_edges_offset = (ref_edges_unaligned + 3) & !3u64;
+    let ref_edges_pad = (ref_edges_offset - ref_edges_unaligned) as usize;
+    let ref_edges_len = ref_edge_bytes.len() as u64;
+    let ref_edges_fst_offset = ref_edges_offset + ref_edges_len;
+    let ref_edges_postings_offset = ref_edges_fst_offset + ref_edge_fst_bytes.len() as u64;
 
     let call_graph_header = CallGraphHeader {
         call_edges_offset,
@@ -298,16 +352,16 @@ fn write_index_to(
     };
     w.write_all(cg_header_bytes)?;
 
-    // v5: V5SectionHeader immediately after the CallGraphHeader. In
-    // 11.1.3a the section payload itself is still empty — every offset
-    // and length is zero. 11.1.3b will populate this block.
+    // v5: V5SectionHeader immediately after the CallGraphHeader.
+    // Populated with real offsets when bound_refs produced edges; all
+    // zero when there were no ModuleSymbol-resolved refs.
     let v5_header = V5SectionHeader {
-        ref_edges_offset: 0,
-        ref_edges_len: 0,
-        ref_edges_fst_offset: 0,
-        ref_edges_fst_len: 0,
-        ref_edges_postings_offset: 0,
-        ref_edges_postings_len: 0,
+        ref_edges_offset,
+        ref_edges_len,
+        ref_edges_fst_offset,
+        ref_edges_fst_len: ref_edge_fst_bytes.len() as u64,
+        ref_edges_postings_offset,
+        ref_edges_postings_len: ref_edge_post_bytes.len() as u64,
     };
     // SAFETY: V5SectionHeader is #[repr(C)] with fixed layout.
     let v5_bytes: &[u8] = unsafe {
@@ -376,6 +430,14 @@ fn write_index_to(
     w.write_all(bm25_fst)?;
     w.write_all(bm25_posts)?;
     w.write_all(bm25_stats)?;
+
+    // v5 reference_edges sections, 4-byte aligned (see ref_edges_offset).
+    if ref_edges_pad > 0 {
+        w.write_all(&[0u8; 3][..ref_edges_pad])?;
+    }
+    w.write_all(&ref_edge_bytes)?;
+    w.write_all(&ref_edge_fst_bytes)?;
+    w.write_all(&ref_edge_post_bytes)?;
 
     w.flush()?;
 
