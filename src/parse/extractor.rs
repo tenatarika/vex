@@ -567,7 +567,7 @@ fn scan_identifiers(line: &str) -> Vec<&str> {
 /// Filters tuned to balance recall (catch real symbol uses across all
 /// supported case conventions) against FST bloat (skip prose nouns and
 /// trivial locals).
-fn is_meaningful_identifier(word: &str) -> bool {
+pub(crate) fn is_meaningful_identifier(word: &str) -> bool {
     if word.len() < 3 || word.bytes().all(|b| b == b'_') {
         return false;
     }
