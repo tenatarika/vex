@@ -406,6 +406,27 @@ pub enum Commands {
         scope: ScopeArgs,
     },
 
+    /// Symbol-level diff between an arbitrary git revision and the
+    /// working tree. Lists added / removed / moved / body-changed
+    /// symbols across the files touched on the branch.
+    Diff {
+        /// Git revision to compare against (e.g. `main`, `HEAD~3`,
+        /// `origin/main`). The working tree is the "new" side.
+        #[arg(long)]
+        base: String,
+
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Max changes to return
+        #[arg(short, long, default_value = "500")]
+        limit: usize,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
+    },
+
     /// Enumerate all caller chains from `from` to `to` in the persistent
     /// call graph. Multi-hop generalisation of `vex callers`.
     Paths {

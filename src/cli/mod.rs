@@ -42,6 +42,7 @@ fn extract_path_hint(cmd: &Commands) -> Option<std::path::PathBuf> {
         | Commands::Implementations { path, .. }
         | Commands::Callers { path, .. }
         | Commands::Callees { path, .. }
+        | Commands::Diff { path, .. }
         | Commands::Paths { path, .. }
         | Commands::Reachable { path, .. }
         | Commands::Check { path, .. }
@@ -1270,6 +1271,22 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 excludes,
                 &path_scope,
             )
+        }
+        Commands::Diff {
+            base,
+            path,
+            limit,
+            scope,
+        } => {
+            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+            let root = resolve_root(path)?.canonicalize()?;
+            let changes = crate::diff::diff_against_base(&root, &base, excludes, limit)?;
+            let changes: Vec<_> = changes
+                .into_iter()
+                .filter(|c| path_scope.accept(&c.path))
+                .collect();
+            output::print_diff(&changes, &base, &format);
+            Ok(())
         }
         Commands::Paths {
             from,

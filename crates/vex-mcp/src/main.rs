@@ -421,6 +421,20 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             push_scope(&mut extra, args);
             ("callees".to_string(), extra)
         }
+        "diff" => {
+            let base = args["base"].as_str().context("missing base")?;
+            let limit = args["limit"].as_u64().unwrap_or(500);
+            let mut extra = vec![
+                "--base".into(),
+                base.to_string(),
+                "--path".into(),
+                project_root.to_string(),
+                "--limit".into(),
+                limit.to_string(),
+            ];
+            push_scope(&mut extra, args);
+            ("diff".to_string(), extra)
+        }
         "paths" => {
             let from = args["from"].as_str().context("missing from")?;
             let to = args["to"].as_str().context("missing to")?;
@@ -724,6 +738,21 @@ fn tool_descriptors() -> Value {
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["symbol"]
+            }
+        },
+        {
+            "name": "diff",
+            "description": "Symbol-level diff between an arbitrary git revision and the working tree. Lists added / removed / moved / body-changed symbols across the files touched on the branch. Useful for `what did this PR change?` queries without scrolling through unified diffs.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "base": { "type": "string", "description": "Git revision to compare against (e.g. main, HEAD~3, origin/main). Working tree is the new side." },
+                    "limit": { "type": "integer", "description": "Max changes to return", "default": 500 },
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist changes by path glob (gitignore syntax)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist changes by path glob (wins over include)" }
+                },
+                "required": ["base"]
             }
         },
         {

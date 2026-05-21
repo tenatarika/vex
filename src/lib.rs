@@ -1,5 +1,6 @@
 pub mod callgraph;
 pub mod cli;
+pub mod diff;
 pub mod embed;
 pub mod grep;
 pub mod hierarchy;

@@ -1,4 +1,5 @@
 use crate::callgraph::bfs::{CallPath, ReachableMatch};
+use crate::diff::SymbolChange;
 use crate::search::explain::Explanation;
 use crate::search::similar::SimilarMatch;
 use crate::search::SearchResult;
@@ -208,6 +209,62 @@ fn print_explanation_text(ex: &Explanation) {
     );
     for line in ex.diff.lines() {
         println!("           {line}");
+    }
+}
+
+pub fn print_diff(changes: &[SymbolChange], base: &str, format: &super::args::OutputFormat) {
+    match format {
+        super::args::OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(changes).unwrap_or_default()
+            );
+        }
+        super::args::OutputFormat::Text => {
+            if changes.is_empty() {
+                println!("No symbol-level changes between `{base}` and working tree");
+                return;
+            }
+            // Group by path for readability.
+            let mut by_path: std::collections::BTreeMap<&str, Vec<&SymbolChange>> =
+                std::collections::BTreeMap::new();
+            for c in changes {
+                by_path.entry(c.path.as_str()).or_default().push(c);
+            }
+            println!("{} symbol change(s) vs `{base}`:", changes.len());
+            for (path, group) in by_path {
+                println!("  {path}");
+                for c in group {
+                    let extra = match c.old_line {
+                        Some(old) => format!("  (was line {old})"),
+                        None => String::new(),
+                    };
+                    println!(
+                        "    {kind:<12}  {sym_kind:<10} {name}:{line}{extra}",
+                        kind = c.kind.as_str(),
+                        sym_kind = c.symbol_kind,
+                        name = c.name,
+                        line = c.line,
+                    );
+                }
+            }
+        }
+        super::args::OutputFormat::Compact => {
+            for c in changes {
+                let suffix = match c.old_line {
+                    Some(old) => format!(" was:{old}"),
+                    None => String::new(),
+                };
+                println!(
+                    "{kind} {sym_kind} {name} {path}:{line}{suffix}",
+                    kind = c.kind.as_str(),
+                    sym_kind = c.symbol_kind,
+                    name = c.name,
+                    path = c.path,
+                    line = c.line,
+                );
+            }
+        }
     }
 }
 

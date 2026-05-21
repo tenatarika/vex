@@ -3,6 +3,7 @@ use clap::Parser;
 
 mod callgraph;
 mod cli;
+mod diff;
 mod embed;
 mod grep;
 mod hierarchy;
