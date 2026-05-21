@@ -53,6 +53,11 @@ unchanged; the new precision is opt-in via `vex usages --strict`.
   section. Without `--strict` the legacy refs FST keeps backing the
   command (covers the 14 languages without a binder yet). MCP `usages`
   tool schema gained `"strict": { "type": "boolean", "default": false }`.
+- **`vex implementations` finds generic-parameterised subclasses**
+  (11.1.6): `impl Iterator<T> for Foo` (Rust), `implements Handler<T>`
+  (TypeScript), `class Box(Container[int])` (Python), and
+  `: public Repository<T>` (C++) now match alongside the bare-name
+  forms. Java + C# already had the band-aid since the 11.7 train.
 
 ### Internal
 
