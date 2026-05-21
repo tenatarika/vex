@@ -81,6 +81,21 @@ fn inheritance_query(lang: Language) -> Option<&'static str> {
             (interface_declaration
               name: (identifier) @child
               (extends_interfaces (type_list (type_identifier) @base))) @def
+
+            ; 11.3: generic-parameterised bases — `extends Repository<T>`,
+            ; `implements Handler<T>`. Tree-sitter wraps the identifier in
+            ; a `generic_type` parent when type arguments are present.
+            (class_declaration
+              name: (identifier) @child
+              (superclass (generic_type (type_identifier) @base))) @def
+
+            (class_declaration
+              name: (identifier) @child
+              (super_interfaces (type_list (generic_type (type_identifier) @base)))) @def
+
+            (interface_declaration
+              name: (identifier) @child
+              (extends_interfaces (type_list (generic_type (type_identifier) @base)))) @def
             "#,
         ),
         Language::TypeScript => Some(
@@ -109,6 +124,13 @@ fn inheritance_query(lang: Language) -> Option<&'static str> {
               (base_list
                 (qualified_name
                   (identifier) @base))) @def
+
+            ; 11.3: generic-parameterised bases — `: Repository<T>`,
+            ; `: IRepository<T>`. The grammar wraps the identifier in
+            ; `generic_name` when type arguments are present.
+            (class_declaration
+              name: (identifier) @child
+              (base_list (generic_name (identifier) @base))) @def
             "#,
         ),
         Language::Swift => Some(
@@ -125,12 +147,27 @@ fn inheritance_query(lang: Language) -> Option<&'static str> {
             "#,
         ),
         Language::Kotlin => Some(
+            // tree-sitter-kotlin-ng node names verified via AST dump:
+            // class name is `identifier` (not `type_identifier`); the
+            // delegation list is `delegation_specifiers` (not
+            // `_list`); generic args live as a sibling
+            // `type_arguments` of `identifier` inside `user_type`,
+            // so the bare `(user_type (identifier))` pattern matches
+            // both plain and generic bases.
             r#"
             (class_declaration
-              (type_identifier) @child
-              (delegation_specifier_list
+              (identifier) @child
+              (delegation_specifiers
                 (delegation_specifier
-                  (user_type (type_identifier) @base)))) @def
+                  (user_type (identifier) @base)))) @def
+
+            ; Superclass call: `class Foo : Bar()` or `class Foo : Repository<T>()`.
+            (class_declaration
+              (identifier) @child
+              (delegation_specifiers
+                (delegation_specifier
+                  (constructor_invocation
+                    (user_type (identifier) @base))))) @def
             "#,
         ),
         // Go has implicit interfaces, Ruby has mixins — skip for now
@@ -522,6 +559,140 @@ public class Cat : Animal, IMovable {}
             assert!(names.contains(&"Dog"));
             assert!(names.contains(&"Cat"));
         }
+    }
+
+    // --- 11.3 generics band-aid ---
+    //
+    // Subclasses parameterised over a base — `class Foo : BaseClass<T>`,
+    // `class Repo extends Repository<User>`, etc. Tree-sitter wraps the
+    // base identifier in a `generic_name` / `generic_type` parent node
+    // in several grammars, so the bare `(identifier) @base` pattern
+    // misses them. These tests pin down the contract that
+    // `vex implementations BaseClass` finds those subclasses too.
+
+    #[test]
+    fn java_generic_extends() {
+        let src = r#"
+public class Repository<T> {}
+public class UserRepo extends Repository<User> {}
+public class OrderRepo extends Repository<Order> {}
+"#;
+        let matches = find(src, Language::Java, "Repository");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"UserRepo"),
+            "Java generic extends: {matches:?}"
+        );
+        assert!(
+            names.contains(&"OrderRepo"),
+            "Java generic extends: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn java_generic_implements() {
+        let src = r#"
+public interface Handler<T> {}
+public class StringHandler implements Handler<String> {}
+public class IntHandler implements Handler<Integer> {}
+"#;
+        let matches = find(src, Language::Java, "Handler");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"StringHandler"),
+            "Java generic implements: {matches:?}"
+        );
+        assert!(
+            names.contains(&"IntHandler"),
+            "Java generic implements: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn typescript_generic_extends() {
+        let src = r#"
+class Repository<T> {}
+class UserRepo extends Repository<User> {}
+class OrderRepo extends Repository<Order> {}
+"#;
+        let matches = find(src, Language::TypeScript, "Repository");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"UserRepo"),
+            "TS generic extends: {matches:?}"
+        );
+        assert!(
+            names.contains(&"OrderRepo"),
+            "TS generic extends: {matches:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "debug helper — uncomment with `cargo test -- --include-ignored kotlin_ast` to dump"]
+    fn kotlin_ast_dump_for_inheritance() {
+        use tree_sitter::{Node, Parser};
+        let src = "class UserRepo : Repository<User>()\nclass NoArgs : Other\nclass Plain : Bar";
+        let mut parser = Parser::new();
+        parser
+            .set_language(&Language::Kotlin.ts_language())
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        fn dump(n: Node<'_>, depth: usize, src: &str) {
+            let snip: String = src[n.byte_range()]
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(60)
+                .collect();
+            eprintln!(
+                "{}{} [{}..{}] {:?}",
+                " ".repeat(depth),
+                n.kind(),
+                n.start_position().row,
+                n.end_position().row,
+                snip
+            );
+            for i in 0..n.child_count() {
+                dump(n.child(i as u32).unwrap(), depth + 2, src);
+            }
+        }
+        dump(tree.root_node(), 0, src);
+    }
+
+    #[test]
+    fn kotlin_generic_extends() {
+        let src = r#"
+open class Repository<T>
+class UserRepo : Repository<User>()
+class OrderRepo : Repository<Order>()
+"#;
+        let matches = find(src, Language::Kotlin, "Repository");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        // Kotlin's tree-sitter `user_type (type_identifier)` already
+        // matches identifiers regardless of type-argument siblings, so
+        // this is a regression guard rather than a new fix.
+        assert!(
+            names.contains(&"UserRepo"),
+            "Kotlin generic extends: {matches:?}"
+        );
+        assert!(
+            names.contains(&"OrderRepo"),
+            "Kotlin generic extends: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn csharp_generic_base() {
+        let src = r#"
+public class Repository<T> {}
+public class UserRepo : Repository<User> {}
+public class OrderRepo : Repository<Order> {}
+"#;
+        let matches = find(src, Language::CSharp, "Repository");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"UserRepo"), "C# generic base: {matches:?}");
+        assert!(names.contains(&"OrderRepo"), "C# generic base: {matches:?}");
     }
 
     #[test]
