@@ -156,6 +156,33 @@ fn push_auto_update(extra: &mut Vec<String>, args: &Value) {
     }
 }
 
+/// Pull `include: string[]` and `exclude: string[]` off the JSON-RPC args
+/// and append them as repeated `--include` / `--exclude` flags. Mirrors
+/// the CLI scope filter and shares the same gitignore-style glob syntax.
+/// Non-array or missing values are silently ignored so agents that emit
+/// the field as `null`/`""` don't fail; non-string elements inside an
+/// otherwise valid array are logged at warn — silently dropping them was
+/// hiding the fact that a filter never engaged.
+fn push_scope(extra: &mut Vec<String>, args: &Value) {
+    push_scope_field(extra, args, "include", "--include");
+    push_scope_field(extra, args, "exclude", "--exclude");
+}
+
+fn push_scope_field(extra: &mut Vec<String>, args: &Value, key: &str, flag: &str) {
+    let Some(arr) = args[key].as_array() else {
+        return;
+    };
+    for v in arr {
+        match v.as_str() {
+            Some(s) => extra.extend([flag.into(), s.to_string()]),
+            None => tracing::warn!(
+                key, value = ?v,
+                "ignoring non-string element in MCP scope array"
+            ),
+        }
+    }
+}
+
 fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String, Vec<String>)> {
     match tool {
         "search" => {
@@ -167,12 +194,14 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
                 extra.push("--semantic".into());
             }
             push_auto_update(&mut extra, args);
+            push_scope(&mut extra, args);
             Ok(("search".into(), extra))
         }
         "find_symbol" => {
             let name = args["name"].as_str().context("missing name")?;
             let mut extra = vec![name.to_string(), "--limit".into(), "10".into()];
             push_auto_update(&mut extra, args);
+            push_scope(&mut extra, args);
             Ok(("search".into(), extra))
         }
         "find_similar" => {
@@ -184,6 +213,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
                 "10".into(),
             ];
             push_auto_update(&mut extra, args);
+            push_scope(&mut extra, args);
             Ok(("search".into(), extra))
         }
         "outline" => {
@@ -224,6 +254,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
             let mut extra = symbols;
             extra.extend(["--limit".into(), limit.to_string()]);
             push_auto_update(&mut extra, args);
+            push_scope(&mut extra, args);
             Ok(("show".into(), extra))
         }
         "usages" => {
@@ -231,6 +262,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
             let limit = args["limit"].as_u64().unwrap_or(50);
             let mut extra = vec![name.to_string(), "--limit".into(), limit.to_string()];
             push_auto_update(&mut extra, args);
+            push_scope(&mut extra, args);
             Ok(("usages".into(), extra))
         }
         "grep" => {
@@ -246,21 +278,21 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
             if let Some(filter) = args["filter"].as_str() {
                 extra.extend(["--filter".into(), filter.to_string()]);
             }
+            push_scope(&mut extra, args);
             Ok(("grep".into(), extra))
         }
         "implementations" => {
             let name = args["name"].as_str().context("missing name")?;
             let limit = args["limit"].as_u64().unwrap_or(50);
-            Ok((
-                "implementations".into(),
-                vec![
-                    name.to_string(),
-                    "--path".into(),
-                    project_root.to_string(),
-                    "--limit".into(),
-                    limit.to_string(),
-                ],
-            ))
+            let mut extra = vec![
+                name.to_string(),
+                "--path".into(),
+                project_root.to_string(),
+                "--limit".into(),
+                limit.to_string(),
+            ];
+            push_scope(&mut extra, args);
+            Ok(("implementations".into(), extra))
         }
         "callers" => {
             let name = args["name"].as_str().context("missing name")?;
@@ -273,6 +305,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
                 limit.to_string(),
             ];
             push_auto_update(&mut extra, args);
+            push_scope(&mut extra, args);
             Ok(("callers".into(), extra))
         }
         "callees" => {
@@ -286,6 +319,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
                 limit.to_string(),
             ];
             push_auto_update(&mut extra, args);
+            push_scope(&mut extra, args);
             Ok(("callees".into(), extra))
         }
         "check" => {
@@ -319,6 +353,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
                 extra.extend(["--filter".into(), filter.to_string()]);
             }
             push_auto_update(&mut extra, args);
+            push_scope(&mut extra, args);
             Ok(("similar".into(), extra))
         }
         "duplicates" => {
@@ -339,6 +374,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<(String
                 extra.extend(["--filter".into(), filter.to_string()]);
             }
             push_auto_update(&mut extra, args);
+            push_scope(&mut extra, args);
             Ok(("duplicates".into(), extra))
         }
         _ => anyhow::bail!("unknown tool: {tool}"),
@@ -357,7 +393,9 @@ fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 20 },
                     "semantic": { "type": "boolean", "description": "Enable semantic vector search", "default": false },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax, e.g. 'tests/**')" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["query"]
             }
@@ -370,7 +408,9 @@ fn tool_descriptors() -> Value {
                 "properties": {
                     "name": { "type": "string", "description": "Symbol name to find" },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["name"]
             }
@@ -383,7 +423,9 @@ fn tool_descriptors() -> Value {
                 "properties": {
                     "query": { "type": "string", "description": "Natural language description" },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["query"]
             }
@@ -443,7 +485,9 @@ fn tool_descriptors() -> Value {
                     "symbols": { "type": "array", "items": { "type": "string" }, "description": "Symbol names to show" },
                     "limit": { "type": "integer", "description": "Max results per symbol", "default": 1 },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["symbols"]
             }
@@ -457,7 +501,9 @@ fn tool_descriptors() -> Value {
                     "name": { "type": "string", "description": "Symbol name to find usages of" },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["name"]
             }
@@ -471,7 +517,9 @@ fn tool_descriptors() -> Value {
                     "pattern": { "type": "string", "description": "Regex pattern" },
                     "filter": { "type": "string", "description": "Filter by path substring" },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
-                    "project_root": { "type": "string", "description": "Project root path" }
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["pattern"]
             }
@@ -484,7 +532,9 @@ fn tool_descriptors() -> Value {
                 "properties": {
                     "name": { "type": "string", "description": "Base class/trait/interface name" },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
-                    "project_root": { "type": "string", "description": "Project root path" }
+                    "project_root": { "type": "string", "description": "Project root path" },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["name"]
             }
@@ -498,7 +548,9 @@ fn tool_descriptors() -> Value {
                     "name": { "type": "string", "description": "Function name" },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)", "default": true },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["name"]
             }
@@ -512,7 +564,9 @@ fn tool_descriptors() -> Value {
                     "name": { "type": "string", "description": "Function name" },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)", "default": true },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["name"]
             }
@@ -541,7 +595,9 @@ fn tool_descriptors() -> Value {
                     "threshold": { "type": "number", "description": "Minimum cosine similarity (0.0..1.0)", "default": 0.5 },
                     "filter": { "type": "string", "description": "Filter results by path substring" },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["name"]
             }
@@ -557,7 +613,9 @@ fn tool_descriptors() -> Value {
                     "min_body_lines": { "type": "integer", "description": "Skip symbols with body shorter than this many lines", "default": 5 },
                     "filter": { "type": "string", "description": "Restrict to pairs where at least one symbol's path contains this substring" },
                     "project_root": { "type": "string", "description": "Project root path" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist pairs by path glob — a pair is kept when at least one side matches" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist pairs by path glob — a pair is dropped when either side matches" }
                 }
             }
         }
@@ -655,6 +713,72 @@ mod tests {
             assert!(
                 props["auto_update"].is_object(),
                 "{name} schema is missing the auto_update field: {props}"
+            );
+        }
+    }
+
+    #[test]
+    fn search_scope_globs_become_repeated_cli_flags() {
+        let extra = args_for(
+            "search",
+            json!({
+                "query": "Foo",
+                "include": ["tests/**", "crates/**"],
+                "exclude": ["**/generated/**"],
+            }),
+        );
+        // Each glob round-trips as a separate `--include`/`--exclude` pair so
+        // clap's `Vec<String>` accumulator on the CLI side sees one value per
+        // flag (the standard repeatable-arg shape).
+        let pairs: Vec<&str> = extra.iter().map(String::as_str).collect();
+        let window = |flag: &str, val: &str| pairs.windows(2).any(|w| w[0] == flag && w[1] == val);
+        assert!(
+            window("--include", "tests/**"),
+            "missing --include tests/**: {pairs:?}"
+        );
+        assert!(
+            window("--include", "crates/**"),
+            "missing --include crates/**: {pairs:?}"
+        );
+        assert!(
+            window("--exclude", "**/generated/**"),
+            "missing --exclude **/generated/**: {pairs:?}"
+        );
+    }
+
+    #[test]
+    fn search_shaped_tools_expose_scope_in_schema() {
+        // Schema-regression guard: every search-shaped tool must surface
+        // include/exclude so MCP clients can discover the filter via
+        // `tools/list`.
+        let desc = tool_descriptors();
+        let tools = desc.as_array().expect("tool_descriptors returns array");
+
+        for name in [
+            "search",
+            "find_symbol",
+            "find_similar",
+            "show",
+            "usages",
+            "grep",
+            "implementations",
+            "callers",
+            "callees",
+            "similar",
+            "duplicates",
+        ] {
+            let entry = tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("missing tool {name}"));
+            let props = &entry["inputSchema"]["properties"];
+            assert!(
+                props["include"].is_object(),
+                "{name} schema is missing include: {props}"
+            );
+            assert!(
+                props["exclude"].is_object(),
+                "{name} schema is missing exclude: {props}"
             );
         }
     }

@@ -1,6 +1,22 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
 use std::path::PathBuf;
+
+/// Per-query path scope filters — `--include <glob>` and `--exclude <glob>`,
+/// both repeatable. Flatten into every search-shaped subcommand for a
+/// consistent UX.
+#[derive(Args, Clone, Debug, Default)]
+pub struct ScopeArgs {
+    /// Whitelist results by path glob (repeatable, case-sensitive). Example:
+    /// `--include 'tests/**' --include 'crates/**'`.
+    #[arg(long, value_name = "GLOB")]
+    pub include: Vec<String>,
+
+    /// Blacklist results by path glob (repeatable, case-sensitive).
+    /// Wins over `--include`. Example: `--exclude '**/*.gen.*'`.
+    #[arg(long, value_name = "GLOB")]
+    pub exclude: Vec<String>,
+}
 
 #[derive(Parser)]
 #[command(
@@ -108,6 +124,9 @@ pub enum Commands {
         /// Disable BM25 channel (auto-on when the index has BM25 data)
         #[arg(long)]
         no_bm25: bool,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
     },
 
     /// Find all usages/references of a symbol
@@ -130,6 +149,9 @@ pub enum Commands {
         /// Skip staleness check entirely
         #[arg(long)]
         no_stale_check: bool,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
     },
 
     /// Find code matching a structural AST pattern (like ast-grep)
@@ -148,6 +170,9 @@ pub enum Commands {
         /// Max results to return
         #[arg(long, default_value = "50")]
         limit: usize,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
     },
 
     /// Incremental update: only re-index changed files
@@ -263,6 +288,9 @@ pub enum Commands {
         /// Skip staleness check entirely
         #[arg(long)]
         no_stale_check: bool,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
     },
 
     /// Search file contents by regex pattern (no index needed)
@@ -281,6 +309,9 @@ pub enum Commands {
         /// Project root path (defaults to cwd)
         #[arg(short, long)]
         path: Option<PathBuf>,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
     },
 
     /// Show index statistics
@@ -302,6 +333,9 @@ pub enum Commands {
         /// Max results to return
         #[arg(short, long, default_value = "50")]
         limit: usize,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
     },
 
     /// Find all functions that call a given function. Uses the persistent call
@@ -326,6 +360,9 @@ pub enum Commands {
         /// Skip staleness check entirely
         #[arg(long)]
         no_stale_check: bool,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
     },
 
     /// Find all functions called by a given function. Uses the persistent call
@@ -350,6 +387,9 @@ pub enum Commands {
         /// Skip staleness check entirely
         #[arg(long)]
         no_stale_check: bool,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
     },
 
     /// Fast existence check: which of the given symbols exist in the index?
@@ -399,6 +439,9 @@ pub enum Commands {
         /// Skip staleness check entirely
         #[arg(long)]
         no_stale_check: bool,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
     },
 
     /// Find pairs of near-duplicate symbols (requires --semantic index)
@@ -430,6 +473,9 @@ pub enum Commands {
         /// Skip staleness check entirely
         #[arg(long)]
         no_stale_check: bool,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
     },
 
     /// Generate shell completions

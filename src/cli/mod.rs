@@ -1,5 +1,6 @@
 pub mod args;
 pub mod output;
+pub mod scope;
 
 use std::time::Instant;
 
@@ -330,17 +331,18 @@ fn ensure_index_ready(
     Ok(avail.path)
 }
 
-fn filter_by_path(
+fn apply_path_filters(
     results: Vec<crate::search::SearchResult>,
     filter: Option<&str>,
+    scope: &scope::PathScope,
 ) -> Vec<crate::search::SearchResult> {
-    match filter {
-        Some(fp) => results
-            .into_iter()
-            .filter(|r| r.path.contains(fp))
-            .collect(),
-        None => results,
+    if filter.is_none() && scope.is_empty() {
+        return results;
     }
+    results
+        .into_iter()
+        .filter(|r| filter.map_or(true, |fp| r.path.contains(fp)) && scope.accept(&r.path))
+        .collect()
 }
 
 pub fn dispatch(cli: Cli) -> Result<()> {
@@ -438,8 +440,10 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             auto_update,
             no_stale_check,
             no_bm25,
+            scope,
         } => {
             let semantic = resolve_semantic(semantic, no_semantic, &cfg);
+            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(None)?.canonicalize()?;
             let index_path = ensure_index_ready(
                 &root,
@@ -452,8 +456,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
 
             let reader = IndexReader::open(&index_path).context("open index")?;
 
-            // Fetch more results when filtering, then truncate after filter
-            let fetch_limit = if filter_path.is_some() {
+            // Over-fetch when a path filter is active — the post-filter
+            // `take(limit)` runs AFTER the results are produced, so a narrow
+            // include/exclude or substring would silently truncate matches.
+            // Bound by `symbol_count()`, not `usize::MAX`, because index-backed
+            // results cannot exceed the symbol table.
+            let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() {
                 reader.symbol_count()
             } else {
                 limit
@@ -517,7 +525,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 context_path: context_path.as_deref(),
             };
             let results = crate::search::rerank::rerank(&query, &rerank_ctx, results);
-            let results: Vec<_> = filter_by_path(results, filter_path.as_deref())
+            let results: Vec<_> = apply_path_filters(results, filter_path.as_deref(), &path_scope)
                 .into_iter()
                 .take(limit)
                 .collect();
@@ -551,7 +559,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             filter_path,
             auto_update,
             no_stale_check,
+            scope,
         } => {
+            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(None)?.canonicalize()?;
             let index_path = ensure_index_ready(
                 &root,
@@ -572,13 +582,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let entries: Vec<_> = entries
                 .into_iter()
                 .filter(|e| {
-                    if let Some(ref fp) = filter_path {
-                        file_paths
-                            .get(e.file_id as usize)
-                            .is_some_and(|p| p.contains(fp.as_str()))
-                    } else {
-                        true
-                    }
+                    let path = match file_paths.get(e.file_id as usize) {
+                        Some(p) => p.as_str(),
+                        None => return false,
+                    };
+                    let filter_ok = filter_path.as_deref().map_or(true, |fp| path.contains(fp));
+                    filter_ok && path_scope.accept(path)
                 })
                 .collect();
             let total = entries.len();
@@ -631,7 +640,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             lang,
             path,
             limit,
+            scope,
         } => {
+            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(path)?;
             let language = crate::parse::language::Language::from_extension(&lang)
                 .or(match lang.as_str() {
@@ -661,7 +672,19 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 .with_context(|| format!("unknown language: {lang}"))?;
 
             let start = Instant::now();
-            let matches = crate::pattern::scan(&root, &pattern, language, limit, excludes)?;
+            // Over-fetch when scope filters are active so post-filter truncation
+            // does not silently drop matches the user expects to see.
+            let fetch_limit = if path_scope.is_empty() {
+                limit
+            } else {
+                usize::MAX
+            };
+            let matches = crate::pattern::scan(&root, &pattern, language, fetch_limit, excludes)?;
+            let matches: Vec<_> = matches
+                .into_iter()
+                .filter(|m| path_scope.accept(&m.path))
+                .take(limit)
+                .collect();
             let elapsed = start.elapsed();
 
             match &format {
@@ -809,7 +832,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             context_path,
             auto_update,
             no_stale_check,
+            scope,
         } => {
+            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(None)?.canonicalize()?;
             let index_path = ensure_index_ready(
                 &root,
@@ -821,7 +846,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             )?;
 
             let reader = IndexReader::open(&index_path).context("open index")?;
-            let fetch_limit = if filter_path.is_some() {
+            let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() {
                 reader.symbol_count()
             } else {
                 limit
@@ -837,10 +862,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             for symbol in &symbols {
                 let results = structural::search_with_fuzzy(&reader, symbol, fetch_limit);
                 let results = crate::search::rerank::rerank(symbol, &rerank_ctx, results);
-                let results: Vec<_> = filter_by_path(results, filter_path.as_deref())
-                    .into_iter()
-                    .take(limit)
-                    .collect();
+                let results: Vec<_> =
+                    apply_path_filters(results, filter_path.as_deref(), &path_scope)
+                        .into_iter()
+                        .take(limit)
+                        .collect();
 
                 if results.is_empty() {
                     match &format {
@@ -996,10 +1022,29 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             limit,
             filter_path,
             path,
+            scope,
         } => {
+            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(path)?;
-            let matches =
-                crate::grep::search(&root, &pattern, filter_path.as_deref(), limit, excludes)?;
+            // Over-fetch when scope filters are active so post-filter truncation
+            // does not silently drop matches the user expects to see.
+            let fetch_limit = if path_scope.is_empty() {
+                limit
+            } else {
+                usize::MAX
+            };
+            let matches = crate::grep::search(
+                &root,
+                &pattern,
+                filter_path.as_deref(),
+                fetch_limit,
+                excludes,
+            )?;
+            let matches: Vec<_> = matches
+                .into_iter()
+                .filter(|m| path_scope.accept(&m.path))
+                .take(limit)
+                .collect();
 
             match &format {
                 OutputFormat::Json => {
@@ -1034,10 +1079,27 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Commands::Implementations { name, path, limit } => {
+        Commands::Implementations {
+            name,
+            path,
+            limit,
+            scope,
+        } => {
+            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(path)?;
             let start = Instant::now();
-            let matches = crate::hierarchy::find_implementations(&root, &name, limit, excludes)?;
+            let fetch_limit = if path_scope.is_empty() {
+                limit
+            } else {
+                usize::MAX
+            };
+            let matches =
+                crate::hierarchy::find_implementations(&root, &name, fetch_limit, excludes)?;
+            let matches: Vec<_> = matches
+                .into_iter()
+                .filter(|m| path_scope.accept(&m.path))
+                .take(limit)
+                .collect();
             let elapsed = start.elapsed();
 
             match &format {
@@ -1083,36 +1145,46 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             limit,
             auto_update,
             no_stale_check,
-        } => cmd_callgraph(
-            &name,
-            path,
-            limit,
-            true,
-            auto_update,
-            no_stale_check,
-            local_cache_active,
-            &cfg,
-            &format,
-            excludes,
-        ),
+            scope,
+        } => {
+            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+            cmd_callgraph(
+                &name,
+                path,
+                limit,
+                true,
+                auto_update,
+                no_stale_check,
+                local_cache_active,
+                &cfg,
+                &format,
+                excludes,
+                &path_scope,
+            )
+        }
         Commands::Callees {
             name,
             path,
             limit,
             auto_update,
             no_stale_check,
-        } => cmd_callgraph(
-            &name,
-            path,
-            limit,
-            false,
-            auto_update,
-            no_stale_check,
-            local_cache_active,
-            &cfg,
-            &format,
-            excludes,
-        ),
+            scope,
+        } => {
+            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+            cmd_callgraph(
+                &name,
+                path,
+                limit,
+                false,
+                auto_update,
+                no_stale_check,
+                local_cache_active,
+                &cfg,
+                &format,
+                excludes,
+                &path_scope,
+            )
+        }
         Commands::Check {
             names,
             path,
@@ -1191,7 +1263,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             filter_path,
             auto_update,
             no_stale_check,
+            scope,
         } => {
+            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(path)?.canonicalize()?;
             let index_path = ensure_index_ready(
                 &root,
@@ -1208,7 +1282,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
 
             let hnsw = config::hnsw_path(&root);
-            let fetch_limit = if filter_path.is_some() {
+            let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() {
                 reader.symbol_count()
             } else {
                 limit
@@ -1220,14 +1294,16 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 fetch_limit,
                 threshold,
             )?;
-            let matches: Vec<_> = match filter_path.as_deref() {
-                Some(fp) => matches
-                    .into_iter()
-                    .filter(|m| m.path.contains(fp))
-                    .collect(),
-                None => matches,
-            };
-            let matches: Vec<_> = matches.into_iter().take(limit).collect();
+            let matches: Vec<_> = matches
+                .into_iter()
+                .filter(|m| {
+                    let filter_ok = filter_path
+                        .as_deref()
+                        .map_or(true, |fp| m.path.contains(fp));
+                    filter_ok && path_scope.accept(&m.path)
+                })
+                .take(limit)
+                .collect();
 
             output::print_similar(&matches, &name, &format);
             Ok(())
@@ -1240,7 +1316,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             filter_path,
             auto_update,
             no_stale_check,
+            scope,
         } => {
+            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(path)?.canonicalize()?;
             let index_path = ensure_index_ready(
                 &root,
@@ -1257,12 +1335,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
 
             let hnsw = config::hnsw_path(&root);
-            // When --filter is active we must over-fetch because the final
-            // `take(limit)` runs AFTER the path filter; a narrow filter can
-            // drop most pairs. Bound by total pair population
-            // `C(symbol_count, 2)` capped at usize::MAX. Mirrors how
-            // `vex similar --filter` uses `symbol_count()` as the ceiling.
-            let fetch_limit = if filter_path.is_some() {
+            // When --filter or --include/--exclude are active we must
+            // over-fetch because the final `take(limit)` runs AFTER the
+            // path filter; a narrow filter can drop most pairs. Mirrors
+            // `vex similar --filter` (uses `symbol_count()`) but here the
+            // upper bound is the pair population, so usize::MAX is the
+            // right cap.
+            let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() {
                 usize::MAX
             } else {
                 limit
@@ -1274,14 +1353,16 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 min_body_lines,
                 fetch_limit,
             )?;
-            let pairs: Vec<_> = match filter_path.as_deref() {
-                Some(fp) => pairs
-                    .into_iter()
-                    .filter(|(a, b)| a.path.contains(fp) || b.path.contains(fp))
-                    .collect(),
-                None => pairs,
-            };
-            let pairs: Vec<_> = pairs.into_iter().take(limit).collect();
+            let pairs: Vec<_> = pairs
+                .into_iter()
+                .filter(|(a, b)| {
+                    let filter_ok = filter_path
+                        .as_deref()
+                        .map_or(true, |fp| a.path.contains(fp) || b.path.contains(fp));
+                    filter_ok && path_scope.accept_pair(&a.path, &b.path)
+                })
+                .take(limit)
+                .collect();
 
             output::print_duplicates(&pairs, &format);
             Ok(())
@@ -1392,10 +1473,19 @@ fn cmd_callgraph(
     cfg: &config::VexConfig,
     format: &OutputFormat,
     excludes: &[String],
+    path_scope: &scope::PathScope,
 ) -> Result<()> {
     let root = resolve_root(path)?;
     let label = if is_callers { "callers" } else { "callees" };
     let start = std::time::Instant::now();
+    // Over-fetch when scope filters are active. Both the persistent FST and
+    // live-scan paths accept `limit` as a hard cap, so without the inflation
+    // a narrow `--include` would silently truncate matches.
+    let fetch_limit = if path_scope.is_empty() {
+        limit
+    } else {
+        usize::MAX
+    };
 
     // Fast path: if a v4 index with a call graph exists for this project,
     // use the persistent FST (~4ms). Otherwise fall back to the live-scan
@@ -1446,19 +1536,24 @@ fn cmd_callgraph(
     let matches = match reader.as_ref() {
         Some(r) if r.has_call_graph() => {
             if is_callers {
-                crate::store::call_graph::find_callers_fast(r, name, limit)
+                crate::store::call_graph::find_callers_fast(r, name, fetch_limit)
             } else {
-                crate::store::call_graph::find_callees_fast(r, name, limit)
+                crate::store::call_graph::find_callees_fast(r, name, fetch_limit)
             }
         }
         _ => {
             if is_callers {
-                crate::callgraph::find_callers(&root, name, limit, excludes)?
+                crate::callgraph::find_callers(&root, name, fetch_limit, excludes)?
             } else {
-                crate::callgraph::find_callees(&root, name, limit, excludes)?
+                crate::callgraph::find_callees(&root, name, fetch_limit, excludes)?
             }
         }
     };
+    let matches: Vec<_> = matches
+        .into_iter()
+        .filter(|m| path_scope.accept(&m.path))
+        .take(limit)
+        .collect();
     let elapsed = start.elapsed();
 
     match &format {
