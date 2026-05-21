@@ -58,6 +58,12 @@ fn inheritance_query(lang: Language) -> Option<&'static str> {
             (impl_item
               trait: (type_identifier) @base
               type: (type_identifier) @child) @def
+
+            ; 11.1.6: generic-parameterised trait — `impl Iterator<T> for Foo`.
+            ; tree-sitter-rust wraps the trait field in `generic_type`.
+            (impl_item
+              trait: (generic_type type: (type_identifier) @base)
+              type: (type_identifier) @child) @def
             "#,
         ),
         Language::Python => Some(
@@ -66,6 +72,14 @@ fn inheritance_query(lang: Language) -> Option<&'static str> {
               name: (identifier) @child
               superclasses: (argument_list
                 (identifier) @base)) @def
+
+            ; 11.1.6: typing.Generic[T]-style parameterised base —
+            ; `class IntBox(Container[int])`. The base is wrapped in a
+            ; `subscript` node whose `value:` field is the identifier.
+            (class_definition
+              name: (identifier) @child
+              superclasses: (argument_list
+                (subscript value: (identifier) @base))) @def
             "#,
         ),
         Language::Java => Some(
@@ -111,6 +125,17 @@ fn inheritance_query(lang: Language) -> Option<&'static str> {
               (class_heritage
                 (implements_clause
                   (type_identifier) @base))) @def
+
+            ; 11.1.6: generic-parameterised implements — `implements
+            ; Handler<T>`. Tree-sitter-typescript wraps it in
+            ; `generic_type` whose `name:` field is the identifier.
+            ; (`extends Foo<T>` already works because tree-sitter keeps
+            ; `value: identifier` with `type_arguments` as a sibling.)
+            (class_declaration
+              name: (type_identifier) @child
+              (class_heritage
+                (implements_clause
+                  (generic_type name: (type_identifier) @base)))) @def
             "#,
         ),
         Language::CSharp => Some(
@@ -186,6 +211,18 @@ fn inheritance_query(lang: Language) -> Option<&'static str> {
               name: (type_identifier) @child
               (base_class_clause
                 (type_identifier) @base)) @def
+
+            ; 11.1.6: template-parameterised base — `: public Foo<T>`.
+            ; Tree-sitter-cpp wraps the identifier in `template_type`.
+            (class_specifier
+              name: (type_identifier) @child
+              (base_class_clause
+                (template_type name: (type_identifier) @base))) @def
+
+            (struct_specifier
+              name: (type_identifier) @child
+              (base_class_clause
+                (template_type name: (type_identifier) @base))) @def
             "#,
         ),
         // PHP: `class Foo extends Bar implements I1, I2`, plus
@@ -609,6 +646,103 @@ public class IntHandler implements Handler<Integer> {}
         assert!(
             names.contains(&"IntHandler"),
             "Java generic implements: {matches:?}"
+        );
+    }
+
+    // --- 11.1.6: generic-parameterized base classes ---
+
+    #[test]
+    fn rust_impl_generic_trait_for_struct() {
+        // `impl Iterator<Item = u32> for Foo` wraps the trait field in
+        // `generic_type`; without the extra pattern the bare
+        // `trait: (type_identifier)` match misses every generic impl.
+        let src = r#"
+struct Foo;
+struct Bar;
+
+impl Iterator<Item = u32> for Foo {}
+impl Iterator<Item = i64> for Bar {}
+impl Clone for Foo {}
+"#;
+        let matches = find(src, Language::Rust, "Iterator");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"Foo"), "Rust generic impl: {matches:?}");
+        assert!(names.contains(&"Bar"), "Rust generic impl: {matches:?}");
+    }
+
+    #[test]
+    fn typescript_implements_generic_interface() {
+        // `extends Foo<T>` already works (the value field stays a plain
+        // identifier with type_arguments as a sibling). `implements
+        // Foo<T>` is different: tree-sitter wraps it in `generic_type`.
+        let src = r#"
+interface Handler<T> {}
+
+class JsonHandler implements Handler<string> {}
+class CsvHandler implements Handler<Buffer> {}
+"#;
+        let matches = find(src, Language::TypeScript, "Handler");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"JsonHandler"),
+            "TS generic implements: {matches:?}"
+        );
+        assert!(
+            names.contains(&"CsvHandler"),
+            "TS generic implements: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn python_class_inheritance_with_typing_subscript() {
+        // `class Dog(Animal[T])` — `typing.Generic`-style
+        // parameterization wraps the base in a `subscript` node.
+        let src = r#"
+from typing import Generic, TypeVar
+T = TypeVar("T")
+
+class Container(Generic[T]):
+    pass
+
+class IntBox(Container[int]):
+    pass
+
+class StrBox(Container[str]):
+    pass
+"#;
+        let matches = find(src, Language::Python, "Container");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"IntBox"),
+            "Python subscript inheritance: {matches:?}"
+        );
+        assert!(
+            names.contains(&"StrBox"),
+            "Python subscript inheritance: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn cpp_class_extends_template() {
+        // `class UserRepo : public Repository<User>` — base is wrapped
+        // in `template_type` rather than appearing as a plain
+        // `type_identifier`.
+        let src = r#"
+template<typename T>
+class Repository {};
+
+class UserRepo : public Repository<User> {};
+class OrderRepo : public Repository<Order> {};
+"#;
+        let matches = find(src, Language::Cpp, "Repository");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"UserRepo"),
+            "C++ template inheritance: {matches:?}"
+        );
+        assert!(
+            names.contains(&"OrderRepo"),
+            "C++ template inheritance: {matches:?}"
         );
     }
 
