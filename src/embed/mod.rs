@@ -1,3 +1,4 @@
+pub mod integrity;
 pub mod minilm;
 pub mod model;
 pub mod tokenizer;

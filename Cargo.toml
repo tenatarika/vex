@@ -96,6 +96,9 @@ globset = "0.4"
 # Text diffing for `vex similar --explain` / `vex duplicates --explain`
 similar = "2"
 
+# SHA-256 for the MiniLM model integrity check (10.4)
+sha2 = "0.10"
+
 # File locking
 fs2 = "0.4"
 

@@ -42,10 +42,36 @@ impl MiniLMEmbedder {
         })?;
         let model = TextEmbedding::try_new(
             InitOptions::new(EmbeddingModel::AllMiniLML6V2)
-                .with_cache_dir(cache_dir)
+                .with_cache_dir(cache_dir.clone())
                 .with_show_download_progress(true),
         )
         .context("failed to load MiniLM-L6-v2 embedding model")?;
+
+        // Integrity check (10.4): verify the downloaded ONNX bytes match
+        // the pinned SHA-256. Best-effort defence-in-depth — the model
+        // is already loaded into ONNX Runtime by the time we run, but
+        // a mismatch immediately tells the user the cache or CDN gave
+        // them an unexpected file and the resulting index should not
+        // be trusted. `find_minilm_onnx` returns `None` when fastembed
+        // cache layout has drifted; in that case we warn and proceed
+        // so a fastembed upgrade doesn't break vex for everyone.
+        match super::integrity::find_minilm_onnx(&cache_dir) {
+            Some(onnx_path) => {
+                super::integrity::verify_file_sha256(
+                    &onnx_path,
+                    super::integrity::MINILM_ONNX_SHA256,
+                )?;
+            }
+            None => {
+                tracing::warn!(
+                    cache_dir = %cache_dir.display(),
+                    "MiniLM ONNX file not found at the expected HF-Hub-style \
+                     path; skipping integrity check (fastembed cache layout \
+                     may have changed — please report)"
+                );
+            }
+        }
+
         Ok(Self { model })
     }
 }
