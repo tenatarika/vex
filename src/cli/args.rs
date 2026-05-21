@@ -18,6 +18,35 @@ pub struct ScopeArgs {
     pub exclude: Vec<String>,
 }
 
+/// Symbol metadata filters (11.6). Post-filter that narrows results
+/// by lexical inspection of each symbol's captured signature line —
+/// no format bump, no re-parsing.
+#[derive(Args, Clone, Debug, Default)]
+pub struct MetadataArgs {
+    /// Keep only symbols whose signature contains an explicit
+    /// visibility keyword. Aliases: `pub` / `priv`. Default-visibility
+    /// (Rust private, TS class-member public) is not inferred; only
+    /// explicit keywords match.
+    #[arg(long, value_name = "VIS")]
+    pub visibility: Option<String>,
+
+    /// Keep only async / suspend functions.
+    #[arg(long)]
+    pub async_only: bool,
+
+    /// Exclude async / suspend functions (mutually exclusive with `--async-only`).
+    #[arg(long, conflicts_with = "async_only")]
+    pub no_async: bool,
+
+    /// Keep only static class members.
+    #[arg(long)]
+    pub static_only: bool,
+
+    /// Keep only sealed (or Java-`final`) types.
+    #[arg(long)]
+    pub sealed_only: bool,
+}
+
 #[derive(Parser)]
 #[command(
     name = "vex",
@@ -128,6 +157,9 @@ pub enum Commands {
         /// Disable BM25 channel (auto-on when the index has BM25 data)
         #[arg(long)]
         no_bm25: bool,
+
+        #[command(flatten)]
+        meta: MetadataArgs,
 
         /// Append a JSON trace to stderr after the result list:
         /// normalized query, per-channel hit counts (FST / BM25 /
@@ -302,6 +334,9 @@ pub enum Commands {
         /// Skip staleness check entirely
         #[arg(long)]
         no_stale_check: bool,
+
+        #[command(flatten)]
+        meta: MetadataArgs,
 
         #[command(flatten)]
         scope: ScopeArgs,

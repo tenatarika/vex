@@ -226,6 +226,26 @@ fn push_scope_field(extra: &mut Vec<String>, args: &Value, key: &str, flag: &str
     }
 }
 
+/// Translate MCP metadata fields (visibility / async / static /
+/// sealed) into the matching CLI flags. 11.6.
+fn push_metadata(extra: &mut Vec<String>, args: &Value) {
+    if let Some(vis) = args["visibility"].as_str() {
+        extra.extend(["--visibility".into(), vis.to_string()]);
+    }
+    if args["async_only"].as_bool().unwrap_or(false) {
+        extra.push("--async-only".into());
+    }
+    if args["no_async"].as_bool().unwrap_or(false) {
+        extra.push("--no-async".into());
+    }
+    if args["static_only"].as_bool().unwrap_or(false) {
+        extra.push("--static-only".into());
+    }
+    if args["sealed_only"].as_bool().unwrap_or(false) {
+        extra.push("--sealed-only".into());
+    }
+}
+
 /// Read a string-valued argument under its canonical name, falling back
 /// to a legacy alias. When the legacy alias is used, the alias name is
 /// pushed into `deprecated` so the JSON-RPC response can surface a
@@ -282,6 +302,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             }
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
+            push_metadata(&mut extra, args);
             ("search".to_string(), extra)
         }
         "find_symbol" => {
@@ -290,6 +311,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             let mut extra = vec![symbol.to_string(), "--limit".into(), "10".into()];
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
+            push_metadata(&mut extra, args);
             ("search".to_string(), extra)
         }
         "find_similar" => {
@@ -302,6 +324,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             ];
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
+            push_metadata(&mut extra, args);
             ("search".to_string(), extra)
         }
         "outline" => {
@@ -348,6 +371,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             extra.extend(["--limit".into(), limit.to_string()]);
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
+            push_metadata(&mut extra, args);
             ("show".to_string(), extra)
         }
         "usages" => {
@@ -555,7 +579,12 @@ fn tool_descriptors() -> Value {
                     "project_root": { "type": "string", "description": "Project root path" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax, e.g. 'tests/**')" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" },
+                    "visibility": { "type": "string", "enum": ["public", "private", "protected", "internal"], "description": "Keep only symbols whose signature contains this explicit visibility keyword (no inferred defaults)" },
+                    "async_only": { "type": "boolean", "description": "Keep only async/suspend functions", "default": false },
+                    "no_async": { "type": "boolean", "description": "Exclude async/suspend functions", "default": false },
+                    "static_only": { "type": "boolean", "description": "Keep only static class members", "default": false },
+                    "sealed_only": { "type": "boolean", "description": "Keep only sealed (or Java-`final`) types", "default": false }
                 },
                 "required": ["query"]
             }

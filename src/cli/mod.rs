@@ -380,6 +380,35 @@ fn fetch_symbol_body(path: &str, line: usize, kind: &str) -> String {
 /// screenful without overwhelming compact output.
 const EXPLAIN_MAX_DIFF_LINES: usize = 30;
 
+/// Translate the CLI metadata flags into a `MetadataFilter`.
+/// `--no-async` produces `async_required = Some(false)`; the
+/// `conflicts_with` on the args struct keeps the combination
+/// consistent with `--async-only`.
+fn build_metadata_filter(
+    meta: &args::MetadataArgs,
+) -> Result<crate::search::metadata::MetadataFilter> {
+    let visibility = meta
+        .visibility
+        .as_deref()
+        .map(|v| v.parse::<crate::search::metadata::Visibility>())
+        .transpose()?;
+    let async_required = if meta.async_only {
+        Some(true)
+    } else if meta.no_async {
+        Some(false)
+    } else {
+        None
+    };
+    let static_required = if meta.static_only { Some(true) } else { None };
+    let sealed_required = if meta.sealed_only { Some(true) } else { None };
+    Ok(crate::search::metadata::MetadataFilter {
+        visibility,
+        async_required,
+        static_required,
+        sealed_required,
+    })
+}
+
 fn apply_path_filters(
     results: Vec<crate::search::SearchResult>,
     filter: Option<&str>,
@@ -489,11 +518,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             auto_update,
             no_stale_check,
             no_bm25,
+            meta,
             why,
             scope,
         } => {
             let semantic = resolve_semantic(semantic, no_semantic, &cfg);
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+            let metadata_filter = build_metadata_filter(&meta)?;
             let root = resolve_root(None)?.canonicalize()?;
             let index_path = ensure_index_ready(
                 &root,
@@ -594,6 +625,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let results = crate::search::rerank::rerank(&query, &rerank_ctx, results);
             let results: Vec<_> = apply_path_filters(results, filter_path.as_deref(), &path_scope)
                 .into_iter()
+                .filter(|r| metadata_filter.matches(r.signature.as_deref()))
                 .take(limit)
                 .collect();
 
@@ -919,9 +951,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             context_path,
             auto_update,
             no_stale_check,
+            meta,
             scope,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+            let metadata_filter = build_metadata_filter(&meta)?;
             let root = resolve_root(None)?.canonicalize()?;
             let index_path = ensure_index_ready(
                 &root,
@@ -952,6 +986,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 let results: Vec<_> =
                     apply_path_filters(results, filter_path.as_deref(), &path_scope)
                         .into_iter()
+                        .filter(|r| metadata_filter.matches(r.signature.as_deref()))
                         .take(limit)
                         .collect();
 
