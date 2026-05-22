@@ -1,0 +1,7 @@
+lang = "cpp"
+pattern = "class $NAME { $$$BODY }"
+exercises = "cpp_class_body"
+
+[[expected]]
+line = 1
+captures = { NAME = "Server", BODY = "public:\n    Server();\n    int Start();" }

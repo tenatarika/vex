@@ -58,6 +58,7 @@ fn input_extension(lang: &str) -> &'static str {
         "typescript" | "ts" => "ts",
         "python" | "py" => "py",
         "go" => "go",
+        "cpp" | "c++" => "cpp",
         other => panic!("unsupported fixture lang: {other}"),
     }
 }
@@ -190,4 +191,19 @@ fn go_method_decl_matches_receiver_shape() {
 #[test]
 fn go_struct_with_multiline_body() {
     run_fixture("go_struct_body");
+}
+
+#[test]
+fn baseline_cpp_simple_function() {
+    run_fixture("baseline_cpp");
+}
+
+#[test]
+fn cpp_class_with_member_body() {
+    run_fixture("cpp_class_body");
+}
+
+#[test]
+fn cpp_template_function_signature() {
+    run_fixture("cpp_template_function");
 }

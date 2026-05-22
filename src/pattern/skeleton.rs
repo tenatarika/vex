@@ -18,8 +18,8 @@
 //! | Tier | Languages                                        | Allowlist     |
 //! |------|--------------------------------------------------|---------------|
 //! | T1   | Rust, TypeScript, Python                         | populated     |
-//! | T2a  | Go                                               | populated     |
-//! | T2   | Java, Kotlin, C#, C++, Swift, PHP, Ruby          | empty for now |
+//! | T2a  | Go, C++                                          | populated     |
+//! | T2   | Java, Kotlin, C#, Swift, PHP, Ruby               | empty for now |
 //! | T3   | SQL, Markdown, CSS, HTML, YAML, TOML, Bash, Lua  | empty (final) |
 //!
 //! An empty allowlist short-circuits to `Vec::new()`, so unrolled-T2
@@ -151,6 +151,30 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             "decorated_definition",
             "lambda",
         ],
+        Language::Cpp => &[
+            // Top-level functions and methods. `function_definition`
+            // buries the name under a declarator chain — see
+            // [`extract_ident`] for the special-case walker.
+            "function_definition",
+            // Named record / enum kinds — all carry `name:
+            // type_identifier`.
+            "class_specifier",
+            "struct_specifier",
+            "union_specifier",
+            "enum_specifier",
+            "namespace_definition",
+            // Wrapper around fn/class templates. No name on the
+            // wrapper itself — anonymous, but the inner specifier
+            // emits its own skeleton.
+            "template_declaration",
+            // Type aliases: `using V = T;` and the older
+            // `typedef T V;` (note: `type_definition` puts the alias
+            // name in `declarator:`, not `name:`).
+            "alias_declaration",
+            "type_definition",
+            // Anonymous closures: `auto f = [](int x) { return x; };`.
+            "lambda_expression",
+        ],
         Language::Go => &[
             // Top-level decls — `function_declaration` and
             // `method_declaration` are first-class; `type_spec` /
@@ -186,9 +210,18 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
             "arrow_function" | "function_expression",
         ) | (Language::Python, "lambda" | "decorated_definition")
             | (Language::Go, "func_literal")
+            | (Language::Cpp, "template_declaration" | "lambda_expression",)
     );
     if anonymous {
         return None;
+    }
+    // C++ buries function/method names under a declarator chain. The
+    // chain mirrors the scope binder's `extract_inner_identifier`.
+    if matches!(
+        (lang, kind),
+        (Language::Cpp, "function_definition" | "type_definition")
+    ) {
+        return extract_cpp_declarator_ident(node, source);
     }
     // For Rust `impl_item` the identifying field is `type`, not `name`.
     let field = if matches!((lang, kind), (Language::Rust, "impl_item")) {
@@ -201,6 +234,28 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
         .utf8_text(source.as_bytes())
         .ok()
         .map(String::from)
+}
+
+/// Walk a C++ declarator chain to its innermost identifier. Mirrors
+/// the helper in `src/parse/scope/cpp.rs`; duplicated rather than
+/// re-exported to keep `pattern::skeleton` self-contained. Bounded
+/// loop guards against any cyclic / malformed AST.
+fn extract_cpp_declarator_ident(node: Node<'_>, source: &str) -> Option<String> {
+    let mut cur = node.child_by_field_name("declarator")?;
+    for _ in 0..32 {
+        match cur.kind() {
+            "identifier" | "type_identifier" | "field_identifier" => {
+                return cur.utf8_text(source.as_bytes()).ok().map(String::from);
+            }
+            "qualified_identifier" => {
+                cur = cur.child_by_field_name("name")?;
+            }
+            _ => {
+                cur = cur.child_by_field_name("declarator")?;
+            }
+        }
+    }
+    None
 }
 
 /// Block-shaped body markers, language-agnostic. Tree-sitter uses these
@@ -218,8 +273,11 @@ fn has_body_block(node: Node<'_>) -> bool {
                 | "field_declaration_list"
                 | "enum_body"
                 | "enum_variant_list"
+                | "enumerator_list"
                 | "class_body"
                 | "interface_body"
+                // C++ function / lambda bodies are `compound_statement`.
+                | "compound_statement"
         )
     });
     found
@@ -459,6 +517,115 @@ mod tests {
         let names: Vec<&str> = specs.iter().filter_map(|s| s.ident.as_deref()).collect();
         assert!(names.contains(&"aOne"));
         assert!(names.contains(&"bTwo"));
+    }
+
+    #[test]
+    fn cpp_free_function_emits_skeleton_with_ident() {
+        let sk = extract(Language::Cpp, "void freefn() {}\n");
+        let f = sk.iter().find(|s| s.kind == "function_definition").unwrap();
+        assert_eq!(f.ident.as_deref(), Some("freefn"));
+        assert!(f.has_block);
+        assert_eq!(f.parent_kind, None);
+    }
+
+    #[test]
+    fn cpp_qualified_method_definition_extracts_inner_name() {
+        // `int Server::Start() {}` — the declarator chain ends in
+        // `qualified_identifier { scope: Server, name: Start }`. The
+        // skeleton ident must surface `Start`, not the qualifier.
+        let sk = extract(Language::Cpp, "int Server::Start() { return 0; }\n");
+        let f = sk.iter().find(|s| s.kind == "function_definition").unwrap();
+        assert_eq!(f.ident.as_deref(), Some("Start"));
+    }
+
+    #[test]
+    fn cpp_class_emits_with_field_declaration_list_body() {
+        let sk = extract(
+            Language::Cpp,
+            "class Server {\npublic:\n    int Start();\n};\n",
+        );
+        let c = sk.iter().find(|s| s.kind == "class_specifier").unwrap();
+        assert_eq!(c.ident.as_deref(), Some("Server"));
+        assert!(c.has_block, "field_declaration_list counts as a body");
+    }
+
+    #[test]
+    fn cpp_namespace_definition_carries_name_and_body() {
+        let sk = extract(Language::Cpp, "namespace App {\nint counter = 0;\n}\n");
+        let n = sk
+            .iter()
+            .find(|s| s.kind == "namespace_definition")
+            .unwrap();
+        assert_eq!(n.ident.as_deref(), Some("App"));
+        assert!(n.has_block, "namespace body is declaration_list");
+    }
+
+    #[test]
+    fn cpp_template_declaration_is_anonymous_wrapper() {
+        // The wrapper itself has no name; the inner `function_definition`
+        // is what carries `identity`. Mirrors Python `decorated_definition`.
+        let sk = extract(
+            Language::Cpp,
+            "template<typename T>\nT identity(T x) { return x; }\n",
+        );
+        let wrapper = sk
+            .iter()
+            .find(|s| s.kind == "template_declaration")
+            .unwrap();
+        assert_eq!(wrapper.ident, None);
+        let inner = sk.iter().find(|s| s.kind == "function_definition").unwrap();
+        assert_eq!(inner.ident.as_deref(), Some("identity"));
+        assert_eq!(inner.parent_kind, Some("template_declaration"));
+    }
+
+    #[test]
+    fn cpp_alias_and_typedef_both_emit_named_skeletons() {
+        let sk = extract(
+            Language::Cpp,
+            "using IntPtr = int*;\ntypedef int Counter;\n",
+        );
+        let alias = sk.iter().find(|s| s.kind == "alias_declaration").unwrap();
+        assert_eq!(alias.ident.as_deref(), Some("IntPtr"));
+        // `type_definition` puts the alias name in `declarator:`, not
+        // `name:` — that's the branch `extract_cpp_declarator_ident`
+        // covers.
+        let td = sk.iter().find(|s| s.kind == "type_definition").unwrap();
+        assert_eq!(td.ident.as_deref(), Some("Counter"));
+    }
+
+    #[test]
+    fn cpp_enum_class_has_enumerator_list_body() {
+        let sk = extract(Language::Cpp, "enum class Mode { Fast, Slow };\n");
+        let e = sk.iter().find(|s| s.kind == "enum_specifier").unwrap();
+        assert_eq!(e.ident.as_deref(), Some("Mode"));
+        assert!(
+            e.has_block,
+            "enumerator_list must count as a body for $$$BODY matching"
+        );
+    }
+
+    #[test]
+    fn cpp_lambda_expression_is_anonymous_with_block() {
+        let sk = extract(Language::Cpp, "auto f = [](int x) { return x; };\n");
+        let lam = sk.iter().find(|s| s.kind == "lambda_expression").unwrap();
+        assert_eq!(lam.ident, None);
+        assert!(lam.has_block, "lambda body is compound_statement");
+    }
+
+    #[test]
+    fn cpp_union_specifier_emits_named_skeleton() {
+        let sk = extract(Language::Cpp, "union Variant { int i; double d; };\n");
+        let u = sk.iter().find(|s| s.kind == "union_specifier").unwrap();
+        assert_eq!(u.ident.as_deref(), Some("Variant"));
+        assert!(u.has_block);
+    }
+
+    #[test]
+    fn cpp_grammar_fingerprint_is_stable_and_nonzero() {
+        let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Cpp);
+        let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Cpp);
+        assert_eq!(a, b, "fingerprint must be deterministic");
+        assert_ne!(a, 0, "zero is reserved as the not-stored sentinel");
     }
 
     #[test]
