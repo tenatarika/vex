@@ -422,26 +422,25 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
     if anonymous {
         return None;
     }
-    // CSS: `rule_set` ident = full selectors text (positional
-    // `selectors` field is a named field that contains the selector
-    // chain). `keyframes_statement` ident = `keyframes_name` child
-    // (positional). `media_statement` stays anonymous — its feature-
-    // query is part of the pattern, not an identifying name.
+    // CSS: `media_statement` is intentionally anonymous (its
+    // `feature_query` is part of the pattern, not a name) — keep
+    // its early-return distinct from the named-ident path so a
+    // future contributor doesn't accidentally fold a new CSS kind
+    // into the same arm. Both `rule_set` ident (full selector
+    // chain) and `keyframes_statement` ident (`keyframes_name`)
+    // come from positional children — there's no `name:` field on
+    // either, same pattern as SQL `object_reference`.
+    if matches!((lang, kind), (Language::Css, "media_statement")) {
+        return None;
+    }
     if matches!(
         (lang, kind),
-        (
-            Language::Css,
-            "rule_set" | "keyframes_statement" | "media_statement",
-        )
+        (Language::Css, "rule_set" | "keyframes_statement")
     ) {
         let name_node = match kind {
-            // `selectors` and `keyframes_name` are positional child
-            // kinds on the parent node (no `name:` field annotation
-            // in the grammar) — walk children by kind, same pattern
-            // as SQL `object_reference`.
             "rule_set" => child_by_kind(node, "selectors"),
             "keyframes_statement" => child_by_kind(node, "keyframes_name"),
-            _ => None,
+            _ => unreachable!("guarded by outer matches!"),
         };
         return name_node
             .and_then(|n| n.utf8_text(source.as_bytes()).ok())
@@ -695,8 +694,8 @@ mod tests {
         // repoint at the next still-empty T2 language each time one
         // rolls out (Swift / PHP / Ruby remain). Once *all* T2
         // languages are populated, repoint at a T3 language we
-        // explicitly never plan to fill (e.g. `Language::Css` or
-        // `Language::Yaml`) so the canary stops shifting.
+        // explicitly never plan to fill (e.g. `Language::Yaml` or
+        // `Language::Toml`) so the canary stops shifting.
         let sk = extract(Language::Kotlin, "class Foo\n");
         assert!(sk.is_empty());
     }
@@ -1475,6 +1474,85 @@ mod tests {
     }
 
     #[test]
+    fn css_nested_rule_in_media_block_has_block_as_parent_kind() {
+        // Reviewer H2: an inner `.btn { ... }` inside `@media (...) {
+        // ... }` sits under the media_statement's `block` child, NOT
+        // directly under `media_statement`. The immediate parent —
+        // and therefore `parent_kind` — is `Some("block")`. Pin so a
+        // prefilter that branches on `parent_kind == "media_statement"`
+        // doesn't silently miss every nested rule.
+        let sk = extract(
+            Language::Css,
+            "@media (max-width: 600px) { .btn { color: blue; } }\n",
+        );
+        let inner = sk
+            .iter()
+            .find(|s| s.kind == "rule_set")
+            .expect("inner rule_set missing");
+        assert_eq!(inner.parent_kind, Some("block"));
+        // `.btn` selector flows through `selectors` like any other.
+        assert_eq!(inner.ident.as_deref(), Some(".btn"));
+    }
+
+    #[test]
+    fn css_deferred_at_rules_emit_zero_skeletons() {
+        // Reviewer aqa-H: `@import`, `@supports`, `@font-face`, and
+        // bare `@charset` are intentionally absent from the
+        // allowlist. Pin zero-emission so a future train that adds
+        // any of them must explicitly opt in (and update this test).
+        let sk = extract(
+            Language::Css,
+            "@import \"reset.css\";\n\
+             @charset \"UTF-8\";\n\
+             @supports (display: grid) { .btn { color: red; } }\n\
+             @font-face { font-family: \"X\"; src: url(\"x.woff2\"); }\n",
+        );
+        for deferred in [
+            "import_statement",
+            "charset_statement",
+            "supports_statement",
+            "at_rule",
+        ] {
+            assert!(
+                !sk.iter().any(|s| s.kind == deferred),
+                "{deferred} is deferred — must not emit; saw: {sk:?}",
+            );
+        }
+        // The `.btn` rule inside @supports DOES emit (rule_set is
+        // allowlisted) — pin its parent_kind=Some("block") for the
+        // same reason as the @media case.
+        let nested = sk
+            .iter()
+            .find(|s| s.kind == "rule_set" && s.ident.as_deref() == Some(".btn"))
+            .expect("inner .btn rule_set missing");
+        assert_eq!(nested.parent_kind, Some("block"));
+    }
+
+    #[test]
+    fn css_compound_selectors_with_combinators_extract_full_text() {
+        // The `selectors` text covers compound forms — child (`>`),
+        // adjacent sibling (`+`), general sibling (`~`),
+        // attribute selectors, pseudo-classes — all flow through
+        // `utf8_text(selectors)` as the literal source text.
+        let sk = extract(
+            Language::Css,
+            "h1 + p { margin: 0; }\nh1 ~ p { color: gray; }\na[href^=\"https\"] { font-weight: bold; }\na:hover { text-decoration: underline; }\n",
+        );
+        let idents: Vec<&str> = sk
+            .iter()
+            .filter(|s| s.kind == "rule_set")
+            .filter_map(|s| s.ident.as_deref())
+            .collect();
+        assert!(idents.contains(&"h1 + p"), "got {idents:?}");
+        assert!(idents.contains(&"h1 ~ p"), "got {idents:?}");
+        assert!(
+            idents.iter().any(|s| s.contains("a[href")),
+            "got {idents:?}"
+        );
+        assert!(idents.contains(&"a:hover"), "got {idents:?}");
+    }
+
+    #[test]
     fn css_grammar_fingerprint_is_stable_and_nonzero() {
         let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Css);
         let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Css);
@@ -1513,6 +1591,51 @@ mod tests {
         assert_eq!(s.ident.as_deref(), Some("script"));
         let st = sk.iter().find(|s| s.kind == "style_element").unwrap();
         assert_eq!(st.ident.as_deref(), Some("style"));
+    }
+
+    #[test]
+    fn html_self_closing_element_ident_is_none() {
+        // Reviewer H1: tree-sitter-html parses `<br />` as an
+        // `element` whose only child is `self_closing_tag` (not
+        // `start_tag`). The `extract_ident` walker hits
+        // `child_by_kind("start_tag") -> None` and the skeleton
+        // emits with `ident=None`. Pin so a grammar tweak that
+        // renames `self_closing_tag` doesn't silently flip the
+        // contract.
+        let sk = extract(Language::Html, "<br />\n");
+        let e = sk
+            .iter()
+            .find(|s| s.kind == "element")
+            .expect("self-closing element must still emit a skeleton");
+        assert_eq!(e.ident, None);
+        assert!(
+            !e.has_block,
+            "self-closing element has no body — has_block must be false",
+        );
+    }
+
+    #[test]
+    fn html_void_element_with_no_end_tag_still_extracts_tag_name() {
+        // `<img src="...">` is a void element — no end tag, but the
+        // grammar emits a normal `start_tag` so `tag_name` is still
+        // recoverable. Distinct from the self-closing XHTML form.
+        let sk = extract(Language::Html, "<img src=\"x.png\">\n");
+        let e = sk
+            .iter()
+            .find(|s| s.kind == "element")
+            .expect("void element must emit a skeleton");
+        assert_eq!(e.ident.as_deref(), Some("img"));
+    }
+
+    #[test]
+    fn html_doctype_emits_zero_skeletons() {
+        // `<!DOCTYPE html>` parses as `doctype`, intentionally
+        // absent from the allowlist. Pin zero emission.
+        let sk = extract(Language::Html, "<!DOCTYPE html>\n");
+        assert!(
+            !sk.iter().any(|s| s.kind == "doctype"),
+            "doctype is deferred — must not emit; saw {sk:?}",
+        );
     }
 
     #[test]
@@ -1827,10 +1950,22 @@ mod tests {
         assert!(is_root_kind("document", Language::Html));
         assert!(!is_root_kind("document", Language::Yaml));
         // Base set stays language-agnostic, including the new
-        // `stylesheet` (CSS root).
+        // `stylesheet` (CSS root). Pin under CSS itself plus a
+        // sample of other languages so a future per-language gate
+        // can't silently break the global behaviour.
         assert!(is_root_kind("source_file", Language::Rust));
         assert!(is_root_kind("compilation_unit", Language::CSharp));
         assert!(is_root_kind("stylesheet", Language::Css));
+        assert!(is_root_kind("stylesheet", Language::Rust));
+        // T3 languages that still have empty allowlists — verify
+        // their root kinds aren't accidentally suppressed AND that
+        // `stylesheet` / `document` don't trigger for them. (`bash`,
+        // `lua`, `toml` all use `program` for their root, which IS
+        // in the global base — that's the right behaviour.)
+        assert!(is_root_kind("program", Language::Bash));
+        assert!(is_root_kind("program", Language::Lua));
+        assert!(!is_root_kind("document", Language::Toml));
+        assert!(!is_root_kind("document", Language::Bash));
     }
 
     #[test]
