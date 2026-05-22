@@ -6,6 +6,133 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+The "first-class structural patterns" train (Phase 11.4 scope-B).
+Promotes `vex pattern` from cold live-scan to indexed search with a
+persisted skeleton prefilter, adds multi-line block / arg metavars,
+ships AND/OR composition, and surfaces a scan-mode trace via `--why`.
+All existing patterns continue to work; the new syntax is additive.
+
+### Format change — v6
+
+- **`VERSION = 6`** with a new `PatternSkeletonHeader` (168 bytes)
+  immediately after `V5SectionHeader`. Carries offsets and lengths for
+  four sub-sections — `SkeletonRecord` array (24 B records sorted by
+  `file_id`), `kind_path_arena` (inline null-terminated kind names
+  plus per-record path entries), `ident_pool` (length-prefixed UTF-8),
+  `file_index` (sorted `{file_id, first_skel_idx}` for O(log n)
+  `skeletons_for_file`) — plus a `[u32; 32]` per-language
+  `grammar_fingerprints` array. (11.4 Inc 3)
+- **`MIN_SUPPORTED_VERSION` stays at 3** — v3/v4/v5 indexes still
+  open; `vex pattern` falls back to live-scan on them with `--why`
+  reason `"no-skeleton-section"`. New indexes auto-rebuild on first
+  use after upgrade.
+- **`Language::lang_id() -> u8`** with explicitly-assigned stable IDs
+  (Rust=1..Toml=19). Slot 0 is reserved for "not fingerprinted".
+  Adding a new language gets the next integer; removing one leaves a
+  reserved gap so the on-disk fingerprint slot index stays stable.
+- **Adversarial coverage**: 3 new tests in `tests/adversarial_format_-
+  test.rs` cover the v6 header gate (`pattern_skeleton_header_-
+  has_nonzero_size`), backward-compat (`v5_index_has_no_pattern_-
+  skeleton_header`), and truncation
+  (`v6_truncated_at_pattern_skeleton_header_rejected`).
+
+### Added — pattern syntax
+
+- **Named multi-line metavars**: `$$$BODY` (block-spanning) and
+  `$$ARGS` (arg-list-spanning). Functionally identical — the two
+  syntaxes coexist for readability (`fn $F($$ARGS) { $$$BODY }` reads
+  naturally). Both capture and enforce back-reference equality on
+  repeat occurrences, just like single-token `$NAME`. (11.4 Inc 6)
+- **AND / OR composition** via space-flanked ` && ` and ` || ` at
+  bracket / quote depth 0. AND requires both sub-patterns to match in
+  the same file with consistent captures across shared metavars; OR
+  takes the union, deduped by `(path, line)`. `&&` binds tighter than
+  `||` (standard). The depth-aware split keeps `record($X, $X)` and
+  `f($X && $Y)` as single patterns. Empty middle conjuncts/disjuncts
+  bail with a clear "empty pattern" error. (11.4 Inc 7)
+- **Greedy `>` fix for `Result<$T, $E>`-shape patterns**: the
+  identifier scanner now stops one byte short of the next literal's
+  starting character, so `$E` correctly captures `Error` instead of
+  `Error>`. Pre-existing limitation, surfaced by the Inc 6 fixtures.
+
+### Added — scan modes
+
+- **Indexed prefilter**: when a v6 index is present and the per-lang
+  grammar fingerprint matches the live grammar, `vex pattern` walks
+  only the candidate files whose persisted skeletons satisfy the
+  language and (when inferable from the pattern's leading keyword)
+  the root node-kind. Falls back to live-scan with explicit reasons
+  — `"no-index"`, `"index-open-error"`, `"no-skeleton-section"`,
+  `"empty-section"`, `"grammar-drift"`, `"partial-section"` — none
+  of which is fatal. (11.4 Inc 5)
+- **`--why`** on `vex pattern`: appends a JSON `ScanTrace` to stderr
+  with `mode` (indexed / live_scan), `root_kind_inferred`,
+  `candidate_files` / `total_files`, and the optional
+  `fallback_reason`. The same trace surfaces under `_meta.why` in the
+  MCP response. (11.4 Inc 5 + Inc 8 wrapper fix)
+- **Root-kind inference** strips Rust visibility (`pub`,
+  `pub(crate)`, `pub(super)`), Rust `async` / `unsafe` / `const`
+  modifiers, TS `export` / `default` / `async`, and Python `async`
+  before matching the keyword — so `pub async fn $F` infers
+  `function_item` instead of silently disabling the prefilter.
+- **`partial-section` fallback after `vex update`**: incremental
+  builds leave skeletons empty for unchanged files (mirroring the
+  `bound_refs` / `call_edges` convention). The new
+  `Manifest.pattern_index_full` flag distinguishes a full `vex index`
+  from a `vex update`; when `Some(false)` the prefilter degrades to
+  live-scan to avoid silently under-reporting matches.
+
+### Added — CLI / MCP
+
+- **`--no-pattern-index`** on `vex index`, `vex update`, and `vex
+  watch` skips the v6 skeleton section. Same sticky semantics as
+  `--no-call-graph` / `--no-bm25` — opt-out is recorded in
+  `Manifest.pattern_index` and honoured by subsequent `vex update`
+  unless explicitly overridden. `.vex.toml` gains `pattern_index =
+  false` for project-wide opt-out. (11.4 Inc 4)
+- **MCP `pattern` tool** schema documents Inc 6-7 syntax (block
+  metavars, composition, indexed prefilter) and gains a `why:
+  boolean` field. When `why: true` the wrapper extracts the
+  `ScanTrace` JSON from the CLI's stderr and places it under
+  `_meta.why` in the JSON-RPC response. The same plumbing benefits
+  the existing `search --why` MCP flow. (11.4 Inc 8)
+
+### Internal
+
+- **Per-file skeleton extractor** (`src/pattern/skeleton.rs`): pure
+  function that walks tree-sitter once per file and emits a
+  `Skeleton` per pattern-targetable node. T1 allowlists for Rust (10
+  kinds), TypeScript (8), and Python (4). T2 / T3 languages
+  short-circuit to `Vec::new()` so the section is empty for files
+  that don't participate; `vex pattern --lang <x>` still works via
+  live-scan for those. (11.4 Inc 2)
+- **Grammar fingerprints** = `xxh3_64(concat(kind_name, 0; …))`
+  truncated to `u32`, computed at index time per T1 language present
+  in the parsed set. Stored in the `PatternSkeletonHeader`
+  fingerprint array. The reader compares against the live grammar's
+  fingerprint and falls back to live-scan on mismatch — closes the
+  R-A grammar-drift hazard surfaced by the planner.
+- **`CompositePattern { disjuncts: Vec<Vec<PatternTree>>, lang }`**
+  with helpers `parse_composite_pattern`, `split_top_level`,
+  `find_matches_composite`, `match_conjunct`, `captures_agree_-
+  with_map`, `build_normalised_map`. The map projection is built once
+  per `(anchor, other_tree)` pair instead of per candidate, avoiding
+  the O(anchors × trees × candidates × |captures|) HashMap rebuild
+  that the first cut had.
+- **Writer entry sprawl** (transitional): `write_index_with_call_-
+  graph_and_skeletons_and_fingerprints` is the new primary entry.
+  Two back-compat shims (`write_index_with_call_graph`,
+  `write_index_with_call_graph_and_skeletons`) forward to it for
+  legacy and test callers; both are flagged `#[allow(dead_code)]`
+  pending a future consolidation pass.
+- **Fixture-based regression suite** (`tests/pattern_fixtures/`): one
+  baseline + five scope-B fixtures across Rust / TypeScript /
+  Python. Each fixture is `input.<ext>` + `spec.toml` (pattern,
+  expected lines, expected captures); the harness in
+  `tests/pattern_fixture_test.rs` runs `vex pattern --format json`
+  per fixture and asserts. RED in Inc 1, all GREEN after Inc 6+7.
+
+
 ## [1.8.0] - 2026-05-21
 
 The "type-aware usages" release. Replaces `vex usages`'s token-level

@@ -153,7 +153,7 @@ vex completions zsh > ~/.zfunc/_vex
 | `vex similar <name> [--limit N] [--min-score T] [--explain]` | Find symbols semantically close to an existing one (HNSW nearest neighbors). `--explain` adds identifier-Jaccard + truncated unified diff per match. `--min-score` is an alias for `--threshold`. |
 | `vex duplicates [--min-score T] [--min-body-lines N] [--explain]` | List near-duplicate symbol pairs by embedding similarity. `--explain` shows what's actually different between the bodies. |
 | `vex usages <name> [--limit N]` | Find all references/usages of a symbol (FST lookup). |
-| `vex pattern '<pat>' --lang <lang>` | AST pattern matching with metavariables (`$NAME`, `$$$`). Repeated `$NAME` enforces back-references: `record($X, $X)` matches `record(state, state)` and rejects `record(state, other)`. |
+| `vex pattern '<pat>' --lang <lang> [--why]` | AST pattern matching with metavariables (`$NAME`, `$_`, `$$$`, plus the v6 named multi-line forms `$$$BODY` / `$$ARGS`). Repeated metavars enforce back-references. Space-flanked ` && ` / ` || ` compose sub-patterns (AND requires both shapes in the file with shared captures agreeing; OR takes the union). When a v6 index is present an indexed prefilter narrows candidates to lang-matching files with the right root kind; falls back to live-scan otherwise. `--why` surfaces a JSON `ScanTrace` (mode / root_kind / candidate vs total / fallback reason) on stderr — and under `_meta.why` in the MCP response. |
 | `vex outline <file> [--kind fn]` | Show file structure, optionally filter by symbol kind. |
 | `vex implementations <name>` | Find types that extend/implement a base class, trait, or interface (incl. generic-parameterised: `class Foo : Repository<T>`). |
 | `vex callers <name>` | Direct callers of a function (fast path via persistent call graph; falls back to live tree-sitter scan when the index is missing). |
@@ -185,6 +185,7 @@ All search-shaped commands (`search`, `usages`, `pattern`, `show`, `grep`, `impl
 ### Reasoning flags
 
 - **`vex search --why`** prints a JSON trace to stderr (the result list stays on stdout): `normalized_query`, per-channel hit counts (FST / BM25 / semantic), fallbacks engaged (`fuzzy`), and the active filter snapshot.
+- **`vex pattern --why`** prints a JSON `ScanTrace` to stderr after the result list: `mode` (`indexed` / `live_scan`), `root_kind_inferred`, `candidate_files` / `total_files`, and `fallback_reason` when the indexed prefilter was skipped (`no-index`, `no-skeleton-section`, `empty-section`, `grammar-drift`, `partial-section`, `index-open-error`). MCP callers see the same JSON under `_meta.why`.
 - **`vex similar --explain`** / **`vex duplicates --explain`** add a `jaccard` overlap score plus a truncated unified diff between the two bodies, so you can decide whether two semantically-clustered symbols are actually duplicates before acting.
 
 ## Configuration
@@ -303,6 +304,58 @@ Without `--strict` `vex usages` still works for every supported
 language via the legacy refs FST; `--strict` simply trades recall
 breadth for precision on the five binder languages. v3 / v4 indexes
 predating the binder bail with a "re-run `vex index`" message.
+
+### Structural Patterns (`vex pattern`)
+
+Match code by shape rather than text. Live-scan today for every
+language vex parses; indexed prefilter (via the v6 `pattern_skeletons`
+section) for Rust, TypeScript, and Python.
+
+**Syntax**:
+
+- `$NAME` — capture a single identifier or balanced expression. Same
+  name appearing twice enforces a back-reference: `record($X, $X)`
+  matches `record(state, state)` and rejects `record(state, other)`.
+- `$_` — wildcard (matches without capturing).
+- `$$$` — anonymous ellipsis (matches anything up to the next literal;
+  spans newlines).
+- `$$$BODY` / `$$ARGS` — **named** multi-line ellipsis. Functionally
+  identical to `$$$` but captures the consumed text under the given
+  name; `$$$BODY` reads naturally for block bodies, `$$ARGS` for
+  parameter lists. Back-reference equality also applies.
+- ` && ` (space-flanked) — AND composition. Both sub-patterns must
+  match in the same file, and shared metavar names must capture the
+  same text in both: `struct $S && impl $S` matches files that have
+  both shapes for the same `$S`.
+- ` || ` (space-flanked) — OR composition (union, deduped by
+  `(path, line)`). `&&` binds tighter than `||`.
+- Composition operators only fire at bracket / quote depth 0, so
+  `record($X, $X)` and `f($X && $Y)` stay single patterns.
+
+**Indexed prefilter**: when a v6 index is present, the leading literal
+keyword of the pattern (`fn`, `struct`, `class`, `def`, `impl`, …) is
+mapped to a tree-sitter node kind, and `vex pattern` walks only the
+files whose persisted skeletons contain that kind. Visibility / async
+/ export modifiers in front of the keyword are stripped before the
+match (`pub async fn $F` infers `function_item` correctly). Falls
+back to live-scan on grammar drift, missing section, or a partial
+section after `vex update` — `--why` reports the exact reason.
+
+**Examples**:
+
+```bash
+# Multi-line function body with named captures
+vex pattern 'fn $NAME($$ARGS) -> Result<$T, $E> { $$$BODY }' --lang rust
+
+# Both struct and impl for the same type in one file
+vex pattern 'struct $S && impl $S' --lang rust
+
+# Interface OR class with the same name
+vex pattern 'interface $N || class $N' --lang typescript
+
+# See which mode and what narrowing happened
+vex pattern 'fn $N($$$)' --lang rust --why 2>trace.json
+```
 
 ## Benchmarks
 
