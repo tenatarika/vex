@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 [![Commands](https://img.shields.io/badge/commands-19-blue.svg)]()
 [![Languages](https://img.shields.io/badge/languages-19-blueviolet.svg)]()
-[![Tests](https://img.shields.io/badge/tests-1032-green.svg)]()
+[![Tests](https://img.shields.io/badge/tests-1172-green.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
@@ -634,7 +634,11 @@ Use vex for code search instead of grep or manual file reading:
 - `vex grep "pattern"` — regex content search (when you need text, not symbols)
 - `vex search "description" --semantic` — search by meaning
 - `vex search "rare_term"` — BM25 channel finds rare terms in symbol bodies (auto-on when index has BM25 data)
-- `vex pattern 'class $NAME(BaseModel):' --lang python` — AST pattern matching
+- `vex pattern 'class $NAME(BaseModel):' --lang python` — AST pattern matching with metavariables
+- `vex pattern 'fn $N($$ARGS) -> Result<$T, $E> { $$$BODY }' --lang rust` — multi-line `$$$BODY` / `$$ARGS` capture
+- `vex pattern 'struct $S && impl $S' --lang rust` — AND composition (back-ref `$S` must agree across both shapes)
+- `vex pattern 'interface $N || class $N' --lang typescript` — OR composition (union, deduped by `(path, line)`)
+- `vex pattern '<pat>' --lang <lang> --why` — emit ScanTrace on stderr (mode / candidate vs total / fallback reason)
 - `vex outline path/to/file.py` — file structure overview
 - `vex implementations "BaseService"` — find types extending a class/interface
 - `vex callers "function_name"` — find all callers (~4ms via persistent call graph)
@@ -653,11 +657,14 @@ All commands support `--filter "path/"` to narrow results to a directory.
 - **Use `--kind fn`** to boost results matching a specific symbol kind (fn, struct, trait, class, etc.)
 - **Use `--context-path`** with the path of the file you are currently editing to boost nearby results
 - **Run `vex update` after modifying source files** if `auto_update` is not enabled in `.vex.toml`
+- **Use `vex pattern ... --why`** to debug match counts — the trace tells you whether the indexed prefilter ran or fell back to live-scan, and why
+- **Indexed pattern prefilter requires a full `vex index`** — after `vex update` the section is partial and `vex pattern` automatically degrades to live-scan (reason `partial-section` in `--why`)
 
 ### Indexing
-- `vex index` — full structural index (fast)
+- `vex index` — full structural index + pattern skeleton section (v6)
 - `vex index --semantic` — with embeddings (slower, enables semantic search)
 - `vex update` — incremental update (only changed files)
+- `vex index --no-pattern-index` — skip the v6 pattern skeleton section if you don't use `vex pattern` (sticky across `vex update`)
 ```
 
 ## Testing
@@ -665,7 +672,7 @@ All commands support `--filter "path/"` to narrow results to a directory.
 ### Unit & Integration Tests
 
 ```bash
-cargo test                    # 1032 tests — unit, integration, property-based, adversarial
+cargo test                    # 1172 tests — unit, integration, property-based, adversarial
 cargo clippy -- -D warnings   # zero warnings policy
 ```
 
