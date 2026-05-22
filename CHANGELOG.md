@@ -6,13 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-The "first-class structural patterns" train (Phase 11.4 scope-B).
-Promotes `vex pattern` from cold live-scan to indexed search with a
-persisted skeleton prefilter, adds multi-line block / arg metavars,
-ships AND/OR composition, and surfaces a scan-mode trace via `--why`.
-All existing patterns continue to work; the new syntax is additive.
+## [1.8.0] - 2026-05-22
 
-### Format change — v6
+Combined "type-aware usages + first-class structural patterns"
+release — two large trains landed back-to-back:
+
+- **Phase 11.1 (type-aware `usages`)** — LSP-style scope binder for
+  Rust, TypeScript, Python, C#, and C++ with a persisted v5
+  `reference_edges` section. Default `vex usages` is unchanged; the
+  precision upgrade is opt-in via `--strict`.
+- **Phase 11.4 (first-class structural patterns)** — `vex pattern`
+  promoted from cold live-scan to indexed search via a persisted v6
+  `pattern_skeletons` section, with multi-line `$$$BODY` / `$$ARGS`
+  metavars and `&&` / `||` composition. All existing patterns keep
+  working; the new syntax is additive.
+
+`MIN_SUPPORTED_VERSION` stays at 3 — v3 / v4 indexes still open and
+auto-rebuild on first use after upgrade.
+
+### Format change — v6 (Phase 11.4)
 
 - **`VERSION = 6`** with a new `PatternSkeletonHeader` (168 bytes)
   immediately after `V5SectionHeader`. Carries offsets and lengths for
@@ -36,7 +48,7 @@ All existing patterns continue to work; the new syntax is additive.
   skeleton_header`), and truncation
   (`v6_truncated_at_pattern_skeleton_header_rejected`).
 
-### Added — pattern syntax
+### Added — pattern syntax (Phase 11.4)
 
 - **Named multi-line metavars**: `$$$BODY` (block-spanning) and
   `$$ARGS` (arg-list-spanning). Functionally identical — the two
@@ -55,7 +67,7 @@ All existing patterns continue to work; the new syntax is additive.
   starting character, so `$E` correctly captures `Error` instead of
   `Error>`. Pre-existing limitation, surfaced by the Inc 6 fixtures.
 
-### Added — scan modes
+### Added — scan modes (Phase 11.4)
 
 - **Indexed prefilter**: when a v6 index is present and the per-lang
   grammar fingerprint matches the live grammar, `vex pattern` walks
@@ -82,7 +94,7 @@ All existing patterns continue to work; the new syntax is additive.
   from a `vex update`; when `Some(false)` the prefilter degrades to
   live-scan to avoid silently under-reporting matches.
 
-### Added — CLI / MCP
+### Added — CLI / MCP (Phase 11.4)
 
 - **`--no-pattern-index`** on `vex index`, `vex update`, and `vex
   watch` skips the v6 skeleton section. Same sticky semantics as
@@ -97,7 +109,7 @@ All existing patterns continue to work; the new syntax is additive.
   `_meta.why` in the JSON-RPC response. The same plumbing benefits
   the existing `search --why` MCP flow. (11.4 Inc 8)
 
-### Internal
+### Internal (Phase 11.4)
 
 - **Per-file skeleton extractor** (`src/pattern/skeleton.rs`): pure
   function that walks tree-sitter once per file and emits a
@@ -133,14 +145,7 @@ All existing patterns continue to work; the new syntax is additive.
   per fixture and asserts. RED in Inc 1, all GREEN after Inc 6+7.
 
 
-## [1.8.0] - 2026-05-21
-
-The "type-aware usages" release. Replaces `vex usages`'s token-level
-scanner with an LSP-style scope binder for five languages, and persists
-the resolved references in a new v5 index section. Default behaviour is
-unchanged; the new precision is opt-in via `vex usages --strict`.
-
-### Format change — v5
+### Format change — v5 (Phase 11.1)
 
 - **`VERSION = 5`** with a new `V5SectionHeader` (48 bytes) immediately
   after `CallGraphHeader`. The header carries offsets and lengths for
@@ -155,7 +160,7 @@ unchanged; the new precision is opt-in via `vex usages --strict`.
   three sub-section past-EOF arms; `tests/integration_test.rs` pins
   cross-file `Imported` resolution for Rust, TypeScript, and Python.
 
-### Added — scope binders
+### Added — scope binders (Phase 11.1)
 
 - **AST-aware ref extraction** (11.1.1): identifiers inside line / block
   comments, doc-strings, and string literals are filtered out before
@@ -174,7 +179,7 @@ unchanged; the new precision is opt-in via `vex usages --strict`.
   `add_import_binding`, `emit_ref`, `resolve`, and `walk_children`.
   Each language file is the dispatch + grammar-specific helpers.
 
-### Added — CLI / MCP
+### Added — CLI / MCP (Phase 11.1)
 
 - **`vex usages --strict`** reads the persisted `reference_edges`
   section. Without `--strict` the legacy refs FST keeps backing the
@@ -186,7 +191,7 @@ unchanged; the new precision is opt-in via `vex usages --strict`.
   `: public Repository<T>` (C++) now match alongside the bare-name
   forms. Java + C# already had the band-aid since the 11.7 train.
 
-### Internal
+### Internal (Phase 11.1)
 
 - Pass-2 cross-file resolution at index-write time. `BindTarget::-
   Imported(use_path)` records are rewritten to `ModuleSymbol(global_-
