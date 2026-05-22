@@ -1,0 +1,12 @@
+.btn {
+    color: red;
+    padding: 10px;
+}
+
+.danger {
+    background: black;
+}
+
+#header {
+    width: 100%;
+}

@@ -1,0 +1,11 @@
+lang = "css"
+pattern = ".$NAME {"
+exercises = "baseline"
+
+[[expected]]
+line = 1
+captures = { NAME = "btn" }
+
+[[expected]]
+line = 6
+captures = { NAME = "danger" }

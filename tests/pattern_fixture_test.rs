@@ -63,6 +63,8 @@ fn input_extension(lang: &str) -> &'static str {
         "sql" => "sql",
         "markdown" | "md" => "md",
         "java" => "java",
+        "css" => "css",
+        "html" => "html",
         other => panic!("unsupported fixture lang: {other}"),
     }
 }
@@ -260,4 +262,19 @@ fn java_class_with_method_body() {
 #[test]
 fn java_record_signature() {
     run_fixture("java_record");
+}
+
+#[test]
+fn baseline_css_rule_set() {
+    run_fixture("baseline_css");
+}
+
+#[test]
+fn css_keyframes_animation() {
+    run_fixture("css_keyframes");
+}
+
+#[test]
+fn baseline_html_element_tag_name() {
+    run_fixture("baseline_html");
 }

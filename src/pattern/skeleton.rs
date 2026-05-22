@@ -18,9 +18,13 @@
 //! | Tier | Languages                                        | Allowlist     |
 //! |------|--------------------------------------------------|---------------|
 //! | T1   | Rust, TypeScript, Python                         | populated     |
-//! | T2a  | Go, C++, C#, SQL, Markdown, Java                 | populated     |
+//! | T2a  | Go, C++, C#, SQL, Markdown, Java, CSS, HTML      | populated     |
 //! | T2   | Kotlin, Swift, PHP, Ruby                         | empty for now |
-//! | T3   | CSS, HTML, YAML, TOML, Bash, Lua                 | empty (final) |
+//! | T3   | YAML, TOML, Bash, Lua                            | empty (final) |
+//!
+//! JavaScript shares the TypeScript grammar (`Language::TypeScript`)
+//! via `"js" | "jsx" → TypeScript` in the extension map, so the T1
+//! TypeScript allowlist already covers it — no separate JS row.
 //!
 //! An empty allowlist short-circuits to `Vec::new()`, so unrolled-T2
 //! / T3 files produce no skeletons and `vex pattern --lang <x>` falls
@@ -119,20 +123,31 @@ fn walk(
 /// Per-language root-node kind suppression. The shared base set
 /// (`source_file` / `program` / `module` / `translation_unit` /
 /// `compilation_unit`) covers Rust, Go, TS, Python, C++, C# — none of
-/// those grammars use any of those names elsewhere. Markdown's
-/// `document` is gated on `Language::Markdown` because the YAML and
-/// HTML grammars *also* use `document` (YAML as a non-root subtree
-/// under `stream`, HTML as the root) — a global suppression would
-/// silently break the parent-kind contract the moment YAML / HTML
-/// move out of the empty T3 allowlist.
+/// those grammars use any of those names elsewhere. `stylesheet` is
+/// CSS's root; the kind name is unused by every other grammar in the
+/// matrix so it stays in the global base set.
+///
+/// `document` is gated to Markdown AND HTML because both grammars use
+/// it as the file root, but YAML uses the same kind name for a
+/// *non-root* subtree under `stream`. A global suppression would
+/// silently break the parent-kind contract the moment YAML moves out
+/// of the empty T3 allowlist.
 fn is_root_kind(kind: &str, lang: Language) -> bool {
     if matches!(
         kind,
-        "source_file" | "program" | "module" | "translation_unit" | "compilation_unit"
+        "source_file"
+            | "program"
+            | "module"
+            | "translation_unit"
+            | "compilation_unit"
+            | "stylesheet"
     ) {
         return true;
     }
-    matches!((kind, lang), ("document", Language::Markdown))
+    matches!(
+        (kind, lang),
+        ("document", Language::Markdown) | ("document", Language::Html)
+    )
 }
 
 /// T1 allowlist. T2/T3 languages return an empty slice — see module docs.
@@ -294,6 +309,37 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             //   * Lists, blockquotes, tables — revisit when there's
             //     demand for `vex pattern` on those shapes.
         ],
+        Language::Css => &[
+            // Top-level CSS rules + at-rules. `rule_set` carries
+            // selectors text as its ident (`.btn`, `body > p`),
+            // `keyframes_statement` has a proper `name:` field, and
+            // `media_statement` is anonymous (no useful name; its
+            // `feature_query` is part of the pattern body, not a
+            // name). All three carry a `block:` body.
+            "rule_set",
+            "keyframes_statement",
+            "media_statement",
+            // Intentionally absent:
+            //   * `import_statement` (`@import "..."`) — binding
+            //     site, not a pattern target.
+            //   * `charset_statement`, `namespace_statement`,
+            //     `supports_statement`, generic `at_rule` — niche;
+            //     revisit when patterns need them.
+            //   * `declaration` (`color: red;`) — too granular;
+            //     would emit thousands of skeletons per file.
+        ],
+        Language::Html => &[
+            // Every named element + raw-text elements. Ident is the
+            // `tag_name` inside `start_tag`, extracted via the
+            // language-specific arm in `extract_ident`.
+            "element",
+            "script_element",
+            "style_element",
+            // Intentionally absent:
+            //   * `doctype`, `xml_declaration` — no useful name; the
+            //     declaration text is the entire content.
+            //   * Inline attribute / text nodes — too granular.
+        ],
         Language::Java => &[
             // Top-level type declarations — all carry
             // `name: identifier`. `record_declaration` is Java 16+,
@@ -375,6 +421,47 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
     );
     if anonymous {
         return None;
+    }
+    // CSS: `rule_set` ident = full selectors text (positional
+    // `selectors` field is a named field that contains the selector
+    // chain). `keyframes_statement` ident = `keyframes_name` child
+    // (positional). `media_statement` stays anonymous — its feature-
+    // query is part of the pattern, not an identifying name.
+    if matches!(
+        (lang, kind),
+        (
+            Language::Css,
+            "rule_set" | "keyframes_statement" | "media_statement",
+        )
+    ) {
+        let name_node = match kind {
+            // `selectors` and `keyframes_name` are positional child
+            // kinds on the parent node (no `name:` field annotation
+            // in the grammar) — walk children by kind, same pattern
+            // as SQL `object_reference`.
+            "rule_set" => child_by_kind(node, "selectors"),
+            "keyframes_statement" => child_by_kind(node, "keyframes_name"),
+            _ => None,
+        };
+        return name_node
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+    }
+    // HTML: `element` ident = `tag_name` text from the positional
+    // `start_tag` child. `script_element` / `style_element` are
+    // shaped the same way.
+    if matches!(
+        (lang, kind),
+        (
+            Language::Html,
+            "element" | "script_element" | "style_element",
+        )
+    ) {
+        return child_by_kind(node, "start_tag")
+            .and_then(|st| child_by_kind(st, "tag_name"))
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(String::from);
     }
     // SQL DDL nodes split across three name shapes:
     //   * `create_index` — direct `column:` named field.
@@ -505,6 +592,7 @@ fn has_body_block(node: Node<'_>) -> bool {
                 | "code_fence_content" // Markdown fenced block content
                 | "annotation_type_body" // Java @interface body
                 | "constructor_body" // Java constructor body
+                | "keyframe_block_list" // CSS @keyframes body
         )
     });
     found
@@ -1344,6 +1432,98 @@ mod tests {
     }
 
     #[test]
+    fn css_rule_set_emits_with_selectors_as_ident() {
+        let sk = extract(
+            Language::Css,
+            ".btn { color: red; }\n#header { width: 100%; }\nbody > p { font-size: 14px; }\n",
+        );
+        let rules: Vec<_> = sk.iter().filter(|s| s.kind == "rule_set").collect();
+        assert_eq!(rules.len(), 3);
+        let idents: Vec<&str> = rules.iter().filter_map(|s| s.ident.as_deref()).collect();
+        assert!(idents.contains(&".btn"));
+        assert!(idents.contains(&"#header"));
+        assert!(idents.contains(&"body > p"));
+        // Each rule has a `block:` body which is already in the
+        // universal markers — pin so a future refactor doesn't
+        // accidentally remove the `block` arm.
+        assert!(rules.iter().all(|s| s.has_block));
+        // Top-level rules sit directly under `stylesheet` (root)
+        // and therefore have `parent_kind=None`.
+        assert!(rules.iter().all(|s| s.parent_kind.is_none()));
+    }
+
+    #[test]
+    fn css_keyframes_extracts_name_with_keyframe_block_list_body() {
+        let sk = extract(
+            Language::Css,
+            "@keyframes fade {\n    from { opacity: 0; }\n    to { opacity: 1; }\n}\n",
+        );
+        let k = sk.iter().find(|s| s.kind == "keyframes_statement").unwrap();
+        assert_eq!(k.ident.as_deref(), Some("fade"));
+        assert!(k.has_block, "keyframe_block_list must register as body",);
+    }
+
+    #[test]
+    fn css_media_statement_is_anonymous() {
+        let sk = extract(
+            Language::Css,
+            "@media (max-width: 600px) { .btn { color: blue; } }\n",
+        );
+        let m = sk.iter().find(|s| s.kind == "media_statement").unwrap();
+        assert_eq!(m.ident, None);
+        assert!(m.has_block, "media body is a `block`");
+    }
+
+    #[test]
+    fn css_grammar_fingerprint_is_stable_and_nonzero() {
+        let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Css);
+        let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Css);
+        assert_eq!(a, b);
+        assert_ne!(a, 0);
+    }
+
+    #[test]
+    fn html_element_ident_is_tag_name() {
+        let sk = extract(
+            Language::Html,
+            "<div id=\"root\">\n  <h1>Hello</h1>\n  <p>Text.</p>\n</div>\n",
+        );
+        let outer = sk
+            .iter()
+            .find(|s| s.kind == "element" && s.ident.as_deref() == Some("div"))
+            .expect("outer div element missing");
+        // Top-level `element` sits directly under `document` — must
+        // be suppressed to None by `is_root_kind` (HTML gate).
+        assert_eq!(outer.parent_kind, None);
+        let h1 = sk
+            .iter()
+            .find(|s| s.kind == "element" && s.ident.as_deref() == Some("h1"))
+            .expect("h1 element missing");
+        // Nested elements get the parent element kind, not None.
+        assert_eq!(h1.parent_kind, Some("element"));
+    }
+
+    #[test]
+    fn html_script_and_style_elements_extract_tag_name() {
+        let sk = extract(
+            Language::Html,
+            "<script>console.log('hi');</script>\n<style>body { color: red; }</style>\n",
+        );
+        let s = sk.iter().find(|s| s.kind == "script_element").unwrap();
+        assert_eq!(s.ident.as_deref(), Some("script"));
+        let st = sk.iter().find(|s| s.kind == "style_element").unwrap();
+        assert_eq!(st.ident.as_deref(), Some("style"));
+    }
+
+    #[test]
+    fn html_grammar_fingerprint_is_stable_and_nonzero() {
+        let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Html);
+        let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Html);
+        assert_eq!(a, b);
+        assert_ne!(a, 0);
+    }
+
+    #[test]
     fn java_generic_method_ident_is_bare_name() {
         // Reviewer M2: generic class is tested, but generic method
         // has its own `<T>` shape (`type_parameters` sibling of
@@ -1637,19 +1817,20 @@ mod tests {
     }
 
     #[test]
-    fn is_root_kind_document_only_suppressed_for_markdown() {
-        // Reviewer H1: `is_root_kind` must NOT suppress `document`
-        // for non-Markdown languages — YAML/HTML grammars also use
-        // that kind name (YAML for a non-root subtree under `stream`,
-        // HTML for the file root) and a global suppression would
-        // silently corrupt `parent_kind` once those languages move
-        // out of the empty T3 allowlist.
+    fn is_root_kind_document_gated_for_markdown_and_html_but_not_yaml() {
+        // Reviewer H1 (SQL/MD train): `document` must be a root kind
+        // for Markdown AND HTML (both use it as the file root), but
+        // NOT for YAML (where `document` is a non-root subtree
+        // under `stream`). Otherwise top-level YAML nodes would
+        // silently leak `parent_kind=None` once YAML rolls out.
         assert!(is_root_kind("document", Language::Markdown));
+        assert!(is_root_kind("document", Language::Html));
         assert!(!is_root_kind("document", Language::Yaml));
-        assert!(!is_root_kind("document", Language::Html));
-        // Base set stays language-agnostic.
+        // Base set stays language-agnostic, including the new
+        // `stylesheet` (CSS root).
         assert!(is_root_kind("source_file", Language::Rust));
         assert!(is_root_kind("compilation_unit", Language::CSharp));
+        assert!(is_root_kind("stylesheet", Language::Css));
     }
 
     #[test]
@@ -1681,11 +1862,11 @@ mod tests {
 
     #[test]
     fn t3_language_short_circuits_to_empty() {
-        // CSS is T3 — never planned for skeletons. Markdown used to
-        // be the canary here but moved to T2a; use CSS so the empty-
-        // allowlist short-circuit stays covered by a language we
-        // actually intend to keep empty.
-        let sk = extract(Language::Css, "body { color: red; }\n");
+        // YAML is T3 — config / data formats with no useful
+        // pattern-targetable shape. Markdown then CSS used to be
+        // the canary here, but both moved to T2a; YAML is a stable
+        // anchor that we explicitly never plan to populate.
+        let sk = extract(Language::Yaml, "key: value\n");
         assert!(sk.is_empty());
     }
 

@@ -1,0 +1,7 @@
+lang = "html"
+pattern = "<$TAG class=\"footer\">"
+exercises = "baseline"
+
+[[expected]]
+line = 4
+captures = { TAG = "div" }
