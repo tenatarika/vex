@@ -157,7 +157,9 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             // [`extract_ident`] for the special-case walker.
             "function_definition",
             // Named record / enum kinds — all carry `name:
-            // type_identifier`.
+            // type_identifier`. `class_specifier` / `struct_specifier`
+            // also fire for forward declarations (`class Foo;`); the
+            // skeleton emits with `has_block=false` in that case.
             "class_specifier",
             "struct_specifier",
             "union_specifier",
@@ -165,15 +167,31 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             "namespace_definition",
             // Wrapper around fn/class templates. No name on the
             // wrapper itself — anonymous, but the inner specifier
-            // emits its own skeleton.
+            // emits its own skeleton. Also fires for C++20 concept
+            // declarations (`template<typename T> concept X = ...`);
+            // the concept body lives outside the allowlist so the
+            // skeleton is just an anonymous wrapper.
             "template_declaration",
             // Type aliases: `using V = T;` and the older
             // `typedef T V;` (note: `type_definition` puts the alias
-            // name in `declarator:`, not `name:`).
+            // name in `declarator:`, not `name:`). Function-pointer
+            // typedefs (`typedef int (*FuncPtr)();`) land here with
+            // `ident=None` — the abstract declarator chain has no
+            // identifier the helper can recover.
             "alias_declaration",
             "type_definition",
             // Anonymous closures: `auto f = [](int x) { return x; };`.
             "lambda_expression",
+            // Intentionally absent (deferred / out of scope):
+            //   * `field_declaration` — multi-declarator forms
+            //     (`int a, b, c;`) would emit only the first name.
+            //   * `declaration` — prototypes; the body-bearing
+            //     `function_definition` is what users target.
+            //   * `concept_definition` — handled at the wrapper level
+            //     via `template_declaration`; revisit if patterns
+            //     need to target the bare concept body.
+            //   * `friend_declaration`, `static_assert_declaration` —
+            //     not pattern-targetable.
         ],
         Language::Go => &[
             // Top-level decls — `function_declaration` and
@@ -215,13 +233,21 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
     if anonymous {
         return None;
     }
-    // C++ buries function/method names under a declarator chain. The
-    // chain mirrors the scope binder's `extract_inner_identifier`.
+    // C++ buries function/method names under a declarator chain.
+    // Reuse the scope binder's `extract_inner_identifier` so the
+    // skeleton prefilter and `vex usages` agree on what the name is —
+    // a duplicated walk could silently drift the moment one side
+    // picks up a future operator-overload / abstract-declarator
+    // tweak.
     if matches!(
         (lang, kind),
         (Language::Cpp, "function_definition" | "type_definition")
     ) {
-        return extract_cpp_declarator_ident(node, source);
+        return node
+            .child_by_field_name("declarator")
+            .and_then(crate::parse::scope::cpp_extract_inner_identifier)
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(String::from);
     }
     // For Rust `impl_item` the identifying field is `type`, not `name`.
     let field = if matches!((lang, kind), (Language::Rust, "impl_item")) {
@@ -236,28 +262,6 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
         .map(String::from)
 }
 
-/// Walk a C++ declarator chain to its innermost identifier. Mirrors
-/// the helper in `src/parse/scope/cpp.rs`; duplicated rather than
-/// re-exported to keep `pattern::skeleton` self-contained. Bounded
-/// loop guards against any cyclic / malformed AST.
-fn extract_cpp_declarator_ident(node: Node<'_>, source: &str) -> Option<String> {
-    let mut cur = node.child_by_field_name("declarator")?;
-    for _ in 0..32 {
-        match cur.kind() {
-            "identifier" | "type_identifier" | "field_identifier" => {
-                return cur.utf8_text(source.as_bytes()).ok().map(String::from);
-            }
-            "qualified_identifier" => {
-                cur = cur.child_by_field_name("name")?;
-            }
-            _ => {
-                cur = cur.child_by_field_name("declarator")?;
-            }
-        }
-    }
-    None
-}
-
 /// Block-shaped body markers, language-agnostic. Tree-sitter uses these
 /// kinds for the statement-list child of declarations across grammars.
 fn has_body_block(node: Node<'_>) -> bool {
@@ -265,19 +269,20 @@ fn has_body_block(node: Node<'_>) -> bool {
     let found = node.children(&mut cursor).any(|child| {
         matches!(
             child.kind(),
-            // Universal markers across T1 grammars. Add as T2/T3
-            // languages reveal new body-shaped kinds.
+            // Universal markers across T1 grammars; add per-language
+            // body kind names below this line as T2 languages get
+            // promoted (e.g. Java would bring `class_body` flavors,
+            // Kotlin `function_body`, etc.).
             "block"
                 | "statement_block"
                 | "declaration_list"
                 | "field_declaration_list"
                 | "enum_body"
                 | "enum_variant_list"
-                | "enumerator_list"
+                | "enumerator_list"           // C++ enum body
                 | "class_body"
                 | "interface_body"
-                // C++ function / lambda bodies are `compound_statement`.
-                | "compound_statement"
+                | "compound_statement" // C++ fn / lambda body
         )
     });
     found
@@ -618,6 +623,74 @@ mod tests {
         let u = sk.iter().find(|s| s.kind == "union_specifier").unwrap();
         assert_eq!(u.ident.as_deref(), Some("Variant"));
         assert!(u.has_block);
+    }
+
+    #[test]
+    fn cpp_forward_class_decl_emits_skeleton_with_no_block() {
+        // Reviewer GAP-1 (critical): forward declarations share the
+        // `class_specifier` node kind with full definitions —
+        // `has_block=false` is the *only* signal that separates them.
+        // Pin both halves of the contract so a future tweak to
+        // has_body_block doesn't silently flip the prefilter.
+        let sk = extract(Language::Cpp, "class Server;\nstruct Foo;\n");
+        let c = sk.iter().find(|s| s.kind == "class_specifier").unwrap();
+        assert_eq!(c.ident.as_deref(), Some("Server"));
+        assert!(
+            !c.has_block,
+            "forward class decl must report has_block=false"
+        );
+        let s = sk.iter().find(|s| s.kind == "struct_specifier").unwrap();
+        assert_eq!(s.ident.as_deref(), Some("Foo"));
+        assert!(!s.has_block);
+    }
+
+    #[test]
+    fn cpp_typedef_fn_ptr_ident_is_none() {
+        // Reviewer GAP-2 (critical): `typedef int (*FuncPtr)();` has
+        // an abstract function declarator with no recoverable
+        // identifier on the walked path. Pin `ident=None` so a
+        // future "smarter" walker doesn't accidentally start
+        // returning the wrong substring.
+        let sk = extract(Language::Cpp, "typedef int (*FuncPtr)();\n");
+        let td = sk.iter().find(|s| s.kind == "type_definition").unwrap();
+        assert_eq!(td.ident, None, "fn-ptr typedef must report ident=None");
+    }
+
+    #[test]
+    fn cpp_operator_overload_ident_is_none() {
+        // Reviewer GAP-4: `operator_name` is not an identifier kind,
+        // so `extract_inner_identifier` terminates with None. Correct
+        // behaviour, but unpinned until now.
+        let sk = extract(
+            Language::Cpp,
+            "struct Foo {};\nint operator+(const Foo& a, const Foo& b) { return 0; }\n",
+        );
+        let op = sk.iter().find(|s| s.kind == "function_definition").unwrap();
+        assert_eq!(op.ident, None, "operator overload must report ident=None");
+    }
+
+    #[test]
+    fn cpp_fn_returning_fn_ptr_ident_is_none() {
+        // Reviewer GAP-3: nested abstract declarators in
+        // `int (*foo())();`-style return types break the walk —
+        // pin the `None` outcome.
+        let sk = extract(Language::Cpp, "int (*foo())() { return 0; }\n");
+        if let Some(f) = sk.iter().find(|s| s.kind == "function_definition") {
+            assert_eq!(f.ident, None, "fn-returning-fn-ptr must report ident=None",);
+        }
+        // Either no skeleton (parse rejection) or ident=None is
+        // acceptable; what we want to fail loudly is a wrong-string
+        // surface.
+    }
+
+    #[test]
+    fn cpp_class_template_inner_class_has_template_declaration_parent() {
+        // Reviewer GAP-6: the function-template case is tested but
+        // the class-template inner class wasn't pinned.
+        let sk = extract(Language::Cpp, "template<typename T>\nclass Box {};\n");
+        let inner = sk.iter().find(|s| s.kind == "class_specifier").unwrap();
+        assert_eq!(inner.ident.as_deref(), Some("Box"));
+        assert_eq!(inner.parent_kind, Some("template_declaration"));
     }
 
     #[test]

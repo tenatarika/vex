@@ -359,8 +359,15 @@ fn is_cpp_plain_string_kind(kind: &str) -> bool {
 /// `function_declarator`, and `parenthesized_declarator` by following
 /// their `declarator` field. `qualified_identifier` chains (`Outer::
 /// Inner::name`) recurse through `name:` field until a terminal
-/// identifier is reached.
-fn extract_inner_identifier(node: Node) -> Option<Node> {
+/// identifier is reached. `operator_name`, `destructor_name`, and
+/// `abstract_function_declarator` (e.g. `typedef int (*FuncPtr)();`)
+/// terminate the walk with `None` since they aren't identifier-shaped.
+///
+/// `pub(crate)` so `pattern::skeleton` can reuse the same walk —
+/// keeping both call sites in lockstep prevents silent drift between
+/// the scope binder's notion of "the name of this declaration" and
+/// the pattern prefilter's notion of it.
+pub(crate) fn extract_inner_identifier(node: Node) -> Option<Node> {
     let mut cur = node;
     // Bound the loop so a malformed AST cycle can't hang.
     for _ in 0..32 {

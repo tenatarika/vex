@@ -26,6 +26,7 @@ use super::language::Language;
 use crate::index::symbols::ParsedSymbol;
 
 pub mod cpp;
+pub(crate) use cpp::extract_inner_identifier as cpp_extract_inner_identifier;
 pub mod csharp;
 pub mod python;
 pub mod rust;

@@ -1,0 +1,5 @@
+# Pattern-fixture inputs and specs pin multi-line `$$$BODY` captures
+# with `\n` separators. A Windows checkout under `core.autocrlf=true`
+# would silently rewrite these to CRLF and break the byte-exact
+# capture asserts in `tests/pattern_fixture_test.rs`. Force LF.
+tests/pattern_fixtures/** text eol=lf
