@@ -18,12 +18,20 @@
 //! | Tier | Languages                                        | Allowlist     |
 //! |------|--------------------------------------------------|---------------|
 //! | T1   | Rust, TypeScript, Python                         | populated     |
-//! | T2   | Go, Java, Kotlin, C#, C++, Swift, PHP, Ruby      | empty for now |
+//! | T2a  | Go                                               | populated     |
+//! | T2   | Java, Kotlin, C#, C++, Swift, PHP, Ruby          | empty for now |
 //! | T3   | SQL, Markdown, CSS, HTML, YAML, TOML, Bash, Lua  | empty (final) |
 //!
-//! An empty allowlist short-circuits to `Vec::new()`, so T2/T3 files
-//! produce no skeletons and `vex pattern --lang <x>` falls back to
-//! live-scan exactly as today.
+//! An empty allowlist short-circuits to `Vec::new()`, so unrolled-T2
+//! / T3 files produce no skeletons and `vex pattern --lang <x>` falls
+//! back to live-scan exactly as today.
+//!
+//! Go-specific note: struct / interface bodies in Go live two AST
+//! levels below `type_spec` (`type_spec > struct_type >
+//! field_declaration_list`), so [`has_body_block`] returns `false` for
+//! `type_spec` even when there's a structural body. Patterns using
+//! `$$$BODY` on Go struct/interface declarations therefore fall back
+//! to live-scan — correctness preserved, perf-only impact.
 
 use tree_sitter::{Node, Parser};
 
@@ -143,6 +151,21 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             "decorated_definition",
             "lambda",
         ],
+        Language::Go => &[
+            // Top-level decls — `function_declaration` and
+            // `method_declaration` are first-class; `type_spec` /
+            // `var_spec` / `const_spec` are the named units inside
+            // grouped `type (...)` / `var (...)` / `const (...)`
+            // wrappers (also fired for ungrouped single-spec forms).
+            "function_declaration",
+            "method_declaration",
+            "type_spec",
+            "var_spec",
+            "const_spec",
+            // Anonymous closures — `value = func(x) { ... }` and
+            // `defer func() { ... }()` patterns.
+            "func_literal",
+        ],
         _ => &[],
     }
 }
@@ -158,6 +181,7 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
             Language::TypeScript,
             "arrow_function" | "function_expression",
         ) | (Language::Python, "lambda" | "decorated_definition")
+            | (Language::Go, "func_literal")
     );
     if anonymous {
         return None;
@@ -289,9 +313,90 @@ mod tests {
 
     #[test]
     fn t2_language_returns_empty_until_rolled_out() {
-        // Go is T2 — not yet in the allowlist.
-        let sk = extract(Language::Go, "func main() {}\n");
+        // Java is still T2 — not yet in the allowlist. Go used to be
+        // the canary here; it moved to T2a (populated) so swap to
+        // Java to keep the empty-allowlist short-circuit covered.
+        let sk = extract(Language::Java, "class Foo {}\n");
         assert!(sk.is_empty());
+    }
+
+    #[test]
+    fn go_function_emits_single_skeleton() {
+        let sk = extract(Language::Go, "package main\n\nfunc Foo() {}\n");
+        let f = sk
+            .iter()
+            .find(|s| s.kind == "function_declaration")
+            .unwrap();
+        assert_eq!(f.ident.as_deref(), Some("Foo"));
+        assert_eq!(f.parent_kind, None);
+        assert!(f.has_block);
+    }
+
+    #[test]
+    fn go_method_decl_carries_receiver_field_name() {
+        let sk = extract(
+            Language::Go,
+            "package main\n\ntype Bar struct{}\n\nfunc (b *Bar) Hello() {}\n",
+        );
+        let m = sk.iter().find(|s| s.kind == "method_declaration").unwrap();
+        // `name:` is a `field_identifier`, not a plain `identifier` —
+        // pin that `extract_ident` still recovers it.
+        assert_eq!(m.ident.as_deref(), Some("Hello"));
+        assert!(m.has_block);
+    }
+
+    #[test]
+    fn go_type_spec_inside_grouped_decl_emits_per_spec() {
+        let sk = extract(
+            Language::Go,
+            "package main\n\ntype (\n    Foo struct{}\n    Bar interface{}\n)\n",
+        );
+        let specs: Vec<_> = sk.iter().filter(|s| s.kind == "type_spec").collect();
+        assert_eq!(specs.len(), 2);
+        let names: Vec<&str> = specs.iter().filter_map(|s| s.ident.as_deref()).collect();
+        assert!(names.contains(&"Foo"));
+        assert!(names.contains(&"Bar"));
+        // `type_spec` body lives one level deeper — has_block stays
+        // false (see module doc note).
+        assert!(specs.iter().all(|s| !s.has_block));
+        // Parent is `type_declaration` (the `type (...)` wrapper).
+        assert!(specs
+            .iter()
+            .all(|s| s.parent_kind == Some("type_declaration")));
+    }
+
+    #[test]
+    fn go_func_literal_is_anonymous() {
+        let sk = extract(
+            Language::Go,
+            "package main\n\nvar handler = func(x int) int { return x }\n",
+        );
+        let lit = sk.iter().find(|s| s.kind == "func_literal").unwrap();
+        assert_eq!(lit.ident, None);
+        assert!(lit.has_block);
+    }
+
+    #[test]
+    fn go_var_and_const_specs_carry_idents() {
+        let sk = extract(
+            Language::Go,
+            "package main\n\nvar top = 42\nconst MyConst = \"hi\"\n",
+        );
+        let v = sk.iter().find(|s| s.kind == "var_spec").unwrap();
+        assert_eq!(v.ident.as_deref(), Some("top"));
+        let c = sk.iter().find(|s| s.kind == "const_spec").unwrap();
+        assert_eq!(c.ident.as_deref(), Some("MyConst"));
+    }
+
+    #[test]
+    fn go_grammar_fingerprint_is_stable_and_nonzero() {
+        // Smoke test: the grammar fingerprint must be deterministic
+        // across calls and never collide with the zero sentinel (which
+        // the reader uses to signal "not stored").
+        let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Go);
+        let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Go);
+        assert_eq!(a, b, "fingerprint must be deterministic");
+        assert_ne!(a, 0, "zero is reserved as the not-stored sentinel");
     }
 
     #[test]

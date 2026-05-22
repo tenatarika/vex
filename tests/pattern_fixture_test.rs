@@ -57,6 +57,7 @@ fn input_extension(lang: &str) -> &'static str {
         "rust" => "rs",
         "typescript" | "ts" => "ts",
         "python" | "py" => "py",
+        "go" => "go",
         other => panic!("unsupported fixture lang: {other}"),
     }
 }
@@ -174,4 +175,19 @@ fn typescript_interface_or_class_composition() {
 #[test]
 fn python_multiline_method_with_body() {
     run_fixture("python_multiline_method");
+}
+
+#[test]
+fn baseline_go_simple_func() {
+    run_fixture("baseline_go");
+}
+
+#[test]
+fn go_method_decl_matches_receiver_shape() {
+    run_fixture("go_method_receiver");
+}
+
+#[test]
+fn go_struct_with_multiline_body() {
+    run_fixture("go_struct_body");
 }

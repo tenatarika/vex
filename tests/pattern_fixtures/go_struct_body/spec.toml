@@ -1,0 +1,7 @@
+lang = "go"
+pattern = "type $NAME struct { $$$BODY }"
+exercises = "go_struct_body"
+
+[[expected]]
+line = 3
+captures = { NAME = "Config" }

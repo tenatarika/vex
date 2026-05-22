@@ -1,0 +1,7 @@
+lang = "go"
+pattern = "func $NAME()"
+exercises = "baseline"
+
+[[expected]]
+line = 3
+captures = { NAME = "foo" }

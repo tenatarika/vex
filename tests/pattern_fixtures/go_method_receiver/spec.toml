@@ -1,0 +1,11 @@
+lang = "go"
+pattern = "func ($RECV *$TYPE) $NAME() error"
+exercises = "go_method_receiver"
+
+[[expected]]
+line = 5
+captures = { RECV = "s", TYPE = "Server", NAME = "Start" }
+
+[[expected]]
+line = 9
+captures = { RECV = "s", TYPE = "Server", NAME = "Stop" }
