@@ -800,6 +800,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             lang,
             path,
             limit,
+            why,
             scope,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
@@ -839,8 +840,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             } else {
                 usize::MAX
             };
-            let matches = crate::pattern::scan(&root, &pattern, language, fetch_limit, excludes)?;
-            let matches: Vec<_> = matches
+
+            let (raw_matches, trace) =
+                crate::pattern::scan_with_mode(&root, &pattern, language, fetch_limit, excludes)?;
+
+            let matches: Vec<_> = raw_matches
                 .into_iter()
                 .filter(|m| path_scope.accept(&m.path))
                 .take(limit)
@@ -886,6 +890,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     }
                 }
             }
+
+            if why {
+                // stderr keeps stdout a pure result stream — mirrors
+                // `vex search --why` so `vex pattern 'pat' --why | jq` works.
+                eprintln!("{}", serde_json::to_string(&trace)?);
+            }
+
             Ok(())
         }
         Commands::Update {

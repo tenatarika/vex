@@ -165,15 +165,40 @@ fn handle_tool_call(params: &Option<Value>) -> Result<Value> {
 
     // Surface MCP-protocol-level metadata via the reserved `_meta` field
     // (see modelcontextprotocol.io spec). Clients that don't read
-    // `_meta` see the unchanged content array; clients that do can
-    // detect deprecated argument usage.
+    // `_meta` see the unchanged content array; clients that do see:
+    //   * deprecated_args — legacy MCP arg names the caller used
+    //   * why            — the CLI's `--why` ScanTrace JSON, parsed
+    //                      from stderr. Only present when `why: true`
+    //                      was requested and the CLI emitted a trace.
+    let mut meta = serde_json::Map::new();
     if !built.deprecated_args.is_empty() {
-        result["_meta"] = serde_json::json!({
-            "deprecated_args": built.deprecated_args,
-        });
+        meta.insert(
+            "deprecated_args".into(),
+            serde_json::json!(built.deprecated_args),
+        );
+    }
+    if let Some(trace) = extract_why_trace(&stderr) {
+        meta.insert("why".into(), trace);
+    }
+    if !meta.is_empty() {
+        result["_meta"] = Value::Object(meta);
     }
 
     Ok(result)
+}
+
+/// Extract the `--why` ScanTrace JSON from a vex CLI's stderr. The CLI
+/// emits one `{...}` line via `eprintln!` after the result list; we
+/// pick the first such line that parses as JSON. Returns `None` when no
+/// trace is present (the common case — `--why` wasn't passed).
+fn extract_why_trace(stderr: &str) -> Option<Value> {
+    stderr.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with('{') {
+            return None;
+        }
+        serde_json::from_str::<Value>(line).ok()
+    })
 }
 
 /// Output of `build_command`. Carries the resolved vex subcommand plus the
@@ -467,6 +492,11 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 "--limit".into(),
                 limit.to_string(),
             ];
+            // 11.4 Inc 8: surface the ScanTrace via --why so MCP agents
+            // can observe which mode the prefilter selected and why.
+            if args["why"].as_bool().unwrap_or(false) {
+                extra.push("--why".into());
+            }
             push_scope(&mut extra, args);
             ("pattern".to_string(), extra)
         }
@@ -602,7 +632,7 @@ fn tool_descriptors() -> Value {
                     "query": { "type": "string", "description": "Free-text search query — symbol name, pattern, or natural language" },
                     "limit": { "type": "integer", "description": "Max results", "default": 20 },
                     "semantic": { "type": "boolean", "description": "Enable semantic vector search", "default": false },
-                    "why": { "type": "boolean", "description": "Append a JSON trace to stderr: normalized query, per-channel hits (FST/BM25/semantic/fuzzy), filter_applied snapshot", "default": false },
+                    "why": { "type": "boolean", "description": "Surface a JSON trace under `_meta.why` in the response: normalized query, per-channel hits (FST/BM25/semantic/fuzzy), filter_applied snapshot", "default": false },
                     "project_root": { "type": "string", "description": "Project root path" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax, e.g. 'tests/**')" },
@@ -797,16 +827,17 @@ fn tool_descriptors() -> Value {
         },
         {
             "name": "pattern",
-            "description": "Structural AST pattern matching. Match code by shape rather than text: `$NAME` captures an identifier or balanced expression, `$$$` matches anything (ellipsis), repeated `$NAME` is a back-reference that requires the same capture across occurrences. Live-scan over source files (no index needed) using the per-language tree-sitter grammar.",
+            "description": "Structural AST pattern matching. Match code by shape rather than text: `$NAME` captures an identifier or balanced expression, `$_` is a wildcard, `$$$` matches anything anonymously (ellipsis), `$$$NAME` / `$$NAME` is a named ellipsis that captures a multi-line body or arg list, repeated metavars enforce back-reference equality. Composition: space-flanked ` && ` and ` || ` join sub-patterns (AND requires both shapes in the file with shared captures agreeing; OR takes the union). When the project has been indexed (`vex index`), a persisted skeleton prefilter narrows candidates to files containing the right node kinds — set `why: true` to inspect which mode fired.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "pattern": { "type": "string", "description": "Structural pattern (e.g. `fn $NAME($$$) -> Result`, `$X.then($X)`)" },
+                    "pattern": { "type": "string", "description": "Structural pattern (e.g. `fn $NAME($$ARGS) -> Result<$T, $E> { $$$BODY }`, `interface $N || class $N`)" },
                     "lang": { "type": "string", "description": "Language: rust, python, typescript, go, java, csharp, ruby, kotlin, swift, cpp, php, sql, markdown" },
                     "limit": { "type": "integer", "description": "Max matches to return", "default": 50 },
                     "project_root": { "type": "string", "description": "Project root path" },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" },
+                    "why": { "type": "boolean", "description": "Surface a ScanTrace under `_meta.why` in the response: mode (indexed/live_scan), root_kind_inferred, candidate_files / total_files, fallback_reason." }
                 },
                 "required": ["pattern", "lang"]
             }
@@ -1183,5 +1214,121 @@ mod tests {
                 "{name} schema is missing exclude: {props}"
             );
         }
+    }
+
+    // ── 11.4 Inc 8: vex_pattern tool surface ──────────────────────────────
+
+    #[test]
+    fn pattern_canonical_args_become_cli_flags() {
+        let extra = args_for(
+            "pattern",
+            json!({
+                "pattern": "fn $NAME($$$) -> Result",
+                "lang": "rust",
+                "limit": 25,
+            }),
+        );
+        assert_eq!(
+            extra[0], "fn $NAME($$$) -> Result",
+            "pattern is first positional arg"
+        );
+        assert!(extra.iter().any(|a| a == "--lang"));
+        assert!(extra.iter().any(|a| a == "rust"));
+        assert!(extra.iter().any(|a| a == "--limit"));
+        assert!(extra.iter().any(|a| a == "25"));
+    }
+
+    #[test]
+    fn pattern_composition_string_passes_through_verbatim() {
+        // The CLI parses `&&` / `||` at parse time — MCP just forwards.
+        let extra = args_for(
+            "pattern",
+            json!({
+                "pattern": "struct $S && impl $S",
+                "lang": "rust",
+            }),
+        );
+        assert_eq!(
+            extra[0], "struct $S && impl $S",
+            "composition operators must not be mangled by MCP"
+        );
+    }
+
+    #[test]
+    fn pattern_why_true_appends_why_flag() {
+        let extra = args_for(
+            "pattern",
+            json!({
+                "pattern": "fn $N()",
+                "lang": "rust",
+                "why": true,
+            }),
+        );
+        assert!(
+            extra.iter().any(|a| a == "--why"),
+            "why=true must add --why to the spawned CLI args; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn pattern_why_false_omits_why_flag() {
+        let extra = args_for(
+            "pattern",
+            json!({"pattern": "fn $N()", "lang": "rust", "why": false}),
+        );
+        assert!(
+            !extra.iter().any(|a| a == "--why"),
+            "why=false must not pass --why; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn pattern_why_default_omits_why_flag() {
+        let extra = args_for("pattern", json!({"pattern": "fn $N()", "lang": "rust"}));
+        assert!(
+            !extra.iter().any(|a| a == "--why"),
+            "missing why arg must not pass --why; got: {extra:?}"
+        );
+    }
+
+    // ── extract_why_trace — wrapper stderr → _meta.why plumbing ────────────
+
+    #[test]
+    fn extract_why_trace_picks_first_json_line() {
+        let stderr = "some warning\n{\"mode\":\"indexed\",\"candidate_files\":12}\nmore noise\n";
+        let trace = extract_why_trace(stderr).expect("should extract");
+        assert_eq!(trace["mode"].as_str(), Some("indexed"));
+        assert_eq!(trace["candidate_files"].as_u64(), Some(12));
+    }
+
+    #[test]
+    fn extract_why_trace_returns_none_when_no_json_line_present() {
+        let stderr = "WARN tree-sitter: foo\nINFO bar\n";
+        assert!(extract_why_trace(stderr).is_none());
+    }
+
+    #[test]
+    fn extract_why_trace_ignores_non_parseable_brace_lines() {
+        // A `{` that doesn't open a valid JSON object must not throw.
+        let stderr = "{ not really json\n";
+        assert!(extract_why_trace(stderr).is_none());
+    }
+
+    #[test]
+    fn pattern_schema_exposes_why_and_scope() {
+        let desc = tool_descriptors();
+        let tools = desc.as_array().expect("tool_descriptors returns array");
+        let entry = tools
+            .iter()
+            .find(|t| t["name"] == "pattern")
+            .expect("missing pattern tool descriptor");
+        let props = &entry["inputSchema"]["properties"];
+        assert!(props["why"].is_object(), "pattern schema must expose `why`");
+        assert!(props["include"].is_object());
+        assert!(props["exclude"].is_object());
+        // Canonical naming (anticipating 11.10): pattern / lang / project_root.
+        assert!(props["pattern"].is_object());
+        assert!(props["lang"].is_object());
+        assert!(props["project_root"].is_object());
     }
 }

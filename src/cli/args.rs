@@ -229,6 +229,13 @@ pub enum Commands {
         #[arg(long, default_value = "50")]
         limit: usize,
 
+        /// Append a JSON scan-mode trace to stderr after the result list:
+        /// whether the indexed prefilter or a live-scan was used, the
+        /// inferred root kind, candidate/total file counts, and the
+        /// fallback reason when the index path was skipped.
+        #[arg(long)]
+        why: bool,
+
         #[command(flatten)]
         scope: ScopeArgs,
     },

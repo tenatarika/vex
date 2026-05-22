@@ -7,7 +7,33 @@
 //! - Literal text is matched exactly
 //! - `$NAME` matches a single identifier/expression and captures it
 //! - `$_` matches anything without capturing
-//! - `$$$` matches zero or more characters (ellipsis)
+//! - `$$$` matches zero or more characters anonymously (ellipsis,
+//!   spans across newlines and node boundaries)
+//! - `$$$NAME` — node/block-spanning ellipsis with a named capture
+//!   (11.4 Inc 6 — typical use: `fn $F($$ARGS) { $$$BODY }`)
+//! - `$$NAME` — comma/arg-list-spanning ellipsis with a named capture
+//!   (11.4 Inc 6). Functionally identical to `$$$NAME` today; the two
+//!   syntaxes coexist for readability — `$$$BODY` reads naturally for
+//!   block bodies, `$$ARGS` for parameter lists.
+//!
+//! ## Composition (Inc 7)
+//!
+//! Two top-level operators combine sub-patterns. They are detected
+//! **before** the per-conjunct tokeniser runs, so single-pattern
+//! semantics are unchanged when neither operator is present.
+//!
+//! - ` && ` — AND. Both sub-patterns must match in the same file;
+//!   shared metavar names must capture the same text in both.
+//! - ` || ` — OR. The union of either sub-pattern's matches.
+//!
+//! Precedence: `&&` binds tighter than `||` (standard).
+//!
+//! Splits only fire when the operator is **space-flanked** and at
+//! bracket / quote depth 0. So `record($X, $X)` is one pattern;
+//! `f($X && $Y)` is one pattern (the `&&` sits inside parens);
+//! `if x && y` at top level **does** split — pattern authors who
+//! intend a literal Rust/C `&&` operator should wrap it in a larger
+//! structural context that puts it past depth 0.
 
 use std::collections::HashMap;
 
@@ -19,17 +45,68 @@ use crate::parse::language::Language;
 use super::PatternMatch;
 
 /// Compiled pattern — a list of segments (literal or metavar).
+#[derive(Debug)]
 pub struct PatternTree {
     segments: Vec<Segment>,
     pub lang: Language,
 }
 
+/// Composite pattern shape — OR of ANDs. Single-pattern usages produce
+/// exactly one disjunct with one [`PatternTree`] inside.
+///
+/// Semantics:
+/// - Each top-level `||`-separated branch becomes one entry in
+///   `disjuncts`.
+/// - Each `&&`-separated piece within a branch becomes one
+///   [`PatternTree`] in that branch's vector.
+/// - A file matches the composite when **any** disjunct matches, and a
+///   disjunct matches when **all** of its trees match with consistent
+///   captures across shared metavar names.
+#[allow(dead_code)] // Debug used by `Result::unwrap_err` panics in tests
+#[derive(Debug)]
+pub struct CompositePattern {
+    /// Outer vec = OR; inner vec = AND.
+    pub disjuncts: Vec<Vec<PatternTree>>,
+    /// Language the composite was parsed against. Kept on the composite
+    /// so consumers don't need to reach into a `PatternTree` to recover
+    /// it (e.g. tracing, future structural-rewrite preview in scope-C).
+    /// Currently no in-crate reader — `#[allow(dead_code)]` until a real
+    /// caller arrives.
+    #[allow(dead_code)]
+    pub lang: Language,
+}
+
+impl CompositePattern {
+    /// `true` iff the composite has more than one disjunct (an OR).
+    pub fn has_or(&self) -> bool {
+        self.disjuncts.len() > 1
+    }
+}
+
 #[derive(Debug)]
 enum Segment {
     Literal(String),
-    Capture(String), // $NAME
-    Wildcard,        // $_
-    Ellipsis,        // $$$
+    Capture(String),       // $NAME — single token / balanced expression
+    Wildcard,              // $_
+    Ellipsis,              // $$$  — anonymous ellipsis
+    NamedEllipsis(String), // $$$NAME or $$NAME — named ellipsis with capture
+}
+
+/// Consume an alphanumeric/underscore identifier from `chars` and return it.
+/// Returns an empty string when the peek is not an identifier start —
+/// callers use the empty result to distinguish anonymous prefixes (e.g.
+/// `$$$`) from named ones (`$$$BODY`).
+fn read_ident(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut name = String::new();
+    while let Some(&c) = chars.peek() {
+        if c.is_alphanumeric() || c == '_' {
+            name.push(c);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    name
 }
 
 /// Parse the pattern string into segments.
@@ -52,16 +129,29 @@ pub fn parse_pattern(pattern: &str, lang: Language) -> Result<PatternTree> {
             }
             chars.next(); // consume $
 
-            // Check for $$$
+            // Check for $$$ / $$$NAME / $$NAME — multi-`$` prefixes.
             if chars.peek() == Some(&'$') {
                 chars.next();
                 if chars.peek() == Some(&'$') {
+                    // Three `$` — anonymous `$$$` or named `$$$NAME`.
                     chars.next();
-                    segments.push(Segment::Ellipsis);
+                    let name = read_ident(&mut chars);
+                    if name.is_empty() {
+                        segments.push(Segment::Ellipsis);
+                    } else {
+                        segments.push(Segment::NamedEllipsis(name));
+                    }
                     continue;
                 }
-                // Just $$ — treat as literal
-                literal.push_str("$$");
+                // Two `$` — either `$$NAME` (named ellipsis) or a bare
+                // `$$` that we keep as a literal so existing patterns
+                // mentioning `$$` in shell-style syntax don't break.
+                let name = read_ident(&mut chars);
+                if name.is_empty() {
+                    literal.push_str("$$");
+                } else {
+                    segments.push(Segment::NamedEllipsis(name));
+                }
                 continue;
             }
 
@@ -103,6 +193,212 @@ pub fn parse_pattern(pattern: &str, lang: Language) -> Result<PatternTree> {
     }
 
     Ok(PatternTree { segments, lang })
+}
+
+/// Parse a (possibly composite) pattern into [`CompositePattern`].
+///
+/// Single patterns (no top-level `&&` / `||`) produce one disjunct with
+/// one tree — semantically identical to [`parse_pattern`]. Patterns
+/// containing top-level composition operators are split first, then
+/// each leaf is parsed via [`parse_pattern`].
+pub fn parse_composite_pattern(pattern: &str, lang: Language) -> Result<CompositePattern> {
+    if pattern.trim().is_empty() {
+        anyhow::bail!(
+            "empty pattern — supply at least one literal token or metavar \
+             (e.g. `fn $NAME($$$)`, `$X.then($X)`)"
+        );
+    }
+    let or_parts = split_top_level(pattern, "||");
+    let mut disjuncts = Vec::with_capacity(or_parts.len());
+    for or_part in or_parts {
+        let and_parts = split_top_level(&or_part, "&&");
+        let mut trees = Vec::with_capacity(and_parts.len());
+        for and_part in and_parts {
+            trees.push(parse_pattern(and_part.trim(), lang)?);
+        }
+        disjuncts.push(trees);
+    }
+    Ok(CompositePattern { disjuncts, lang })
+}
+
+/// Split `s` on the literal operator `op` only at positions where:
+///   * bracket depth `() [] {}` is zero,
+///   * the position is not inside a `"`/`'` string literal,
+///   * the operator is space-flanked on both sides.
+///
+/// When no split fires the result is `[s.trim().to_string()]`.
+fn split_top_level(s: &str, op: &str) -> Vec<String> {
+    let bytes = s.as_bytes();
+    let op_bytes = op.as_bytes();
+    let mut parts: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    let mut depth: i32 = 0;
+    let mut in_str: Option<u8> = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        // Inside a string literal — consume verbatim, watch for escapes
+        // and the matching quote.
+        if let Some(q) = in_str {
+            if b == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                in_str = None;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'"' || b == b'\'' {
+            in_str = Some(b);
+            i += 1;
+            continue;
+        }
+        if b == b'(' || b == b'[' || b == b'{' {
+            depth += 1;
+        } else if b == b')' || b == b']' || b == b'}' {
+            depth -= 1;
+        }
+        // Look for ` && ` / ` || ` at depth 0.
+        let op_end = i + op_bytes.len();
+        if depth == 0
+            && i > 0
+            && bytes[i - 1] == b' '
+            && op_end < bytes.len()
+            && &bytes[i..op_end] == op_bytes
+            && bytes[op_end] == b' '
+        {
+            parts.push(s[start..i].trim().to_string());
+            i = op_end + 1;
+            start = i;
+            continue;
+        }
+        i += 1;
+    }
+    parts.push(s[start..].trim().to_string());
+    parts
+}
+
+/// Top-level composite matcher (Inc 7).
+///
+/// OR semantics: union of every disjunct's matches, deduped by
+/// `(file_path, line)`. AND semantics: every tree in a disjunct must
+/// match in the file and their captures must agree on shared metavar
+/// names. The reported match is anchored at the **first** conjunct's
+/// location with captures from all conjuncts merged in order.
+pub fn find_matches_composite(
+    source: &str,
+    pattern: &CompositePattern,
+    file_path: &str,
+) -> Vec<PatternMatch> {
+    let mut out: Vec<PatternMatch> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for trees in &pattern.disjuncts {
+        for m in match_conjunct(source, trees, file_path) {
+            if seen.insert((m.path.clone(), m.line)) {
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
+fn match_conjunct(source: &str, trees: &[PatternTree], file_path: &str) -> Vec<PatternMatch> {
+    if trees.is_empty() {
+        return Vec::new();
+    }
+    if trees.len() == 1 {
+        return find_matches(source, &trees[0], file_path);
+    }
+
+    // Materialise every tree's per-file matches once.
+    let per_tree: Vec<Vec<PatternMatch>> = trees
+        .iter()
+        .map(|t| find_matches(source, t, file_path))
+        .collect();
+    if per_tree.iter().any(|v| v.is_empty()) {
+        return Vec::new();
+    }
+
+    // For each match of tree[0], confirm an agreeing match exists in
+    // every subsequent tree. Captures from all conjuncts are merged.
+    //
+    // Perf (review H1): the `merged → HashMap` projection is built once
+    // per `(anchor, other_tree)` iteration (the input `merged` grows as
+    // each conjunct is accepted, so the third+ conjunct's map includes
+    // the names introduced by earlier conjuncts — that's the
+    // cross-conjunct back-ref enforcement). Avoids the previous
+    // O(anchors × other_trees × candidates × |captures|) HashMap work
+    // by amortising the build over every candidate in the tree.
+    let mut out = Vec::new();
+    for anchor in &per_tree[0] {
+        let mut merged = anchor.captures.clone();
+        let mut all_ok = true;
+        for other_matches in &per_tree[1..] {
+            let merged_map = build_normalised_map(&merged);
+            let next = other_matches
+                .iter()
+                .find(|m| captures_agree_with_map(&merged_map, &m.captures));
+            match next {
+                Some(m) => {
+                    for (k, v) in &m.captures {
+                        if !merged.iter().any(|(k2, _)| k2 == k) {
+                            merged.push((k.clone(), v.clone()));
+                        }
+                    }
+                }
+                None => {
+                    all_ok = false;
+                    break;
+                }
+            }
+        }
+        if all_ok {
+            out.push(PatternMatch {
+                path: anchor.path.clone(),
+                line: anchor.line,
+                matched_text: anchor.matched_text.clone(),
+                captures: merged,
+            });
+        }
+    }
+    out
+}
+
+/// Build the normalised lookup map used by [`captures_agree_with_map`].
+/// First binding wins — matches the back-ref semantics inside a single
+/// pattern.
+fn build_normalised_map(captures: &[(String, String)]) -> HashMap<&str, String> {
+    let mut map: HashMap<&str, String> = HashMap::new();
+    for (k, v) in captures {
+        map.entry(k.as_str())
+            .or_insert_with(|| normalise_capture(v));
+    }
+    map
+}
+
+/// `true` iff every metavar name in `c2` that is also in `map_c1` has
+/// the same normalised text in both. Disjoint names always agree.
+/// Pre-built `map_c1` is the perf-hot path; tests use the simpler
+/// [`captures_agree`] below.
+fn captures_agree_with_map(map_c1: &HashMap<&str, String>, c2: &[(String, String)]) -> bool {
+    for (k, v) in c2 {
+        if let Some(prev) = map_c1.get(k.as_str()) {
+            if *prev != normalise_capture(v) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Test-friendly convenience that builds the map internally. Production
+/// code goes through [`captures_agree_with_map`] to amortise the build.
+#[cfg(test)]
+fn captures_agree(c1: &[(String, String)], c2: &[(String, String)]) -> bool {
+    let map = build_normalised_map(c1);
+    captures_agree_with_map(&map, c2)
 }
 
 /// Find all AST nodes in `source` whose text matches the pattern.
@@ -213,8 +509,15 @@ fn try_match(text: &str, segments: &[Segment]) -> Option<Vec<(String, String)>> 
                 while pos < text.len() && text.as_bytes()[pos].is_ascii_whitespace() {
                     pos += 1;
                 }
-                // Capture a "word" — identifier or balanced expression
-                let word = extract_word(&text[pos..]);
+                // Capture a "word" — identifier or balanced expression.
+                // Pass the first byte of the next literal so the greedy
+                // identifier scan stops at the boundary instead of
+                // swallowing characters that belong to the next segment.
+                // Without this, `Result<$T, $E>` over `Error>` would have
+                // `$E` swallow the `>` because `>` is in the identifier
+                // allow-list (kept for inline generics like `$T<$U>`).
+                let stop = next_literal_first_byte(&segments[i + 1..]);
+                let word = extract_word_until(&text[pos..], stop);
                 if word.is_empty() {
                     return None;
                 }
@@ -242,7 +545,8 @@ fn try_match(text: &str, segments: &[Segment]) -> Option<Vec<(String, String)>> 
                 while pos < text.len() && text.as_bytes()[pos].is_ascii_whitespace() {
                     pos += 1;
                 }
-                let word = extract_word(&text[pos..]);
+                let stop = next_literal_first_byte(&segments[i + 1..]);
+                let word = extract_word_until(&text[pos..], stop);
                 if word.is_empty() {
                     return None;
                 }
@@ -262,21 +566,49 @@ fn try_match(text: &str, segments: &[Segment]) -> Option<Vec<(String, String)>> 
                     pos = text.len();
                 }
             }
+            Segment::NamedEllipsis(name) => {
+                // $$$NAME / $$NAME — like Ellipsis but captures the
+                // consumed text under `name` and enforces back-reference
+                // equality on repeat occurrences (same semantics as
+                // `Capture`, just over a multi-token / multi-line span).
+                let start = pos;
+                if let Some(next_lit) = find_next_literal(&segments[i + 1..]) {
+                    if let Some(idx) = text[pos..].find(next_lit.trim()) {
+                        pos += idx;
+                    } else {
+                        return None;
+                    }
+                } else {
+                    pos = text.len();
+                }
+                let captured = text[start..pos].trim().to_string();
+                let norm = normalise_capture(&captured);
+                if let Some(prev) = bound.get(name) {
+                    if prev != &norm {
+                        return None;
+                    }
+                } else {
+                    bound.insert(name.clone(), norm);
+                }
+                captures.push((name.clone(), captured));
+            }
         }
     }
 
     Some(captures)
 }
 
-/// Extract a "word" from the current position — an identifier or balanced parens.
-fn extract_word(s: &str) -> &str {
+/// Extract a "word" from the current position — an identifier or
+/// balanced parens. Stops one byte early when the byte equals `stop`
+/// (used to keep a capture from swallowing characters that belong to
+/// the next literal segment). Pass `None` for unconstrained extraction.
+fn extract_word_until(s: &str, stop: Option<u8>) -> &str {
     if s.is_empty() {
         return "";
     }
-
     let bytes = s.as_bytes();
 
-    // If starts with a bracket, find the balanced closing bracket
+    // If starts with a bracket, find the balanced closing bracket.
     if bytes[0] == b'(' || bytes[0] == b'{' || bytes[0] == b'[' {
         let open = bytes[0];
         let close = match open {
@@ -298,10 +630,13 @@ fn extract_word(s: &str) -> &str {
         return &s[..i];
     }
 
-    // Otherwise, collect an identifier (alphanumeric + underscore + :: + <> + *)
+    // Otherwise, collect an identifier (alphanumeric + underscore + :: + <> + *).
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
+        if stop == Some(b) {
+            break;
+        }
         if b.is_ascii_alphanumeric()
             || b == b'_'
             || b == b'<'
@@ -318,6 +653,25 @@ fn extract_word(s: &str) -> &str {
         }
     }
     &s[..i]
+}
+
+#[cfg(test)]
+fn extract_word(s: &str) -> &str {
+    extract_word_until(s, None)
+}
+
+/// First non-whitespace byte of the next literal segment, if any. Used
+/// as a boundary for greedy `Capture` / `Wildcard` extraction.
+fn next_literal_first_byte(segments: &[Segment]) -> Option<u8> {
+    for seg in segments {
+        if let Segment::Literal(lit) = seg {
+            let trimmed = lit.trim_start();
+            if let Some(b) = trimmed.bytes().next() {
+                return Some(b);
+            }
+        }
+    }
+    None
 }
 
 /// Strip all whitespace so back-reference equality on balanced
@@ -556,6 +910,253 @@ func main() {}
             .collect();
         assert_eq!(by_name.get("A"), Some(&"client"));
         assert_eq!(by_name.get("B"), Some(&"server"));
+    }
+
+    // --- 11.4 Inc 6: $$$NAME / $$NAME multi-line metavars ---
+
+    #[test]
+    fn parses_named_block_ellipsis() {
+        let pattern = parse_pattern("fn $F($$ARGS) { $$$BODY }", Language::Rust).unwrap();
+        // Literal("fn ") Capture("F") Literal("(") NamedEllipsis("ARGS")
+        // Literal(") { ") NamedEllipsis("BODY") Literal(" }")
+        assert!(matches!(pattern.segments[3], Segment::NamedEllipsis(ref n) if n == "ARGS"));
+        assert!(matches!(pattern.segments[5], Segment::NamedEllipsis(ref n) if n == "BODY"));
+    }
+
+    #[test]
+    fn anonymous_triple_dollar_still_parses_as_ellipsis() {
+        let pattern = parse_pattern("fn $NAME($$$) -> Result", Language::Rust).unwrap();
+        assert!(matches!(pattern.segments[3], Segment::Ellipsis));
+    }
+
+    #[test]
+    fn matches_multiline_function_body_with_named_block_ellipsis() {
+        let source = "fn process(x: i32) -> Result<i32, Error> {\n    let y = x + 1;\n    let z = y * 2;\n    Ok(z)\n}\n";
+        let pattern = parse_pattern(
+            "fn $NAME($$ARGS) -> Result<$T, $E> { $$$BODY }",
+            Language::Rust,
+        )
+        .unwrap();
+        let matches = find_matches(source, &pattern, "test.rs");
+        assert!(!matches.is_empty(), "expected match across multi-line body");
+        let by_name: std::collections::HashMap<&str, &str> = matches[0]
+            .captures
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(by_name.get("NAME"), Some(&"process"));
+        assert_eq!(by_name.get("T"), Some(&"i32"));
+        assert_eq!(by_name.get("E"), Some(&"Error"));
+    }
+
+    #[test]
+    fn capture_stops_before_next_literal_byte() {
+        // Pre-Inc-6, `extract_word` greedily consumed `>` to support
+        // `Result<T>`-style inline generics. Patterns with a literal
+        // `>` after a capture (e.g. `Result<$T, $E>`) silently lost
+        // matches because `$E` swallowed the closing `>`. The
+        // `extract_word_until` boundary lookahead pins the fix.
+        let bounded = extract_word_until("Error>", Some(b'>'));
+        assert_eq!(bounded, "Error");
+        let unbounded = extract_word("Error>");
+        assert_eq!(unbounded, "Error>");
+    }
+
+    // --- 11.4 Inc 7: AND / OR composition ---
+
+    #[test]
+    fn split_top_level_respects_bracket_depth() {
+        // `&&` inside parens is not a split point.
+        let parts = split_top_level("f($X && $Y) && g($Z)", "&&");
+        assert_eq!(parts, vec!["f($X && $Y)", "g($Z)"]);
+    }
+
+    #[test]
+    fn split_top_level_requires_space_flank() {
+        // `&&` not space-flanked (no surrounding spaces) is left alone.
+        let parts = split_top_level("a&&b", "&&");
+        assert_eq!(parts, vec!["a&&b"]);
+    }
+
+    #[test]
+    fn parse_composite_single_pattern_has_one_branch() {
+        let comp = parse_composite_pattern("fn $NAME()", Language::Rust).unwrap();
+        assert_eq!(comp.disjuncts.len(), 1);
+        assert_eq!(comp.disjuncts[0].len(), 1);
+        assert!(!comp.has_or());
+    }
+
+    #[test]
+    fn parse_composite_and_two_conjuncts() {
+        let comp = parse_composite_pattern("struct $S && impl $S", Language::Rust).unwrap();
+        assert_eq!(comp.disjuncts.len(), 1, "no OR → one disjunct");
+        assert_eq!(comp.disjuncts[0].len(), 2, "AND → two conjuncts");
+        assert!(!comp.has_or());
+    }
+
+    #[test]
+    fn parse_composite_or_two_disjuncts() {
+        let comp =
+            parse_composite_pattern("interface $N || class $N", Language::TypeScript).unwrap();
+        assert_eq!(comp.disjuncts.len(), 2);
+        assert!(comp.has_or());
+    }
+
+    #[test]
+    fn parse_composite_and_or_precedence() {
+        // `a && b || c && d` → (a && b) || (c && d). `&&` binds tighter.
+        let comp =
+            parse_composite_pattern("fn $A && fn $B || fn $C && fn $D", Language::Rust).unwrap();
+        assert_eq!(comp.disjuncts.len(), 2, "two OR branches");
+        assert_eq!(comp.disjuncts[0].len(), 2, "left branch has 2 ANDs");
+        assert_eq!(comp.disjuncts[1].len(), 2, "right branch has 2 ANDs");
+    }
+
+    #[test]
+    fn captures_agree_when_shared_name_matches() {
+        let c1 = vec![("S".to_string(), "Foo".to_string())];
+        let c2 = vec![("S".to_string(), "Foo".to_string())];
+        assert!(captures_agree(&c1, &c2));
+    }
+
+    #[test]
+    fn captures_disagree_when_shared_name_differs() {
+        let c1 = vec![("S".to_string(), "Foo".to_string())];
+        let c2 = vec![("S".to_string(), "Bar".to_string())];
+        assert!(!captures_agree(&c1, &c2));
+    }
+
+    #[test]
+    fn captures_agree_when_names_disjoint() {
+        // No shared metavar → always agree, no constraint to enforce.
+        let c1 = vec![("S".to_string(), "Foo".to_string())];
+        let c2 = vec![("T".to_string(), "Bar".to_string())];
+        assert!(captures_agree(&c1, &c2));
+    }
+
+    #[test]
+    fn and_intersects_on_back_referenced_capture() {
+        // Bar has no impl → must not appear in the result.
+        let source = "struct Foo;\nstruct Bar;\nimpl Foo { fn f(&self) {} }\n";
+        let comp = parse_composite_pattern("struct $S && impl $S", Language::Rust).unwrap();
+        let matches = find_matches_composite(source, &comp, "test.rs");
+        // Foo passes the AND; Bar is filtered out by the back-ref.
+        assert!(matches
+            .iter()
+            .any(|m| m.captures.iter().any(|(_, v)| v == "Foo")));
+        assert!(!matches
+            .iter()
+            .any(|m| m.captures.iter().any(|(_, v)| v == "Bar")));
+    }
+
+    // --- 11.4 review H findings (post-Inc-7) ---
+
+    #[test]
+    fn and_anchor_uses_first_conjunct_line() {
+        // Reported `line` is anchored at the first conjunct's match. The
+        // direction matters: swapping the conjuncts swaps the reported
+        // line — this pins the documented contract.
+        let source = "struct Foo;\nimpl Foo { fn f(&self) {} }\n";
+
+        let comp = parse_composite_pattern("struct $S && impl $S", Language::Rust).unwrap();
+        let matches = find_matches_composite(source, &comp, "test.rs");
+        assert!(!matches.is_empty());
+        assert_eq!(matches[0].line, 1, "first conjunct is `struct` on line 1");
+
+        let comp = parse_composite_pattern("impl $S && struct $S", Language::Rust).unwrap();
+        let matches = find_matches_composite(source, &comp, "test.rs");
+        assert!(!matches.is_empty());
+        assert_eq!(matches[0].line, 2, "first conjunct is `impl` on line 2");
+    }
+
+    #[test]
+    fn matches_single_line_result_generic() {
+        // The `extract_word_until` bonus fix in Inc 6 must also hold for
+        // single-line patterns — only the multi-line fixture exercised
+        // it through the full pipeline before this test.
+        let source = "fn f(x: i32) -> Result<i32, String> { Ok(x) }\n";
+        let pattern = parse_pattern("fn $N($$$) -> Result<$T, $E>", Language::Rust).unwrap();
+        let matches = find_matches(source, &pattern, "test.rs");
+        assert!(!matches.is_empty());
+        let caps: HashMap<&str, &str> = matches[0]
+            .captures
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(caps.get("T"), Some(&"i32"));
+        assert_eq!(caps.get("E"), Some(&"String"));
+    }
+
+    #[test]
+    fn and_with_disjoint_metavars_both_must_match() {
+        // `fn $A() && struct $B` — independent metavar names; AND just
+        // requires both shapes present in the file, with no cross-capture
+        // constraint.
+        let comp = parse_composite_pattern("fn $A() && struct $B", Language::Rust).unwrap();
+
+        // Both present → one composite match.
+        let both = "fn foo() {}\nstruct Bar;\n";
+        let matches = find_matches_composite(both, &comp, "test.rs");
+        assert_eq!(
+            matches.len(),
+            1,
+            "both shapes present must match exactly once"
+        );
+        let caps: HashMap<&str, &str> = matches[0]
+            .captures
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(caps.get("A"), Some(&"foo"));
+        assert_eq!(caps.get("B"), Some(&"Bar"));
+
+        // Only struct → AND fails because `fn $A()` has no matches.
+        let struct_only = "struct Bar;\n";
+        assert!(find_matches_composite(struct_only, &comp, "test.rs").is_empty());
+
+        // Only fn → AND fails because `struct $B` has no matches.
+        let fn_only = "fn foo() {}\n";
+        assert!(find_matches_composite(fn_only, &comp, "test.rs").is_empty());
+    }
+
+    #[test]
+    fn parse_composite_empty_middle_conjunct_errors() {
+        // Two consecutive space-flanked `&&` produce an empty middle
+        // conjunct. `parse_pattern` on the empty leaf must bail with
+        // the existing empty-pattern message — pinned so tooling that
+        // matches on the error text doesn't break on a future rewording.
+        let err = parse_composite_pattern("fn $A && && fn $B", Language::Rust).unwrap_err();
+        assert!(
+            err.to_string().contains("empty pattern"),
+            "expected 'empty pattern' in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_composite_empty_middle_disjunct_errors() {
+        // Same logic for `||`.
+        let err = parse_composite_pattern("fn $A || || fn $B", Language::Rust).unwrap_err();
+        assert!(
+            err.to_string().contains("empty pattern"),
+            "expected 'empty pattern' in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn or_takes_union_of_disjuncts() {
+        let source = "interface Animal {}\nclass Dog {}\nclass Cat {}\nfunction helper() {}\n";
+        let comp =
+            parse_composite_pattern("interface $N || class $N", Language::TypeScript).unwrap();
+        let matches = find_matches_composite(source, &comp, "test.ts");
+        let names: std::collections::HashSet<String> = matches
+            .iter()
+            .flat_map(|m| m.captures.iter().map(|(_, v)| v.clone()))
+            .collect();
+        // `helper` is a function — neither disjunct should pick it up.
+        assert!(names.contains("Animal"));
+        assert!(names.contains("Dog"));
+        assert!(names.contains("Cat"));
+        assert!(!names.contains("helper"));
     }
 
     #[test]
