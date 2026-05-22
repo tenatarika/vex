@@ -6,6 +6,83 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-05-23
+
+Phase 11.4 T2 pattern-skeleton rollout — eight new languages graduate
+from the empty-allowlist short-circuit to full prefilter coverage —
+plus a cross-file scope-binder follow-up for C# `using` and C++ `using`
+declarations. No format change; v6 stays compatible.
+
+### Added — pattern skeletons populated for
+
+- **Go** — `function_declaration` / `method_declaration` / `type_spec`
+  / `type_alias` / `var_spec` / `const_spec` / `func_literal`.
+- **C++** — `function_definition` (with declarator-chain ident reused
+  from the scope binder), `class_specifier` / `struct_specifier` /
+  `union_specifier` / `enum_specifier` / `namespace_definition` /
+  `template_declaration` (anonymous wrapper) / `alias_declaration` /
+  `type_definition` / `lambda_expression`.
+- **C#** — `class_declaration` / `interface_declaration` /
+  `struct_declaration` / `enum_declaration` / `record_declaration` /
+  `method_declaration` / `constructor_declaration` /
+  `destructor_declaration` / `property_declaration` /
+  `delegate_declaration` / `local_function_statement` /
+  `namespace_declaration` / `file_scoped_namespace_declaration` /
+  `lambda_expression` / `anonymous_method_expression`.
+- **SQL** — `create_table` / `create_index` / `create_view` /
+  `create_materialized_view` / `create_function` / `alter_table` /
+  `drop_table` / `drop_view` / `drop_function` / `drop_index`.
+- **Markdown** — `atx_heading` / `setext_heading` /
+  `fenced_code_block` (language tag as ident).
+- **Java** — `class_declaration` / `interface_declaration` /
+  `enum_declaration` / `record_declaration` /
+  `annotation_type_declaration` / `method_declaration` /
+  `constructor_declaration` / `compact_constructor_declaration` /
+  `lambda_expression`.
+- **CSS** — `rule_set` (full selector chain as ident) /
+  `keyframes_statement` / `media_statement` (anonymous).
+- **HTML** — `element` / `script_element` / `style_element` with
+  `tag_name` extraction from `start_tag`.
+
+JavaScript already uses the TypeScript grammar (the extension map
+routes `.js` / `.jsx` to `Language::TypeScript`), so its skeletons
+were covered by the T1 TypeScript allowlist from v1.8.0 on — no
+separate row needed.
+
+### Added — cross-file scope binders (`vex usages --strict`)
+
+C# and C++ now resolve import bindings across files, joining Rust /
+TypeScript / Python:
+
+- **C#** — `using A.B.C;`, `using static A.B.C;`,
+  `using Alias = A.B.C;`, `global using A.B.C;`, and
+  `using global::A.B;` (the `global::` qualifier is stripped from
+  the resolved path).
+- **C++** — `using std::vector;`, `using V = std::vector<int>;`
+  (template arguments stripped from the path), and
+  `namespace alias = ns::sub;`.
+
+`#include` and `using namespace` stay deferred as wildcard imports
+(no name-keyed `UsePath` representation).
+
+### Fixed
+
+- `is_root_kind` is now language-aware: `document` is suppressed for
+  Markdown and HTML (both use it as the file root) but not for YAML
+  (which uses it as a non-root subtree under `stream`) — prevents a
+  silent `parent_kind` corruption when YAML is eventually rolled out.
+- C# top-level decls no longer leak `parent_kind=Some("compilation_unit")`
+  (added `compilation_unit` to the suppression set).
+- C++ root-namespace `using ::Foo;` no longer produces a doubled-up
+  `UsePath` (`["Foo", "Foo"]`); C# `using global::App.Lib.X;` no
+  longer corrupts the first path segment.
+
+### Other
+
+- `tests/pattern_fixtures/**` is force-LF via `.gitattributes` so the
+  multi-line `$$$BODY` capture pins don't break on Windows checkouts
+  with `core.autocrlf=true`.
+
 ## [1.8.0] - 2026-05-22
 
 Combined "type-aware usages + first-class structural patterns"
