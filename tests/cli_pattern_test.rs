@@ -99,11 +99,13 @@ fn scope_include_filters_pattern_results() {
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let paths: Vec<&str> = json
+    // Normalise path separators so the substring checks work on Windows
+    // where vex emits backslashes (`src\a.rs`).
+    let paths: Vec<String> = json
         .as_array()
         .unwrap()
         .iter()
-        .map(|m| m["path"].as_str().unwrap_or(""))
+        .map(|m| m["path"].as_str().unwrap_or("").replace('\\', "/"))
         .collect();
     assert!(
         paths.iter().any(|p| p.contains("src/")),

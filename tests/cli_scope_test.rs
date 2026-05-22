@@ -51,7 +51,8 @@ fn include_glob_restricts_search_results() {
         .args(["search", "payment_processor", "--include", "tests/**"])
         .assert()
         .success();
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout)
+        .replace('\\', "/"); // Normalise Windows path separators for substring checks.
 
     assert!(
         stdout.contains("tests/integration.rs"),
@@ -83,7 +84,8 @@ fn exclude_glob_drops_results_even_when_included() {
         ])
         .assert()
         .success();
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout)
+        .replace('\\', "/"); // Normalise Windows path separators for substring checks.
 
     assert!(
         stdout.contains("src/api.rs"),
@@ -115,7 +117,8 @@ fn multiple_include_globs_union() {
         ])
         .assert()
         .success();
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout)
+        .replace('\\', "/"); // Normalise Windows path separators for substring checks.
 
     assert!(
         stdout.contains("src/api.rs"),
@@ -163,7 +166,8 @@ fn scope_applies_to_grep() {
         ])
         .assert()
         .success();
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout)
+        .replace('\\', "/"); // Normalise Windows path separators for substring checks.
 
     assert!(
         stdout.contains("src/api.rs"),
@@ -202,7 +206,8 @@ fn scope_applies_to_usages() {
         .args(["usages", "payment_processor", "--exclude", "tests/**"])
         .assert()
         .success();
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout)
+        .replace('\\', "/"); // Normalise Windows path separators for substring checks.
     assert!(
         stdout.contains("src/lib.rs"),
         "expected src/ usage, got: {stdout}"
