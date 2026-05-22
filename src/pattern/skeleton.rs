@@ -18,8 +18,8 @@
 //! | Tier | Languages                                        | Allowlist     |
 //! |------|--------------------------------------------------|---------------|
 //! | T1   | Rust, TypeScript, Python                         | populated     |
-//! | T2a  | Go, C++                                          | populated     |
-//! | T2   | Java, Kotlin, C#, Swift, PHP, Ruby               | empty for now |
+//! | T2a  | Go, C++, C#                                      | populated     |
+//! | T2   | Java, Kotlin, Swift, PHP, Ruby                   | empty for now |
 //! | T3   | SQL, Markdown, CSS, HTML, YAML, TOML, Bash, Lua  | empty (final) |
 //!
 //! An empty allowlist short-circuits to `Vec::new()`, so unrolled-T2
@@ -193,6 +193,40 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             //   * `friend_declaration`, `static_assert_declaration` —
             //     not pattern-targetable.
         ],
+        Language::CSharp => &[
+            // Type declarations — all carry `name: identifier`.
+            "class_declaration",
+            "interface_declaration",
+            "struct_declaration",
+            "enum_declaration",
+            "record_declaration",
+            // Members — methods, constructors, destructors, accessor
+            // properties, delegates. All carry `name: identifier`
+            // (`~Foo()` parses with `name:` pointing at `Foo`, the
+            // `~` is its own keyword child).
+            "method_declaration",
+            "constructor_declaration",
+            "destructor_declaration",
+            "property_declaration",
+            "delegate_declaration",
+            "local_function_statement",
+            // Namespaces — block-bodied `namespace X { ... }` and the
+            // C# 10 file-scoped `namespace X;` form.
+            "namespace_declaration",
+            "file_scoped_namespace_declaration",
+            // Anonymous callables: `x => x + 1` lambdas and the older
+            // `delegate { ... }` syntax.
+            "lambda_expression",
+            "anonymous_method_expression",
+            // Intentionally absent (deferred / out of scope):
+            //   * `field_declaration` — multi-declarator forms
+            //     (`int a, b, c;`) would emit only the first name.
+            //   * `event_declaration`, `operator_declaration`,
+            //     `conversion_operator_declaration` — niche; revisit
+            //     if patterns need them.
+            //   * `using_directive` / `extern_alias_directive` —
+            //     binding sites, not pattern targets.
+        ],
         Language::Go => &[
             // Top-level decls — `function_declaration` and
             // `method_declaration` are first-class; `type_spec` /
@@ -229,6 +263,10 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
         ) | (Language::Python, "lambda" | "decorated_definition")
             | (Language::Go, "func_literal")
             | (Language::Cpp, "template_declaration" | "lambda_expression",)
+            | (
+                Language::CSharp,
+                "lambda_expression" | "anonymous_method_expression",
+            )
     );
     if anonymous {
         return None;
@@ -282,7 +320,9 @@ fn has_body_block(node: Node<'_>) -> bool {
                 | "enumerator_list"           // C++ enum body
                 | "class_body"
                 | "interface_body"
-                | "compound_statement" // C++ fn / lambda body
+                | "compound_statement"           // C++ fn / lambda body
+                | "enum_member_declaration_list" // C# enum body
+                | "accessor_list" // C# property body
         )
     });
     found
@@ -691,6 +731,173 @@ mod tests {
         let inner = sk.iter().find(|s| s.kind == "class_specifier").unwrap();
         assert_eq!(inner.ident.as_deref(), Some("Box"));
         assert_eq!(inner.parent_kind, Some("template_declaration"));
+    }
+
+    #[test]
+    fn csharp_class_emits_with_body_and_method_child() {
+        let sk = extract(
+            Language::CSharp,
+            "class Server {\n    public int Start() { return 0; }\n}\n",
+        );
+        let c = sk.iter().find(|s| s.kind == "class_declaration").unwrap();
+        assert_eq!(c.ident.as_deref(), Some("Server"));
+        assert!(c.has_block, "declaration_list counts as body");
+        let m = sk.iter().find(|s| s.kind == "method_declaration").unwrap();
+        assert_eq!(m.ident.as_deref(), Some("Start"));
+        assert_eq!(m.parent_kind, Some("declaration_list"));
+    }
+
+    #[test]
+    fn csharp_interface_struct_enum_record_emit_named_skeletons() {
+        let sk = extract(
+            Language::CSharp,
+            "interface IRunner { void Run(); }\n\
+             struct Point { public int X; }\n\
+             enum Mode { Fast, Slow }\n\
+             record User(string Name);\n",
+        );
+        for (kind, name) in [
+            ("interface_declaration", "IRunner"),
+            ("struct_declaration", "Point"),
+            ("enum_declaration", "Mode"),
+            ("record_declaration", "User"),
+        ] {
+            let s = sk
+                .iter()
+                .find(|s| s.kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind}"));
+            assert_eq!(s.ident.as_deref(), Some(name));
+        }
+    }
+
+    #[test]
+    fn csharp_enum_body_counts_as_has_block() {
+        // `enum_member_declaration_list` is the C# enum body — pin
+        // that the language-specific arm of `has_body_block` was
+        // wired up.
+        let sk = extract(Language::CSharp, "enum Mode { Fast, Slow }\n");
+        let e = sk.iter().find(|s| s.kind == "enum_declaration").unwrap();
+        assert!(
+            e.has_block,
+            "C# enum_member_declaration_list must register as body",
+        );
+    }
+
+    #[test]
+    fn csharp_property_emits_with_accessor_list_body() {
+        let sk = extract(
+            Language::CSharp,
+            "class C {\n    public string Name { get; set; }\n}\n",
+        );
+        let p = sk
+            .iter()
+            .find(|s| s.kind == "property_declaration")
+            .unwrap();
+        assert_eq!(p.ident.as_deref(), Some("Name"));
+        assert!(p.has_block, "accessor_list must register as body");
+    }
+
+    #[test]
+    fn csharp_constructor_and_destructor_carry_type_name() {
+        // `~Server()` parses with `name:` pointing at `Server` (the
+        // tilde is its own keyword child) — same field as the
+        // constructor.
+        let sk = extract(
+            Language::CSharp,
+            "class Server {\n    public Server() {}\n    ~Server() {}\n}\n",
+        );
+        let ctor = sk
+            .iter()
+            .find(|s| s.kind == "constructor_declaration")
+            .unwrap();
+        assert_eq!(ctor.ident.as_deref(), Some("Server"));
+        let dtor = sk
+            .iter()
+            .find(|s| s.kind == "destructor_declaration")
+            .unwrap();
+        assert_eq!(dtor.ident.as_deref(), Some("Server"));
+    }
+
+    #[test]
+    fn csharp_delegate_decl_has_no_block() {
+        // Delegates are signature-only; their declaration is
+        // semicolon-terminated with no body. Pin `has_block=false`
+        // so a future signature change doesn't accidentally start
+        // matching `$$$BODY` patterns against them.
+        let sk = extract(Language::CSharp, "public delegate void Handler(int x);\n");
+        let d = sk
+            .iter()
+            .find(|s| s.kind == "delegate_declaration")
+            .unwrap();
+        assert_eq!(d.ident.as_deref(), Some("Handler"));
+        assert!(!d.has_block);
+    }
+
+    #[test]
+    fn csharp_local_function_is_pattern_targetable() {
+        // C#'s `local_function_statement` lets users target nested
+        // helper fns. Pin name + parent kind so the prefilter can
+        // narrow on either.
+        let sk = extract(
+            Language::CSharp,
+            "class C { void M() { int Local() { return 0; } } }\n",
+        );
+        let l = sk
+            .iter()
+            .find(|s| s.kind == "local_function_statement")
+            .unwrap();
+        assert_eq!(l.ident.as_deref(), Some("Local"));
+        assert_eq!(l.parent_kind, Some("block"));
+    }
+
+    #[test]
+    fn csharp_namespace_both_block_and_file_scoped() {
+        let block_form = extract(Language::CSharp, "namespace App { class C {} }\n");
+        let b = block_form
+            .iter()
+            .find(|s| s.kind == "namespace_declaration")
+            .unwrap();
+        assert_eq!(b.ident.as_deref(), Some("App"));
+        assert!(b.has_block);
+
+        // File-scoped form (C# 10): `namespace App.Other;` — `name:`
+        // is `qualified_name`, no body. utf8_text gives the full
+        // dotted path which is fine for the prefilter.
+        let file_form = extract(Language::CSharp, "namespace App.Other;\nclass C {}\n");
+        let f = file_form
+            .iter()
+            .find(|s| s.kind == "file_scoped_namespace_declaration")
+            .unwrap();
+        assert_eq!(f.ident.as_deref(), Some("App.Other"));
+        assert!(!f.has_block);
+    }
+
+    #[test]
+    fn csharp_lambda_and_anonymous_method_are_anonymous() {
+        let sk = extract(
+            Language::CSharp,
+            "class C { void M() { System.Func<int,int> a = x => x;\n\
+             System.Action b = delegate { }; } }\n",
+        );
+        let lam = sk.iter().find(|s| s.kind == "lambda_expression").unwrap();
+        assert_eq!(lam.ident, None);
+        let dm = sk
+            .iter()
+            .find(|s| s.kind == "anonymous_method_expression")
+            .unwrap();
+        assert_eq!(dm.ident, None);
+        assert!(
+            dm.has_block,
+            "anonymous-method body is `block`, must register as a body",
+        );
+    }
+
+    #[test]
+    fn csharp_grammar_fingerprint_is_stable_and_nonzero() {
+        let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::CSharp);
+        let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::CSharp);
+        assert_eq!(a, b, "fingerprint must be deterministic");
+        assert_ne!(a, 0, "zero is reserved as the not-stored sentinel");
     }
 
     #[test]

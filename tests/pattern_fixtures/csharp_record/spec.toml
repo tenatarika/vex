@@ -1,0 +1,11 @@
+lang = "csharp"
+pattern = "public record $NAME($$ARGS);"
+exercises = "csharp_record"
+
+[[expected]]
+line = 1
+captures = { NAME = "User" }
+
+[[expected]]
+line = 3
+captures = { NAME = "Product" }

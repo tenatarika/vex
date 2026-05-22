@@ -59,6 +59,7 @@ fn input_extension(lang: &str) -> &'static str {
         "python" | "py" => "py",
         "go" => "go",
         "cpp" | "c++" => "cpp",
+        "csharp" | "cs" => "cs",
         other => panic!("unsupported fixture lang: {other}"),
     }
 }
@@ -206,4 +207,19 @@ fn cpp_class_with_member_body() {
 #[test]
 fn cpp_template_function_signature() {
     run_fixture("cpp_template_function");
+}
+
+#[test]
+fn baseline_csharp_simple_method() {
+    run_fixture("baseline_csharp");
+}
+
+#[test]
+fn csharp_class_with_property_body() {
+    run_fixture("csharp_class_body");
+}
+
+#[test]
+fn csharp_record_signature() {
+    run_fixture("csharp_record");
 }

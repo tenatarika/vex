@@ -1,0 +1,10 @@
+lang = "csharp"
+pattern = "public class $NAME { $$$BODY }"
+exercises = "csharp_class_body"
+
+# Avoid nested `{ get; set; }` braces in the BODY — the engine's
+# `$$$BODY` metavar doesn't track brace nesting and would stop at
+# the inner `}` (documented engine limit, not a pin we want here).
+[[expected]]
+line = 1
+captures = { NAME = "UserService", BODY = "public int counter;\n    public string label;" }

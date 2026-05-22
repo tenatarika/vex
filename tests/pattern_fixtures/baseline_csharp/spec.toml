@@ -1,0 +1,7 @@
+lang = "csharp"
+pattern = "public void $NAME()"
+exercises = "baseline"
+
+[[expected]]
+line = 3
+captures = { NAME = "Greet" }
