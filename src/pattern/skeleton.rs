@@ -116,7 +116,12 @@ fn walk(
 fn is_root_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "source_file" | "program" | "module" | "translation_unit"
+        // Rust/Go: `source_file`. TypeScript: `program`. Python:
+        // `module`. C++: `translation_unit`. C#: `compilation_unit`.
+        // Missing any of these makes top-level decls in that language
+        // surface a non-None `parent_kind`, silently breaking any
+        // prefilter logic that treats `None` as "file-root".
+        "source_file" | "program" | "module" | "translation_unit" | "compilation_unit"
     )
 }
 
@@ -221,11 +226,24 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             // Intentionally absent (deferred / out of scope):
             //   * `field_declaration` — multi-declarator forms
             //     (`int a, b, c;`) would emit only the first name.
-            //   * `event_declaration`, `operator_declaration`,
-            //     `conversion_operator_declaration` — niche; revisit
-            //     if patterns need them.
+            //   * `event_declaration` — niche surface.
+            //   * `operator_declaration`,
+            //     `conversion_operator_declaration` — no `name:`
+            //     field; the operator token lives under `operator:`,
+            //     so inclusion needs a special-case arm in
+            //     `extract_ident`. Revisit when users ask.
+            //   * `indexer_declaration` (`public $T this[$I $P]
+            //     { ... }`) — same "no `name:` field" problem; the
+            //     `this` keyword is its identity. Falls back to
+            //     live-scan today.
             //   * `using_directive` / `extern_alias_directive` —
             //     binding sites, not pattern targets.
+            // Note on explicit interface impl (`void IFoo.Run()`):
+            // the prefix is an `explicit_interface_specifier`
+            // sibling, NOT part of `name:`. The skeleton ident
+            // returns just `Run` — `vex pattern 'void $NAME()'` then
+            // captures `Run` from the source text, which is the
+            // user-intuitive result.
         ],
         Language::Go => &[
             // Top-level decls — `function_declaration` and
@@ -890,6 +908,94 @@ mod tests {
             dm.has_block,
             "anonymous-method body is `block`, must register as a body",
         );
+    }
+
+    #[test]
+    fn csharp_top_level_decls_have_no_parent_kind() {
+        // Reviewer CRITICAL: tree-sitter C# uses `compilation_unit`
+        // as the file-root node. Missing this in `is_root_kind`
+        // would leak `parent_kind = Some("compilation_unit")` for
+        // every top-level decl, silently breaking any future
+        // prefilter that treats `None` as the file-root marker.
+        let sk = extract(
+            Language::CSharp,
+            "namespace App;\nclass Foo {}\nstruct Bar {}\nenum E { A }\n",
+        );
+        for kind in [
+            "file_scoped_namespace_declaration",
+            "class_declaration",
+            "struct_declaration",
+            "enum_declaration",
+        ] {
+            let s = sk
+                .iter()
+                .find(|s| s.kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind}"));
+            assert_eq!(
+                s.parent_kind, None,
+                "{kind} at file root must report parent_kind=None, got {:?}",
+                s.parent_kind
+            );
+        }
+    }
+
+    #[test]
+    fn csharp_record_struct_is_record_declaration_not_struct() {
+        // C# 10 `record struct Point(int X, int Y);` — the grammar
+        // emits a single `record_declaration` for both the class-
+        // and struct-flavoured record syntax. Pin the kind so a
+        // future grammar split doesn't silently double-emit (one
+        // skeleton each for record_declaration AND struct_declaration).
+        let sk = extract(Language::CSharp, "record struct Point(int X, int Y);\n");
+        assert!(
+            sk.iter()
+                .any(|s| s.kind == "record_declaration" && s.ident.as_deref() == Some("Point")),
+            "record struct must emit a record_declaration skeleton",
+        );
+        assert!(
+            !sk.iter().any(|s| s.kind == "struct_declaration"),
+            "record struct must NOT also emit a struct_declaration",
+        );
+    }
+
+    #[test]
+    fn csharp_expression_bodied_property_has_no_block() {
+        // `public int X => 42;` — no `accessor_list` body, so
+        // `has_block=false`. Paired with the existing accessor-list
+        // test so the two halves of the property surface are pinned.
+        let sk = extract(Language::CSharp, "class C { public int X => 42; }\n");
+        let p = sk
+            .iter()
+            .find(|s| s.kind == "property_declaration")
+            .unwrap();
+        assert_eq!(p.ident.as_deref(), Some("X"));
+        assert!(
+            !p.has_block,
+            "expression-bodied property has no block — pin so $$$BODY \
+             matchers correctly fall through to live-scan",
+        );
+    }
+
+    #[test]
+    fn csharp_explicit_interface_impl_ident_drops_iface_prefix() {
+        // `void IFoo.Run() {}` — the explicit_interface_specifier
+        // (`IFoo.`) is a sibling of `name:`, not part of it. The
+        // skeleton ident must return just `Run` so that
+        // `vex pattern 'void $NAME()'` consistently captures the
+        // member-side name.
+        let sk = extract(
+            Language::CSharp,
+            "interface IFoo { void Run(); }\n\
+             class C : IFoo { void IFoo.Run() {} }\n",
+        );
+        let m = sk
+            .iter()
+            .filter(|s| s.kind == "method_declaration")
+            .find(|s| s.ident.as_deref() == Some("Run"))
+            .expect("explicit interface impl must surface as ident=Run");
+        // Sanity: the method is the class-side impl, not the
+        // interface declaration (which is a method_declaration too).
+        assert_eq!(m.parent_kind, Some("declaration_list"));
     }
 
     #[test]

@@ -16,6 +16,22 @@
 //!   syntaxes coexist for readability — `$$$BODY` reads naturally for
 //!   block bodies, `$$ARGS` for parameter lists.
 //!
+//! ### Ellipsis capture limit — first-literal stop
+//!
+//! `$$$NAME` / `$$NAME` capture by forward-scanning for the next
+//! literal segment in the pattern. The scan is a plain substring
+//! search; it does NOT track brace/paren depth. A pattern that ends
+//! with `}` will stop at the **first** `}` in source, not the
+//! balancing one — `class $T { $$$BODY }` against a body containing
+//! `{ get; set; }` truncates `BODY` at the inner closing brace.
+//!
+//! Workarounds: (a) restructure the pattern to use a less-ambiguous
+//! trailing literal (e.g. `;` instead of `}`), (b) pick a body shape
+//! that doesn't carry nested literal terminators, or (c) accept the
+//! prefix-only capture and post-process. Tracked as a known limit;
+//! see `tests/pattern_fixtures/csharp_class_body/` for a fixture that
+//! intentionally avoids `{ get; set; }` for this reason.
+//!
 //! ## Composition (Inc 7)
 //!
 //! Two top-level operators combine sub-patterns. They are detected
@@ -1168,5 +1184,35 @@ func main() {}
         assert!(matches!(pattern.segments[2], Segment::Literal(ref s) if s == "("));
         assert!(matches!(pattern.segments[3], Segment::Ellipsis));
         assert!(matches!(pattern.segments[4], Segment::Literal(ref s) if s == ") -> Result"));
+    }
+
+    #[test]
+    fn named_ellipsis_does_not_track_brace_nesting() {
+        // Hard pin for the documented limit in the module docs: an
+        // `$$$BODY` that terminates on `}` stops at the FIRST `}`, not
+        // the balancing one. Reviewer GAP-5: this contract was only
+        // documented in a fixture comment.
+        let source = "class C {\n    void Run() { let inner = 1; }\n}\n";
+        let pattern = parse_pattern("class $T { $$$BODY }", Language::TypeScript).unwrap();
+        let matches = find_matches(source, &pattern, "test.ts");
+        assert_eq!(matches.len(), 1, "one match expected");
+        let body = matches[0]
+            .captures
+            .iter()
+            .find(|(k, _)| k == "BODY")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("");
+        // The capture truncates at the inner `}` (end of `Run`'s
+        // body), NOT at the class's balancing `}`. The trailing
+        // newline + outer `}` are excluded.
+        assert!(
+            body.contains("void Run() { let inner = 1;"),
+            "BODY should at least include the start of the inner method, got: {body:?}",
+        );
+        assert!(
+            !body.contains("\n}\n"),
+            "BODY must stop at the first `}}`; the outer closing brace \
+             must NOT appear in the capture. Got: {body:?}",
+        );
     }
 }

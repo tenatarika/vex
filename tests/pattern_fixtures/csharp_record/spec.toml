@@ -2,10 +2,12 @@ lang = "csharp"
 pattern = "public record $NAME($$ARGS);"
 exercises = "csharp_record"
 
+# Pin both `NAME` and `ARGS` — without the ARGS assertion, an
+# ellipsis-capture regression would silently still pass the NAME check.
 [[expected]]
 line = 1
-captures = { NAME = "User" }
+captures = { NAME = "User", ARGS = "string Name, int Age" }
 
 [[expected]]
 line = 3
-captures = { NAME = "Product" }
+captures = { NAME = "Product", ARGS = "string Sku, decimal Price" }
