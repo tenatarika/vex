@@ -305,8 +305,14 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             "annotation_type_declaration",
             // Members — methods, constructors. Both have
             // `name: identifier` and `body: block`.
+            // `compact_constructor_declaration` is the Java 16+
+            // record-only compact form (`public User { validate(); }`),
+            // same `name: identifier` + `body: block` shape — without
+            // it, record-targeted constructor patterns would silently
+            // fall through to live-scan.
             "method_declaration",
             "constructor_declaration",
+            "compact_constructor_declaration",
             // Anonymous closures. Lambda body may be `block` (block-
             // bodied) or an inline expression (no block) — has_block
             // reflects this naturally.
@@ -319,8 +325,11 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             //     binding sites / metadata, not pattern targets.
             //   * `annotation` — too noisy (every `@Override` on a
             //     method would emit).
-            //   * `static_initializer`, `instance_initializer` —
-            //     niche; revisit when patterns need them.
+            //   * `static_initializer` and bare `block` instance
+            //     initializers — niche. Note: tree-sitter-java has
+            //     no `instance_initializer` kind; `{ ... }` blocks
+            //     directly under `class_body` ARE the instance-init
+            //     form.
         ],
         Language::Go => &[
             // Top-level decls — `function_declaration` and
@@ -596,7 +605,10 @@ mod tests {
         // Kotlin is still T2 — not yet in the allowlist. Java used
         // to live here but moved to T2a; this test will need to
         // repoint at the next still-empty T2 language each time one
-        // rolls out (Swift / PHP / Ruby remain).
+        // rolls out (Swift / PHP / Ruby remain). Once *all* T2
+        // languages are populated, repoint at a T3 language we
+        // explicitly never plan to fill (e.g. `Language::Css` or
+        // `Language::Yaml`) so the canary stops shifting.
         let sk = extract(Language::Kotlin, "class Foo\n");
         assert!(sk.is_empty());
     }
@@ -1329,6 +1341,77 @@ mod tests {
             .find(|s| s.ident.as_deref() == Some("Inner"))
             .expect("missing Inner");
         assert_eq!(inner.parent_kind, Some("class_body"));
+    }
+
+    #[test]
+    fn java_generic_method_ident_is_bare_name() {
+        // Reviewer M2: generic class is tested, but generic method
+        // has its own `<T>` shape (`type_parameters` sibling of
+        // `name:`). Pin so a future grammar restructure can't slip.
+        let sk = extract(
+            Language::Java,
+            "class C { <T> T identity(T x) { return x; } }\n",
+        );
+        let m = sk
+            .iter()
+            .find(|s| s.kind == "method_declaration")
+            .expect("missing method_declaration");
+        assert_eq!(m.ident.as_deref(), Some("identity"));
+    }
+
+    #[test]
+    fn java_abstract_method_emits_with_no_block() {
+        // Reviewer GAP-J1: an abstract method on an interface has
+        // no `block` child — `has_block=false`. Mirrors the C++
+        // `cpp_forward_class_decl_emits_skeleton_with_no_block`
+        // contract: structurally identical to a definition except
+        // for the body, so the only signal separating them is
+        // `has_block`.
+        let sk = extract(
+            Language::Java,
+            "interface IRunner {\n    void run();\n    void halt();\n}\n",
+        );
+        let methods: Vec<_> = sk
+            .iter()
+            .filter(|s| s.kind == "method_declaration")
+            .collect();
+        assert_eq!(methods.len(), 2);
+        for m in &methods {
+            assert!(
+                !m.has_block,
+                "abstract interface method must report has_block=false, \
+                 got {:?} for {:?}",
+                m.has_block, m.ident,
+            );
+        }
+    }
+
+    #[test]
+    fn java_record_with_compact_constructor_emits_both_skeletons() {
+        // Reviewer H1: `compact_constructor_declaration` is the
+        // Java 16+ record-only form; pin both the outer record and
+        // the compact constructor surface so the allowlist entry
+        // stays load-bearing.
+        let sk = extract(
+            Language::Java,
+            "public record User(String name, int age) {\n\
+             \x20\x20\x20\x20public User { if (age < 0) throw new IllegalArgumentException(); }\n\
+             }\n",
+        );
+        let r = sk
+            .iter()
+            .find(|s| s.kind == "record_declaration")
+            .expect("missing record_declaration");
+        assert_eq!(r.ident.as_deref(), Some("User"));
+        let c = sk
+            .iter()
+            .find(|s| s.kind == "compact_constructor_declaration")
+            .expect("missing compact_constructor_declaration");
+        assert_eq!(c.ident.as_deref(), Some("User"));
+        assert!(
+            c.has_block,
+            "compact constructor body is `block` — must register",
+        );
     }
 
     #[test]
