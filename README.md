@@ -470,28 +470,48 @@ For an agent making 10-20 code lookups per task, vex saves **5,000-20,000 tokens
 
 ## Supported Languages
 
-`Binder` shows whether `vex usages --strict` runs the LSP-style scope
-resolver for the language — see [Type-aware refs](#type-aware-refs).
-The remaining 14 languages fall back to the line-based scanner.
+19 languages indexed via tree-sitter. The capability columns:
 
-| Language | Extensions | Symbols | Imports | Binder |
-|----------|------------|---------|---------|--------|
-| Rust | `.rs` | functions, structs, enums, traits, impls, types, constants | `use` declarations | ✓ + cross-file |
-| Python | `.py` | classes, functions (incl. async, decorated) | `import`, `from..import` | ✓ + cross-file |
-| TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx` | classes, interfaces, enums, functions, arrows, type aliases | `import` | ✓ + cross-file |
-| C# | `.cs` | classes, interfaces, structs, enums, methods, properties | — | ✓ in-file only |
-| C/C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | classes, structs, functions, methods, templates, enums | `#include` | ✓ in-file only |
-| Go | `.go` | functions, methods, structs, interfaces | `import` | — |
-| Java | `.java` | classes, interfaces, enums, methods, constructors | `import` | — |
-| Ruby | `.rb` | classes, modules, methods | — | — |
-| Swift | `.swift` | classes, structs, enums, actors, protocols, functions | `import` | — |
-| Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` | — |
-| SQL | `.sql` | tables, views, functions, triggers, indexes, schemas, types, sequences | `ALTER TABLE` refs | — |
-| Markdown | `.md`, `.markdown` | headings (section structure) | — | — |
+- **Binder** — does `vex usages --strict` resolve refs through an
+  LSP-style scope chain (Phase 11.1)? `cross-file` includes
+  `use` / `import` resolution; `in-file` resolves within a file but
+  treats imports as unresolved. The remaining languages fall back to
+  the line-based scanner used by plain `vex usages`.
+- **Patterns** — does `vex pattern` get the v6 indexed prefilter
+  (Phase 11.4)? `indexed` means a persisted skeleton section narrows
+  candidate files at query time; `live-scan` means tree-sitter walks
+  every lang-matching file on each query. All 19 languages work with
+  `vex pattern` syntax (`$NAME`, `$$$BODY`, `&&` / `||`); the
+  prefilter just speeds up discovery for the three T1 languages.
+
+| Language | Extensions | Symbols | Imports | Binder | Patterns |
+|----------|------------|---------|---------|--------|----------|
+| Rust | `.rs` | functions, structs, enums, traits, impls, types, constants | `use` declarations | cross-file | indexed |
+| TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx` | classes, interfaces, enums, functions, arrows, type aliases | `import` | cross-file | indexed |
+| Python | `.py` | classes, functions (incl. async, decorated) | `import`, `from..import` | cross-file | indexed |
+| C# | `.cs` | classes, interfaces, structs, enums, methods, properties | — | in-file | live-scan |
+| C/C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | classes, structs, functions, methods, templates, enums | `#include` | in-file | live-scan |
+| Go | `.go` | functions, methods, structs, interfaces | `import` | — | live-scan |
+| Java | `.java` | classes, interfaces, enums, methods, constructors | `import` | — | live-scan |
+| Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` | — | live-scan |
+| Ruby | `.rb` | classes, modules, methods | — | — | live-scan |
+| Swift | `.swift` | classes, structs, enums, actors, protocols, functions | `import` | — | live-scan |
+| PHP | `.php`, `.phtml` | classes, interfaces, traits, methods, functions | `use`, `require` | — | live-scan |
+| SQL | `.sql` | tables, views, functions, triggers, indexes, schemas, types, sequences | `ALTER TABLE` refs | — | live-scan |
+| Markdown | `.md`, `.markdown` | headings (section structure) | — | — | live-scan |
+| Bash | `.sh`, `.bash` | functions | — | — | live-scan |
+| Lua | `.lua` | functions, local functions, tables | `require` | — | live-scan |
+| CSS | `.css` | rules, selectors, `@keyframes` | — | — | live-scan |
+| HTML | `.html`, `.htm` | custom elements (hyphenated tag names) | — | — | live-scan |
+| YAML | `.yaml`, `.yml` | top-level keys | — | — | live-scan |
+| TOML | `.toml` | bare keys, dotted keys, tables | — | — | live-scan |
 
 See [docs/SUPPORTED_LANGUAGES.md](docs/SUPPORTED_LANGUAGES.md) for grammar
 versions, ABI level, and the runbook for adding a language or upgrading a
-grammar.
+grammar. Adding a language to the indexed-Patterns tier is one
+allowlist edit in `src/pattern/skeleton.rs` — see the Phase 11.4
+follow-up notes for the planned Go → Java → Kotlin → C# → C++ → Swift
+→ PHP → Ruby promotion order.
 
 ## Index Location
 
