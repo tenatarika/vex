@@ -198,6 +198,11 @@ fn handle_staleness(
                         manifest.call_graph,
                     ),
                     with_bm25: resolve_section_enabled(false, cfg.bm25, manifest.bm25),
+                    with_pattern_index: resolve_section_enabled(
+                        false,
+                        cfg.pattern_index,
+                        manifest.pattern_index,
+                    ),
                 };
                 let (total, changed, deleted) =
                     pipeline::update(root, opts, &embedder_id, &cfg.exclude)?;
@@ -290,6 +295,7 @@ fn ensure_index_exists(
         with_embeddings: with_semantic,
         with_call_graph: resolve_section_enabled(false, cfg.call_graph, None),
         with_bm25: resolve_section_enabled(false, cfg.bm25, None),
+        with_pattern_index: resolve_section_enabled(false, cfg.pattern_index, None),
     };
     let count = pipeline::run(root, opts, &embedder_id, &cfg.exclude)
         .with_context(|| format!("bootstrap index for {}", root.display()))?;
@@ -465,6 +471,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             jobs,
             no_call_graph,
             no_bm25,
+            no_pattern_index,
         } => {
             let root = resolve_root(path)?;
             let start = Instant::now();
@@ -482,6 +489,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 with_embeddings: with_semantic,
                 with_call_graph: resolve_section_enabled(no_call_graph, cfg.call_graph, None),
                 with_bm25: resolve_section_enabled(no_bm25, cfg.bm25, None),
+                with_pattern_index: resolve_section_enabled(
+                    no_pattern_index,
+                    cfg.pattern_index,
+                    None,
+                ),
             };
             let count = pipeline::run(&root, opts, &embedder_id, excludes)?;
             let elapsed = start.elapsed();
@@ -884,6 +896,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             jobs,
             no_call_graph,
             no_bm25,
+            no_pattern_index,
         } => {
             // Canonicalize once at the top so `prior_manifest`'s lookup
             // path matches the one `pipeline::update` uses internally —
@@ -911,6 +924,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     prior_manifest.call_graph,
                 ),
                 with_bm25: resolve_section_enabled(no_bm25, cfg.bm25, prior_manifest.bm25),
+                with_pattern_index: resolve_section_enabled(
+                    no_pattern_index,
+                    cfg.pattern_index,
+                    prior_manifest.pattern_index,
+                ),
             };
             let (total, changed, deleted) = pipeline::update(&root, opts, &embedder_id, excludes)?;
             let elapsed = start.elapsed();
@@ -944,6 +962,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             jobs,
             no_call_graph,
             no_bm25,
+            no_pattern_index,
         } => {
             // Canonicalize once (see Update arm) so the manifest lookup
             // matches what `pipeline::run/update` will use.
@@ -967,6 +986,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     prior_manifest.call_graph,
                 ),
                 with_bm25: resolve_section_enabled(no_bm25, cfg.bm25, prior_manifest.bm25),
+                with_pattern_index: resolve_section_enabled(
+                    no_pattern_index,
+                    cfg.pattern_index,
+                    prior_manifest.pattern_index,
+                ),
             };
             crate::watch::handler::watch(&root, opts, &embedder_id, excludes)?;
             Ok(())

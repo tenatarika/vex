@@ -22,14 +22,18 @@ const EMBED_BATCH_SIZE: usize = 256;
 /// Build-time toggles for [`run`] and [`update`].
 ///
 /// `with_embeddings` is a transient run-time choice (the user decides per
-/// invocation). `with_call_graph` and `with_bm25` are persisted into the
-/// manifest after a successful build so `update` can keep the opt-out
-/// sticky across incremental rebuilds.
+/// invocation). `with_call_graph`, `with_bm25`, and `with_pattern_index`
+/// are persisted into the manifest after a successful build so `update`
+/// can keep the opt-out sticky across incremental rebuilds.
 #[derive(Debug, Clone, Copy)]
 pub struct IndexOptions {
     pub with_embeddings: bool,
     pub with_call_graph: bool,
     pub with_bm25: bool,
+    /// Build the v6 pattern-skeleton side-section. When `false`, the
+    /// section is written empty and `vex pattern` keeps using its
+    /// live-scan path (today's behaviour). Default `true`. 11.4 Inc 4.
+    pub with_pattern_index: bool,
 }
 
 impl Default for IndexOptions {
@@ -38,6 +42,7 @@ impl Default for IndexOptions {
             with_embeddings: false,
             with_call_graph: true,
             with_bm25: true,
+            with_pattern_index: true,
         }
     }
 }
@@ -78,6 +83,7 @@ pub fn run(
         &file_hashes,
         manifest_embedder,
         opts,
+        true, // is_full_rebuild — `vex index` always replaces everything
     )?;
 
     if !vectors.is_empty() {
@@ -199,6 +205,7 @@ pub fn update(
         &file_hashes,
         manifest_embedder,
         opts,
+        false, // is_full_rebuild — incremental update, skeletons partial
     )?;
 
     if !all_vectors.is_empty() {
@@ -269,6 +276,7 @@ fn reconstruct_unchanged(
                 refs: Vec::new(),
                 call_edges: Vec::new(),
                 bound_refs: Vec::new(),
+                skeletons: Vec::new(),
             });
         }
         current_path = path;
@@ -308,6 +316,7 @@ fn reconstruct_unchanged(
             refs: Vec::new(),
             call_edges: Vec::new(),
             bound_refs: Vec::new(),
+            skeletons: Vec::new(),
         });
     }
 
@@ -565,6 +574,55 @@ fn resolve_call_edges(parsed: &[ParsedFile]) -> Vec<crate::store::call_graph::Ca
     out
 }
 
+/// Output of [`collect_pattern_skeletons`] — the flattened skeleton tuples
+/// the writer consumes, paired with the per-language grammar fingerprints
+/// Inc 5 will compare against the live grammar.
+type SkeletonsForWriter = (
+    Vec<(u32, crate::pattern::skeleton::Skeleton)>,
+    Vec<(u8, u32)>,
+);
+
+/// Flatten per-file pattern skeletons into the `(file_id, Skeleton)`
+/// shape the writer expects, and compute grammar fingerprints for the
+/// distinct T1 languages that contributed at least one skeleton. The
+/// fingerprint lets Inc 5 detect grammar drift between index build and
+/// query time and fall back to live-scan when the on-disk skeletons no
+/// longer agree with the live grammar.
+fn collect_pattern_skeletons(parsed: &[ParsedFile]) -> SkeletonsForWriter {
+    use std::collections::HashSet;
+    let mut skeletons: Vec<(u32, crate::pattern::skeleton::Skeleton)> = Vec::new();
+    let mut langs_with_skeletons: HashSet<Language> = HashSet::new();
+    for (file_id, file) in parsed.iter().enumerate() {
+        if file.skeletons.is_empty() {
+            continue;
+        }
+        // Recover the language from the file extension — ParsedFile
+        // does not carry it explicitly, but the extension is canonical
+        // (parse_files uses Language::from_extension).
+        let lang = std::path::Path::new(&file.path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(Language::from_extension);
+        if let Some(lang) = lang {
+            langs_with_skeletons.insert(lang);
+        }
+        for sk in &file.skeletons {
+            skeletons.push((file_id as u32, sk.clone()));
+        }
+    }
+    let fingerprints: Vec<(u8, u32)> = langs_with_skeletons
+        .into_iter()
+        .map(|lang| {
+            (
+                lang.lang_id(),
+                crate::store::pattern_skeletons::grammar_fingerprint_for_lang(lang),
+            )
+        })
+        .collect();
+    (skeletons, fingerprints)
+}
+
+#[allow(clippy::too_many_arguments)] // mirrors the writer entry shape
 fn write_output(
     root: &Path,
     parsed: &[ParsedFile],
@@ -573,6 +631,7 @@ fn write_output(
     file_hashes: &[(String, u64)],
     embedder_id: Option<String>,
     opts: IndexOptions,
+    is_full_rebuild: bool,
 ) -> Result<()> {
     let index_path = config::index_path(root);
     let cache_dir = index_path.parent().context("index path has no parent")?;
@@ -613,12 +672,22 @@ fn write_output(
                 Some((fst.as_slice(), posts.as_slice(), stats.as_slice()))
             }
         });
-        store::writer::write_index_with_call_graph(
+        // 11.4 Inc 4 — collect (file_id, Skeleton) tuples and compute
+        // per-language grammar fingerprints. The empty-opt-out path
+        // still produces a v6 index, just with all-zero header fields.
+        let (pattern_skeletons, lang_fingerprints) = if opts.with_pattern_index {
+            collect_pattern_skeletons(parsed)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        store::writer::write_index_with_call_graph_and_skeletons_and_fingerprints(
             parsed,
             vectors,
             vector_dim,
             &call_edges,
             bm25,
+            &pattern_skeletons,
+            &lang_fingerprints,
             &index_path,
         )
         .context("write index")?;
@@ -634,6 +703,14 @@ fn write_output(
             // default case so post-10.3 manifests are unambiguous.
             call_graph: Some(opts.with_call_graph),
             bm25: Some(opts.with_bm25),
+            pattern_index: Some(opts.with_pattern_index),
+            // 11.4 Inc 5: `pattern_index_full` distinguishes a full
+            // `vex index` from a `vex update`. The reader checks this
+            // before using the indexed prefilter — incremental builds
+            // produce a partial section (only re-parsed files have
+            // skeletons) and would silently drop matches in unchanged
+            // files. `is_update` is plumbed by the writer wrapper.
+            pattern_index_full: Some(is_full_rebuild),
         };
         manifest.save(&manifest_path)?;
         Ok(())

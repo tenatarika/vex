@@ -42,6 +42,7 @@ fn one_symbol_parsed() -> Vec<ParsedFile> {
         refs: vec![],
         call_edges: vec![],
         bound_refs: vec![],
+        skeletons: Vec::new(),
     }]
 }
 

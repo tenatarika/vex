@@ -269,4 +269,10 @@ pub struct ParsedFile {
     /// `reference_edges` section in 11.1.3.
     #[allow(dead_code)]
     pub bound_refs: Vec<crate::parse::scope::BoundRef>,
+    /// Pattern skeletons emitted by the Phase 11.4 extractor. Empty for
+    /// T2/T3 languages (no allowlist yet) and — like `bound_refs` and
+    /// `call_edges` — empty for files reconstructed from the existing
+    /// index during `vex update`. Populated only for files actually
+    /// re-parsed from source. Inc 5 reads from the persistent section.
+    pub skeletons: Vec<crate::pattern::skeleton::Skeleton>,
 }

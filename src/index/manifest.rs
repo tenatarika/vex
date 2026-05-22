@@ -38,6 +38,23 @@ pub struct Manifest {
     /// as `call_graph` — opt-out is sticky across updates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bm25: Option<bool>,
+
+    /// Whether this index was built with the v6 pattern-skeleton
+    /// section (11.4 Inc 4). Same sticky-opt-out semantics as
+    /// `call_graph` / `bm25`. `None` on pre-11.4 manifests is treated
+    /// as enabled (the section's empty state is harmless if absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern_index: Option<bool>,
+
+    /// `true` when this manifest was written by a full rebuild
+    /// (`vex index`), `false` after `vex update` because incremental
+    /// updates leave skeletons empty for unchanged files (matches the
+    /// `bound_refs` / `call_edges` convention). 11.4 Inc 5's indexed
+    /// `vex pattern` prefilter degrades to live-scan when this is
+    /// `Some(false)` to avoid silently under-reporting matches. `None`
+    /// on pre-11.4 manifests is treated as `false` (conservative).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern_index_full: Option<bool>,
 }
 
 impl Manifest {

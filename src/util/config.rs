@@ -60,6 +60,12 @@ pub struct VexConfig {
     /// resolution order as `call_graph`. Default `true`.
     pub bm25: Option<bool>,
 
+    /// Build the v6 pattern-skeleton side-section during `vex index`
+    /// (11.4). When `false`, `vex pattern` keeps using its live-scan
+    /// path. Same resolution order as `call_graph` / `bm25`. Default
+    /// `true`.
+    pub pattern_index: Option<bool>,
+
     /// Directory containing the `.vex.toml` that produced this config.
     /// Used to resolve relative `cache_dir` paths.
     #[serde(skip)]

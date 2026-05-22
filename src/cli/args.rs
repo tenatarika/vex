@@ -111,6 +111,12 @@ pub enum Commands {
         /// manifest like `--no-call-graph`.
         #[arg(long)]
         no_bm25: bool,
+
+        /// Skip the v6 pattern-skeleton side-section (11.4). `vex pattern`
+        /// keeps using live-scan instead of the indexed prefilter. Same
+        /// sticky-opt-out semantics as `--no-call-graph` / `--no-bm25`.
+        #[arg(long)]
+        no_pattern_index: bool,
     },
 
     /// Search symbols by name or semantics
@@ -261,6 +267,12 @@ pub enum Commands {
         /// the previous decision.
         #[arg(long)]
         no_bm25: bool,
+
+        /// Skip the v6 pattern-skeleton side-section. Overrides the
+        /// previous build's setting. Without this flag, `update`
+        /// honours what the manifest recorded.
+        #[arg(long)]
+        no_pattern_index: bool,
     },
 
     /// Show structure of a file (symbols, kinds, lines)
@@ -305,6 +317,11 @@ pub enum Commands {
         /// incremental updates.
         #[arg(long)]
         no_bm25: bool,
+
+        /// Skip the v6 pattern-skeleton side-section in both the initial
+        /// build and subsequent incremental updates.
+        #[arg(long)]
+        no_pattern_index: bool,
     },
 
     /// Show the full body of a symbol (function, class, struct, etc.)

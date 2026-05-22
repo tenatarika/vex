@@ -29,11 +29,15 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
         )
         .collect();
     let bound_refs = scope::bind_refs(content, lang, &symbols)?;
+    // 11.4 Inc 4 — extract pattern skeletons while source is hot. T2/T3
+    // langs return an empty Vec via the allowlist short-circuit.
+    let skeletons = crate::pattern::skeleton::extract_skeletons(content, lang);
     Ok(ParsedFile {
         path: path.to_string(),
         symbols,
         refs,
         call_edges,
         bound_refs,
+        skeletons,
     })
 }
