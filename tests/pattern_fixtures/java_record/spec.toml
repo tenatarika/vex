@@ -1,0 +1,11 @@
+lang = "java"
+pattern = "public record $NAME($$ARGS) {}"
+exercises = "java_record"
+
+[[expected]]
+line = 1
+captures = { NAME = "User", ARGS = "String name, int age" }
+
+[[expected]]
+line = 3
+captures = { NAME = "Product", ARGS = "String sku, double price" }

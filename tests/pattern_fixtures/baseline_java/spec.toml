@@ -1,0 +1,7 @@
+lang = "java"
+pattern = "public void $NAME()"
+exercises = "baseline"
+
+[[expected]]
+line = 2
+captures = { NAME = "greet" }

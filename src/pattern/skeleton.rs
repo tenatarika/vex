@@ -18,8 +18,8 @@
 //! | Tier | Languages                                        | Allowlist     |
 //! |------|--------------------------------------------------|---------------|
 //! | T1   | Rust, TypeScript, Python                         | populated     |
-//! | T2a  | Go, C++, C#, SQL, Markdown                       | populated     |
-//! | T2   | Java, Kotlin, Swift, PHP, Ruby                   | empty for now |
+//! | T2a  | Go, C++, C#, SQL, Markdown, Java                 | populated     |
+//! | T2   | Kotlin, Swift, PHP, Ruby                         | empty for now |
 //! | T3   | CSS, HTML, YAML, TOML, Bash, Lua                 | empty (final) |
 //!
 //! An empty allowlist short-circuits to `Vec::new()`, so unrolled-T2
@@ -294,6 +294,34 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             //   * Lists, blockquotes, tables — revisit when there's
             //     demand for `vex pattern` on those shapes.
         ],
+        Language::Java => &[
+            // Top-level type declarations — all carry
+            // `name: identifier`. `record_declaration` is Java 16+,
+            // `annotation_type_declaration` covers `@interface`.
+            "class_declaration",
+            "interface_declaration",
+            "enum_declaration",
+            "record_declaration",
+            "annotation_type_declaration",
+            // Members — methods, constructors. Both have
+            // `name: identifier` and `body: block`.
+            "method_declaration",
+            "constructor_declaration",
+            // Anonymous closures. Lambda body may be `block` (block-
+            // bodied) or an inline expression (no block) — has_block
+            // reflects this naturally.
+            "lambda_expression",
+            // Intentionally absent:
+            //   * `field_declaration` — multi-declarator forms
+            //     (`int a, b, c;`) would emit only the first name;
+            //     same reason as C++/C#.
+            //   * `package_declaration`, `import_declaration` —
+            //     binding sites / metadata, not pattern targets.
+            //   * `annotation` — too noisy (every `@Override` on a
+            //     method would emit).
+            //   * `static_initializer`, `instance_initializer` —
+            //     niche; revisit when patterns need them.
+        ],
         Language::Go => &[
             // Top-level decls — `function_declaration` and
             // `method_declaration` are first-class; `type_spec` /
@@ -334,6 +362,7 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
                 Language::CSharp,
                 "lambda_expression" | "anonymous_method_expression",
             )
+            | (Language::Java, "lambda_expression")
     );
     if anonymous {
         return None;
@@ -465,6 +494,8 @@ fn has_body_block(node: Node<'_>) -> bool {
                 | "column_definitions" // SQL CREATE TABLE body
                 | "function_body" // SQL CREATE FUNCTION body
                 | "code_fence_content" // Markdown fenced block content
+                | "annotation_type_body" // Java @interface body
+                | "constructor_body" // Java constructor body
         )
     });
     found
@@ -562,13 +593,11 @@ mod tests {
 
     #[test]
     fn t2_language_returns_empty_until_rolled_out() {
-        // Java is still T2 — not yet in the allowlist. Go used to be
-        // the canary here; it moved to T2a (populated) so swap to
-        // Java to keep the empty-allowlist short-circuit covered.
-        // When Java itself rolls out next, repoint at a T3 lang that
-        // we explicitly don't plan to populate (e.g. `Language::Css`
-        // or `Language::Yaml`) so the canary doesn't keep shifting.
-        let sk = extract(Language::Java, "class Foo {}\n");
+        // Kotlin is still T2 — not yet in the allowlist. Java used
+        // to live here but moved to T2a; this test will need to
+        // repoint at the next still-empty T2 language each time one
+        // rolls out (Swift / PHP / Ruby remain).
+        let sk = extract(Language::Kotlin, "class Foo\n");
         assert!(sk.is_empty());
     }
 
@@ -1172,6 +1201,142 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing {kind}"));
             assert_eq!(s.ident.as_deref(), Some(name), "{kind} ident");
         }
+    }
+
+    #[test]
+    fn java_class_with_method_emits_both() {
+        let sk = extract(
+            Language::Java,
+            "public class Server {\n    public String getName() { return \"\"; }\n}\n",
+        );
+        let c = sk.iter().find(|s| s.kind == "class_declaration").unwrap();
+        assert_eq!(c.ident.as_deref(), Some("Server"));
+        assert!(c.has_block, "class_body must register as body");
+        assert_eq!(c.parent_kind, None);
+        let m = sk.iter().find(|s| s.kind == "method_declaration").unwrap();
+        assert_eq!(m.ident.as_deref(), Some("getName"));
+        assert_eq!(m.parent_kind, Some("class_body"));
+        assert!(m.has_block);
+    }
+
+    #[test]
+    fn java_interface_enum_record_emit_named_skeletons() {
+        let sk = extract(
+            Language::Java,
+            "interface IRunner { void run(); }\n\
+             enum Mode { FAST, SLOW }\n\
+             record User(String name, int age) {}\n",
+        );
+        for (kind, name) in [
+            ("interface_declaration", "IRunner"),
+            ("enum_declaration", "Mode"),
+            ("record_declaration", "User"),
+        ] {
+            let s = sk
+                .iter()
+                .find(|s| s.kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind}"));
+            assert_eq!(s.ident.as_deref(), Some(name), "{kind}");
+            assert!(s.has_block, "{kind} must register as body");
+        }
+    }
+
+    #[test]
+    fn java_annotation_type_emits_with_body() {
+        // `@interface MyAnnot { ... }` — uses `annotation_type_body`
+        // which is the Java-specific arm of `has_body_block`.
+        let sk = extract(
+            Language::Java,
+            "@interface MyAnnot {\n    String value();\n}\n",
+        );
+        let a = sk
+            .iter()
+            .find(|s| s.kind == "annotation_type_declaration")
+            .unwrap();
+        assert_eq!(a.ident.as_deref(), Some("MyAnnot"));
+        assert!(a.has_block, "annotation_type_body must register as body",);
+    }
+
+    #[test]
+    fn java_constructor_emits_with_block_body() {
+        let sk = extract(
+            Language::Java,
+            "class Server {\n    public Server(String name) {}\n}\n",
+        );
+        let c = sk
+            .iter()
+            .find(|s| s.kind == "constructor_declaration")
+            .unwrap();
+        assert_eq!(c.ident.as_deref(), Some("Server"));
+        // `constructor_body` is the Java grammar's body kind here.
+        // The unit pins both the ident and that has_block fires so
+        // the `constructor_body` arm of has_body_block is exercised.
+        assert!(c.has_block);
+    }
+
+    #[test]
+    fn java_lambda_expression_block_vs_expression_body() {
+        // Lambdas come in two shapes: block-bodied (`() -> { ... }`)
+        // gets `has_block=true`; expression-bodied (`() -> x.foo()`)
+        // gets `has_block=false`. Both are anonymous.
+        let block_form = extract(
+            Language::Java,
+            "class C { Runnable r = () -> { System.out.println(\"hi\"); }; }\n",
+        );
+        let lb = block_form
+            .iter()
+            .find(|s| s.kind == "lambda_expression")
+            .unwrap();
+        assert_eq!(lb.ident, None);
+        assert!(lb.has_block);
+
+        let expr_form = extract(
+            Language::Java,
+            "class C { java.util.function.Function<String,Integer> f = s -> s.length(); }\n",
+        );
+        let le = expr_form
+            .iter()
+            .find(|s| s.kind == "lambda_expression")
+            .unwrap();
+        assert_eq!(le.ident, None);
+        assert!(
+            !le.has_block,
+            "expression-bodied lambda must report has_block=false",
+        );
+    }
+
+    #[test]
+    fn java_generic_type_ident_is_bare_name() {
+        // `class Box<T> {}` — `name: identifier` gives `Box`; the
+        // `<T>` lives in a sibling `type_parameters` field. Pin so
+        // a future grammar update doesn't accidentally start
+        // returning `Box<T>` or `<T>`.
+        let sk = extract(Language::Java, "class Box<T> { T value; }\n");
+        let b = sk.iter().find(|s| s.kind == "class_declaration").unwrap();
+        assert_eq!(b.ident.as_deref(), Some("Box"));
+    }
+
+    #[test]
+    fn java_nested_class_carries_class_body_parent_kind() {
+        // Inner classes sit under the outer class's `class_body`.
+        let sk = extract(
+            Language::Java,
+            "class Outer {\n    static class Inner {}\n}\n",
+        );
+        let inner = sk
+            .iter()
+            .filter(|s| s.kind == "class_declaration")
+            .find(|s| s.ident.as_deref() == Some("Inner"))
+            .expect("missing Inner");
+        assert_eq!(inner.parent_kind, Some("class_body"));
+    }
+
+    #[test]
+    fn java_grammar_fingerprint_is_stable_and_nonzero() {
+        let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Java);
+        let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Java);
+        assert_eq!(a, b);
+        assert_ne!(a, 0);
     }
 
     #[test]

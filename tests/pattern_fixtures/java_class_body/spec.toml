@@ -1,0 +1,11 @@
+lang = "java"
+pattern = "public class $NAME { $$$BODY }"
+exercises = "java_class_body"
+
+# Avoid nested `{ ... }` braces in BODY (e.g. inline methods or
+# array initializers) — `$$$BODY` doesn't track brace nesting and
+# would truncate at the first inner `}`. Plain field decls keep
+# the body shape unambiguous.
+[[expected]]
+line = 1
+captures = { NAME = "UserService", BODY = "private String name;\n    private int age;" }

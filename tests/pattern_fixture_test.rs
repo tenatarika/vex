@@ -62,6 +62,7 @@ fn input_extension(lang: &str) -> &'static str {
         "csharp" | "cs" => "cs",
         "sql" => "sql",
         "markdown" | "md" => "md",
+        "java" => "java",
         other => panic!("unsupported fixture lang: {other}"),
     }
 }
@@ -244,4 +245,19 @@ fn baseline_markdown_atx_heading() {
 #[test]
 fn markdown_fenced_code_block_language() {
     run_fixture("markdown_fenced_code");
+}
+
+#[test]
+fn baseline_java_simple_method() {
+    run_fixture("baseline_java");
+}
+
+#[test]
+fn java_class_with_method_body() {
+    run_fixture("java_class_body");
+}
+
+#[test]
+fn java_record_signature() {
+    run_fixture("java_record");
 }
