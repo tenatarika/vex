@@ -20,6 +20,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # mold linker on Linux only — rust-lld hits SIGBUS / OOM when
+      # linking 30+ test binaries with the full tree-sitter + ONNX dep
+      # graph on the 7 GB GitHub runner. mold is both faster and far
+      # more memory-efficient; macOS / Windows keep their default
+      # linkers.
+      - uses: rui314/setup-mold@v1
+        if: matrix.os == 'ubuntu-latest'
       # rustfmt's output is platform-independent — run it once on linux only
       # to avoid spurious diff-on-CRLF flags.
       - run: cargo fmt --check
