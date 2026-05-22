@@ -138,6 +138,85 @@ fn strict_prints_no_usages_when_symbol_has_zero_refs() {
 }
 
 #[test]
+fn strict_resolves_csharp_using_directive_cross_file() {
+    // Two-file C# project: lib defines PaymentGateway, caller pulls
+    // it in via `using App.Lib.PaymentGateway;` and instantiates it.
+    // Pass-2 must rewrite the Imported(["App","Lib","PaymentGateway"])
+    // binding into a ref edge pointing at PaymentGateway in lib.cs.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("lib.cs"),
+        "namespace App.Lib;\npublic class PaymentGateway {\n    public void Charge() {}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("caller.cs"),
+        "using App.Lib.PaymentGateway;\nclass Caller {\n    void Run() {\n        var gw = new PaymentGateway();\n    }\n}\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let assert = vex_in(tmp.path())
+        .args(["usages", "PaymentGateway", "--strict"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    // line 4 of caller.cs: `        var gw = new PaymentGateway();`
+    assert!(
+        stdout.contains("src/caller.cs:4") || stdout.contains("src\\caller.cs:4"),
+        "expected the line-4 PaymentGateway ref under --strict, got: {stdout}"
+    );
+    // The defining file (lib.cs) must NOT show up in `--strict`:
+    // definitions are bindings, not refs. This pins the directional
+    // invariant — ref edges point caller → definition only.
+    assert!(
+        !stdout.contains("lib.cs"),
+        "definition file lib.cs leaked into usages output: {stdout}"
+    );
+}
+
+#[test]
+fn strict_resolves_cpp_using_declaration_cross_file() {
+    // Two-file C++ project: gateway.cpp defines PaymentGateway,
+    // caller.cpp brings it in via `using app::PaymentGateway;` and
+    // references it. Pass-2 must rewrite the import binding into a
+    // ref edge.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("gateway.cpp"),
+        "namespace app {\nclass PaymentGateway {};\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("caller.cpp"),
+        "using app::PaymentGateway;\nvoid Run() {\n    PaymentGateway gw;\n}\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let assert = vex_in(tmp.path())
+        .args(["usages", "PaymentGateway", "--strict"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    // line 3 of caller.cpp: `    PaymentGateway gw;`
+    assert!(
+        stdout.contains("src/caller.cpp:3") || stdout.contains("src\\caller.cpp:3"),
+        "expected the line-3 PaymentGateway ref under --strict, got: {stdout}"
+    );
+    // Definition file (gateway.cpp) must NOT appear — pins the
+    // caller-only direction of ref edges, same as the C# case.
+    assert!(
+        !stdout.contains("gateway.cpp"),
+        "definition file gateway.cpp leaked into usages output: {stdout}"
+    );
+}
+
+#[test]
 fn strict_filters_out_string_literal_noise_that_legacy_fst_keeps() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();

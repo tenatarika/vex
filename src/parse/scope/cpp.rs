@@ -1,5 +1,5 @@
-//! C++ scope binder (11.1.5). Shares scaffolding with the other
-//! binders via [`super::walker::Walker`]. No `#include` resolution.
+//! C++ scope binder (11.1.5 + `using` cross-file follow-up). Shares
+//! scaffolding with the other binders via [`super::walker::Walker`].
 //!
 //! ## What's handled
 //!
@@ -14,11 +14,30 @@
 //!   inner declarator, walk value first.
 //! - `parameter_declaration` — bind declarator's identifier.
 //! - `compound_statement` — child block scope.
+//! - `using_declaration` — `using std::vector;` → bind `vector` to
+//!   `UsePath{[std, vector]}` as `DefKind::Import`. Pass-2 resolves
+//!   the tail against the global name index.
+//! - `alias_declaration` — `using V = std::vector<int>;` → bind `V` as
+//!   `DefKind::Import` with the RHS type's qualified path; generic
+//!   arguments are ignored (the type identifier is what Pass-2 looks
+//!   up cross-file).
+//! - `namespace_alias_definition` — `namespace alias = ns::sub;` →
+//!   bind `alias` with `UsePath{[ns, sub]}`. The tail usually names a
+//!   namespace (no symbol hit), but the binding keeps `alias` out of
+//!   the `Unresolved` bucket if `sub` ever has a same-named type.
 //!
 //! ## What's deferred
 //!
+//! - `#include "foo.h"` / `#include <vector>` — preprocessor wildcard
+//!   import with no single name binding. Resolving symbols brought in
+//!   transitively would need a side-channel (header → file_id list)
+//!   plus a Pass-2 fallback for `Unresolved` refs to scan included
+//!   headers. Out of scope for the in-file binder.
+//! - `using namespace std;` — same wildcard story; no name binding
+//!   here. The `using_directive` node is matched explicitly and its
+//!   children are dropped so the bare namespace identifier (e.g.,
+//!   `std`) doesn't surface as a phantom ref.
 //! - Templates and generic parameters.
-//! - `using namespace` / `using ns::Name`.
 //! - `operator==` and other operator overloads — `operator_name` is
 //!   not an identifier kind so `extract_inner_identifier` returns None.
 //! - Multiple declarators in one `declaration` (`int a, b, c;`).
@@ -27,7 +46,7 @@ use anyhow::Result;
 use tree_sitter::Node;
 
 use super::walker::{parse_with, Walker};
-use super::{BoundRef, DefKind, RefKind, ScopeBinder, ScopeId, ScopeKind};
+use super::{BoundRef, DefKind, RefKind, ScopeBinder, ScopeId, ScopeKind, UsePath};
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::language::Language;
 
@@ -55,11 +74,25 @@ fn dispatch(w: &mut Walker, node: Node, scope: ScopeId) {
         }
         "init_declarator" => walk_init_declarator(w, node, scope),
         "parameter_declaration" => walk_parameter(w, node, scope),
+        "using_declaration" => walk_using_declaration(w, node, scope),
+        "alias_declaration" => walk_alias_declaration(w, node, scope),
+        "namespace_alias_definition" => walk_namespace_alias(w, node, scope),
+        // `using namespace std;` is a wildcard import the binder can't
+        // express in the name-keyed UsePath model — skip its children
+        // so the namespace name doesn't surface as a phantom ref.
+        "using_directive" => {}
         "compound_statement" => {
             let s = w.push_scope(ScopeKind::Block, scope);
             w.walk_children(node, s);
         }
         "identifier" | "field_identifier" => w.emit_ref(node, scope, RefKind::Value),
+        // `namespace_identifier` appears in `Gateway::Charge()` style
+        // qualified expressions. The previous implementation dropped
+        // these silently (walked into the leaf with no handler), which
+        // meant `using app::Gateway;` followed by `Gateway::foo()`
+        // produced zero refs for `Gateway`. Emit as a Value ref so the
+        // import binding can resolve it.
+        "namespace_identifier" => w.emit_ref(node, scope, RefKind::Value),
         "type_identifier" => w.emit_ref(node, scope, RefKind::Type),
         _ => w.walk_children(node, scope),
     }
@@ -133,6 +166,179 @@ fn walk_parameter(w: &mut Walker, node: Node, scope: ScopeId) {
         if let Some(n) = extract_inner_identifier(d) {
             w.add_binding(scope, n, DefKind::Param);
         }
+    }
+}
+
+/// `using std::vector;` — extract the trailing identifier from the
+/// `qualified_identifier` child and emit a `DefKind::Import` binding
+/// with the full path. No refs are emitted for path segments —
+/// they're a binding site, not a use site.
+fn walk_using_declaration(w: &mut Walker, node: Node, scope: ScopeId) {
+    let line = node.start_position().row + 1;
+    // `using_declaration` carries either a bare `identifier` or a
+    // `qualified_identifier`. Pick the first non-keyword child.
+    let mut cursor = node.walk();
+    let path_node = node.children(&mut cursor).find(|c| {
+        matches!(
+            c.kind(),
+            "qualified_identifier" | "identifier" | "type_identifier"
+        )
+    });
+    let Some(path_node) = path_node else { return };
+    let segments = collect_path_segments(path_node, w.content);
+    let Some(tail) = segments.last().cloned() else {
+        return;
+    };
+    w.add_import_binding(scope, tail, line, UsePath { segments });
+}
+
+/// `using V = std::vector<int>;` — bind the LHS `name:` field to the
+/// RHS type's qualified path. Template arguments are stripped (the
+/// path Pass-2 looks up is the type identifier, not the parameterised
+/// shape).
+fn walk_alias_declaration(w: &mut Walker, node: Node, scope: ScopeId) {
+    let line = node.start_position().row + 1;
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let alias = name_node
+        .utf8_text(w.content.as_bytes())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if alias.is_empty() {
+        return;
+    }
+    let segments = node
+        .child_by_field_name("type")
+        .map(|t| extract_alias_target_path(t, w.content))
+        .unwrap_or_default();
+    if segments.is_empty() {
+        // Plain alias to a primitive (`using Byte = unsigned char;`)
+        // can't resolve cross-file — bind as a local Type instead so
+        // the in-file resolver still treats it as defined.
+        w.add_binding(scope, name_node, DefKind::Type);
+        return;
+    }
+    w.add_import_binding(scope, alias, line, UsePath { segments });
+}
+
+/// `namespace alias = ns::sub;` — bind the alias name with the path
+/// from the `nested_namespace_specifier` RHS.
+fn walk_namespace_alias(w: &mut Walker, node: Node, scope: ScopeId) {
+    let line = node.start_position().row + 1;
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let alias = name_node
+        .utf8_text(w.content.as_bytes())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if alias.is_empty() {
+        return;
+    }
+    // The target sits as a positional `nested_namespace_specifier`
+    // or `namespace_identifier` *after* the `=` token. Walk children
+    // in order and pick the first match that isn't the `name:` field
+    // (the LHS alias name itself).
+    let mut cursor = node.walk();
+    let target = node.children(&mut cursor).find(|c| {
+        c.id() != name_node.id()
+            && matches!(
+                c.kind(),
+                "nested_namespace_specifier" | "namespace_identifier"
+            )
+    });
+    let segments = match target {
+        Some(t) => collect_path_segments(t, w.content),
+        None => return,
+    };
+    if segments.is_empty() {
+        return;
+    }
+    w.add_import_binding(scope, alias, line, UsePath { segments });
+}
+
+/// Walk a `qualified_identifier` / `nested_namespace_specifier` /
+/// bare identifier and collect its segments. Recurses through the
+/// `scope:` / `name:` fields of `qualified_identifier`, and strips
+/// template-argument lists when a segment is `template_type`.
+fn collect_path_segments(node: Node, content: &str) -> Vec<String> {
+    let mut segs = Vec::new();
+    push_path_segments(node, content, &mut segs);
+    segs
+}
+
+fn push_path_segments(node: Node, content: &str, out: &mut Vec<String>) {
+    match node.kind() {
+        "qualified_identifier" | "nested_namespace_specifier" => {
+            let name_node = node.child_by_field_name("name");
+            if let Some(scope) = node.child_by_field_name("scope") {
+                push_path_segments(scope, content, out);
+            } else {
+                // `nested_namespace_specifier` uses positional children;
+                // `qualified_identifier` for root-qualified shapes like
+                // `::Foo` has no `scope:` but still carries `name:`. We
+                // must skip the `name:` child here — it's emitted below
+                // — otherwise `::Foo` lands as `["Foo", "Foo"]`.
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if Some(child.id()) == name_node.map(|n| n.id()) {
+                        continue;
+                    }
+                    if matches!(
+                        child.kind(),
+                        "namespace_identifier" | "identifier" | "type_identifier"
+                    ) {
+                        push_text_segment(child, content, out);
+                    }
+                }
+            }
+            if let Some(name) = name_node {
+                push_path_segments(name, content, out);
+            }
+        }
+        "template_type" => {
+            if let Some(name) = node.child_by_field_name("name") {
+                push_text_segment(name, content, out);
+            }
+        }
+        "namespace_identifier" | "identifier" | "type_identifier" => {
+            push_text_segment(node, content, out);
+        }
+        _ => {}
+    }
+}
+
+fn push_text_segment(node: Node, content: &str, out: &mut Vec<String>) {
+    let s = node
+        .utf8_text(content.as_bytes())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !s.is_empty() {
+        out.push(s);
+    }
+}
+
+/// For `using V = T;` — pull the qualified path out of `T`. `T` is
+/// a `type_descriptor` whose `type:` field is the actual type
+/// expression (`qualified_identifier`, `template_type`,
+/// `primitive_type`, etc.). Returns an empty vec for primitives /
+/// shapes that don't have a qualified name — the caller falls back
+/// to a local Type binding.
+fn extract_alias_target_path(type_descriptor: Node, content: &str) -> Vec<String> {
+    let ty = type_descriptor
+        .child_by_field_name("type")
+        .unwrap_or(type_descriptor);
+    match ty.kind() {
+        "qualified_identifier" | "template_type" | "type_identifier" | "identifier" => {
+            collect_path_segments(ty, content)
+        }
+        // Primitives, `sized_type_specifier` (`unsigned char`), and
+        // anything else can't resolve cross-file.
+        _ => Vec::new(),
     }
 }
 
