@@ -5,3 +5,10 @@ exercises = "baseline"
 [[expected]]
 line = 3
 captures = { NAME = "foo" }
+
+# Pattern intentionally lacks a return-type literal, so `bar`
+# (which has `int` return) also matches. Pinning both prevents a
+# future engine change that silently splits the two from sneaking by.
+[[expected]]
+line = 7
+captures = { NAME = "bar" }

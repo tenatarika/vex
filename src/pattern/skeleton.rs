@@ -160,6 +160,10 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             "function_declaration",
             "method_declaration",
             "type_spec",
+            // `type_alias` is a sibling of `type_spec` for `type
+            // Alias = Target` (Go 1.9+ alias form). Same `name:`
+            // field shape, so `extract_ident` handles it.
+            "type_alias",
             "var_spec",
             "const_spec",
             // Anonymous closures — `value = func(x) { ... }` and
@@ -316,6 +320,9 @@ mod tests {
         // Java is still T2 — not yet in the allowlist. Go used to be
         // the canary here; it moved to T2a (populated) so swap to
         // Java to keep the empty-allowlist short-circuit covered.
+        // When Java itself rolls out next, repoint at a T3 lang that
+        // we explicitly don't plan to populate (e.g. `Language::Css`
+        // or `Language::Yaml`) so the canary doesn't keep shifting.
         let sk = extract(Language::Java, "class Foo {}\n");
         assert!(sk.is_empty());
     }
@@ -386,6 +393,72 @@ mod tests {
         assert_eq!(v.ident.as_deref(), Some("top"));
         let c = sk.iter().find(|s| s.kind == "const_spec").unwrap();
         assert_eq!(c.ident.as_deref(), Some("MyConst"));
+    }
+
+    #[test]
+    fn go_type_spec_ungrouped_emits_same_parent_kind() {
+        // Reviewer GAP-2: pin that the ungrouped single-spec form
+        // produces the same `parent_kind` as the grouped form —
+        // tree-sitter's grammar wraps both in `type_declaration`.
+        let sk = extract(Language::Go, "package main\n\ntype Foo struct{}\n");
+        let spec = sk.iter().find(|s| s.kind == "type_spec").unwrap();
+        assert_eq!(spec.ident.as_deref(), Some("Foo"));
+        assert_eq!(spec.parent_kind, Some("type_declaration"));
+    }
+
+    #[test]
+    fn go_type_alias_form_emits_skeleton_with_ident() {
+        // Reviewer GAP-3: `type Alias = Target` parses as `type_alias`,
+        // not `type_spec`. Without the dedicated allowlist entry it
+        // would silently produce zero skeletons.
+        let sk = extract(Language::Go, "package main\n\ntype Alias = int\n");
+        let a = sk.iter().find(|s| s.kind == "type_alias").unwrap();
+        assert_eq!(a.ident.as_deref(), Some("Alias"));
+        assert_eq!(a.parent_kind, Some("type_declaration"));
+    }
+
+    #[test]
+    fn go_nested_func_literal_has_expression_list_parent() {
+        // Reviewer GAP-5: inner closures sit inside an
+        // `expression_list` wrapper (right-hand-side of a short var
+        // declaration). Pin so a future prefilter that narrows by
+        // `parent_kind` doesn't regress this surface.
+        let sk = extract(
+            Language::Go,
+            "package main\n\nvar outer = func() { inner := func() {} }\n",
+        );
+        let literals: Vec<_> = sk.iter().filter(|s| s.kind == "func_literal").collect();
+        assert_eq!(literals.len(), 2, "outer + inner literal");
+        let inner = literals.iter().find(|s| s.start_row > 0 || s.end_row > 0);
+        // Both literals are anonymous regardless of nesting depth.
+        assert!(literals.iter().all(|s| s.ident.is_none()));
+        // The deeper one sits under an `expression_list` (RHS of
+        // `inner := func() {}`), not directly under the outer block.
+        assert!(
+            literals
+                .iter()
+                .any(|s| s.parent_kind == Some("expression_list")),
+            "expected at least one literal with expression_list parent, got: {:?}",
+            literals.iter().map(|s| s.parent_kind).collect::<Vec<_>>()
+        );
+        let _ = inner; // silence unused
+    }
+
+    #[test]
+    fn go_grouped_var_block_parents_are_var_spec_list() {
+        // Reviewer GAP-6: grouped `var (...)` puts each `var_spec`
+        // under `var_spec_list`, distinct from the ungrouped case
+        // where the parent is `var_declaration`.
+        let sk = extract(
+            Language::Go,
+            "package main\n\nvar (\n    aOne int\n    bTwo string\n)\n",
+        );
+        let specs: Vec<_> = sk.iter().filter(|s| s.kind == "var_spec").collect();
+        assert_eq!(specs.len(), 2);
+        assert!(specs.iter().all(|s| s.parent_kind == Some("var_spec_list")));
+        let names: Vec<&str> = specs.iter().filter_map(|s| s.ident.as_deref()).collect();
+        assert!(names.contains(&"aOne"));
+        assert!(names.contains(&"bTwo"));
     }
 
     #[test]

@@ -2,6 +2,8 @@ lang = "go"
 pattern = "type $NAME struct { $$$BODY }"
 exercises = "go_struct_body"
 
+# Pin the BODY capture text — empty / off-by-one byte ranges would
+# silently still pass a NAME-only assertion (reviewer GAP-4).
 [[expected]]
 line = 3
-captures = { NAME = "Config" }
+captures = { NAME = "Config", BODY = "Host string\n\tPort int" }
