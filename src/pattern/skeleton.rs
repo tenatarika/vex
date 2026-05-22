@@ -18,9 +18,9 @@
 //! | Tier | Languages                                        | Allowlist     |
 //! |------|--------------------------------------------------|---------------|
 //! | T1   | Rust, TypeScript, Python                         | populated     |
-//! | T2a  | Go, C++, C#                                      | populated     |
+//! | T2a  | Go, C++, C#, SQL, Markdown                       | populated     |
 //! | T2   | Java, Kotlin, Swift, PHP, Ruby                   | empty for now |
-//! | T3   | SQL, Markdown, CSS, HTML, YAML, TOML, Bash, Lua  | empty (final) |
+//! | T3   | CSS, HTML, YAML, TOML, Bash, Lua                 | empty (final) |
 //!
 //! An empty allowlist short-circuits to `Vec::new()`, so unrolled-T2
 //! / T3 files produce no skeletons and `vex pattern --lang <x>` falls
@@ -118,10 +118,11 @@ fn is_root_kind(kind: &str) -> bool {
         kind,
         // Rust/Go: `source_file`. TypeScript: `program`. Python:
         // `module`. C++: `translation_unit`. C#: `compilation_unit`.
+        // Markdown: `document`. SQL also uses `program`.
         // Missing any of these makes top-level decls in that language
         // surface a non-None `parent_kind`, silently breaking any
         // prefilter logic that treats `None` as "file-root".
-        "source_file" | "program" | "module" | "translation_unit" | "compilation_unit"
+        "source_file" | "program" | "module" | "translation_unit" | "compilation_unit" | "document"
     )
 }
 
@@ -245,6 +246,37 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             // captures `Run` from the source text, which is the
             // user-intuitive result.
         ],
+        Language::Sql => &[
+            // Top-level DDL statements — each carries an object name
+            // either via `object_reference > name:` (most) or a
+            // direct `column:` field (create_index). Skeleton ident
+            // is extracted via the language-specific arm in
+            // [`extract_ident`] below.
+            "create_table",
+            "create_index",
+            "create_view",
+            "create_function",
+            "alter_table",
+            "drop_table",
+            // Intentionally absent (deferred):
+            //   * `create_trigger`, `create_schema`, `create_type` —
+            //     niche; add when patterns need them.
+            //   * Plain `select` / DML — not pattern-targetable as
+            //     definitions; `vex pattern` falls through to live-
+            //     scan for ad-hoc query shapes.
+        ],
+        Language::Markdown => &[
+            // Headings + fenced code blocks are the structurally
+            // pinnable elements of a Markdown document.
+            "atx_heading",
+            "setext_heading",
+            "fenced_code_block",
+            // Intentionally absent:
+            //   * `paragraph` / `inline` — too noisy; every line of
+            //     prose would land in the skeleton table.
+            //   * Lists, blockquotes, tables — revisit when there's
+            //     demand for `vex pattern` on those shapes.
+        ],
         Language::Go => &[
             // Top-level decls — `function_declaration` and
             // `method_declaration` are first-class; `type_spec` /
@@ -289,6 +321,54 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
     if anonymous {
         return None;
     }
+    // SQL DDL nodes carry the object name two levels deep — either
+    // a positional `object_reference > name:` child for most DDL,
+    // or a direct `column:` field for `create_index`. The outer
+    // `object_reference` is NOT a named field on the statement
+    // node, so we walk children by kind instead of using
+    // `child_by_field_name`.
+    if matches!(
+        (lang, kind),
+        (
+            Language::Sql,
+            "create_table"
+                | "create_view"
+                | "create_function"
+                | "alter_table"
+                | "drop_table"
+                | "create_index",
+        )
+    ) {
+        let name_node = if kind == "create_index" {
+            node.child_by_field_name("column")
+        } else {
+            child_by_kind(node, "object_reference").and_then(|r| r.child_by_field_name("name"))
+        };
+        return name_node
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(String::from);
+    }
+    // Markdown: extract heading text for `atx_heading` / `setext_
+    // heading` (both expose `heading_content:` as a named field),
+    // and the language tag from `info_string` for fenced code
+    // blocks (positional child — walk children by kind).
+    if matches!(
+        (lang, kind),
+        (
+            Language::Markdown,
+            "atx_heading" | "setext_heading" | "fenced_code_block",
+        )
+    ) {
+        let text_node = if kind == "fenced_code_block" {
+            child_by_kind(node, "info_string")
+        } else {
+            node.child_by_field_name("heading_content")
+        };
+        return text_node
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+    }
     // C++ buries function/method names under a declarator chain.
     // Reuse the scope binder's `extract_inner_identifier` so the
     // skeleton prefilter and `vex usages` agree on what the name is —
@@ -318,6 +398,17 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
         .map(String::from)
 }
 
+/// First child of `node` whose kind equals `kind`, or `None`. Walks
+/// the children once; allocates nothing beyond the tree-sitter
+/// cursor. Useful when a grammar exposes a meaningful child as a
+/// positional (not named) field — e.g. SQL `object_reference` under
+/// `create_table`, or Markdown `info_string` under `fenced_code_block`.
+fn child_by_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    let result = node.children(&mut cursor).find(|c| c.kind() == kind);
+    result
+}
+
 /// Block-shaped body markers, language-agnostic. Tree-sitter uses these
 /// kinds for the statement-list child of declarations across grammars.
 fn has_body_block(node: Node<'_>) -> bool {
@@ -341,6 +432,9 @@ fn has_body_block(node: Node<'_>) -> bool {
                 | "compound_statement"           // C++ fn / lambda body
                 | "enum_member_declaration_list" // C# enum body
                 | "accessor_list" // C# property body
+                | "column_definitions" // SQL CREATE TABLE body
+                | "function_body" // SQL CREATE FUNCTION body
+                | "code_fence_content" // Markdown fenced block content
         )
     });
     found
@@ -1007,6 +1101,128 @@ mod tests {
     }
 
     #[test]
+    fn sql_create_table_extracts_object_name_with_body() {
+        let sk = extract(
+            Language::Sql,
+            "CREATE TABLE users (id INT PRIMARY KEY, name TEXT);\n",
+        );
+        let t = sk.iter().find(|s| s.kind == "create_table").unwrap();
+        assert_eq!(t.ident.as_deref(), Some("users"));
+        assert!(t.has_block, "`column_definitions` must register as body");
+        assert_eq!(t.parent_kind, Some("statement"));
+    }
+
+    #[test]
+    fn sql_create_index_uses_column_field_for_ident() {
+        // `create_index` is the odd one out — name lives directly in
+        // the `column:` field, not nested under `object_reference`.
+        let sk = extract(Language::Sql, "CREATE INDEX idx_users ON users(name);\n");
+        let i = sk.iter().find(|s| s.kind == "create_index").unwrap();
+        assert_eq!(i.ident.as_deref(), Some("idx_users"));
+    }
+
+    #[test]
+    fn sql_create_view_function_alter_drop_emit_named_skeletons() {
+        let sk = extract(
+            Language::Sql,
+            "CREATE VIEW active_users AS SELECT * FROM users;\n\
+             CREATE OR REPLACE FUNCTION greet() RETURNS TEXT AS $$ SELECT 'hi'; $$ LANGUAGE plpgsql;\n\
+             ALTER TABLE users ADD COLUMN email TEXT;\n\
+             DROP TABLE old_data;\n",
+        );
+        for (kind, name) in [
+            ("create_view", "active_users"),
+            ("create_function", "greet"),
+            ("alter_table", "users"),
+            ("drop_table", "old_data"),
+        ] {
+            let s = sk
+                .iter()
+                .find(|s| s.kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind}"));
+            assert_eq!(s.ident.as_deref(), Some(name), "{kind} ident");
+        }
+    }
+
+    #[test]
+    fn sql_grammar_fingerprint_is_stable_and_nonzero() {
+        let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Sql);
+        let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Sql);
+        assert_eq!(a, b);
+        assert_ne!(a, 0);
+    }
+
+    #[test]
+    fn markdown_atx_heading_extracts_heading_text() {
+        let sk = extract(
+            Language::Markdown,
+            "# Top Title\n\n## Section One\n\n### Sub Three\n",
+        );
+        let headings: Vec<_> = sk.iter().filter(|s| s.kind == "atx_heading").collect();
+        assert_eq!(headings.len(), 3);
+        let titles: Vec<&str> = headings.iter().filter_map(|s| s.ident.as_deref()).collect();
+        assert!(titles.contains(&"Top Title"));
+        assert!(titles.contains(&"Section One"));
+        assert!(titles.contains(&"Sub Three"));
+    }
+
+    #[test]
+    fn markdown_setext_heading_extracts_underlined_title() {
+        let sk = extract(
+            Language::Markdown,
+            "Setext H1\n=========\n\nSetext H2\n---------\n",
+        );
+        let setexts: Vec<_> = sk.iter().filter(|s| s.kind == "setext_heading").collect();
+        assert_eq!(setexts.len(), 2);
+        // The grammar wraps the title in a `paragraph` node — utf8_
+        // text on `heading_content` returns the line plus a trailing
+        // newline, so we trim in `extract_ident`.
+        let titles: Vec<&str> = setexts.iter().filter_map(|s| s.ident.as_deref()).collect();
+        assert!(titles.contains(&"Setext H1"));
+        assert!(titles.contains(&"Setext H2"));
+    }
+
+    #[test]
+    fn markdown_fenced_code_block_extracts_info_string_lang() {
+        let sk = extract(
+            Language::Markdown,
+            "```rust\nfn foo() {}\n```\n\n```python\nprint('hi')\n```\n",
+        );
+        let blocks: Vec<_> = sk
+            .iter()
+            .filter(|s| s.kind == "fenced_code_block")
+            .collect();
+        assert_eq!(blocks.len(), 2);
+        let langs: Vec<&str> = blocks.iter().filter_map(|s| s.ident.as_deref()).collect();
+        assert!(langs.contains(&"rust"));
+        assert!(langs.contains(&"python"));
+        // Code fence body is `code_fence_content` — has_block must
+        // fire so `$$$BODY` patterns can prefilter against it.
+        assert!(blocks.iter().all(|s| s.has_block));
+    }
+
+    #[test]
+    fn markdown_atx_heading_parent_kind_is_section() {
+        // tree-sitter-markdown wraps every heading in an enclosing
+        // `section` — even at the top level. `parent_kind` should
+        // therefore consistently be `Some("section")`, not `None`.
+        // The skeleton.rs `is_root_kind` suppression for `document`
+        // is still load-bearing for any future top-level node that
+        // sits directly under `document` (e.g. front-matter blocks).
+        let sk = extract(Language::Markdown, "# Top\n");
+        let h = sk.iter().find(|s| s.kind == "atx_heading").unwrap();
+        assert_eq!(h.parent_kind, Some("section"));
+    }
+
+    #[test]
+    fn markdown_grammar_fingerprint_is_stable_and_nonzero() {
+        let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Markdown);
+        let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Markdown);
+        assert_eq!(a, b);
+        assert_ne!(a, 0);
+    }
+
+    #[test]
     fn cpp_grammar_fingerprint_is_stable_and_nonzero() {
         let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Cpp);
         let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Cpp);
@@ -1027,8 +1243,11 @@ mod tests {
 
     #[test]
     fn t3_language_short_circuits_to_empty() {
-        // Markdown is T3 — never gets skeletons.
-        let sk = extract(Language::Markdown, "# Heading\n");
+        // CSS is T3 — never planned for skeletons. Markdown used to
+        // be the canary here but moved to T2a; use CSS so the empty-
+        // allowlist short-circuit stays covered by a language we
+        // actually intend to keep empty.
+        let sk = extract(Language::Css, "body { color: red; }\n");
         assert!(sk.is_empty());
     }
 

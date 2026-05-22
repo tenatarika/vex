@@ -1,0 +1,11 @@
+lang = "markdown"
+pattern = "## $TITLE"
+exercises = "baseline"
+
+[[expected]]
+line = 5
+captures = { TITLE = "Installation" }
+
+[[expected]]
+line = 9
+captures = { TITLE = "Usage" }

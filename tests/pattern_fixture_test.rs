@@ -60,6 +60,8 @@ fn input_extension(lang: &str) -> &'static str {
         "go" => "go",
         "cpp" | "c++" => "cpp",
         "csharp" | "cs" => "cs",
+        "sql" => "sql",
+        "markdown" | "md" => "md",
         other => panic!("unsupported fixture lang: {other}"),
     }
 }
@@ -222,4 +224,24 @@ fn csharp_class_with_property_body() {
 #[test]
 fn csharp_record_signature() {
     run_fixture("csharp_record");
+}
+
+#[test]
+fn baseline_sql_create_table() {
+    run_fixture("baseline_sql");
+}
+
+#[test]
+fn sql_create_function_signature() {
+    run_fixture("sql_create_function");
+}
+
+#[test]
+fn baseline_markdown_atx_heading() {
+    run_fixture("baseline_markdown");
+}
+
+#[test]
+fn markdown_fenced_code_block_language() {
+    run_fixture("markdown_fenced_code");
 }

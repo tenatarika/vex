@@ -1,0 +1,6 @@
+lang = "markdown"
+pattern = "```rust"
+exercises = "markdown_fenced_code"
+
+[[expected]]
+line = 5

@@ -1,0 +1,7 @@
+lang = "sql"
+pattern = "CREATE OR REPLACE FUNCTION $NAME"
+exercises = "sql_create_function"
+
+[[expected]]
+line = 1
+captures = { NAME = "greet" }
