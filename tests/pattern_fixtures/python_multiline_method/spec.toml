@@ -1,0 +1,7 @@
+lang = "python"
+pattern = "def $METHOD(self, $$ARGS) -> $T: $$$BODY"
+exercises = "block_metavar"
+
+[[expected]]
+line = 2
+captures = { METHOD = "save", T = "bool" }

@@ -1,0 +1,11 @@
+lang = "rust"
+pattern = "fn $NAME()"
+exercises = "baseline"
+
+[[expected]]
+line = 1
+captures = { NAME = "foo" }
+
+[[expected]]
+line = 5
+captures = { NAME = "bar" }

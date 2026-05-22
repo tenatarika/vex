@@ -1,0 +1,6 @@
+lang = "typescript"
+pattern = "constructor($$ARGS) { $$$BODY }"
+exercises = "block_metavar"
+
+[[expected]]
+line = 2

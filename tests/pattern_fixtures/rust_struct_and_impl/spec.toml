@@ -1,0 +1,11 @@
+lang = "rust"
+pattern = "struct $S && impl $S"
+exercises = "and_composition"
+
+[[expected]]
+line = 1
+captures = { S = "Foo" }
+
+[[expected]]
+line = 3
+captures = { S = "Baz" }

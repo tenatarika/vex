@@ -1,0 +1,15 @@
+lang = "typescript"
+pattern = "interface $N || class $N"
+exercises = "or_composition"
+
+[[expected]]
+line = 1
+captures = { N = "Animal" }
+
+[[expected]]
+line = 5
+captures = { N = "Dog" }
+
+[[expected]]
+line = 9
+captures = { N = "Cat" }

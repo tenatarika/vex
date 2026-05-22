@@ -1,0 +1,7 @@
+lang = "rust"
+pattern = "fn $NAME($$ARGS) -> Result<$T, $E> { $$$BODY }"
+exercises = "block_metavar"
+
+[[expected]]
+line = 1
+captures = { NAME = "process", T = "i32", E = "Error" }
