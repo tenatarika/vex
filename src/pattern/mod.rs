@@ -1,4 +1,5 @@
 pub mod matcher;
+pub mod skeleton;
 
 use std::path::Path;
 

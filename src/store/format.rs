@@ -1,22 +1,31 @@
 //! Binary index file format specification.
 //!
-//! Layout (v4 — current):
+//! Layout (v6 — current):
 //! ```text
-//! [Header]             fixed (168 B) - magic, version, counts, section offsets
-//! [CallGraphHeader]    fixed (80  B) - call graph section offsets (v4 only)
-//! [Symbols Section]    variable      - fixed-size symbol records
-//! [Vectors Section]    variable      - dense f32 arrays (vector_dim each)
-//! [Strings Section]    variable      - deduplicated string pool
-//! [Refs FST]           variable      - fst::Map bytes (ref name → posting offset)
-//! [Refs Postings]      variable      - posting lists (count, [(file_id, line)])
-//! [File Table]         variable      - u32 string offsets, one per file_id
-//! [Symbol FST]         variable      - fst::Map bytes (name/token → sym posting offset)
-//! [Symbol Postings]    variable      - posting lists (count, [symbol_idx])
-//! [Call Edges]         variable      - fixed-size CallEdge records (v4 only)
-//! [Callers FST]        variable      - fst::Map (callee name → edge-idx posting offset)
-//! [Callers Postings]   variable      - posting lists (count, [edge_idx])
-//! [Callees FST]        variable      - fst::Map (caller_sym_idx_str → posting offset)
-//! [Callees Postings]   variable      - posting lists (count, [edge_idx])
+//! [Header]                  fixed (168 B) - magic, version, counts, section offsets
+//! [CallGraphHeader]         fixed (128 B) - call graph section offsets (v4+)
+//! [V5SectionHeader]         fixed (48  B) - ref edges section offsets (v5+)
+//! [PatternSkeletonHeader]   fixed (168 B) - pattern skeleton section offsets + fingerprints (v6+)
+//! [Symbols Section]         variable      - fixed-size symbol records
+//! [Vectors Section]         variable      - dense f32 arrays (vector_dim each)
+//! [Strings Section]         variable      - deduplicated string pool
+//! [Refs FST]                variable      - fst::Map bytes (ref name → posting offset)
+//! [Refs Postings]           variable      - posting lists (count, [(file_id, line)])
+//! [File Table]              variable      - u32 string offsets, one per file_id
+//! [Symbol FST]              variable      - fst::Map bytes (name/token → sym posting offset)
+//! [Symbol Postings]         variable      - posting lists (count, [symbol_idx])
+//! [Call Edges]              variable      - fixed-size CallEdge records (v4+)
+//! [Callers FST]             variable      - fst::Map (callee name → edge-idx posting offset)
+//! [Callers Postings]        variable      - posting lists (count, [edge_idx])
+//! [Callees FST]             variable      - fst::Map (caller_sym_idx_str → posting offset)
+//! [Callees Postings]        variable      - posting lists (count, [edge_idx])
+//! [Reference Edges]         variable      - fixed-size RefEdge records (v5+)
+//! [Reference Edges FST]     variable      - fst::Map (v5+)
+//! [Reference Edges Posts]   variable      - posting lists (v5+)
+//! [Skeleton Records]        variable      - fixed-size SkeletonRecord array (v6+)
+//! [Kind Path Arena]         variable      - kind-name path entries (v6+)
+//! [Ident Pool]              variable      - length-prefixed UTF-8 identifier strings (v6+)
+//! [File Index]              variable      - per-file skeleton lookup (v6+)
 //! ```
 //!
 //! Layout v3 (legacy, still readable): same as v4 minus `CallGraphHeader`
@@ -25,7 +34,7 @@
 //! and v4 — version dispatch happens at the reader.
 
 pub const MAGIC: &[u8; 4] = b"VEXI";
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 /// Oldest format version this build can still open for read.
 /// v3 and v4 indexes continue to read without the v5-only sections —
 /// `vex usages --strict` will refuse, everything else still works.
@@ -83,6 +92,12 @@ impl Header {
     /// --strict` falls back to the legacy refs FST on those.
     pub fn has_v5_section_header(&self) -> bool {
         self.version >= 5
+    }
+
+    /// Whether this index format carries a [`PatternSkeletonHeader`]
+    /// immediately after the [`V5SectionHeader`]. v3/v4/v5 indexes do not.
+    pub fn has_pattern_skeleton_header(&self) -> bool {
+        self.version >= 6
     }
 }
 
@@ -150,6 +165,82 @@ pub struct V5SectionHeader {
 
 impl V5SectionHeader {
     pub const SIZE: usize = std::mem::size_of::<Self>();
+}
+
+/// Section offsets and lengths for the v6-only sections (pattern
+/// skeletons from the structural-pattern prefilter, 11.4). Located in
+/// the file at exactly
+/// `Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE` when
+/// `header.version >= 6`. Absent from v3/v4/v5 files — those readers
+/// skip to `Symbols` at `Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE`
+/// (unchanged) while v6 readers now add `PatternSkeletonHeader::SIZE` on top.
+///
+/// Sub-sections:
+/// - **skeletons**: flat array of fixed-size [`SkeletonRecord`] structs.
+/// - **kind_path**: kind-name entries; each entry is
+///   `[u16 depth][u32 string_pool_offset; depth]` pointing into the
+///   *Strings* section already present in every index.
+/// - **ident_pool**: length-prefixed UTF-8 identifier strings.
+///   Each entry is `[u32 byte_len][UTF-8 bytes; byte_len]`.
+/// - **file_index**: per-file lookup sorted by `file_id`.
+///   Format: `[u32 count][{u32 file_id, u32 first_skeleton_idx}; count]`.
+///   Binary-search on `file_id` gives `first_skeleton_idx` into the
+///   skeleton records array; consecutive records until the next
+///   `file_id` boundary belong to the same file.
+/// - **grammar_fingerprints**: 32 `u32` slots (one per `lang_id`).
+///   Slot 0 = unused. Non-zero means the slot was written.
+///   Computed as `xxh3_64(...)` truncated to `u32` — see
+///   [`crate::parse::language::Language::lang_id`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PatternSkeletonHeader {
+    pub skeletons_offset: u64,
+    pub skeletons_len: u64,
+    pub kind_path_offset: u64,
+    pub kind_path_len: u64,
+    pub ident_pool_offset: u64,
+    pub ident_pool_len: u64,
+    pub file_index_offset: u64,
+    pub file_index_len: u64,
+    /// Grammar fingerprints indexed by `lang_id()`. Capacity: 32 slots.
+    /// Each `u32` is `xxh3_64(...) as u32`, or 0 when not fingerprinted.
+    pub grammar_fingerprints: [u32; 32],
+}
+
+impl PatternSkeletonHeader {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+}
+
+/// One on-disk skeleton record (24 bytes, `#[repr(C)]`).
+///
+/// Fields are ordered to avoid implicit `#[repr(C)]` padding:
+/// four `u32`s, then one `u32`, then `u16`, then two `u8`s.
+///
+/// `kind_path_offset` is a byte offset into the *kind_path* sub-section;
+/// `kind_path_len` is the depth (number of kind-name entries for this
+/// record, typically 1 or 2). `ident_offset` is a byte offset into the
+/// *ident_pool*; `u32::MAX` means "no identifier". Bit 0 of `flags` is
+/// `has_block`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkeletonRecord {
+    pub file_id: u32,
+    pub start_row: u32,
+    pub end_row: u32,
+    /// Byte offset into the kind_path arena where this record's path begins.
+    pub kind_path_offset: u32,
+    /// Byte offset into ident_pool; `u32::MAX` = no identifier.
+    pub ident_offset: u32,
+    /// Number of kind-name path entries (typically 1–2).
+    pub kind_path_len: u16,
+    /// bit 0 = has_block.
+    pub flags: u8,
+    pub _pad: u8,
+}
+
+impl SkeletonRecord {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+    pub const FLAG_HAS_BLOCK: u8 = 0x01;
 }
 
 /// One resolved reference edge. `to_sym_idx` is the global index into

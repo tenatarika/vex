@@ -96,6 +96,38 @@ impl Language {
         )
     }
 
+    /// Stable numeric identifier for persisting per-language grammar
+    /// fingerprints in [`crate::store::format::PatternSkeletonHeader`].
+    ///
+    /// IDs are **explicitly assigned** and must never change — adding a
+    /// new language variant gets the next available integer, and removing
+    /// one leaves a gap (the slot stays reserved). Slot 0 is reserved for
+    /// "not fingerprinted". Maximum capacity in the header: 32 slots (IDs
+    /// 1..=31).
+    pub fn lang_id(self) -> u8 {
+        match self {
+            Self::Rust => 1,
+            Self::Kotlin => 2,
+            Self::TypeScript => 3,
+            Self::Python => 4,
+            Self::Go => 5,
+            Self::Java => 6,
+            Self::CSharp => 7,
+            Self::Ruby => 8,
+            Self::Swift => 9,
+            Self::Sql => 10,
+            Self::Markdown => 11,
+            Self::Cpp => 12,
+            Self::Php => 13,
+            Self::Bash => 14,
+            Self::Lua => 15,
+            Self::Css => 16,
+            Self::Html => 17,
+            Self::Yaml => 18,
+            Self::Toml => 19,
+        }
+    }
+
     #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {

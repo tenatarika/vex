@@ -33,6 +33,7 @@ fn make_file(path: &str, symbols: Vec<ParsedSymbol>) -> ParsedFile {
         refs: Vec::new(),
         call_edges: Vec::new(),
         bound_refs: Vec::new(),
+        skeletons: Vec::new(),
     }
 }
 
@@ -56,10 +57,10 @@ fn write_and_open(tmp: &TempDir, parsed: &[ParsedFile], edges: &[CallEdgeBuilder
 
 #[test]
 fn current_version_is_5() {
-    // Bumped from 4 to 5 in 11.1.3a (adds V5SectionHeader for the
-    // type-aware reference_edges section). v3/v4 indexes still open
+    // Bumped from 5 to 6 in 11.4 Inc 3 (adds PatternSkeletonHeader for
+    // the structural-pattern prefilter). v3/v4/v5 indexes still open
     // because MIN_SUPPORTED_VERSION stays at 3.
-    assert_eq!(VERSION, 5);
+    assert_eq!(VERSION, 6);
 }
 
 #[test]

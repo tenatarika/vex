@@ -3,7 +3,9 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use memmap2::Mmap;
 
-use super::format::{CallEdge, CallGraphHeader, Header, SymbolRecord, V5SectionHeader};
+use super::format::{
+    CallEdge, CallGraphHeader, Header, PatternSkeletonHeader, SymbolRecord, V5SectionHeader,
+};
 
 /// Memory-mapped index reader. Zero-copy access to symbols and strings.
 pub struct IndexReader {
@@ -101,6 +103,30 @@ impl IndexReader {
                     > reader.mmap.len()
             {
                 bail!("v5 index at {p} is truncated (no room for V5SectionHeader). Re-run `vex index` to rebuild.");
+            }
+            // v6: PatternSkeletonHeader sits directly after V5SectionHeader.
+            if header.has_pattern_skeleton_header()
+                && (Header::SIZE
+                    + CallGraphHeader::SIZE
+                    + V5SectionHeader::SIZE
+                    + PatternSkeletonHeader::SIZE)
+                    > reader.mmap.len()
+            {
+                bail!("v6 index at {p} is truncated (no room for PatternSkeletonHeader). Re-run `vex index` to rebuild.");
+            }
+            if let Some(psh) = reader.pattern_skeleton_header() {
+                let mmap_len = reader.mmap.len() as u64;
+                let skel_end = psh.skeletons_offset.saturating_add(psh.skeletons_len);
+                let kp_end = psh.kind_path_offset.saturating_add(psh.kind_path_len);
+                let ip_end = psh.ident_pool_offset.saturating_add(psh.ident_pool_len);
+                let fi_end = psh.file_index_offset.saturating_add(psh.file_index_len);
+                if skel_end > mmap_len
+                    || kp_end > mmap_len
+                    || ip_end > mmap_len
+                    || fi_end > mmap_len
+                {
+                    bail!("v6 index at {p} is corrupted (pattern_skeleton section offsets exceed file size). Re-run `vex index` to rebuild.");
+                }
             }
             if let Some(v5) = reader.v5_section_header() {
                 let edges_end = v5.ref_edges_offset.saturating_add(v5.ref_edges_len);
@@ -358,6 +384,65 @@ impl IndexReader {
         }
         // SAFETY: bounds + alignment checked. V5SectionHeader is #[repr(C)].
         Some(unsafe { &*(ptr as *const V5SectionHeader) })
+    }
+
+    /// Read the v6 [`PatternSkeletonHeader`] when present. Returns `None`
+    /// for v3/v4/v5 indexes or when the bytes don't fit.
+    pub fn pattern_skeleton_header(&self) -> Option<&PatternSkeletonHeader> {
+        if !self.header().has_pattern_skeleton_header() {
+            return None;
+        }
+        let offset = Header::SIZE
+            .checked_add(CallGraphHeader::SIZE)?
+            .checked_add(V5SectionHeader::SIZE)?;
+        let end = offset.checked_add(PatternSkeletonHeader::SIZE)?;
+        if end > self.mmap.len() {
+            return None;
+        }
+        let ptr = unsafe { self.mmap.as_ptr().add(offset) };
+        if ptr.align_offset(std::mem::align_of::<PatternSkeletonHeader>()) != 0 {
+            return None;
+        }
+        // SAFETY: bounds + alignment checked. PatternSkeletonHeader is #[repr(C)].
+        Some(unsafe { &*(ptr as *const PatternSkeletonHeader) })
+    }
+
+    /// Construct a [`PatternSkeletonReader`] for the v6 skeleton section.
+    /// Returns `None` for v3/v4/v5 indexes (no section present).
+    /// Returns `Some` even when the section is empty (zero-length records).
+    pub fn pattern_skeleton_reader(
+        &self,
+    ) -> Option<super::pattern_skeletons::PatternSkeletonReader<'_>> {
+        let psh = self.pattern_skeleton_header()?;
+        let mmap = &self.mmap[..];
+        let skel = slice_or_empty(
+            mmap,
+            psh.skeletons_offset as usize,
+            psh.skeletons_len as usize,
+        )?;
+        let kp = slice_or_empty(
+            mmap,
+            psh.kind_path_offset as usize,
+            psh.kind_path_len as usize,
+        )?;
+        let ip = slice_or_empty(
+            mmap,
+            psh.ident_pool_offset as usize,
+            psh.ident_pool_len as usize,
+        )?;
+        let fi = slice_or_empty(
+            mmap,
+            psh.file_index_offset as usize,
+            psh.file_index_len as usize,
+        )?;
+        super::pattern_skeletons::PatternSkeletonReader::new(
+            skel,
+            kp,
+            ip,
+            fi,
+            psh.grammar_fingerprints,
+        )
+        .ok()
     }
 
     /// Whether the index carries scope-resolved reference edges. False

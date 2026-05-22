@@ -6,8 +6,10 @@ use anyhow::{ensure, Context, Result};
 
 use super::call_graph::{build_callees_fst, build_callers_fst, CallEdgeBuilder};
 use super::format::{
-    CallEdge, CallGraphHeader, Header, SymbolRecord, V5SectionHeader, MAGIC, VECTOR_DIM, VERSION,
+    CallEdge, CallGraphHeader, Header, PatternSkeletonHeader, SymbolRecord, V5SectionHeader, MAGIC,
+    VECTOR_DIM, VERSION,
 };
+use super::pattern_skeletons::build_pattern_skeleton_section;
 use super::ref_edges::{build_ref_edges_section, RefEdgeBuilder};
 use super::{refs_fst, symbol_fst};
 use crate::parse::scope::{BindTarget, BoundRef, RefKind};
@@ -24,6 +26,7 @@ fn ref_kind_bits(r: &BoundRef) -> u8 {
     }
 }
 use crate::index::symbols::ParsedFile;
+use crate::pattern::skeleton::Skeleton;
 
 /// Vector dimension to record in the Header when no vectors are written.
 /// Stays at the legacy MiniLM-L6-v2 value so v3 readers that ignore the
@@ -68,8 +71,8 @@ pub fn write_index(parsed: &[ParsedFile], output: &Path) -> Result<()> {
 pub type Bm25Sections<'a> = (&'a [u8], &'a [u8], &'a [u8]);
 
 /// Write parsed files + embedding vectors + refs FST into the binary index
-/// format (no call graph, no BM25). For indexes with those sections use
-/// [`write_index_with_call_graph`].
+/// format (no call graph, no BM25, no pattern skeletons). For indexes with
+/// those sections use [`write_index_with_call_graph`].
 pub fn write_index_full(
     parsed: &[ParsedFile],
     vectors: &[Vec<f32>],
@@ -82,12 +85,72 @@ pub fn write_index_full(
 /// Write parsed files + embedding vectors + refs FST + v4 sections
 /// (call graph + optional BM25) into the binary index format. Uses atomic
 /// write: writes to a temp file first, then renames on success.
+///
+/// Pattern skeletons are written as an empty v6 section (zeroed header).
+/// To include real skeletons use [`write_index_with_call_graph_and_skeletons`].
 pub fn write_index_with_call_graph(
     parsed: &[ParsedFile],
     vectors: &[Vec<f32>],
     vector_dim: u32,
     call_edges: &[CallEdgeBuilder],
     bm25: Option<Bm25Sections<'_>>,
+    output: &Path,
+) -> Result<()> {
+    write_index_with_call_graph_and_skeletons_and_fingerprints(
+        parsed,
+        vectors,
+        vector_dim,
+        call_edges,
+        bm25,
+        &[],
+        &[],
+        output,
+    )
+}
+
+/// Back-compat shim for the previous Inc 3 entry — preserved so internal
+/// tests / pre-Inc 4 callers keep working. Inc 4 added `lang_fingerprints`
+/// and pipeline callers now use [`write_index_with_call_graph_and_skeletons_and_fingerprints`]
+/// directly.
+#[allow(dead_code)]
+pub fn write_index_with_call_graph_and_skeletons(
+    parsed: &[ParsedFile],
+    vectors: &[Vec<f32>],
+    vector_dim: u32,
+    call_edges: &[CallEdgeBuilder],
+    bm25: Option<Bm25Sections<'_>>,
+    pattern_skeletons: &[(u32, Skeleton)],
+    output: &Path,
+) -> Result<()> {
+    write_index_with_call_graph_and_skeletons_and_fingerprints(
+        parsed,
+        vectors,
+        vector_dim,
+        call_edges,
+        bm25,
+        pattern_skeletons,
+        &[],
+        output,
+    )
+}
+
+/// Write parsed files + embedding vectors + v4 sections + v6 pattern
+/// skeletons with per-language grammar fingerprints. Uses atomic write.
+///
+/// `pattern_skeletons` is `&[(file_id, Skeleton)]`; pass `&[]` for an
+/// empty section (still produces a v6 index — version bump is
+/// unconditional). `lang_fingerprints` is `&[(lang_id, fingerprint)]`
+/// for the distinct T1 languages that contributed skeletons; Inc 5
+/// compares these against live grammar to detect drift.
+#[allow(clippy::too_many_arguments)] // primary writer entry — keep flat over a builder for now
+pub fn write_index_with_call_graph_and_skeletons_and_fingerprints(
+    parsed: &[ParsedFile],
+    vectors: &[Vec<f32>],
+    vector_dim: u32,
+    call_edges: &[CallEdgeBuilder],
+    bm25: Option<Bm25Sections<'_>>,
+    pattern_skeletons: &[(u32, Skeleton)],
+    lang_fingerprints: &[(u8, u32)],
     output: &Path,
 ) -> Result<()> {
     // Pre-validate every vector before opening the temp file. The header's
@@ -107,7 +170,16 @@ pub fn write_index_with_call_graph(
     tmp_os.push(".tmp");
     let tmp_path = PathBuf::from(tmp_os);
 
-    if let Err(e) = write_index_to(&tmp_path, parsed, vectors, vector_dim, call_edges, bm25) {
+    if let Err(e) = write_index_to(
+        &tmp_path,
+        parsed,
+        vectors,
+        vector_dim,
+        call_edges,
+        bm25,
+        pattern_skeletons,
+        lang_fingerprints,
+    ) {
         let _ = std::fs::remove_file(&tmp_path); // best-effort cleanup
         return Err(e);
     }
@@ -116,6 +188,7 @@ pub fn write_index_with_call_graph(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // internal write helper — mirrors the public entry shape
 fn write_index_to(
     output: &Path,
     parsed: &[ParsedFile],
@@ -123,6 +196,8 @@ fn write_index_to(
     vector_dim: u32,
     call_edges: &[CallEdgeBuilder],
     bm25: Option<Bm25Sections<'_>>,
+    pattern_skeletons: &[(u32, Skeleton)],
+    lang_fingerprints: &[(u8, u32)],
 ) -> Result<()> {
     let mut strings = StringPool::new();
     let mut records = Vec::new();
@@ -279,12 +354,22 @@ fn write_index_to(
     let (ref_edge_bytes, ref_edge_fst_bytes, ref_edge_post_bytes) =
         build_ref_edges_section(&ref_edge_builders)?;
 
-    // Calculate section offsets — v5 places the CallGraphHeader then
-    // the V5SectionHeader immediately after the base Header, so Symbols
-    // starts at Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE.
+    // Build v6 pattern skeleton section (empty slice → all-zero header fields,
+    // non-empty → populated sub-sections). The version bump to v6 is
+    // unconditional — presence of the header is what gates Inc 5's prefilter.
+    let mut no_intern_fn = |_s: &str| -> u32 { 0 };
+    let (skel_section, skel_fingerprints) =
+        build_pattern_skeleton_section(pattern_skeletons, &mut no_intern_fn, lang_fingerprints)?;
+
+    // Calculate section offsets — v6 places CallGraphHeader, V5SectionHeader,
+    // and PatternSkeletonHeader immediately after the base Header, so Symbols
+    // starts at:
+    //   Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE
+    //   + PatternSkeletonHeader::SIZE
     let cg_header_offset = Header::SIZE as u64;
     let v5_header_offset = cg_header_offset + CallGraphHeader::SIZE as u64;
-    let symbols_offset = v5_header_offset + V5SectionHeader::SIZE as u64;
+    let pat_header_offset = v5_header_offset + V5SectionHeader::SIZE as u64;
+    let symbols_offset = pat_header_offset + PatternSkeletonHeader::SIZE as u64;
     let symbols_size = records.len() * SymbolRecord::SIZE;
 
     let vectors_offset = symbols_offset + symbols_size as u64;
@@ -320,14 +405,39 @@ fn write_index_to(
     let bm25_postings_offset = bm25_fst_offset + bm25_fst.len() as u64;
     let bm25_stats_offset = bm25_postings_offset + bm25_posts.len() as u64;
 
-    // v5 reference_edges sections come last. Align the edges array to
-    // 4 bytes so RefEdge (align_of == 4) can be cast from the mmap.
+    // v5 reference_edges sections. Align the edges array to 4 bytes so
+    // RefEdge (align_of == 4) can be cast from the mmap.
     let ref_edges_unaligned = bm25_stats_offset + bm25_stats.len() as u64;
     let ref_edges_offset = (ref_edges_unaligned + 3) & !3u64;
     let ref_edges_pad = (ref_edges_offset - ref_edges_unaligned) as usize;
     let ref_edges_len = ref_edge_bytes.len() as u64;
     let ref_edges_fst_offset = ref_edges_offset + ref_edges_len;
     let ref_edges_postings_offset = ref_edges_fst_offset + ref_edge_fst_bytes.len() as u64;
+
+    // v6 pattern skeleton sub-sections. Align skeleton records to 4 bytes so
+    // SkeletonRecord (align_of == 4) can be cast from the mmap.
+    let skel_unaligned = ref_edges_postings_offset + ref_edge_post_bytes.len() as u64;
+    let skel_records_offset = (skel_unaligned + 3) & !3u64;
+    let skel_records_pad = (skel_records_offset - skel_unaligned) as usize;
+    let skel_records_len = skel_section.skeleton_records.len() as u64;
+    let skel_kind_path_offset = skel_records_offset + skel_records_len;
+    let skel_kind_path_len = skel_section.kind_path_arena.len() as u64;
+    let skel_ident_pool_offset = skel_kind_path_offset + skel_kind_path_len;
+    let skel_ident_pool_len = skel_section.ident_pool.len() as u64;
+    let skel_file_index_offset = skel_ident_pool_offset + skel_ident_pool_len;
+    let skel_file_index_len = skel_section.file_index.len() as u64;
+
+    let pat_skel_header = PatternSkeletonHeader {
+        skeletons_offset: skel_records_offset,
+        skeletons_len: skel_records_len,
+        kind_path_offset: skel_kind_path_offset,
+        kind_path_len: skel_kind_path_len,
+        ident_pool_offset: skel_ident_pool_offset,
+        ident_pool_len: skel_ident_pool_len,
+        file_index_offset: skel_file_index_offset,
+        file_index_len: skel_file_index_len,
+        grammar_fingerprints: skel_fingerprints,
+    };
 
     let call_graph_header = CallGraphHeader {
         call_edges_offset,
@@ -410,6 +520,18 @@ fn write_index_to(
     };
     w.write_all(v5_bytes)?;
 
+    // v6: PatternSkeletonHeader immediately after V5SectionHeader.
+    // When skeletons is empty all offset/len fields are set to their actual
+    // (zero-length) positions and the sub-section writes below are no-ops.
+    // SAFETY: PatternSkeletonHeader is #[repr(C)] with fixed layout.
+    let pat_skel_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            &pat_skel_header as *const PatternSkeletonHeader as *const u8,
+            PatternSkeletonHeader::SIZE,
+        )
+    };
+    w.write_all(pat_skel_bytes)?;
+
     for rec in &records {
         // SAFETY: SymbolRecord is #[repr(C)] with fixed layout
         let bytes: &[u8] = unsafe {
@@ -476,6 +598,15 @@ fn write_index_to(
     w.write_all(&ref_edge_bytes)?;
     w.write_all(&ref_edge_fst_bytes)?;
     w.write_all(&ref_edge_post_bytes)?;
+
+    // v6 pattern skeleton sub-sections, 4-byte aligned before the records.
+    if skel_records_pad > 0 {
+        w.write_all(&[0u8; 3][..skel_records_pad])?;
+    }
+    w.write_all(&skel_section.skeleton_records)?;
+    w.write_all(&skel_section.kind_path_arena)?;
+    w.write_all(&skel_section.ident_pool)?;
+    w.write_all(&skel_section.file_index)?;
 
     w.flush()?;
 

@@ -31,7 +31,9 @@
 use std::io::Write;
 
 use tempfile::NamedTempFile;
-use vex::store::format::{CallGraphHeader, Header, V5SectionHeader, MAGIC, VERSION};
+use vex::store::format::{
+    CallGraphHeader, Header, PatternSkeletonHeader, V5SectionHeader, MAGIC, VERSION,
+};
 use vex::store::reader::IndexReader;
 
 // ---------------------------------------------------------------------------
@@ -501,12 +503,12 @@ fn open_missing_file_error_includes_path() {
 // All offsets stay zero in 11.1.3a; the section payload itself lands in 11.1.3b.
 // ---------------------------------------------------------------------------
 
-/// `VERSION` is the version this build writes. After 11.1.3a it must be 5
-/// and the v5 layout must place a `V5SectionHeader` immediately after the
-/// existing `CallGraphHeader`.
+/// `VERSION` is the version this build writes. After 11.4 Inc 3 it must be 6
+/// and the v6 layout places a `PatternSkeletonHeader` immediately after the
+/// existing `V5SectionHeader`.
 #[test]
 fn version_is_five_after_format_bump() {
-    assert_eq!(VERSION, 5, "11.1.3a bumps the writer to v5");
+    assert_eq!(VERSION, 6, "11.4 Inc 3 bumps the writer to v6");
 }
 
 /// A v5 file truncated *exactly* at the end of the CallGraphHeader (i.e.,
@@ -601,5 +603,76 @@ fn v5_ref_edges_postings_past_eof_rejected() {
     assert!(
         result.is_err(),
         "expected Err when ref_edges_postings exceeds file size, got Ok",
+    );
+}
+
+/// Backward-compat: a v5 index (version byte = 5) must open successfully
+/// and must report `has_pattern_skeleton_header() == false` and
+/// `pattern_skeleton_reader() == None`.
+///
+/// This confirms MIN_SUPPORTED_VERSION = 3 still admits v5 and that the v6
+/// gate correctly excludes it.
+#[test]
+fn v5_index_has_no_pattern_skeleton_header() {
+    // Build a minimal v5 index: Header with version=5, plus a CallGraphHeader
+    // and V5SectionHeader so the reader doesn't reject it as truncated.
+    let mut buf = vec![0u8; Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE];
+    buf[0..4].copy_from_slice(MAGIC);
+    // version = 5
+    buf[4..8].copy_from_slice(&5u32.to_le_bytes());
+    // symbols_offset must point past the three headers (otherwise the
+    // symbols-section bounds check fires).
+    let after_headers = Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE;
+    write_u64_le(&mut buf, 24, after_headers as u64); // symbols_offset
+    write_u64_le(&mut buf, 32, after_headers as u64); // vectors_offset
+    write_u64_le(&mut buf, 40, after_headers as u64); // strings_offset
+
+    let f = write_tmp(&buf);
+    let reader = IndexReader::open(f.path()).expect("v5 index must open");
+    assert!(
+        !reader.header().has_pattern_skeleton_header(),
+        "v5 index must not have a PatternSkeletonHeader"
+    );
+    assert!(
+        reader.pattern_skeleton_reader().is_none(),
+        "v5 index must return None from pattern_skeleton_reader()"
+    );
+}
+
+/// Sanity check: PatternSkeletonHeader has a non-zero size so the v6 gate
+/// is meaningful. A zero-sized header would silently bypass the size check.
+#[test]
+fn pattern_skeleton_header_has_nonzero_size() {
+    const _: () = assert!(PatternSkeletonHeader::SIZE > 0);
+}
+
+/// A v6 index truncated at exactly V5SectionHeader end (missing the
+/// PatternSkeletonHeader bytes) must be rejected.
+#[test]
+fn v6_truncated_at_pattern_skeleton_header_rejected() {
+    let mut buf = vec![0u8; Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE];
+    buf[0..4].copy_from_slice(MAGIC);
+    buf[4..8].copy_from_slice(&6u32.to_le_bytes()); // version = 6
+    let after_v5 = Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE;
+    write_u64_le(
+        &mut buf,
+        24,
+        (after_v5 + PatternSkeletonHeader::SIZE) as u64,
+    );
+    write_u64_le(
+        &mut buf,
+        32,
+        (after_v5 + PatternSkeletonHeader::SIZE) as u64,
+    );
+    write_u64_le(
+        &mut buf,
+        40,
+        (after_v5 + PatternSkeletonHeader::SIZE) as u64,
+    );
+    let f = write_tmp(&buf);
+    let result = IndexReader::open(f.path());
+    assert!(
+        result.is_err(),
+        "v6 index missing PatternSkeletonHeader bytes must be rejected"
     );
 }
