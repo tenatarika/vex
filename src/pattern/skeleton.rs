@@ -97,7 +97,10 @@ fn walk(
 ) {
     let kind = node.kind();
     if allowlist.contains(&kind) {
-        let parent_kind = node.parent().map(|p| p.kind()).filter(|k| !is_root_kind(k));
+        let parent_kind = node
+            .parent()
+            .map(|p| p.kind())
+            .filter(|k| !is_root_kind(k, lang));
         out.push(Skeleton {
             start_row: node.start_position().row as u32,
             end_row: node.end_position().row as u32,
@@ -113,17 +116,23 @@ fn walk(
     }
 }
 
-fn is_root_kind(kind: &str) -> bool {
-    matches!(
+/// Per-language root-node kind suppression. The shared base set
+/// (`source_file` / `program` / `module` / `translation_unit` /
+/// `compilation_unit`) covers Rust, Go, TS, Python, C++, C# — none of
+/// those grammars use any of those names elsewhere. Markdown's
+/// `document` is gated on `Language::Markdown` because the YAML and
+/// HTML grammars *also* use `document` (YAML as a non-root subtree
+/// under `stream`, HTML as the root) — a global suppression would
+/// silently break the parent-kind contract the moment YAML / HTML
+/// move out of the empty T3 allowlist.
+fn is_root_kind(kind: &str, lang: Language) -> bool {
+    if matches!(
         kind,
-        // Rust/Go: `source_file`. TypeScript: `program`. Python:
-        // `module`. C++: `translation_unit`. C#: `compilation_unit`.
-        // Markdown: `document`. SQL also uses `program`.
-        // Missing any of these makes top-level decls in that language
-        // surface a non-None `parent_kind`, silently breaking any
-        // prefilter logic that treats `None` as "file-root".
-        "source_file" | "program" | "module" | "translation_unit" | "compilation_unit" | "document"
-    )
+        "source_file" | "program" | "module" | "translation_unit" | "compilation_unit"
+    ) {
+        return true;
+    }
+    matches!((kind, lang), ("document", Language::Markdown))
 }
 
 /// T1 allowlist. T2/T3 languages return an empty slice — see module docs.
@@ -248,19 +257,27 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
         ],
         Language::Sql => &[
             // Top-level DDL statements — each carries an object name
-            // either via `object_reference > name:` (most) or a
-            // direct `column:` field (create_index). Skeleton ident
-            // is extracted via the language-specific arm in
+            // either via `object_reference > name:` (most), a direct
+            // `column:` field (`create_index`), or a direct `name:`
+            // field (`drop_index`). Extraction is dispatched in
             // [`extract_ident`] below.
             "create_table",
             "create_index",
             "create_view",
+            "create_materialized_view",
             "create_function",
             "alter_table",
             "drop_table",
-            // Intentionally absent (deferred):
+            "drop_view",
+            "drop_function",
+            "drop_index",
+            // Intentionally absent:
             //   * `create_trigger`, `create_schema`, `create_type` —
             //     niche; add when patterns need them.
+            //   * `CREATE PROCEDURE` — the tree-sitter-sequel grammar
+            //     does not have a `create_procedure` node kind;
+            //     procedure declarations parse as ERROR nodes. Falls
+            //     through to live-scan.
             //   * Plain `select` / DML — not pattern-targetable as
             //     definitions; `vex pattern` falls through to live-
             //     scan for ad-hoc query shapes.
@@ -321,28 +338,41 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
     if anonymous {
         return None;
     }
-    // SQL DDL nodes carry the object name two levels deep — either
-    // a positional `object_reference > name:` child for most DDL,
-    // or a direct `column:` field for `create_index`. The outer
-    // `object_reference` is NOT a named field on the statement
-    // node, so we walk children by kind instead of using
-    // `child_by_field_name`.
+    // SQL DDL nodes split across three name shapes:
+    //   * `create_index` — direct `column:` named field.
+    //   * `drop_index`   — direct `name:` named field.
+    //   * everything else — positional `object_reference > name:`.
+    //     `child_by_kind` finds the FIRST `object_reference` child
+    //     in source order; for `create_function` (which has a second
+    //     `object_reference` under `custom_type:` for the RETURNS
+    //     type) and `alter_table ... RENAME TO` (which has a second
+    //     under `rename_object`), the function-being-declared /
+    //     source-table reliably precedes those, so first-match is
+    //     the correct entity-being-declared. Qualified names like
+    //     `schema.users` resolve via the leaf `name:` field —
+    //     skeleton ident is the unqualified leaf (e.g. `users`).
     if matches!(
         (lang, kind),
         (
             Language::Sql,
             "create_table"
                 | "create_view"
+                | "create_materialized_view"
                 | "create_function"
                 | "alter_table"
                 | "drop_table"
-                | "create_index",
+                | "drop_view"
+                | "drop_function"
+                | "create_index"
+                | "drop_index",
         )
     ) {
-        let name_node = if kind == "create_index" {
-            node.child_by_field_name("column")
-        } else {
-            child_by_kind(node, "object_reference").and_then(|r| r.child_by_field_name("name"))
+        let name_node = match kind {
+            "create_index" => node.child_by_field_name("column"),
+            "drop_index" => node.child_by_field_name("name"),
+            _ => {
+                child_by_kind(node, "object_reference").and_then(|r| r.child_by_field_name("name"))
+            }
         };
         return name_node
             .and_then(|n| n.utf8_text(source.as_bytes()).ok())
@@ -1145,6 +1175,117 @@ mod tests {
     }
 
     #[test]
+    fn sql_create_function_with_custom_return_type_extracts_function_name() {
+        // Reviewer H2: a custom RETURNS type produces a SECOND
+        // `object_reference` child under `custom_type:`. We rely on
+        // source-order first-match; pin that the function name
+        // (positional) precedes the return type (`custom_type:`) so
+        // `child_by_kind` resolves to `get_user`, not `user_type`.
+        let sk = extract(
+            Language::Sql,
+            "CREATE FUNCTION get_user() RETURNS public.user_type AS $$ SELECT NULL; $$ LANGUAGE plpgsql;\n",
+        );
+        let f = sk.iter().find(|s| s.kind == "create_function").unwrap();
+        assert_eq!(f.ident.as_deref(), Some("get_user"));
+        assert!(f.has_block, "function_body must register as a body");
+    }
+
+    #[test]
+    fn sql_qualified_table_ident_is_unqualified_leaf() {
+        // `CREATE TABLE schema.users (...)` — the `object_reference`
+        // wraps an `identifier field=schema` plus `identifier field=name`.
+        // Skeleton ident is the leaf, not the dotted path.
+        let sk = extract(Language::Sql, "CREATE TABLE public.users (id INT);\n");
+        let t = sk.iter().find(|s| s.kind == "create_table").unwrap();
+        assert_eq!(t.ident.as_deref(), Some("users"));
+    }
+
+    #[test]
+    fn sql_create_table_if_not_exists_still_extracts_ident() {
+        let sk = extract(
+            Language::Sql,
+            "CREATE TABLE IF NOT EXISTS users (id INT);\n",
+        );
+        let t = sk.iter().find(|s| s.kind == "create_table").unwrap();
+        assert_eq!(t.ident.as_deref(), Some("users"));
+    }
+
+    #[test]
+    fn sql_create_unique_temp_modifier_variants_extract_ident() {
+        let unique = extract(Language::Sql, "CREATE UNIQUE INDEX idx ON t(c);\n");
+        let i = unique.iter().find(|s| s.kind == "create_index").unwrap();
+        assert_eq!(i.ident.as_deref(), Some("idx"));
+
+        let temp = extract(Language::Sql, "CREATE TEMP TABLE tmp (id INT);\n");
+        let t = temp.iter().find(|s| s.kind == "create_table").unwrap();
+        assert_eq!(t.ident.as_deref(), Some("tmp"));
+    }
+
+    #[test]
+    fn sql_alter_table_rename_ident_is_source_table_not_destination() {
+        // `ALTER TABLE users RENAME TO accounts;` has TWO
+        // object_reference children (source, then rename_object >
+        // destination). Pin source-table wins.
+        let sk = extract(Language::Sql, "ALTER TABLE users RENAME TO accounts;\n");
+        let a = sk.iter().find(|s| s.kind == "alter_table").unwrap();
+        assert_eq!(a.ident.as_deref(), Some("users"));
+    }
+
+    #[test]
+    fn sql_materialized_view_emits_named_skeleton() {
+        // tree-sitter-sequel exposes `create_materialized_view` as a
+        // distinct kind; the allowlist must list it explicitly to
+        // avoid silent zero-emission.
+        let sk = extract(
+            Language::Sql,
+            "CREATE MATERIALIZED VIEW active AS SELECT 1;\n",
+        );
+        let v = sk
+            .iter()
+            .find(|s| s.kind == "create_materialized_view")
+            .unwrap();
+        assert_eq!(v.ident.as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn sql_drop_view_function_index_emit_named_skeletons() {
+        // `drop_view` / `drop_function` follow the `object_reference >
+        // name:` shape; `drop_index` is the odd-one-out using a
+        // direct `name:` field on the statement node.
+        let sk = extract(
+            Language::Sql,
+            "DROP VIEW old_v;\nDROP FUNCTION old_f();\nDROP INDEX old_idx;\n",
+        );
+        for (kind, name) in [
+            ("drop_view", "old_v"),
+            ("drop_function", "old_f"),
+            ("drop_index", "old_idx"),
+        ] {
+            let s = sk
+                .iter()
+                .find(|s| s.kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind}"));
+            assert_eq!(s.ident.as_deref(), Some(name), "{kind} ident");
+        }
+    }
+
+    #[test]
+    fn sql_create_procedure_falls_through_to_live_scan() {
+        // tree-sitter-sequel has no `create_procedure` node; the
+        // input parses with ERROR nodes and emits zero skeletons.
+        // Pin so a future grammar update that adds the node kind
+        // doesn't silently start emitting nameless skeletons.
+        let sk = extract(
+            Language::Sql,
+            "CREATE PROCEDURE p() AS $$ SELECT 1; $$ LANGUAGE plpgsql;\n",
+        );
+        assert!(
+            !sk.iter().any(|s| s.kind == "create_procedure"),
+            "no create_procedure kind expected — grammar gap; saw: {sk:?}",
+        );
+    }
+
+    #[test]
     fn sql_grammar_fingerprint_is_stable_and_nonzero() {
         let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Sql);
         let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Sql);
@@ -1212,6 +1353,55 @@ mod tests {
         let sk = extract(Language::Markdown, "# Top\n");
         let h = sk.iter().find(|s| s.kind == "atx_heading").unwrap();
         assert_eq!(h.parent_kind, Some("section"));
+    }
+
+    #[test]
+    fn markdown_atx_heading_in_blockquote_still_parents_section() {
+        // `> # Quoted` nests as `document > section > block_quote >
+        // section > atx_heading`. The immediate parent is still
+        // `section`, so `parent_kind` cannot distinguish top-level
+        // headings from blockquote-nested ones. Pin this so prefilter
+        // logic doesn't accidentally start branching on it.
+        let sk = extract(Language::Markdown, "> # Quoted\n");
+        let h = sk.iter().find(|s| s.kind == "atx_heading").unwrap();
+        assert_eq!(h.parent_kind, Some("section"));
+    }
+
+    #[test]
+    fn markdown_fenced_code_block_empty_info_string_has_none_ident() {
+        // ```` ``` ```` with no language tag — the `info_string`
+        // child is absent / empty, the `.filter(|s| !s.is_empty())`
+        // guard fires and ident comes back as `None`.
+        let sk = extract(Language::Markdown, "```\njust text\n```\n");
+        let b = sk.iter().find(|s| s.kind == "fenced_code_block").unwrap();
+        assert_eq!(b.ident, None);
+    }
+
+    #[test]
+    fn markdown_atx_heading_with_inline_markup_returns_raw_markup() {
+        // `# **Bold** Title` — utf8_text on `heading_content` returns
+        // the raw inline span including `**` markers. The skeleton
+        // ident is for prefilter narrowing, not rendering; document
+        // this contract so a future "render-strip" patch fails loudly.
+        let sk = extract(Language::Markdown, "# **Bold** Title\n");
+        let h = sk.iter().find(|s| s.kind == "atx_heading").unwrap();
+        assert_eq!(h.ident.as_deref(), Some("**Bold** Title"));
+    }
+
+    #[test]
+    fn is_root_kind_document_only_suppressed_for_markdown() {
+        // Reviewer H1: `is_root_kind` must NOT suppress `document`
+        // for non-Markdown languages — YAML/HTML grammars also use
+        // that kind name (YAML for a non-root subtree under `stream`,
+        // HTML for the file root) and a global suppression would
+        // silently corrupt `parent_kind` once those languages move
+        // out of the empty T3 allowlist.
+        assert!(is_root_kind("document", Language::Markdown));
+        assert!(!is_root_kind("document", Language::Yaml));
+        assert!(!is_root_kind("document", Language::Html));
+        // Base set stays language-agnostic.
+        assert!(is_root_kind("source_file", Language::Rust));
+        assert!(is_root_kind("compilation_unit", Language::CSharp));
     }
 
     #[test]

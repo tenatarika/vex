@@ -1,6 +1,14 @@
 lang = "markdown"
-pattern = "```rust"
+# Use `$LANG` metavar instead of a literal "```rust" so the engine
+# actually exercises the capture path (reviewer Q7 / GAP-9): a
+# literal-only pattern bypasses skeleton lookup entirely.
+pattern = "```$LANG"
 exercises = "markdown_fenced_code"
 
 [[expected]]
 line = 5
+captures = { LANG = "rust" }
+
+[[expected]]
+line = 11
+captures = { LANG = "python" }
