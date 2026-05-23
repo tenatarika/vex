@@ -49,7 +49,8 @@ fn extract_path_hint(cmd: &Commands) -> Option<std::path::PathBuf> {
         | Commands::Check { path, .. }
         | Commands::Pattern { path, .. }
         | Commands::Similar { path, .. }
-        | Commands::Duplicates { path, .. } => path.clone(),
+        | Commands::Duplicates { path, .. }
+        | Commands::Eval { path, .. } => path.clone(),
         _ => None,
     }
 }
@@ -1911,12 +1912,102 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
 
+        Commands::Eval {
+            bench,
+            min_ndcg,
+            path,
+            json,
+        } => cmd_eval(
+            path,
+            bench,
+            min_ndcg,
+            json,
+            local_cache_active,
+            &cfg,
+            &format,
+        ),
+
         Commands::SelfUpdate { check, yes } => {
             // Named at the call site so a future refactor cannot silently
             // swap the two boolean positional args.
             cmd_self_update(/*check_only=*/ check, /*no_confirm=*/ yes)
         }
     }
+}
+
+/// Phase 13.12 — `vex eval` handler. Stays in `cli/mod.rs` instead of
+/// a dedicated `cli/eval.rs` for now: the body is ~40 LOC and depends
+/// on the same `ensure_index_ready` / config plumbing every other
+/// command uses, so co-locating saves a round of import threading.
+fn cmd_eval(
+    path: Option<std::path::PathBuf>,
+    bench: Option<std::path::PathBuf>,
+    min_ndcg: f64,
+    json: bool,
+    local_cache_active: bool,
+    cfg: &config::VexConfig,
+    format: &OutputFormat,
+) -> Result<()> {
+    let root = resolve_root(path)?.canonicalize()?;
+
+    // Resolve the golden set. Default: `<root>/benches/ranking_golden/queries.toml`
+    // when running inside the vex source tree; otherwise the caller must
+    // pass `--bench` explicitly. We don't `include_str!` the bundled set
+    // because cross-repo callers should always author their own.
+    let bench_path = match bench {
+        Some(p) => p,
+        None => root.join("benches/ranking_golden/queries.toml"),
+    };
+    if !bench_path.exists() {
+        bail!(
+            "golden set not found at {}\n\nPass `--bench <PATH>` or run from \
+             the vex source tree. See docs/RANKING-EVAL.md for the schema.",
+            bench_path.display()
+        );
+    }
+
+    let set = crate::eval::harness::GoldenSet::from_path(&bench_path)?;
+
+    // Eval consumes whatever index already exists at `root`. We use the
+    // same staleness/bootstrap helper every other read-side command
+    // uses; passing `false` for both auto-update flags keeps the
+    // command non-destructive — eval surfaces "no index" as an error
+    // instead of silently rebuilding.
+    let index_path = ensure_index_ready(
+        &root,
+        /*auto_update_flag=*/ false,
+        /*no_stale_check=*/ true,
+        /*needs_semantic=*/ false,
+        local_cache_active,
+        cfg,
+    )?;
+    let reader = IndexReader::open(&index_path).context("open index")?;
+
+    let report = crate::eval::harness::run(&reader, &set)?;
+
+    // JSON mode is opt-in via `--json` so the default --format=text
+    // experience stays human-readable. The global `--format json`
+    // also flips the switch for tooling consistency with other
+    // subcommands.
+    let emit_json = json || matches!(format, OutputFormat::Json);
+    if emit_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        crate::eval::harness::print_text_report(&report);
+    }
+
+    if report.mean_ndcg < min_ndcg {
+        // Non-zero exit so CI / shell scripts can branch on the
+        // threshold. Use anyhow::bail so the error message surfaces
+        // via the standard CLI error formatter.
+        bail!(
+            "mean nDCG@{} {:.4} dropped below --min-ndcg threshold {:.4}",
+            report.k,
+            report.mean_ndcg,
+            min_ndcg,
+        );
+    }
+    Ok(())
 }
 
 /// ed25519 public key used to verify release archives signed in CI via

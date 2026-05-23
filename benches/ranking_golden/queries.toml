@@ -1,0 +1,130 @@
+# Vex ranking golden set — Phase 13.12.
+#
+# Hand-curated query/expected-result pairs used as a CI regression guard
+# on vex's ranking quality. Queries are run against vex's own source
+# tree, so the paths below are stable as long as the repository layout
+# stays put.
+#
+# Schema (per query):
+#   query              = "..."           # raw input to `vex search`
+#   query_type         = "exact_symbol"  # one of: exact_symbol, semantic, bm25_rare, fuzzy
+#   acceptable_paths   = ["src/..."]     # any one of these counts as a hit
+#                                        # (use this when several legit answers exist)
+#   expected_top_path  = "src/..."       # OPTIONAL strict top-1 constraint
+#                                        # — when set, the harness records MRR
+#                                        # against just this path
+#
+# Anti-goal: not exhaustive. The bar is "would catch a silent ranking
+# regression", not "comprehensive benchmark". Add a query only when it
+# guards behaviour you care about preserving.
+
+# ---------------------------------------------------------------------
+# Exact-symbol queries — the bread-and-butter case. Top-1 should pin
+# the canonical definition file.
+# ---------------------------------------------------------------------
+
+[[queries]]
+query = "SearchResult"
+query_type = "exact_symbol"
+expected_top_path = "src/search/mod.rs"
+acceptable_paths = ["src/search/mod.rs"]
+
+[[queries]]
+query = "IndexReader"
+query_type = "exact_symbol"
+expected_top_path = "src/store/reader.rs"
+acceptable_paths = ["src/store/reader.rs"]
+
+[[queries]]
+query = "build_signals"
+query_type = "exact_symbol"
+expected_top_path = "src/protocol/signals.rs"
+acceptable_paths = ["src/protocol/signals.rs"]
+
+[[queries]]
+query = "PathScope"
+query_type = "exact_symbol"
+expected_top_path = "src/cli/scope.rs"
+acceptable_paths = ["src/cli/scope.rs"]
+
+[[queries]]
+query = "MatchType"
+query_type = "exact_symbol"
+expected_top_path = "src/search/mod.rs"
+acceptable_paths = ["src/search/mod.rs"]
+
+# ---------------------------------------------------------------------
+# Semantic-phrase queries — natural-language descriptions that should
+# surface the canonical implementation. Without --semantic these rely
+# on BM25 + body-token matching, so we accept several plausible paths.
+# Top-1 is not pinned — too brittle without embeddings — but the
+# correct file must appear in the top-10.
+# ---------------------------------------------------------------------
+
+[[queries]]
+query = "build signals"
+query_type = "semantic"
+acceptable_paths = ["src/protocol/signals.rs"]
+
+[[queries]]
+query = "manifest staleness"
+query_type = "semantic"
+acceptable_paths = ["src/index/staleness.rs", "src/index/manifest.rs"]
+
+[[queries]]
+query = "ref reader"
+query_type = "semantic"
+acceptable_paths = ["src/store/reader.rs", "src/store/refs_fst.rs"]
+
+[[queries]]
+query = "scope binder"
+query_type = "semantic"
+acceptable_paths = ["src/parse/scope/mod.rs"]
+
+[[queries]]
+query = "rerank context"
+query_type = "semantic"
+acceptable_paths = ["src/search/rerank.rs"]
+
+# ---------------------------------------------------------------------
+# BM25 rare-term queries — distinctive tokens that should pin the file
+# where they actually live. Tests the BM25 channel's contribution to
+# fused ranking.
+# ---------------------------------------------------------------------
+
+[[queries]]
+query = "FilterSnapshot"
+query_type = "bm25_rare"
+acceptable_paths = ["src/search/trace.rs", "src/cli/trace.rs"]
+
+[[queries]]
+query = "RerankContext"
+query_type = "bm25_rare"
+expected_top_path = "src/search/rerank.rs"
+acceptable_paths = ["src/search/rerank.rs"]
+
+[[queries]]
+query = "ScopeBinder"
+query_type = "bm25_rare"
+expected_top_path = "src/parse/scope/mod.rs"
+acceptable_paths = ["src/parse/scope/mod.rs"]
+
+# ---------------------------------------------------------------------
+# Fuzzy queries — common typos. The Levenshtein-1/2 fallback must
+# still surface the canonical answer.
+# ---------------------------------------------------------------------
+
+[[queries]]
+query = "IndexReadr"
+query_type = "fuzzy"
+acceptable_paths = ["src/store/reader.rs"]
+
+[[queries]]
+query = "BuildSignal"
+query_type = "fuzzy"
+acceptable_paths = ["src/protocol/signals.rs"]
+
+[[queries]]
+query = "MatcType"
+query_type = "fuzzy"
+acceptable_paths = ["src/search/mod.rs"]

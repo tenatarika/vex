@@ -18,8 +18,11 @@ CLAUDE.md
 # Fastembed model cache
 .fastembed_cache/
 
-# Benchmarks (local, machine-specific)
-/benches/
+# Benchmarks (local, machine-specific). Note: only the machine-generated
+# files inside benches/ are gitignored — versioned data (README.md,
+# bench.sh, the Phase 13.12 ranking_golden/ set) stays under VCS.
+/benches/results/
+/benches/*.txt
 
 # Other tools
 .cocoindex_code/

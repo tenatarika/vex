@@ -2,6 +2,7 @@ pub mod callgraph;
 pub mod cli;
 pub mod diff;
 pub mod embed;
+pub mod eval;
 pub mod grep;
 pub mod hierarchy;
 pub mod index;

@@ -5,6 +5,7 @@ mod callgraph;
 mod cli;
 mod diff;
 mod embed;
+mod eval;
 mod grep;
 mod hierarchy;
 mod index;

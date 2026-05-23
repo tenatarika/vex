@@ -690,6 +690,37 @@ pub enum Commands {
     /// Print machine-readable capabilities matrix (Phase 13.0).
     Capabilities,
 
+    /// Run the ranking evaluation harness (Phase 13.12). Loads a
+    /// hand-curated golden query set, runs every query against the
+    /// current index, and reports nDCG@10 / recall@10 / MRR per
+    /// query and aggregated. Intended as a CI regression guard, not
+    /// a research benchmark — see `docs/RANKING-EVAL.md`.
+    Eval {
+        /// Path to the golden set TOML. Defaults to the bundled
+        /// `benches/ranking_golden/queries.toml` next to the vex
+        /// source tree. Tests and CI override this to a fixture path.
+        #[arg(long, value_name = "PATH")]
+        bench: Option<PathBuf>,
+
+        /// Fail with non-zero exit if the mean nDCG@10 drops below
+        /// this threshold. Default `0.0` — eval always succeeds —
+        /// makes the command safe to wire into "first run" workflows
+        /// before a baseline is captured. CI sets a recorded floor.
+        #[arg(long, default_value = "0.0", value_name = "F64")]
+        min_ndcg: f64,
+
+        /// Project root path (defaults to cwd). Eval consumes whatever
+        /// index already lives at this root — it never builds one.
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Emit the full report as JSON to stdout instead of the
+        /// human-readable summary. The JSON shape matches
+        /// `vex::eval::harness::EvalReport`.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Update vex to the latest GitHub release. Replaces the running
     /// binary in place. Works on Linux, macOS, and Windows.
     SelfUpdate {
