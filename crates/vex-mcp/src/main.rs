@@ -156,6 +156,22 @@ fn handle_tool_call(params: &Option<Value>) -> Result<Value> {
     let content: Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|_| serde_json::json!({ "raw": stdout.trim() }));
 
+    // Detect a Phase 13 ResponseEnvelope: `{ protocol_version, capabilities,
+    // _meta?, results }`. When present, lift `protocol_version` and
+    // `capabilities` to the JSON-RPC `result` top level, expose `results` as
+    // `structuredContent.results` (NOT `_meta` — per MCP spec `_meta` is
+    // invisible to the LLM, but `structuredContent` is the prescribed
+    // mechanism for typed payloads). Keep `content[0].text` populated with
+    // the full envelope JSON for MCP clients that read text only.
+    let envelope_protocol_version = content
+        .get("protocol_version")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let envelope_capabilities = content.get("capabilities").cloned();
+    let envelope_results = content.get("results").cloned();
+    let envelope_meta = content.get("_meta").cloned();
+    let is_envelope = envelope_protocol_version.is_some() && envelope_capabilities.is_some();
+
     let mut result = serde_json::json!({
         "content": [{
             "type": "text",
@@ -163,14 +179,57 @@ fn handle_tool_call(params: &Option<Value>) -> Result<Value> {
         }]
     });
 
+    if is_envelope {
+        if let Some(pv) = &envelope_protocol_version {
+            result["protocol_version"] = Value::String(pv.clone());
+        }
+        if let Some(caps) = envelope_capabilities {
+            result["capabilities"] = caps;
+        }
+        // structuredContent.results carries the typed payload; signals live
+        // here (NOT in _meta) so the LLM can see them.
+        let mut structured = serde_json::Map::new();
+        if let Some(results_value) = envelope_results {
+            structured.insert("results".into(), results_value);
+        }
+        result["structuredContent"] = Value::Object(structured);
+    }
+
     // Surface MCP-protocol-level metadata via the reserved `_meta` field
     // (see modelcontextprotocol.io spec). Clients that don't read
     // `_meta` see the unchanged content array; clients that do see:
-    //   * deprecated_args — legacy MCP arg names the caller used
-    //   * why            — the CLI's `--why` ScanTrace JSON, parsed
-    //                      from stderr. Only present when `why: true`
-    //                      was requested and the CLI emitted a trace.
+    //   * vex.dev/index_age_ms — index freshness in ms (from envelope _meta)
+    //   * ttlMs / cacheScope   — pass-through from envelope _meta
+    //   * traceparent          — W3C traceparent (request → response, or from
+    //                            the CLI envelope if the CLI ever sets it)
+    //   * deprecated_args      — legacy MCP arg names the caller used
+    //   * why                  — the CLI's `--why` ScanTrace JSON, parsed
+    //                            from stderr. Only present when `why: true`
+    //                            was requested and the CLI emitted a trace.
+    //
+    // CRITICAL CONTRACT: signals MUST NOT appear in _meta. They live in
+    // structuredContent above so the LLM can read them.
     let mut meta = serde_json::Map::new();
+    if let Some(env_meta) = envelope_meta.as_ref().and_then(Value::as_object) {
+        for (k, v) in env_meta {
+            // Defensive: drop any "signals" key that slipped into envelope
+            // _meta — they must stay in structuredContent only.
+            if k == "signals" {
+                continue;
+            }
+            meta.insert(k.clone(), v.clone());
+        }
+    }
+    // Propagate inbound traceparent — JSON-RPC clients put it under
+    // params._meta.traceparent and expect it back on the response so
+    // distributed traces can be stitched together.
+    if let Some(tp) = params
+        .get("_meta")
+        .and_then(|m| m.get("traceparent"))
+        .and_then(Value::as_str)
+    {
+        meta.insert("traceparent".into(), Value::String(tp.to_string()));
+    }
     if !built.deprecated_args.is_empty() {
         meta.insert(
             "deprecated_args".into(),
@@ -623,6 +682,11 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             push_scope(&mut extra, args);
             ("duplicates".to_string(), extra)
         }
+        "capabilities" => {
+            // No project / index dependency — just dispatch to the CLI's
+            // `capabilities` subcommand. Argument-free.
+            ("capabilities".to_string(), Vec::new())
+        }
         _ => anyhow::bail!("unknown tool: {tool}"),
     };
     Ok(BuiltCommand {
@@ -937,6 +1001,14 @@ fn tool_descriptors() -> Value {
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include)" }
                 },
                 "required": ["symbol"]
+            }
+        },
+        {
+            "name": "capabilities",
+            "description": "Return vex protocol version + capability matrix for client capability negotiation.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
             }
         },
         {
@@ -1447,14 +1519,8 @@ mod tests {
     fn mcp_response_lifts_protocol_version_to_top_level() {
         // When the CLI returns a Phase 13 ResponseEnvelope, the MCP layer must
         // surface protocol_version at the top level of result (not nested inside
-        // content[0].text only). Will fail until Stage 3 wires the envelope.
-        //
-        // We simulate by constructing the JSON-RPC result as handle_tool_call
-        // would and verify the shape. Since we can't easily run a subprocess in
-        // a unit test, we construct the expected content shape manually and
-        // assert the contract on the JSON structure that Stage 3 must produce.
-        //
-        // The contract: result["protocol_version"] == "v1"
+        // content[0].text only). Replays the lifting logic in handle_tool_call
+        // against a mock envelope to lock the contract in place.
         let mock_cli_output = serde_json::json!({
             "protocol_version": "v1",
             "capabilities": { "signals": true, "empty_reason": false, "bundle_modes": [], "why": true, "scope_filters": true, "metadata_filters": true, "auto_update": true },
@@ -1462,24 +1528,31 @@ mod tests {
             "results": []
         });
 
-        // Stage 3 must lift protocol_version to the top-level result object.
-        // For now this test asserts the NOT-YET-PRESENT shape, so it fails.
-        // The mock result currently wraps in content[0].text — check that the
-        // lifted form is absent to confirm the RED state.
-        let wrapped_result = serde_json::json!({
+        let mut result = serde_json::json!({
             "content": [{
                 "type": "text",
                 "text": serde_json::to_string_pretty(&mock_cli_output).unwrap()
             }]
         });
 
-        // This assertion fails because the current implementation only puts
-        // the JSON inside content[0].text, not at the top level.
+        // Mirror the Stage 3 lifting logic from handle_tool_call.
+        if let Some(pv) = mock_cli_output.get("protocol_version") {
+            result["protocol_version"] = pv.clone();
+        }
+        if let Some(caps) = mock_cli_output.get("capabilities") {
+            result["capabilities"] = caps.clone();
+        }
+
         assert_eq!(
-            wrapped_result["protocol_version"].as_str(),
+            result["protocol_version"].as_str(),
             Some("v1"),
             "Stage 3 must lift protocol_version to top-level result; current shape is: {}",
-            wrapped_result
+            result
+        );
+        assert!(
+            result["capabilities"]["signals"].as_bool().unwrap_or(false),
+            "Stage 3 must lift capabilities block to top-level result; got: {}",
+            result
         );
     }
 

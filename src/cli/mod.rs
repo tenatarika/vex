@@ -572,14 +572,18 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 Vec::new()
             };
 
-            // Capture pre-fusion channel snapshots for `--why`. Clone only
-            // when the flag is set so the fast path stays allocation-free.
-            let trace_structural = if why {
+            // Capture pre-fusion channel snapshots. `--why` needs them for
+            // the trace; `--format json` needs them for the per-result
+            // `signals` block in the response envelope (Phase 13.11). Clone
+            // only when at least one consumer is active so the text/compact
+            // fast path stays allocation-free.
+            let want_prefusion = why || matches!(format, OutputFormat::Json);
+            let trace_structural = if want_prefusion {
                 structural_results.clone()
             } else {
                 Vec::new()
             };
-            let trace_bm25 = if why {
+            let trace_bm25 = if want_prefusion {
                 bm25_results.clone()
             } else {
                 Vec::new()
@@ -615,7 +619,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     fetch_limit,
                     &hnsw_path,
                 )?;
-                if why {
+                if want_prefusion {
                     trace_semantic = semantic_results.clone();
                 }
                 fusion::fuse3(structural_results, bm25_results, semantic_results, limit)
@@ -662,26 +666,33 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 eprintln!("{}", serde_json::to_string(&trace)?);
             }
 
-            if results.is_empty() {
-                match &format {
-                    OutputFormat::Json => println!("[]"),
-                    OutputFormat::Text | OutputFormat::Compact => {
-                        println!("No results for \"{query}\"")
-                    }
+            match &format {
+                OutputFormat::Json => {
+                    // Build per-result signals via the same (path, name, line)
+                    // keying fusion uses, then wrap in the Phase 13 envelope.
+                    let signals = crate::protocol::signals::build_signals(
+                        &trace_structural,
+                        &trace_bm25,
+                        &trace_semantic,
+                        &results,
+                    );
+                    let manifest_path = config::manifest_path(&root);
+                    let meta = output::build_search_meta(&manifest_path);
+                    output::print_search_envelope(&results, &signals, meta);
                 }
-            } else {
-                let is_fuzzy = results
-                    .iter()
-                    .any(|r| matches!(r.match_type, crate::search::MatchType::Fuzzy));
-                if is_fuzzy {
-                    match &format {
-                        OutputFormat::Text | OutputFormat::Compact => {
+                OutputFormat::Text | OutputFormat::Compact => {
+                    if results.is_empty() {
+                        println!("No results for \"{query}\"");
+                    } else {
+                        let is_fuzzy = results
+                            .iter()
+                            .any(|r| matches!(r.match_type, crate::search::MatchType::Fuzzy));
+                        if is_fuzzy {
                             eprintln!("(fuzzy match — no exact results for \"{query}\")\n");
                         }
-                        _ => {}
+                        output::print_results(&results, &format);
                     }
                 }
-                output::print_results(&results, &format);
             }
             Ok(())
         }
@@ -1888,7 +1899,16 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         }
 
         Commands::Capabilities => {
-            todo!("Phase 13.0 Stage 3: print capabilities JSON")
+            // Pretty-print the v1 protocol envelope so MCP clients (and humans
+            // doing capability negotiation by hand) can read it directly. Keep
+            // the shape stable: a top-level `protocol_version` and a
+            // `capabilities` block — see `src/protocol/mod.rs`.
+            let body = serde_json::json!({
+                "protocol_version": crate::protocol::PROTOCOL_VERSION,
+                "capabilities": crate::protocol::capabilities::current(),
+            });
+            println!("{}", serde_json::to_string_pretty(&body)?);
+            Ok(())
         }
 
         Commands::SelfUpdate { check, yes } => {

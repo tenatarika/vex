@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::Signals;
 
 use crate::search::SearchResult;
@@ -5,15 +7,63 @@ use crate::search::SearchResult;
 /// Build per-result signals by re-keying pre-fusion channel lists onto merged results.
 /// Keying mirrors `fusion::fuse_many` — `(path, name, line)` tuple.
 ///
-/// Stage 1: signature only. Body is `todo!()`. Implementation lands in Stage 3.
+/// Per-channel signal slots:
+/// - `fst_hit`: result was produced by the structural / FST channel
+/// - `bm25_rank`: 0-indexed position of the result in the pre-fusion BM25 list
+/// - `semantic_rank`: 0-indexed position in the pre-fusion semantic list
+/// - `fuzzy_distance`: edit distance from the query for fuzzy hits. The current
+///   `MatchType::Fuzzy` variant carries no distance payload, so this field is
+///   always `None` until a future enhancement threads the distance through
+///   `SearchResult`. Documented here so callers do not mistake `None` for
+///   "not a fuzzy match".
+/// - `rerank_boost`: post-fusion rerank delta, populated by the reranker (not
+///   set here — that lives in the rerank pipeline).
 pub fn build_signals(
     structural: &[SearchResult],
     bm25: &[SearchResult],
     semantic: &[SearchResult],
     merged: &[SearchResult],
 ) -> Vec<Signals> {
-    let _ = (structural, bm25, semantic, merged);
-    todo!("Phase 13.11 Stage 3: build_signals via (path, name, line) keying")
+    // Key: (path, name, line). Value mirrors the Signals slots we can derive
+    // from pre-fusion channel lists.
+    type Key = (String, String, usize);
+    let mut by_key: HashMap<Key, (bool, Option<u32>, Option<u32>)> = HashMap::new();
+
+    for r in structural {
+        let entry = by_key
+            .entry((r.path.clone(), r.name.clone(), r.line))
+            .or_insert((false, None, None));
+        entry.0 = true;
+    }
+    for (i, r) in bm25.iter().enumerate() {
+        let entry = by_key
+            .entry((r.path.clone(), r.name.clone(), r.line))
+            .or_insert((false, None, None));
+        entry.1 = Some(i as u32);
+    }
+    for (i, r) in semantic.iter().enumerate() {
+        let entry = by_key
+            .entry((r.path.clone(), r.name.clone(), r.line))
+            .or_insert((false, None, None));
+        entry.2 = Some(i as u32);
+    }
+
+    merged
+        .iter()
+        .map(|r| {
+            let key = (r.path.clone(), r.name.clone(), r.line);
+            let (fst_hit, bm25_rank, semantic_rank) =
+                by_key.get(&key).copied().unwrap_or((false, None, None));
+            Signals {
+                fst_hit,
+                bm25_rank,
+                semantic_rank,
+                // No distance payload on MatchType::Fuzzy yet — see module doc.
+                fuzzy_distance: None,
+                rerank_boost: None,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -34,7 +84,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Phase 13.11 Stage 3")]
     fn build_signals_returns_one_entry_per_merged_result() {
         // After Stage 3 this should return Vec<Signals> with len == merged.len().
         let r0 = make_result("alpha", "src/a.rs", 1);
@@ -45,7 +94,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Phase 13.11 Stage 3")]
     fn build_signals_assigns_bm25_rank_by_pre_fusion_position() {
         // Pre-fusion BM25 list [r0, r1, r2]; merged contains r2.
         // Expected: signals for r2 has bm25_rank == Some(2) (0-indexed position).
@@ -63,7 +111,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Phase 13.11 Stage 3")]
     fn build_signals_assigns_semantic_rank_by_pre_fusion_position() {
         // Pre-fusion semantic list [r0, r1]; merged contains r0.
         // Expected: signals for r0 has semantic_rank == Some(0).
@@ -80,7 +127,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Phase 13.11 Stage 3")]
     fn build_signals_omits_channels_where_result_did_not_appear() {
         // result only in BM25 — semantic_rank must be None and fst_hit false.
         let r = make_result("only_bm25", "src/x.rs", 3);
@@ -97,7 +143,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Phase 13.11 Stage 3")]
     fn build_signals_handles_duplicate_keys_across_channels() {
         // Same (path, name, line) in both FST (structural) and BM25.
         // Merged result should have both ranks populated and fst_hit == true.
@@ -116,7 +161,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Phase 13.11 Stage 3")]
     fn build_signals_fst_hit_true_when_in_structural() {
         // fst_hit is keyed on (path, name, line) membership in structural list.
         let r = make_result("fst_symbol", "src/lib.rs", 42);

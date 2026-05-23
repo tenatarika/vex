@@ -1,8 +1,101 @@
+use std::path::Path;
+
+use serde::Serialize;
+
 use crate::callgraph::bfs::{CallPath, ReachableMatch};
 use crate::diff::SymbolChange;
+use crate::protocol::{capabilities, MetaEnvelope, ResponseEnvelope, Signals, PROTOCOL_VERSION};
 use crate::search::explain::Explanation;
 use crate::search::similar::SimilarMatch;
 use crate::search::SearchResult;
+
+/// Envelope payload for `vex search --format json`: each result carries the
+/// original `SearchResult` shape (via `#[serde(flatten)]`) plus the Phase 13
+/// `signals` block and a normalized `rank_percentile`.
+#[derive(Serialize)]
+struct SearchResultWithSignals<'a> {
+    #[serde(flatten)]
+    inner: &'a SearchResult,
+    signals: Signals,
+    rank_percentile: f32,
+}
+
+/// Build the response `_meta` block for a search call.
+///
+/// `index_age_ms`: derived from the manifest's `indexed_at` Unix timestamp;
+/// clamped to `≥ 0` so a tiny clock skew can't underflow. `None` when the
+/// manifest is missing or has no timestamp.
+///
+/// `ttl_ms`: 30s — a sensible freshness window for an index that the CLI
+/// auto-updates between calls.
+///
+/// `cache_scope`: `"project"` — constant for now; reserved for future
+/// workspace/global distinctions.
+///
+/// `traceparent`: always `None` on the CLI path. Only the MCP wrapper may
+/// propagate one from an inbound JSON-RPC request's `_meta.traceparent`.
+pub fn build_search_meta(manifest_path: &Path) -> MetaEnvelope {
+    let index_age_ms = compute_index_age_ms(manifest_path);
+    MetaEnvelope {
+        index_age_ms,
+        traceparent: None,
+        ttl_ms: Some(30_000),
+        cache_scope: Some("project".into()),
+    }
+}
+
+fn compute_index_age_ms(manifest_path: &Path) -> Option<u64> {
+    use crate::index::manifest::Manifest;
+    let manifest = Manifest::load(manifest_path).ok()?;
+    let indexed_at_s = manifest.indexed_at?;
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let age_s = now_s.saturating_sub(indexed_at_s);
+    Some(age_s.saturating_mul(1_000))
+}
+
+/// Emit the Phase 13 response envelope for `vex search --format json`.
+///
+/// Per-result rank_percentile is `1.0 - i/total` so the top result sits at
+/// `1.0` and order descends to `>= 0.0`. With zero results we emit an empty
+/// payload — callers still see the `protocol_version` and `_meta` block.
+pub fn print_search_envelope(results: &[SearchResult], signals: &[Signals], meta: MetaEnvelope) {
+    let total = results.len();
+    let payload: Vec<SearchResultWithSignals<'_>> = results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let rank_percentile = if total > 0 {
+                1.0_f32 - (i as f32 / total as f32)
+            } else {
+                0.0
+            };
+            // signals length matches results length when build_signals is
+            // called with the same merged slice — fall back to default so a
+            // mismatch never panics in the output path.
+            let sig = signals.get(i).cloned().unwrap_or_default();
+            SearchResultWithSignals {
+                inner: r,
+                signals: sig,
+                rank_percentile,
+            }
+        })
+        .collect();
+
+    let envelope = ResponseEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        capabilities: capabilities::current(),
+        meta,
+        results: payload,
+    };
+    // serde_json::to_string_pretty on a serializable envelope cannot fail
+    // unless one of the inner values has a custom Serialize that panics —
+    // which none of ours do. Fall back to empty-object on the off-chance.
+    let json = serde_json::to_string_pretty(&envelope).unwrap_or_else(|_| "{}".to_string());
+    println!("{json}");
+}
 
 pub fn print_results(results: &[SearchResult], format: &super::args::OutputFormat) {
     match format {
