@@ -2793,9 +2793,8 @@ mod tests {
     fn swift_subscript_is_anonymous() {
         // `subscript(idx: Int) -> Element { get { ... } set { ... } }`
         // — anonymous (no `name:` field). Body lives in a
-        // `computed_property` child (verified via tree-sitter
-        // probe), which is NOT in the universal marker list →
-        // has_block=false at the skeleton level.
+        // `computed_property` child, which is NOT in the universal
+        // marker list → has_block=false at the skeleton level.
         let sk = extract(
             Language::Swift,
             "class C {\n    subscript(i: Int) -> Int { return i * 2 }\n}\n",
@@ -2843,6 +2842,256 @@ mod tests {
             .expect("missing associatedtype_declaration");
         assert_eq!(a.ident.as_deref(), Some("Element"));
         assert!(!a.has_block, "associatedtype has no body");
+    }
+
+    #[test]
+    fn swift_extension_uses_target_type_as_ident() {
+        // Reviewer GAP (rust H4 / aqa M1): `extension Foo { ... }`
+        // parses as `class_declaration` with `declaration_kind:
+        // extension`, and its `name:` field is the type being
+        // extended (`Foo`), NOT a new declaration name. Pin so a
+        // grammar bump that renames the field or splits extension
+        // into its own kind fails loudly instead of returning the
+        // wrong substring.
+        let sk = extract(
+            Language::Swift,
+            "extension String {\n    func reversed2() -> String { return \"\" }\n}\n",
+        );
+        let e = sk.iter().find(|s| s.kind == "class_declaration").unwrap();
+        assert_eq!(
+            e.ident.as_deref(),
+            Some("String"),
+            "extension ident must surface the target type, got {:?}",
+            e.ident,
+        );
+        assert!(e.has_block);
+    }
+
+    #[test]
+    fn swift_actor_emits_via_class_declaration_kind() {
+        // Reviewer GAP (rust H4 / aqa M2): `actor Foo { ... }` folds
+        // into `class_declaration` via `declaration_kind: actor`.
+        // Same `name:` shape as class — pin so a future grammar
+        // promotion to a dedicated `actor_declaration` kind fails
+        // the test instead of dropping the surface.
+        let sk = extract(
+            Language::Swift,
+            "actor Coordinator {\n    var state: Int = 0\n}\n",
+        );
+        let a = sk.iter().find(|s| s.kind == "class_declaration").unwrap();
+        assert_eq!(a.ident.as_deref(), Some("Coordinator"));
+        assert!(a.has_block);
+    }
+
+    #[test]
+    fn swift_protocol_function_and_property_have_no_block() {
+        // Reviewer GAP (rust H2 / aqa H1): protocol member
+        // signatures are body-less requirements — `has_block=false`
+        // is the load-bearing contract that separates them from
+        // concrete `function_declaration` / `property_declaration`.
+        // A future grammar tweak that injects a phantom body field
+        // would silently flip `$$$BODY` matching against protocol
+        // members.
+        let sk = extract(
+            Language::Swift,
+            "protocol Runner {\n    func run()\n    var name: String { get }\n}\n",
+        );
+        let f = sk
+            .iter()
+            .find(|s| s.kind == "protocol_function_declaration")
+            .expect("missing protocol_function_declaration");
+        assert_eq!(f.ident.as_deref(), Some("run"));
+        assert!(
+            !f.has_block,
+            "protocol_function_declaration must report has_block=false",
+        );
+        let p = sk
+            .iter()
+            .find(|s| s.kind == "protocol_property_declaration")
+            .expect("missing protocol_property_declaration");
+        // protocol_property_declaration's `name:` field is a
+        // `pattern` AST node whose text span covers
+        // `value_binding_pattern` ("var" / "let") + bound identifier.
+        // utf8_text returns the literal source — `var name` for
+        // this fixture. Pin so a future arm that strips the binding
+        // keyword fails loudly (current contract is "raw source
+        // text", same as the concrete property_declaration case).
+        assert_eq!(p.ident.as_deref(), Some("var name"));
+        assert!(
+            !p.has_block,
+            "protocol_property_declaration must report has_block=false",
+        );
+    }
+
+    #[test]
+    fn swift_operator_declaration_is_anonymous_no_block() {
+        // Reviewer GAP (aqa H2): `infix operator +++: AdditionPrecedence`
+        // — no `name:` field, the operator token lives under
+        // `custom_operator`. The anonymous-list arm in
+        // `extract_ident` covers this in code, but until now no
+        // test pinned `ident=None` / `has_block=false`.
+        let sk = extract(Language::Swift, "infix operator +++: AdditionPrecedence\n");
+        let op = sk
+            .iter()
+            .find(|s| s.kind == "operator_declaration")
+            .expect("missing operator_declaration");
+        assert_eq!(op.ident, None);
+        assert!(!op.has_block);
+    }
+
+    #[test]
+    fn swift_failable_init_still_parses_as_init_declaration() {
+        // Reviewer GAP (rust H3 / aqa M3): `init?(...)` and `init!(...)`
+        // share the `init_declaration` kind (the `!` form adds a
+        // `bang` child; the `?` form has no marker in the AST).
+        // Body still flows through `function_body`, so `has_block=true`
+        // and `ident=None` mirror the plain `init` shape. Pin so a
+        // future grammar split into `optional_init_declaration` or
+        // similar fails loudly.
+        let sk = extract(
+            Language::Swift,
+            "class C {\n    init?(x: Int) { self.x = x }\n    init!(y: Int) { self.x = y }\n    var x: Int = 0\n}\n",
+        );
+        let inits: Vec<_> = sk.iter().filter(|s| s.kind == "init_declaration").collect();
+        assert_eq!(inits.len(), 2, "both failable forms must emit");
+        for i in &inits {
+            assert_eq!(i.ident, None);
+            assert!(i.has_block, "failable init body is function_body");
+        }
+    }
+
+    #[test]
+    fn swift_property_destructuring_pattern_text_fallback() {
+        // Reviewer GAP (aqa M4): `let (a, b) = pair` — `name:` is
+        // a nested `pattern` AST node whose text is the literal
+        // `(a, b)` from source. Pin the contract so a future arm
+        // that special-cases destructuring (e.g. picking the first
+        // bound identifier) fails the test instead of silently
+        // changing the surface.
+        let sk = extract(Language::Swift, "let (a, b) = (1, 2)\n");
+        let p = sk
+            .iter()
+            .find(|s| s.kind == "property_declaration")
+            .unwrap();
+        assert_eq!(
+            p.ident.as_deref(),
+            Some("(a, b)"),
+            "destructuring property ident must be the raw pattern text",
+        );
+    }
+
+    #[test]
+    fn swift_top_level_decls_have_no_parent_kind() {
+        // Reviewer GAP (aqa C2-adjacent): root suppression sweep
+        // for every top-level Swift kind. tree-sitter-swift uses
+        // `source_file` as the root (in the shared base set), so
+        // top-level decls should report `parent_kind=None`.
+        let sk = extract(
+            Language::Swift,
+            "class C {}\nprotocol P {}\nfunc f() {}\ntypealias T = Int\nvar v: Int = 0\n",
+        );
+        for kind in [
+            "class_declaration",
+            "protocol_declaration",
+            "function_declaration",
+            "typealias_declaration",
+            "property_declaration",
+        ] {
+            let s = sk
+                .iter()
+                .find(|s| s.kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind}"));
+            assert_eq!(
+                s.parent_kind, None,
+                "{kind} at file root must report parent_kind=None, got {:?}",
+                s.parent_kind,
+            );
+        }
+    }
+
+    #[test]
+    fn swift_generic_class_ident_is_bare_type_identifier() {
+        // Reviewer GAP (aqa C2): `class Box<T: Comparable> { ... }`
+        // — `name:` is the bare `type_identifier` ("Box"); type
+        // parameters live in a sibling `type_parameters` child.
+        // Mirrors the Java/Kotlin `_generic_*_ident_is_bare_name`
+        // tradition.
+        let sk = extract(Language::Swift, "class Box<T: Comparable> { let v: T }\n");
+        let b = sk.iter().find(|s| s.kind == "class_declaration").unwrap();
+        assert_eq!(b.ident.as_deref(), Some("Box"));
+    }
+
+    #[test]
+    fn swift_body_local_kinds_carry_class_body_parent_kind() {
+        // Reviewer GAP (mirrors Kotlin body-local pin): pin
+        // `parent_kind = Some("class_body")` for the body-local
+        // kinds (`init_declaration`, `deinit_declaration`,
+        // `subscript_declaration`) so a grammar bump renaming
+        // `class_body` doesn't silently break prefilter branching.
+        let sk = extract(
+            Language::Swift,
+            "class C {\n    init() {}\n    deinit { print(\"bye\") }\n    subscript(i: Int) -> Int { return i }\n}\n",
+        );
+        for kind in [
+            "init_declaration",
+            "deinit_declaration",
+            "subscript_declaration",
+        ] {
+            let s = sk
+                .iter()
+                .find(|s| s.kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind}"));
+            assert_eq!(
+                s.parent_kind,
+                Some("class_body"),
+                "{kind} must nest under class_body, got {:?}",
+                s.parent_kind,
+            );
+        }
+    }
+
+    #[test]
+    fn swift_enum_entry_parent_kind_is_enum_class_body() {
+        // Reviewer GAP (rust M2 / aqa parity with Kotlin):
+        // `enum_entry` nests under `enum_class_body`, NOT
+        // `class_body`. The shared `enum_class_body` kind name
+        // means the Kotlin pin already covers it grammar-wise,
+        // but Swift's umbrella `class_declaration` shape means the
+        // tree shape differs slightly — pin to be explicit.
+        let sk = extract(
+            Language::Swift,
+            "enum Status { case active\n    case inactive\n}\n",
+        );
+        let entry = sk
+            .iter()
+            .find(|s| s.kind == "enum_entry" && s.ident.as_deref() == Some("active"))
+            .expect("missing active enum_entry");
+        assert_eq!(
+            entry.parent_kind,
+            Some("enum_class_body"),
+            "enum_entry must nest under enum_class_body, got {:?}",
+            entry.parent_kind,
+        );
+    }
+
+    #[test]
+    fn swift_train_does_not_regress_kotlin_function_body_has_block() {
+        // Reviewer GAP (aqa M5): the `function_body` arm of
+        // `has_body_block` is now shared across SQL, Kotlin, and
+        // Swift. Pin a Kotlin concrete fn here so a future widening
+        // of the arm (e.g. dropping `function_body` accidentally,
+        // splitting per-language) fails BOTH the Swift and Kotlin
+        // tests rather than only one.
+        let sk = extract(Language::Kotlin, "fun start(): Int = 0\n");
+        let f = sk
+            .iter()
+            .find(|s| s.kind == "function_declaration")
+            .unwrap();
+        assert!(
+            f.has_block,
+            "Kotlin function_body must still register as a body \
+             after Swift joined the shared arm",
+        );
     }
 
     #[test]
