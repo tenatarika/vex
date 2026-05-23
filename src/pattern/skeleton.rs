@@ -622,11 +622,6 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             // `name: constant` (e.g. `Foo`) and an optional
             // `body: body_statement`. `body_statement` is the
             // Ruby-specific arm in `has_body_block`.
-            //
-            // Note: `class` and `module` are ALSO the keyword tokens
-            // (anonymous, with `is_named()==false`) — the
-            // `is_named()` gate in `walk` keeps the keyword tokens
-            // from emitting a phantom second skeleton per site.
             "class",
             "module",
             // Instance methods (`def foo; end`) and class/module
@@ -639,7 +634,7 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             // Operator methods (`def ==(other)`), setter methods
             // (`def name=(v)`) all flow through `name:` whose text
             // includes the trailing token (`==`, `name=`) — pinned
-            // by the happy-path tests.
+            // by the reviewer-gap test.
             "method",
             "singleton_method",
             // `class << self; ...; end` — anonymous singleton-class
@@ -651,9 +646,9 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             // `extract_ident` path calls
             // `child_by_field_name("name")` deterministically, so
             // the skeleton ident is always the NEW alias name —
-            // the `alias:` field is not surfaced. The bare `alias`
-            // keyword token shares the kind string but is anonymous;
-            // the `is_named()` gate in `walk` suppresses it.
+            // the `alias:` field is not surfaced. If a future
+            // grammar version renames or reorders `name:`, the
+            // happy-path test fails loudly.
             "alias",
             // Anonymous callables. Three forms:
             //   * `lambda` — `->{ }` / `->(x) { x + 1 }` literal.
@@ -661,14 +656,9 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             //     passed to a method call.
             //   * `do_block` — `do |x| ... end` keyword-delimited
             //     block, semantically identical to `block`.
-            // All three carry a `body:` field that resolves to a
-            // block-shaped kind (`body_statement` / `block_body` /
-            // `do_block`), so `has_block=true` mirrors Kotlin
-            // `anonymous_function`. Note: arrow-lambda with do/end
-            // body (`->(x) do ... end`) has a `do_block` direct
-            // child — `do_block` is in the universal markers below
-            // for that reason.
-            //
+            // All three carry a `body:` field (`body_statement` for
+            // `do_block`/`block`, similar for `lambda`) so
+            // `has_block=true` mirrors Kotlin `anonymous_function`.
             // Volume note: Ruby idioms use blocks heavily (every
             // `each`/`map`/`tap` call carries one), so these
             // contribute the most skeleton volume of any T2a
@@ -3827,6 +3817,133 @@ mod tests {
         let sk = extract(Language::Ruby, "class Cat < Animal\nend\n");
         let c = sk.iter().find(|s| s.kind == "class").unwrap();
         assert_eq!(c.ident.as_deref(), Some("Cat"));
+    }
+
+    #[test]
+    fn ruby_arrow_lambda_with_do_end_body_has_block() {
+        // Reviewer GAP (rust H1): `->(x) do ... end` — the
+        // tree-sitter-ruby grammar places a `do_block` directly
+        // under the `lambda` node. Without `do_block` in
+        // `has_body_block`, the OUTER lambda's `has_block` would
+        // silently report false, contradicting the allowlist
+        // comment's "mirrors Kotlin anonymous_function" contract.
+        let sk = extract(Language::Ruby, "f = ->(x) do\n  x + 1\nend\n");
+        let l = sk.iter().find(|s| s.kind == "lambda").unwrap();
+        assert_eq!(l.ident, None);
+        assert!(
+            l.has_block,
+            "arrow-lambda with do/end body must report has_block=true \
+             via the `do_block` arm of has_body_block",
+        );
+    }
+
+    #[test]
+    fn ruby_top_level_decls_have_no_parent_kind() {
+        // Reviewer GAP (aqa H1): root-suppression sweep for every
+        // top-level-emitting Ruby kind. tree-sitter-ruby uses
+        // `program` as the root (covered by the shared
+        // `is_root_kind` base set). A future per-language gate or
+        // grammar bump that renames the root could silently leak
+        // `parent_kind = Some("program")` for all top-level decls.
+        let sk = extract(
+            Language::Ruby,
+            "class C\nend\nmodule M\nend\ndef f\nend\nalias new_name old_name\n",
+        );
+        for kind in ["class", "module", "method", "alias"] {
+            let s = sk
+                .iter()
+                .find(|s| s.kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind}"));
+            assert_eq!(
+                s.parent_kind, None,
+                "{kind} at file root must report parent_kind=None, got {:?}",
+                s.parent_kind,
+            );
+        }
+    }
+
+    #[test]
+    fn ruby_singleton_class_and_singleton_method_emit_distinct_kinds() {
+        // Reviewer GAP (aqa H2): both `class << self` (singleton_class)
+        // and `def self.foo` (singleton_method) express class-level
+        // behaviour, but they're DIFFERENT grammar kinds. Pin so a
+        // future refactor that accidentally collapses them into one
+        // arm (or renames either kind) fails loudly.
+        let sk = extract(
+            Language::Ruby,
+            "class C\n  class << self\n    def class_method\n    end\n  end\n  def self.also_class_method\n  end\nend\n",
+        );
+        let sc = sk
+            .iter()
+            .find(|s| s.kind == "singleton_class")
+            .expect("missing singleton_class");
+        assert_eq!(sc.ident, None, "singleton_class is anonymous");
+        let sm = sk
+            .iter()
+            .find(|s| s.kind == "singleton_method")
+            .expect("missing singleton_method");
+        assert_eq!(
+            sm.ident.as_deref(),
+            Some("also_class_method"),
+            "singleton_method ident is the method name only",
+        );
+        assert_ne!(
+            sc.kind, sm.kind,
+            "singleton_class and singleton_method must emit distinct kinds",
+        );
+    }
+
+    #[test]
+    fn ruby_alias_emits_exactly_one_skeleton_for_new_name_only() {
+        // Reviewer GAP (aqa M1): `alias new_name old_name` exposes
+        // both `name:` (new) and `alias:` (old) fields, but the
+        // skeleton emits ONE record bound to the new name. Pin so
+        // a future arm that walks both fields doesn't accidentally
+        // double-emit (one skeleton per field).
+        let sk = extract(Language::Ruby, "alias new_name old_name\n");
+        let aliases: Vec<_> = sk.iter().filter(|s| s.kind == "alias").collect();
+        assert_eq!(
+            aliases.len(),
+            1,
+            "alias must emit exactly one skeleton (not one per field), got: {:?}",
+            aliases
+                .iter()
+                .map(|s| s.ident.as_deref())
+                .collect::<Vec<_>>(),
+        );
+        // The single skeleton carries the new name, NOT the old.
+        assert_eq!(aliases[0].ident.as_deref(), Some("new_name"));
+        assert!(
+            !aliases
+                .iter()
+                .any(|s| s.ident.as_deref() == Some("old_name")),
+            "old name (`alias:` field) must NOT be surfaced",
+        );
+    }
+
+    #[test]
+    fn ruby_nested_module_carries_body_statement_parent_kind() {
+        // Reviewer GAP (code M5): `module A; module B; end; end` —
+        // the inner module nests under the outer module's
+        // `body_statement`, NOT directly under the outer `module`
+        // node. Pin so a prefilter that branches on
+        // `parent_kind == "module"` doesn't silently miss every
+        // nested module.
+        let sk = extract(
+            Language::Ruby,
+            "module A\n  module B\n    def hi\n    end\n  end\nend\n",
+        );
+        let inner = sk
+            .iter()
+            .filter(|s| s.kind == "module")
+            .find(|s| s.ident.as_deref() == Some("B"))
+            .expect("missing inner module B");
+        assert_eq!(
+            inner.parent_kind,
+            Some("body_statement"),
+            "nested module nests under outer body_statement, got {:?}",
+            inner.parent_kind,
+        );
     }
 
     #[test]
