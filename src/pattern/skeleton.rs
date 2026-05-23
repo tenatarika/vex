@@ -15,12 +15,12 @@
 //! Per-language coverage (T1 lands now; T2/T3 in follow-up trains —
 //! see `.claude/Task/PHASE11.4-first-class-pattern.md`):
 //!
-//! | Tier | Languages                                            | Allowlist     |
-//! |------|------------------------------------------------------|---------------|
-//! | T1   | Rust, TypeScript, Python                             | populated     |
-//! | T2a  | Go, C++, C#, SQL, Markdown, Java, CSS, HTML, Kotlin  | populated     |
-//! | T2   | Swift, PHP, Ruby                                     | empty for now |
-//! | T3   | YAML, TOML, Bash, Lua                                | empty (final) |
+//! | Tier | Languages                                                   | Allowlist     |
+//! |------|-------------------------------------------------------------|---------------|
+//! | T1   | Rust, TypeScript, Python                                    | populated     |
+//! | T2a  | Go, C++, C#, SQL, Markdown, Java, CSS, HTML, Kotlin, Swift  | populated     |
+//! | T2   | PHP, Ruby                                                   | empty for now |
+//! | T3   | YAML, TOML, Bash, Lua                                       | empty (final) |
 //!
 //! JavaScript shares the TypeScript grammar (`Language::TypeScript`)
 //! via `"js" | "jsx" → TypeScript` in the extension map, so the T1
@@ -449,9 +449,8 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             // `lambda_literal` wraps statements directly (no `block`
             // child) → `has_block=false`. `anonymous_function`
             // carries a proper `function_body` → `has_block=true`.
-            // TODO(swift-t2): Swift `closure_expression` shares the
-            // same body-as-direct-statements shape as `lambda_literal`
-            // — revisit the `has_block=false` gap there too.
+            // (Swift reuses the same `lambda_literal` kind name with
+            // the same body-as-statements shape — see Swift arm below.)
             "lambda_literal",
             "anonymous_function",
             // Intentionally absent (deferred / out of scope):
@@ -465,6 +464,77 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             //     — too granular; covered by `property_declaration`.
             //   * `import` / `package_header` — binding sites, not
             //     pattern targets.
+        ],
+        Language::Swift => &[
+            // Type declarations. `class_declaration` is the umbrella
+            // for `class`, `struct`, `enum`, `actor`, and `extension`
+            // — distinguished by the named `declaration_kind` field
+            // (anonymous keyword child). A pattern like
+            // `struct $NAME` narrows by kind + source-text. For
+            // `extension`, the `name:` field is the type BEING
+            // extended (e.g. `Foo` in `extension Foo { ... }`) —
+            // intuitive surface for `vex pattern`.
+            "class_declaration",
+            // `protocol Foo { ... }` — separate kind from class
+            // umbrella, with its own `protocol_body`.
+            "protocol_declaration",
+            // Top-level + member functions. Body lives in a required
+            // `function_body` field — reuses the SQL/Kotlin arm of
+            // `has_body_block`. Concrete fns always have a body;
+            // abstract protocol fns parse as
+            // `protocol_function_declaration` instead.
+            "function_declaration",
+            // `var x = 1` / `let y: Int`. The `name:` field is a
+            // `pattern` AST node, NOT a simple identifier — for
+            // `var x: Int` the pattern text is `x`, for the
+            // destructuring form `let (a, b) = pair` it's `(a, b)`.
+            // Default text extraction returns whichever form the
+            // user wrote; a future arm can post-process if needed.
+            "property_declaration",
+            // `typealias Foo = Bar` — has a proper `name:` field;
+            // default extraction works (UNLIKE Kotlin, where the
+            // alias name lives under `type:`).
+            "typealias_declaration",
+            // Enum cases: `case foo`, `case bar(Int)`. `name:` is a
+            // simple identifier; default extraction works.
+            "enum_entry",
+            // `associatedtype Element` — protocol-level type slot,
+            // has `name:` field.
+            "associatedtype_declaration",
+            // Protocol method/property signatures — body-less
+            // requirements that live under `protocol_body`. Both
+            // expose `name:`; `has_block=false` is the natural
+            // outcome of the body-less shape.
+            "protocol_function_declaration",
+            "protocol_property_declaration",
+            // Anonymous member declarations. None expose a
+            // recoverable name (Swift identifies them by keyword:
+            // `init`, `deinit`, `subscript`). All carry a
+            // `function_body` (init/deinit) or wrap their body in
+            // `computed_property` (subscript — has_block=false at
+            // the skeleton's direct-child level).
+            "init_declaration",
+            "deinit_declaration",
+            "subscript_declaration",
+            // Custom operator definition — `infix operator +++: ...`.
+            // No `name:` field; the operator token lives under
+            // `custom_operator`. Anonymous at the skeleton level.
+            "operator_declaration",
+            // Anonymous closures: `{ x in x + 1 }`. The body lives
+            // in a positional `statements` child, NOT a named
+            // block — has_block=false. Mirrors the Kotlin
+            // `lambda_literal` contract.
+            "lambda_literal",
+            // Intentionally absent (deferred / out of scope):
+            //   * `precedence_group_declaration` — niche operator
+            //     glue; not a pattern target users ask for.
+            //   * `macro_declaration` / `macro_definition` /
+            //     `external_macro_definition` — Swift 5.9+ macros;
+            //     low-volume surface, revisit if patterns need them.
+            //   * `computed_property` / `computed_getter` /
+            //     `computed_setter` / `willset_didset_block` —
+            //     accessor internals, live under `property_declaration`.
+            //   * `import_declaration` — binding site, not a target.
         ],
         _ => &[],
     }
@@ -498,6 +568,19 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
                     | "anonymous_function"
                     | "anonymous_initializer"
                     | "secondary_constructor",
+            )
+            | (
+                Language::Swift,
+                // Swift identifies these by keyword (`init`,
+                // `deinit`, `subscript`) — no `name:` field. The
+                // `operator_declaration` wrapper's identity is the
+                // `custom_operator` child (not exposed as a name).
+                // `lambda_literal` is the textbook anonymous closure.
+                "init_declaration"
+                    | "deinit_declaration"
+                    | "subscript_declaration"
+                    | "operator_declaration"
+                    | "lambda_literal",
             )
     );
     if anonymous {
@@ -642,8 +725,8 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
     // field is `type`, not `name`. (Note: Go also has a `type_alias`
     // kind but it uses `name:`, so the Kotlin arm must be language-
     // gated — same-kind-name-different-field-shape across grammars.
-    // Swift's upcoming T2 train will introduce `typealias_declaration`
-    // which uses `name:` — do NOT add Swift to this arm.)
+    // Swift `typealias_declaration` uses `name:` (NOT `type:`) — it
+    // flows through the generic fallback below, NOT this override.)
     let field = if matches!(
         (lang, kind),
         (Language::Rust, "impl_item") | (Language::Kotlin, "type_alias")
@@ -679,12 +762,12 @@ fn has_body_block(node: Node<'_>) -> bool {
             child.kind(),
             // Universal markers across T1 grammars; add per-language
             // body kind names below this line as T2 languages get
-            // promoted (e.g. Swift / PHP / Ruby T2 trains land in
-            // follow-ups). The `function_body` arm below is shared
-            // between SQL `CREATE FUNCTION` and Kotlin — both
-            // grammars wrap a function's body in a node of that
-            // name (Kotlin uses it for `function_declaration` AND
-            // `anonymous_function`).
+            // promoted (e.g. PHP / Ruby T2 trains land in follow-
+            // ups). The `function_body` arm below is shared across
+            // SQL `CREATE FUNCTION`, Kotlin (`function_declaration`
+            // + `anonymous_function`), and Swift (`function_declaration`
+            // + `init_declaration` + `deinit_declaration`) — same
+            // kind name, different grammars.
             "block"
                 | "statement_block"
                 | "declaration_list"
@@ -703,7 +786,8 @@ fn has_body_block(node: Node<'_>) -> bool {
                 | "annotation_type_body" // Java @interface body
                 | "constructor_body" // Java constructor body
                 | "keyframe_block_list" // CSS @keyframes body
-                | "enum_class_body" // Kotlin `enum class` body
+                | "enum_class_body" // Kotlin/Swift `enum class` body
+                | "protocol_body" // Swift `protocol` body
         )
     });
     found
@@ -801,18 +885,14 @@ mod tests {
 
     #[test]
     fn t2_language_returns_empty_until_rolled_out() {
-        // Swift is still T2 — not yet in the allowlist. Kotlin used
+        // PHP is still T2 — not yet in the allowlist. Swift used
         // to live here but moved to T2a; this test will need to
         // repoint at the next still-empty T2 language each time one
-        // rolls out (PHP / Ruby remain). Once *all* T2 languages
-        // are populated, repoint at a T3 language we explicitly
-        // never plan to fill (e.g. `Language::Yaml` or
-        // `Language::Toml`) so the canary stops shifting.
-        // Use Swift-idiomatic syntax (struct + func) rather than
-        // Kotlin-shaped fixture so the test self-documents when
-        // Swift promotes — at that point this line is the canary
-        // that needs repointing.
-        let sk = extract(Language::Swift, "struct Foo {}\nfunc bar() {}\n");
+        // rolls out (Ruby remains). Once *all* T2 languages are
+        // populated, repoint at a T3 language we explicitly never
+        // plan to fill (e.g. `Language::Yaml` or `Language::Toml`)
+        // so the canary stops shifting.
+        let sk = extract(Language::Php, "<?php class Foo {}\n");
         assert!(sk.is_empty());
     }
 
@@ -2574,6 +2654,201 @@ mod tests {
     fn kotlin_grammar_fingerprint_is_stable_and_nonzero() {
         let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Kotlin);
         let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Kotlin);
+        assert_eq!(a, b, "fingerprint must be deterministic");
+        assert_ne!(a, 0, "zero is reserved as the not-stored sentinel");
+    }
+
+    #[test]
+    fn swift_class_with_function_emits_both() {
+        let sk = extract(
+            Language::Swift,
+            "class Server {\n    func start() -> Int { return 0 }\n}\n",
+        );
+        let c = sk.iter().find(|s| s.kind == "class_declaration").unwrap();
+        assert_eq!(c.ident.as_deref(), Some("Server"));
+        assert!(c.has_block, "class_body must register as body");
+        assert_eq!(c.parent_kind, None);
+        let f = sk
+            .iter()
+            .find(|s| s.kind == "function_declaration")
+            .unwrap();
+        assert_eq!(f.ident.as_deref(), Some("start"));
+        assert_eq!(f.parent_kind, Some("class_body"));
+        assert!(f.has_block, "function_body must register as body");
+    }
+
+    #[test]
+    fn swift_struct_via_class_declaration_with_struct_kind() {
+        // tree-sitter-swift folds struct/class/enum/actor/extension
+        // into one `class_declaration` kind, distinguished by the
+        // `declaration_kind` field. A user pattern like
+        // `struct $NAME` narrows to this kind + source-text — pin
+        // that the ident extraction surfaces the type name
+        // regardless of which keyword the user wrote.
+        let sk = extract(
+            Language::Swift,
+            "struct Point {\n    let x: Int\n    let y: Int\n}\n",
+        );
+        let s = sk.iter().find(|s| s.kind == "class_declaration").unwrap();
+        assert_eq!(s.ident.as_deref(), Some("Point"));
+        assert!(s.has_block);
+    }
+
+    #[test]
+    fn swift_protocol_emits_protocol_declaration_with_body() {
+        // `protocol Foo { ... }` is its own kind (NOT folded into
+        // `class_declaration`); body is `protocol_body`, which the
+        // Swift-specific arm of `has_body_block` registers.
+        let sk = extract(
+            Language::Swift,
+            "protocol Repository {\n    func findById(_ id: Int) -> Any?\n}\n",
+        );
+        let p = sk
+            .iter()
+            .find(|s| s.kind == "protocol_declaration")
+            .unwrap();
+        assert_eq!(p.ident.as_deref(), Some("Repository"));
+        assert!(p.has_block, "protocol_body must register as body");
+    }
+
+    #[test]
+    fn swift_function_declaration_extracts_name() {
+        let sk = extract(
+            Language::Swift,
+            "func topLevel() -> String { return \"hi\" }\n",
+        );
+        let f = sk
+            .iter()
+            .find(|s| s.kind == "function_declaration")
+            .unwrap();
+        assert_eq!(f.ident.as_deref(), Some("topLevel"));
+        assert_eq!(f.parent_kind, None);
+        assert!(f.has_block);
+    }
+
+    #[test]
+    fn swift_property_declaration_extracts_pattern_name() {
+        // `var x: Int = 1` — `name:` field is a `pattern` AST node
+        // whose text is `x` for the simple-binding case. Pin the
+        // default-text-extraction contract.
+        let sk = extract(Language::Swift, "var counter: Int = 0\nlet name = \"hi\"\n");
+        let props: Vec<_> = sk
+            .iter()
+            .filter(|s| s.kind == "property_declaration")
+            .collect();
+        assert_eq!(props.len(), 2);
+        let names: Vec<&str> = props.iter().filter_map(|s| s.ident.as_deref()).collect();
+        assert!(names.contains(&"counter"), "got {names:?}");
+        assert!(names.contains(&"name"), "got {names:?}");
+    }
+
+    #[test]
+    fn swift_typealias_extracts_name() {
+        // Unlike Kotlin (where the alias name lives under `type:`),
+        // Swift `typealias_declaration` uses a proper `name:` field
+        // — default extraction works.
+        let sk = extract(Language::Swift, "typealias Handler = (Int) -> Void\n");
+        let t = sk
+            .iter()
+            .find(|s| s.kind == "typealias_declaration")
+            .unwrap();
+        assert_eq!(t.ident.as_deref(), Some("Handler"));
+        assert!(!t.has_block, "typealias has no body");
+    }
+
+    #[test]
+    fn swift_enum_with_entries_extracts_case_names() {
+        let sk = extract(
+            Language::Swift,
+            "enum Status {\n    case active\n    case inactive\n    case pending(reason: String)\n}\n",
+        );
+        let e = sk
+            .iter()
+            .find(|s| s.kind == "class_declaration" && s.ident.as_deref() == Some("Status"))
+            .expect("missing enum class_declaration");
+        assert!(e.has_block, "enum_class_body must register as body");
+        let entries: Vec<_> = sk.iter().filter(|s| s.kind == "enum_entry").collect();
+        assert_eq!(entries.len(), 3);
+        let names: Vec<&str> = entries.iter().filter_map(|s| s.ident.as_deref()).collect();
+        assert!(names.contains(&"active"), "got {names:?}");
+        assert!(names.contains(&"inactive"), "got {names:?}");
+        assert!(names.contains(&"pending"), "got {names:?}");
+    }
+
+    #[test]
+    fn swift_init_and_deinit_are_anonymous_with_block() {
+        let sk = extract(
+            Language::Swift,
+            "class C {\n    init(x: Int) { self.x = x }\n    deinit { print(\"bye\") }\n    var x: Int = 0\n}\n",
+        );
+        let init = sk.iter().find(|s| s.kind == "init_declaration").unwrap();
+        assert_eq!(init.ident, None);
+        assert!(init.has_block, "init body is function_body");
+        let deinit = sk.iter().find(|s| s.kind == "deinit_declaration").unwrap();
+        assert_eq!(deinit.ident, None);
+        assert!(deinit.has_block, "deinit body is function_body");
+    }
+
+    #[test]
+    fn swift_subscript_is_anonymous() {
+        // `subscript(idx: Int) -> Element { get { ... } set { ... } }`
+        // — anonymous (no `name:` field). Body lives in a
+        // `computed_property` child (verified via tree-sitter
+        // probe), which is NOT in the universal marker list →
+        // has_block=false at the skeleton level.
+        let sk = extract(
+            Language::Swift,
+            "class C {\n    subscript(i: Int) -> Int { return i * 2 }\n}\n",
+        );
+        let s = sk
+            .iter()
+            .find(|s| s.kind == "subscript_declaration")
+            .unwrap();
+        assert_eq!(s.ident, None);
+        assert!(
+            !s.has_block,
+            "subscript body is `computed_property`, not in universal markers — has_block=false",
+        );
+    }
+
+    #[test]
+    fn swift_lambda_literal_is_anonymous_without_block_child() {
+        // `{ x in x + 1 }` — statements live as a direct positional
+        // child (not wrapped in a named block). `has_block=false`
+        // mirrors the Kotlin `lambda_literal` contract.
+        let sk = extract(
+            Language::Swift,
+            "let plusOne: (Int) -> Int = { x in x + 1 }\n",
+        );
+        let l = sk.iter().find(|s| s.kind == "lambda_literal").unwrap();
+        assert_eq!(l.ident, None);
+        assert!(
+            !l.has_block,
+            "lambda_literal wraps statements directly — pin has_block=false",
+        );
+    }
+
+    #[test]
+    fn swift_associatedtype_extracts_name() {
+        // `associatedtype Element` — protocol-level type slot. Has
+        // a proper `name:` field of type `type_identifier`; default
+        // extraction works.
+        let sk = extract(
+            Language::Swift,
+            "protocol Collection {\n    associatedtype Element\n}\n",
+        );
+        let a = sk
+            .iter()
+            .find(|s| s.kind == "associatedtype_declaration")
+            .expect("missing associatedtype_declaration");
+        assert_eq!(a.ident.as_deref(), Some("Element"));
+        assert!(!a.has_block, "associatedtype has no body");
+    }
+
+    #[test]
+    fn swift_grammar_fingerprint_is_stable_and_nonzero() {
+        let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Swift);
+        let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Swift);
         assert_eq!(a, b, "fingerprint must be deterministic");
         assert_ne!(a, 0, "zero is reserved as the not-stored sentinel");
     }
