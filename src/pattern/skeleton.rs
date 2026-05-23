@@ -15,12 +15,12 @@
 //! Per-language coverage (T1 lands now; T2/T3 in follow-up trains —
 //! see `.claude/Task/PHASE11.4-first-class-pattern.md`):
 //!
-//! | Tier | Languages                                                   | Allowlist     |
-//! |------|-------------------------------------------------------------|---------------|
-//! | T1   | Rust, TypeScript, Python                                    | populated     |
-//! | T2a  | Go, C++, C#, SQL, Markdown, Java, CSS, HTML, Kotlin, Swift  | populated     |
-//! | T2   | PHP, Ruby                                                   | empty for now |
-//! | T3   | YAML, TOML, Bash, Lua                                       | empty (final) |
+//! | Tier | Languages                                                        | Allowlist     |
+//! |------|------------------------------------------------------------------|---------------|
+//! | T1   | Rust, TypeScript, Python                                         | populated     |
+//! | T2a  | Go, C++, C#, SQL, Markdown, Java, CSS, HTML, Kotlin, Swift, PHP  | populated     |
+//! | T2   | Ruby                                                             | empty for now |
+//! | T3   | YAML, TOML, Bash, Lua                                            | empty (final) |
 //!
 //! JavaScript shares the TypeScript grammar (`Language::TypeScript`)
 //! via `"js" | "jsx" → TypeScript` in the extension map, so the T1
@@ -536,6 +536,86 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             //     accessor internals, live under `property_declaration`.
             //   * `import_declaration` — binding site, not a target.
         ],
+        Language::Php => &[
+            // Type declarations — all carry `name: name` (the
+            // tree-sitter-php grammar calls its identifier kind
+            // `name`, not `identifier`). Bodies live in
+            // `declaration_list` (class/interface/trait) or
+            // `enum_declaration_list` (enum) — the latter is the
+            // PHP-specific arm in `has_body_block`.
+            "class_declaration",
+            "interface_declaration",
+            "trait_declaration",
+            "enum_declaration",
+            // Top-level functions vs methods — different kind names
+            // in tree-sitter-php (unlike e.g. C# where both share
+            // `method_declaration`). Both carry `name:` + optional
+            // `body: compound_statement`. Abstract method on an
+            // interface / `abstract` class has no body — same
+            // has_block=false signal as Java/Kotlin abstract fns.
+            "function_definition",
+            "method_declaration",
+            // PHP property / constant declarations are TWO levels
+            // deep: the wrapper (`property_declaration` /
+            // `const_declaration`) carries modifiers but NO `name:`
+            // field — the actual names live one level down on
+            // `property_element` / `const_element` children. We
+            // allowlist the GRANULAR elements only (mirrors the
+            // existing SymbolKind extraction in `queries/php.scm`):
+            //   * Multi-declarator forms (`public $a, $b, $c;`)
+            //     emit one skeleton per element with the correct
+            //     name (avoids the C++/C#/Java "only-first-name"
+            //     gap).
+            //   * `parent_kind` carries the wrapper info
+            //     (`Some("property_declaration")` /
+            //     `Some("const_declaration")`) so prefilters can
+            //     still narrow on the declaration site.
+            // Ident shape:
+            //   * `property_element.name` is a `variable_name`
+            //     wrapper whose `utf8_text` would surface `$a`
+            //     (with sigil). The `extract_ident` arm walks
+            //     through the wrapper to the bare `name` child so
+            //     the ident is `a` — consistent with every other
+            //     T1/T2a language (none carry language punctuation
+            //     on skeleton idents).
+            //   * `const_element.name` is a positional `name`
+            //     child (NOT a `name:` field on the element). The
+            //     `extract_ident` arm uses `child_by_kind` to
+            //     recover it.
+            "property_element",
+            "const_element",
+            // Enum cases (PHP 8.1+): `case Active;` / backed
+            // `case Active = 1;`. `name:` field is a `name`.
+            "enum_case",
+            // `namespace Foo { ... }` (block form) and
+            // `namespace Foo;` (semicolon form). The block form
+            // carries a `compound_statement` body — already in the
+            // universal markers — so `has_block=true`. The
+            // semicolon form has no body field → `has_block=false`,
+            // which separates the two forms naturally.
+            "namespace_definition",
+            // Anonymous callables / classes. None expose a `name:`
+            // field — all three go through the anonymous-list arm
+            // of `extract_ident`. `arrow_function`'s `body:` is an
+            // `expression`, NOT a block — `has_block=false` mirrors
+            // the Kotlin/Swift lambda contract.
+            "anonymous_function",
+            "arrow_function",
+            "anonymous_class",
+            // Intentionally absent (deferred / out of scope):
+            //   * `property_declaration` / `const_declaration` —
+            //     wrapper nodes whose `name:` field doesn't exist;
+            //     would emit `ident=None` skeletons that the
+            //     granular `*_element` allowlist already covers
+            //     with proper names.
+            //   * `namespace_use_clause` / `namespace_use_declaration`
+            //     — binding sites, not pattern targets.
+            //   * `function_static_declaration` / `global_declaration`
+            //     — niche; revisit if patterns need them.
+            //   * `static_variable_declaration` — too granular.
+            //   * `declare_statement` (`declare(strict_types=1);`)
+            //     — directive, not a definition.
+        ],
         _ => &[],
     }
 }
@@ -581,6 +661,14 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
                     | "subscript_declaration"
                     | "operator_declaration"
                     | "lambda_literal",
+            )
+            | (
+                Language::Php,
+                // PHP anonymous callables (`function() use (...) { ... }`
+                // and `fn($x) => $x + 1`) plus the anonymous
+                // class form `new class { ... }`. None expose a
+                // `name:` field — all three short-circuit here.
+                "anonymous_function" | "arrow_function" | "anonymous_class",
             )
     );
     if anonymous {
@@ -721,6 +809,31 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
             .and_then(|n| n.utf8_text(source.as_bytes()).ok())
             .map(String::from);
     }
+    // PHP: `const_element` exposes its identifier as a positional
+    // `name` child (NOT a `name:` field — distinct from sibling
+    // `property_element` which DOES have a `name:` field of type
+    // `variable_name`).
+    if matches!((lang, kind), (Language::Php, "const_element")) {
+        return child_by_kind(node, "name")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(String::from);
+    }
+    // PHP: `property_element.name` is a `variable_name` wrapper
+    // whose utf8_text would include the leading `$` sigil (e.g.
+    // `$a` rather than `a`). Walk one level deeper to the bare
+    // `name` child so the ident aligns with every other T1/T2a
+    // language (where the skeleton ident never includes language
+    // punctuation). Without this arm, users writing
+    // `vex pattern 'public $$NAME'` would need to know to include
+    // the sigil — asymmetric with the `const_element` arm above
+    // which surfaces the bare name natively.
+    if matches!((lang, kind), (Language::Php, "property_element")) {
+        return node
+            .child_by_field_name("name")
+            .and_then(|vn| child_by_kind(vn, "name"))
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(String::from);
+    }
     // For Rust `impl_item` AND Kotlin `type_alias` the identifying
     // field is `type`, not `name`. (Note: Go also has a `type_alias`
     // kind but it uses `name:`, so the Kotlin arm must be language-
@@ -762,9 +875,9 @@ fn has_body_block(node: Node<'_>) -> bool {
             child.kind(),
             // Universal markers across T1 grammars; add per-language
             // body kind names below this line as T2 languages get
-            // promoted (e.g. PHP / Ruby T2 trains land in follow-
-            // ups). The `function_body` arm below is shared across
-            // SQL `CREATE FUNCTION`, Kotlin (`function_declaration`
+            // promoted (Ruby T2 train lands in a follow-up). The
+            // `function_body` arm below is shared across SQL
+            // `CREATE FUNCTION`, Kotlin (`function_declaration`
             // + `anonymous_function`), and Swift (`function_declaration`
             // + `init_declaration` + `deinit_declaration`) — same
             // kind name, different grammars.
@@ -788,6 +901,7 @@ fn has_body_block(node: Node<'_>) -> bool {
                 | "keyframe_block_list" // CSS @keyframes body
                 | "enum_class_body" // Kotlin/Swift `enum class` body
                 | "protocol_body" // Swift `protocol` body
+                | "enum_declaration_list" // PHP `enum` body
         )
     });
     found
@@ -885,14 +999,12 @@ mod tests {
 
     #[test]
     fn t2_language_returns_empty_until_rolled_out() {
-        // PHP is still T2 — not yet in the allowlist. Swift used
-        // to live here but moved to T2a; this test will need to
-        // repoint at the next still-empty T2 language each time one
-        // rolls out (Ruby remains). Once *all* T2 languages are
-        // populated, repoint at a T3 language we explicitly never
-        // plan to fill (e.g. `Language::Yaml` or `Language::Toml`)
-        // so the canary stops shifting.
-        let sk = extract(Language::Php, "<?php class Foo {}\n");
+        // Ruby is the LAST still-empty T2 language. PHP used to
+        // live here but moved to T2a; once Ruby rolls out, repoint
+        // at a T3 language we explicitly never plan to fill
+        // (e.g. `Language::Yaml` or `Language::Toml`) so the
+        // canary stops shifting.
+        let sk = extract(Language::Ruby, "class Foo\nend\n");
         assert!(sk.is_empty());
     }
 
@@ -3098,6 +3210,191 @@ mod tests {
     fn swift_grammar_fingerprint_is_stable_and_nonzero() {
         let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Swift);
         let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Swift);
+        assert_eq!(a, b, "fingerprint must be deterministic");
+        assert_ne!(a, 0, "zero is reserved as the not-stored sentinel");
+    }
+
+    #[test]
+    fn php_class_with_method_emits_both() {
+        let sk = extract(
+            Language::Php,
+            "<?php class Server {\n    public function start(): int { return 0; }\n}\n",
+        );
+        let c = sk.iter().find(|s| s.kind == "class_declaration").unwrap();
+        assert_eq!(c.ident.as_deref(), Some("Server"));
+        assert!(c.has_block, "declaration_list must register as body");
+        assert_eq!(c.parent_kind, None);
+        let m = sk.iter().find(|s| s.kind == "method_declaration").unwrap();
+        assert_eq!(m.ident.as_deref(), Some("start"));
+        assert_eq!(m.parent_kind, Some("declaration_list"));
+        assert!(m.has_block, "compound_statement must register as body");
+    }
+
+    #[test]
+    fn php_interface_emits_with_declaration_list_body() {
+        let sk = extract(
+            Language::Php,
+            "<?php interface IFoo {\n    public function run(): void;\n}\n",
+        );
+        let i = sk
+            .iter()
+            .find(|s| s.kind == "interface_declaration")
+            .unwrap();
+        assert_eq!(i.ident.as_deref(), Some("IFoo"));
+        assert!(i.has_block);
+    }
+
+    #[test]
+    fn php_trait_emits_with_declaration_list_body() {
+        let sk = extract(
+            Language::Php,
+            "<?php trait Greetable {\n    public function hello(): string { return \"hi\"; }\n}\n",
+        );
+        let t = sk.iter().find(|s| s.kind == "trait_declaration").unwrap();
+        assert_eq!(t.ident.as_deref(), Some("Greetable"));
+        assert!(t.has_block);
+    }
+
+    #[test]
+    fn php_enum_with_backed_cases_uses_enum_declaration_list_body() {
+        // PHP 8.1+ backed enum. Body is `enum_declaration_list` —
+        // the PHP-specific arm in `has_body_block` (without it, the
+        // skeleton would silently report has_block=false for every
+        // PHP enum).
+        let sk = extract(
+            Language::Php,
+            "<?php enum Status: int {\n    case Active = 1;\n    case Inactive = 2;\n}\n",
+        );
+        let e = sk.iter().find(|s| s.kind == "enum_declaration").unwrap();
+        assert_eq!(e.ident.as_deref(), Some("Status"));
+        assert!(e.has_block, "enum_declaration_list must register as body");
+    }
+
+    #[test]
+    fn php_function_definition_extracts_name() {
+        let sk = extract(
+            Language::Php,
+            "<?php function topLevel(): string { return \"hi\"; }\n",
+        );
+        let f = sk.iter().find(|s| s.kind == "function_definition").unwrap();
+        assert_eq!(f.ident.as_deref(), Some("topLevel"));
+        assert_eq!(f.parent_kind, None);
+        assert!(f.has_block);
+    }
+
+    #[test]
+    fn php_property_element_extracts_bare_name_without_sigil() {
+        // `public string $a, $b;` — emits ONE skeleton per
+        // `property_element` with the BARE name (no `$` sigil).
+        // `property_element.name` is a `variable_name` wrapper
+        // whose inner `name` child is the sigil-less identifier;
+        // the special arm in `extract_ident` walks through the
+        // wrapper so the ident aligns with every other T1/T2a
+        // language (none of which carry language punctuation on
+        // skeleton idents).
+        let sk = extract(
+            Language::Php,
+            "<?php class C { public string $a; public string $b, $c; }\n",
+        );
+        let elements: Vec<_> = sk.iter().filter(|s| s.kind == "property_element").collect();
+        assert_eq!(elements.len(), 3, "multi-declarator must emit per element");
+        let names: Vec<&str> = elements.iter().filter_map(|s| s.ident.as_deref()).collect();
+        assert!(names.contains(&"a"), "sigil stripped — got {names:?}");
+        assert!(names.contains(&"b"), "got {names:?}");
+        assert!(names.contains(&"c"), "got {names:?}");
+        assert!(
+            elements
+                .iter()
+                .all(|s| s.parent_kind == Some("property_declaration")),
+            "every element nests under property_declaration",
+        );
+    }
+
+    #[test]
+    fn php_const_element_extracts_bare_name_without_sigil() {
+        // Class constants — `const X = 1, Y = 2;` emits per
+        // element. Unlike `property_element`, the `name:` field is
+        // a bare `name` (no `$` sigil — constants don't carry one).
+        let sk = extract(Language::Php, "<?php class C { const X = 1, Y = 2; }\n");
+        let elements: Vec<_> = sk.iter().filter(|s| s.kind == "const_element").collect();
+        assert_eq!(elements.len(), 2);
+        let names: Vec<&str> = elements.iter().filter_map(|s| s.ident.as_deref()).collect();
+        assert!(names.contains(&"X"), "got {names:?}");
+        assert!(names.contains(&"Y"), "got {names:?}");
+    }
+
+    #[test]
+    fn php_enum_case_extracts_name() {
+        let sk = extract(
+            Language::Php,
+            "<?php enum Status { case Active; case Inactive; }\n",
+        );
+        let cases: Vec<_> = sk.iter().filter(|s| s.kind == "enum_case").collect();
+        assert_eq!(cases.len(), 2);
+        let names: Vec<&str> = cases.iter().filter_map(|s| s.ident.as_deref()).collect();
+        assert!(names.contains(&"Active"), "got {names:?}");
+        assert!(names.contains(&"Inactive"), "got {names:?}");
+    }
+
+    #[test]
+    fn php_namespace_definition_block_form_has_block() {
+        // `namespace App { ... }` — body is `compound_statement`,
+        // already a universal marker → has_block=true.
+        let sk = extract(
+            Language::Php,
+            "<?php namespace App {\n    function f() {}\n}\n",
+        );
+        let n = sk
+            .iter()
+            .find(|s| s.kind == "namespace_definition")
+            .unwrap();
+        assert_eq!(n.ident.as_deref(), Some("App"));
+        assert!(n.has_block);
+    }
+
+    #[test]
+    fn php_arrow_function_is_anonymous_without_block() {
+        // `fn($x) => $x + 1` — body is an `expression` (binary_expression),
+        // NOT a block. Mirrors Kotlin/Swift lambda contract.
+        let sk = extract(Language::Php, "<?php $f = fn($x) => $x + 1;\n");
+        let a = sk.iter().find(|s| s.kind == "arrow_function").unwrap();
+        assert_eq!(a.ident, None);
+        assert!(
+            !a.has_block,
+            "arrow_function body is an expression — has_block=false",
+        );
+    }
+
+    #[test]
+    fn php_anonymous_function_is_anonymous_with_block() {
+        // `function($x) use ($y) { return $x + $y; }` — body is
+        // `compound_statement`, universal marker → has_block=true.
+        let sk = extract(
+            Language::Php,
+            "<?php $g = function($x) use ($y) { return $x + $y; };\n",
+        );
+        let f = sk.iter().find(|s| s.kind == "anonymous_function").unwrap();
+        assert_eq!(f.ident, None);
+        assert!(f.has_block, "anonymous_function body is compound_statement");
+    }
+
+    #[test]
+    fn php_anonymous_class_is_anonymous_with_body() {
+        // `new class { ... }` — body is `declaration_list`,
+        // universal marker → has_block=true.
+        let sk = extract(
+            Language::Php,
+            "<?php $o = new class { public int $z = 0; };\n",
+        );
+        let c = sk.iter().find(|s| s.kind == "anonymous_class").unwrap();
+        assert_eq!(c.ident, None);
+        assert!(c.has_block, "anonymous_class body is declaration_list");
+    }
+
+    #[test]
+    fn php_grammar_fingerprint_is_stable_and_nonzero() {
+        let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Php);
+        let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Php);
         assert_eq!(a, b, "fingerprint must be deterministic");
         assert_ne!(a, 0, "zero is reserved as the not-stored sentinel");
     }
