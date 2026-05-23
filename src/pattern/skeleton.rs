@@ -449,6 +449,9 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             // `lambda_literal` wraps statements directly (no `block`
             // child) → `has_block=false`. `anonymous_function`
             // carries a proper `function_body` → `has_block=true`.
+            // TODO(swift-t2): Swift `closure_expression` shares the
+            // same body-as-direct-statements shape as `lambda_literal`
+            // — revisit the `has_block=false` gap there too.
             "lambda_literal",
             "anonymous_function",
             // Intentionally absent (deferred / out of scope):
@@ -638,7 +641,9 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
     // For Rust `impl_item` AND Kotlin `type_alias` the identifying
     // field is `type`, not `name`. (Note: Go also has a `type_alias`
     // kind but it uses `name:`, so the Kotlin arm must be language-
-    // gated — same-kind-name-different-field-shape across grammars.)
+    // gated — same-kind-name-different-field-shape across grammars.
+    // Swift's upcoming T2 train will introduce `typealias_declaration`
+    // which uses `name:` — do NOT add Swift to this arm.)
     let field = if matches!(
         (lang, kind),
         (Language::Rust, "impl_item") | (Language::Kotlin, "type_alias")
@@ -803,7 +808,11 @@ mod tests {
         // are populated, repoint at a T3 language we explicitly
         // never plan to fill (e.g. `Language::Yaml` or
         // `Language::Toml`) so the canary stops shifting.
-        let sk = extract(Language::Swift, "class Foo {}\n");
+        // Use Swift-idiomatic syntax (struct + func) rather than
+        // Kotlin-shaped fixture so the test self-documents when
+        // Swift promotes — at that point this line is the canary
+        // that needs repointing.
+        let sk = extract(Language::Swift, "struct Foo {}\nfunc bar() {}\n");
         assert!(sk.is_empty());
     }
 
@@ -2184,6 +2193,32 @@ mod tests {
     }
 
     #[test]
+    fn kotlin_companion_object_with_name_and_anonymous() {
+        // Named form: `companion object Factory { ... }`.
+        let named = extract(
+            Language::Kotlin,
+            "class C {\n    companion object Factory {\n        fun create(): C = C()\n    }\n}\n",
+        );
+        let n = named
+            .iter()
+            .find(|s| s.kind == "companion_object")
+            .expect("missing companion_object");
+        assert_eq!(n.ident.as_deref(), Some("Factory"));
+
+        // Anonymous form: `companion object { ... }` — the `name:`
+        // field is absent, so ident=None.
+        let anon = extract(
+            Language::Kotlin,
+            "class C {\n    companion object {\n        fun create(): C = C()\n    }\n}\n",
+        );
+        let a = anon
+            .iter()
+            .find(|s| s.kind == "companion_object")
+            .expect("missing anonymous companion_object");
+        assert_eq!(a.ident, None);
+    }
+
+    #[test]
     fn kotlin_property_declaration_extracts_variable_name() {
         // `val x = 1` — name lives under `variable_declaration >
         // identifier`, NOT in a `name:` field on the property node.
@@ -2200,6 +2235,24 @@ mod tests {
         let names: Vec<&str> = props.iter().filter_map(|s| s.ident.as_deref()).collect();
         assert!(names.contains(&"topLevel"), "got {names:?}");
         assert!(names.contains(&"mutable"), "got {names:?}");
+    }
+
+    #[test]
+    fn kotlin_destructuring_property_falls_through_to_none() {
+        // `val (a, b) = pair` — the children are
+        // `multi_variable_declaration > variable_declaration*`. The
+        // single-var walker returns None; pin the documented gap so
+        // a future "smarter" walker is opt-in.
+        let sk = extract(Language::Kotlin, "fun f() { val (a, b) = Pair(1, 2) }\n");
+        // Body-local properties may or may not emit depending on
+        // statement nesting; only assert when one is present.
+        if let Some(p) = sk.iter().find(|s| s.kind == "property_declaration") {
+            assert_eq!(
+                p.ident, None,
+                "destructuring property must fall through to ident=None, got {:?}",
+                p.ident,
+            );
+        }
     }
 
     #[test]
@@ -2240,6 +2293,28 @@ mod tests {
         assert!(names.contains(&"ACTIVE"), "got {names:?}");
         assert!(names.contains(&"INACTIVE"), "got {names:?}");
         assert!(names.contains(&"PENDING"), "got {names:?}");
+    }
+
+    #[test]
+    fn kotlin_enum_entry_with_class_body_has_block() {
+        // `enum class Op { PLUS { override fun apply() {} } }` — the
+        // entry carries an optional `class_body` child. Pin so a
+        // pattern like `PLUS { $$$BODY }` can prefilter on
+        // `has_block=true` for the body-bearing arm.
+        let sk = extract(
+            Language::Kotlin,
+            "enum class Op {\n    PLUS { fun apply() {} },\n    MINUS\n}\n",
+        );
+        let plus = sk
+            .iter()
+            .find(|s| s.kind == "enum_entry" && s.ident.as_deref() == Some("PLUS"))
+            .expect("missing PLUS entry");
+        let minus = sk
+            .iter()
+            .find(|s| s.kind == "enum_entry" && s.ident.as_deref() == Some("MINUS"))
+            .expect("missing MINUS entry");
+        assert!(plus.has_block, "PLUS has a class_body");
+        assert!(!minus.has_block, "MINUS is body-less");
     }
 
     #[test]
@@ -2291,6 +2366,208 @@ mod tests {
             .expect("missing anonymous_function");
         assert_eq!(a.ident, None);
         assert!(a.has_block, "anonymous_function body is function_body");
+    }
+
+    #[test]
+    fn kotlin_abstract_function_has_no_block() {
+        // Interface method without a body — same shape as the Java
+        // abstract-method contract. The only signal separating an
+        // abstract declaration from a concrete one is `has_block`.
+        let sk = extract(
+            Language::Kotlin,
+            "interface Runner {\n    fun run()\n    fun halt()\n}\n",
+        );
+        let methods: Vec<_> = sk
+            .iter()
+            .filter(|s| s.kind == "function_declaration")
+            .collect();
+        assert_eq!(methods.len(), 2);
+        for m in &methods {
+            assert!(
+                !m.has_block,
+                "abstract interface fun must report has_block=false, \
+                 got {:?} for {:?}",
+                m.has_block, m.ident,
+            );
+        }
+    }
+
+    #[test]
+    fn kotlin_top_level_decls_have_no_parent_kind() {
+        // tree-sitter-kotlin-ng uses `source_file` as the root,
+        // already covered by the shared `is_root_kind` base set.
+        // Pin so a future per-language gate can't silently leak
+        // `parent_kind = Some("source_file")` for top-level decls.
+        let sk = extract(
+            Language::Kotlin,
+            "class Foo {}\nobject Bar\nfun baz() {}\ntypealias Q = Int\nval k = 1\n",
+        );
+        for kind in [
+            "class_declaration",
+            "object_declaration",
+            "function_declaration",
+            "type_alias",
+            "property_declaration",
+        ] {
+            let s = sk
+                .iter()
+                .find(|s| s.kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind}"));
+            assert_eq!(
+                s.parent_kind, None,
+                "{kind} at file root must report parent_kind=None, got {:?}",
+                s.parent_kind,
+            );
+        }
+    }
+
+    #[test]
+    fn kotlin_generic_function_ident_is_bare_name() {
+        // `fun <T> identity(x: T): T = x` — `<T>` lives in a
+        // sibling `type_parameters` field, not part of `name:`.
+        // Pin so a grammar restructure can't slip in `identity<T>`.
+        let sk = extract(Language::Kotlin, "fun <T> identity(x: T): T = x\n");
+        let f = sk
+            .iter()
+            .find(|s| s.kind == "function_declaration")
+            .unwrap();
+        assert_eq!(f.ident.as_deref(), Some("identity"));
+    }
+
+    #[test]
+    fn kotlin_object_declaration_without_body_has_no_block() {
+        // Reviewer GAP-H2 (rust-reviewer): `object Foo` with no body
+        // is valid Kotlin. Every other body-optional kind in the
+        // allowlist (function_declaration abstract, enum_entry bare)
+        // has a paired `has_block=false` test — pin object too so a
+        // grammar bump that accidentally injects a phantom body
+        // child fails loudly.
+        let sk = extract(Language::Kotlin, "object Foo\n");
+        let o = sk.iter().find(|s| s.kind == "object_declaration").unwrap();
+        assert_eq!(o.ident.as_deref(), Some("Foo"));
+        assert!(!o.has_block, "body-less object must report has_block=false");
+    }
+
+    #[test]
+    fn kotlin_body_local_kinds_carry_class_body_parent_kind() {
+        // Reviewer GAP-H1 (aqa-agent): `anonymous_initializer`,
+        // `secondary_constructor`, and `enum_entry` are all body-
+        // local — they never appear at file root. The happy-path
+        // tests assert ident + has_block but don't pin parent_kind,
+        // so a grammar bump renaming `class_body` → e.g.
+        // `class_member_list` would silently break any prefilter
+        // that branches on the container kind.
+        let sk = extract(
+            Language::Kotlin,
+            "class C(val x: Int) {\n\
+             \x20\x20\x20\x20init { println(\"hi\") }\n\
+             \x20\x20\x20\x20constructor(): this(0) {}\n\
+             }\n\
+             enum class M { ACTIVE, INACTIVE }\n",
+        );
+        let init = sk
+            .iter()
+            .find(|s| s.kind == "anonymous_initializer")
+            .expect("missing anonymous_initializer");
+        assert_eq!(
+            init.parent_kind,
+            Some("class_body"),
+            "init must nest under class_body, got {:?}",
+            init.parent_kind,
+        );
+        let ctor = sk
+            .iter()
+            .find(|s| s.kind == "secondary_constructor")
+            .expect("missing secondary_constructor");
+        assert_eq!(
+            ctor.parent_kind,
+            Some("class_body"),
+            "secondary constructor must nest under class_body, got {:?}",
+            ctor.parent_kind,
+        );
+        // enum_entry sits under `enum_class_body`, NOT `class_body`.
+        let entry = sk
+            .iter()
+            .find(|s| s.kind == "enum_entry" && s.ident.as_deref() == Some("ACTIVE"))
+            .expect("missing ACTIVE entry");
+        assert_eq!(
+            entry.parent_kind,
+            Some("enum_class_body"),
+            "enum_entry must nest under enum_class_body, got {:?}",
+            entry.parent_kind,
+        );
+    }
+
+    #[test]
+    fn kotlin_sealed_and_abstract_class_emit_as_class_declaration() {
+        // Reviewer GAP-M (aqa-agent): `sealed class`, `abstract class`,
+        // and `inline / value class` all parse as `class_declaration`
+        // — the modifier sits in a sibling `modifiers` field. Pin
+        // ident extraction so a future grammar that splits any of
+        // these into a distinct kind (e.g. `sealed_class_declaration`)
+        // fails the test instead of silently dropping the surface.
+        let sk = extract(
+            Language::Kotlin,
+            "sealed class Shape\n\
+             abstract class Animal { abstract fun speak() }\n\
+             value class Wrapper(val raw: Int)\n",
+        );
+        for name in ["Shape", "Animal", "Wrapper"] {
+            let s = sk
+                .iter()
+                .find(|s| s.kind == "class_declaration" && s.ident.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("missing class_declaration for {name}"));
+            // Every variant still extracts via the generic `name:`
+            // field path — pin so a future special-case arm doesn't
+            // accidentally fork the extractor.
+            assert_eq!(s.ident.as_deref(), Some(name));
+        }
+    }
+
+    #[test]
+    fn kotlin_property_with_explicit_getter_reports_has_block_false() {
+        // Reviewer GAP-M (aqa-agent): `val x: Int get() { return 0 }`
+        // — the `getter` (with its own block) lives as a child of
+        // `property_declaration`, but `has_body_block` walks
+        // DIRECT children for block-shaped kinds. `getter` is not
+        // in the universal-marker list, so the property reports
+        // `has_block=false`. Pin this contract so a pattern that
+        // narrows on `$$$BODY` against properties consistently
+        // falls through to live-scan, and so a future "promote
+        // getter to has_block" tweak fails loudly.
+        let sk = extract(
+            Language::Kotlin,
+            "class C {\n    val x: Int get() { return 0 }\n}\n",
+        );
+        let p = sk
+            .iter()
+            .find(|s| s.kind == "property_declaration")
+            .unwrap();
+        assert_eq!(p.ident.as_deref(), Some("x"));
+        assert!(
+            !p.has_block,
+            "property with explicit getter must report has_block=false \
+             — getter's block is two levels down, not a direct child",
+        );
+    }
+
+    #[test]
+    fn go_type_alias_still_uses_name_field_after_kotlin_arm_widening() {
+        // Reviewer GAP-C (aqa-agent): the `extract_ident` `type`-
+        // field override grew from `(Rust, impl_item)` to also include
+        // `(Kotlin, type_alias)`. Go ALSO has a `type_alias` kind but
+        // uses `name:` — pin a Go alias here so any future widening
+        // (`_ => "type"`, dropping the Go arm from the allowlist,
+        // accidentally adding Go to the override tuple) fails loudly
+        // instead of silently flipping Go aliases to ident=None.
+        let sk = extract(Language::Go, "package main\n\ntype Alias = int\n");
+        let a = sk.iter().find(|s| s.kind == "type_alias").unwrap();
+        assert_eq!(
+            a.ident.as_deref(),
+            Some("Alias"),
+            "Go type_alias must still extract via `name:` after the \
+             Kotlin arm extended the language-gate tuple",
+        );
     }
 
     #[test]
