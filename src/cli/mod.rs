@@ -1887,6 +1887,10 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
 
+        Commands::Capabilities => {
+            todo!("Phase 13.0 Stage 3: print capabilities JSON")
+        }
+
         Commands::SelfUpdate { check, yes } => {
             // Named at the call site so a future refactor cannot silently
             // swap the two boolean positional args.

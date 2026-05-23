@@ -687,6 +687,9 @@ pub enum Commands {
     /// Create a default .vex.toml config file in the current directory
     Init,
 
+    /// Print machine-readable capabilities matrix (Phase 13.0).
+    Capabilities,
+
     /// Update vex to the latest GitHub release. Replaces the running
     /// binary in place. Works on Linux, macOS, and Windows.
     SelfUpdate {

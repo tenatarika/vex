@@ -7,6 +7,7 @@ pub mod hierarchy;
 pub mod index;
 pub mod parse;
 pub mod pattern;
+pub mod protocol;
 pub mod search;
 pub mod store;
 pub mod util;
