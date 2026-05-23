@@ -3,7 +3,7 @@ members = [".", "crates/vex-mcp"]
 
 [package]
 name = "vex"
-version = "1.8.1"
+version = "1.8.2"
 edition = "2021"
 description = "Fast hybrid structural + semantic code search (vector + index)"
 license = "MIT"
