@@ -374,6 +374,46 @@ pub enum Commands {
         #[arg(long)]
         no_stale_check: bool,
 
+        // ----- Phase 13.3 — smart truncation flags (mutually exclusive) -----
+        /// Print only the signature line(s) up to the first `{` / `:`
+        /// (Phase 13.3). Mutually exclusive with `--head`, `--no-body`,
+        /// `--collapsed`.
+        #[arg(
+            long = "signature-only",
+            conflicts_with_all = ["head", "no_body", "collapsed"],
+        )]
+        signature_only: bool,
+
+        /// Print only the first N lines of the symbol body and append a
+        /// `... (M more lines)` indicator (Phase 13.3). Mutually
+        /// exclusive with `--signature-only`, `--no-body`, `--collapsed`.
+        #[arg(
+            long = "head",
+            value_name = "N",
+            conflicts_with_all = ["signature_only", "no_body", "collapsed"],
+        )]
+        head: Option<usize>,
+
+        /// Print signature + leading docstring/comment block only;
+        /// drop the body (Phase 13.3). Mutually exclusive with
+        /// `--signature-only`, `--head`, `--collapsed`.
+        #[arg(
+            long = "no-body",
+            conflicts_with_all = ["signature_only", "head", "collapsed"],
+        )]
+        no_body: bool,
+
+        /// Collapse nested method/function bodies inside a class /
+        /// impl / module (Phase 13.3). **v1.9 NO-OP** — flag-shape is
+        /// stable but the body is currently emitted unchanged with a
+        /// warning on stderr. Mutually exclusive with
+        /// `--signature-only`, `--head`, `--no-body`.
+        #[arg(
+            long = "collapsed",
+            conflicts_with_all = ["signature_only", "head", "no_body"],
+        )]
+        collapsed: bool,
+
         #[command(flatten)]
         meta: MetadataArgs,
 

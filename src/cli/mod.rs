@@ -1,6 +1,7 @@
 pub mod args;
 pub mod output;
 pub mod scope;
+pub mod show_truncate;
 pub mod trace;
 
 use std::time::Instant;
@@ -1069,9 +1070,38 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             context_path,
             auto_update,
             no_stale_check,
+            signature_only,
+            head,
+            no_body,
+            collapsed,
             meta,
             scope,
         } => {
+            // Phase 13.3 — resolve the truncation mode once. Clap's
+            // `conflicts_with_all` already guarantees at most one flag
+            // is set; this just maps the booleans into an `Option`.
+            let truncation_mode: Option<show_truncate::TruncationMode> = if signature_only {
+                Some(show_truncate::TruncationMode::SignatureOnly)
+            } else if head.is_some() {
+                Some(show_truncate::TruncationMode::Head)
+            } else if no_body {
+                Some(show_truncate::TruncationMode::NoBody)
+            } else if collapsed {
+                Some(show_truncate::TruncationMode::Collapsed)
+            } else {
+                None
+            };
+            if collapsed {
+                tracing::warn!(
+                    "--collapsed pending language-aware implementation; emitting full body"
+                );
+                // Also surface on stderr unconditionally so callers
+                // without a tracing subscriber installed still see the
+                // notice (matches the integration-test expectations).
+                eprintln!(
+                    "warning: --collapsed pending language-aware implementation; emitting full body"
+                );
+            }
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let metadata_filter = build_metadata_filter(&meta)?;
             let root = resolve_root(None)?.canonicalize()?;
@@ -1145,17 +1175,50 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         crate::parse::body::extract_symbol_body(&content, result.line, context)?
                     };
 
+                    // Phase 13.3 — apply optional truncation to the
+                    // extracted body. The struct returned by the
+                    // helpers carries metadata that we surface in the
+                    // JSON envelope per result; text/compact output
+                    // stays clean (just the truncated body).
+                    let truncation = truncation_mode.map(|mode| match mode {
+                        show_truncate::TruncationMode::SignatureOnly => {
+                            show_truncate::signature_only(&body.body)
+                        }
+                        show_truncate::TruncationMode::Head => {
+                            // `head` Option already validated as Some
+                            // when mode is Head.
+                            let n = head.unwrap_or(usize::MAX);
+                            show_truncate::head_n(&body.body, n)
+                        }
+                        show_truncate::TruncationMode::NoBody => show_truncate::no_body(&body.body),
+                        show_truncate::TruncationMode::Collapsed => {
+                            show_truncate::collapsed(&body.body)
+                        }
+                    });
+                    let display_body: &str = truncation
+                        .as_ref()
+                        .map(|t| t.body.as_str())
+                        .unwrap_or(body.body.as_str());
+
                     match &format {
                         OutputFormat::Json => {
-                            json_items.push(serde_json::json!({
+                            let mut item = serde_json::json!({
                                 "name": result.name,
                                 "kind": result.kind,
                                 "path": result.path,
                                 "start_line": body.start_line,
                                 "end_line": body.end_line,
                                 "lines": body.lines,
-                                "body": body.body,
-                            }));
+                                "body": display_body,
+                            });
+                            if let Some(t) = &truncation {
+                                item["truncation"] = serde_json::json!({
+                                    "mode": t.mode.as_str(),
+                                    "original_lines": t.original_lines,
+                                    "kept_lines": t.kept_lines,
+                                });
+                            }
+                            json_items.push(item);
                         }
                         OutputFormat::Text => {
                             if printed > 0 {
@@ -1169,7 +1232,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                                 body.start_line,
                                 body.end_line
                             );
-                            for (n, line) in body.body.lines().enumerate() {
+                            for (n, line) in display_body.lines().enumerate() {
                                 println!("{:>4} | {}", body.start_line + n, line);
                             }
                             printed += 1;
@@ -1182,7 +1245,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                                 "# {}:{}-{} ({})",
                                 result.path, body.start_line, body.end_line, result.kind
                             );
-                            println!("{}", body.body);
+                            println!("{}", display_body);
                             printed += 1;
                         }
                     }
