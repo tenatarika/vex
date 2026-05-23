@@ -6,6 +6,108 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-05-23
+
+Closes Phase 11.4 T2 with the final four language allowlists (Kotlin /
+Swift / PHP / Ruby — T2a now covers 12 languages) and ships Phase 11.10:
+`--why` is now available on `usages`, `similar`, and `duplicates` in
+addition to the existing `search` and `pattern` surfaces. No format
+change; v6 stays compatible. All Phase 11 items are complete.
+
+### Added — pattern skeletons populated for
+
+- **Kotlin** — `class_declaration` (umbrella for class / interface /
+  data class / enum class / sealed class) / `object_declaration` /
+  `companion_object` (named or anonymous) / `function_declaration` /
+  `property_declaration` (`variable_declaration > identifier` walker
+  for sigil-free ident) / `type_alias` (uses `type:` field) /
+  `secondary_constructor` (anonymous) / `enum_entry` (positional
+  `identifier` walker) / `anonymous_initializer` (anonymous `init` block)
+  / `lambda_literal` (anonymous, `has_block=false`) / `anonymous_function`.
+- **Swift** — `class_declaration` (umbrella class / struct / enum /
+  actor / extension via the `declaration_kind:` field — `extension`
+  surfaces the extended type as ident) / `protocol_declaration` /
+  `function_declaration` / `property_declaration` (pattern-based name) /
+  `typealias_declaration` (uses `name:` — distinct from Kotlin's `type:`)
+  / `enum_entry` / `associatedtype_declaration` /
+  `protocol_function_declaration` + `protocol_property_declaration`
+  (body-less, `has_block=false`) / `init_declaration` /
+  `deinit_declaration` / `subscript_declaration` /
+  `operator_declaration` / `lambda_literal`.
+- **PHP** — `class_declaration` / `interface_declaration` /
+  `trait_declaration` / `enum_declaration` (PHP 8.1+) /
+  `function_definition` / `method_declaration` (abstract methods
+  report `has_block=false`) / `property_element` (granular per-name
+  emit so `public $a, $b` yields one skeleton per element with the `$`
+  sigil stripped) / `const_element` / `enum_case` /
+  `namespace_definition` (block-form vs semicolon-form separated by
+  `has_block`) / `anonymous_function` / `arrow_function`
+  (`has_block=false` — expression body) / `anonymous_class`.
+- **Ruby** — `class` / `module` / `method` / `singleton_method`
+  (surfaces the method name only, not the receiver) / `singleton_class`
+  (anonymous `class << self` block) / `alias` (returns the new alias
+  name via the `name:` field) / `lambda` / `block` (brace form) /
+  `do_block`. Endless methods (`def foo() = 42`) report
+  `has_block=false` since the body is an `_arg` rather than a
+  `body_statement`.
+
+### Added — `has_body_block` markers
+
+Cross-language body kinds expand to cover the new allowlist entries:
+`enum_class_body` (Kotlin + Swift), `protocol_body` (Swift),
+`enum_declaration_list` (PHP), `body_statement` + `block_body` +
+`do_block` (Ruby). `function_body` is now shared across SQL, Kotlin,
+and Swift — pinned by a cross-grammar regression test.
+
+### Added — `--why` extended to usages / similar / duplicates (Phase 11.10)
+
+Three new structured-trace shapes alongside the existing `search` /
+`pattern` traces, emitted as one-line JSON on stderr and surfaced
+via `_meta.why` in MCP responses. See `docs/MCP-SCHEMA.md` for the
+canonical vocabulary table.
+
+- `usages --why` — `mode` (`"strict"` / `"text_scan"`),
+  `hits_before_filter` / `hits_after_filter`, `prefix_suggestions`
+  (count from the `Did you mean` fallback when zero exact hits),
+  `filter_applied`.
+- `similar --why` — `seed_resolved`, `threshold_applied`,
+  `candidates_before_filter` / `candidates_after_filter`,
+  `filter_applied`. When `--why` is on, the handler over-fetches
+  (`fetch_limit = symbol_count()`) so the pre-filter count reflects
+  the un-truncated HNSW return list rather than an internally-capped
+  one.
+- `duplicates --why` — `threshold_applied`, `min_body_lines_applied`,
+  `pairs_before_filter` / `pairs_after_filter`, `filter_applied`.
+  Same over-fetch logic as `similar`.
+
+MCP schemas for all three tools gained a `why: boolean` field;
+`extract_why_trace` continues to pick up the trace via stderr.
+
+### Fixed
+
+- **Skeleton walker now gates emission on `node.is_named()`.** Ruby is
+  the first language whose grammar reuses kind strings between named
+  rules and anonymous keyword tokens (`class`, `module`, `alias`).
+  Without the gate, every Ruby declaration site would emit a second
+  phantom skeleton from the keyword token. The gate is safe across
+  T1/T2a because every allowlisted kind is a named grammar rule;
+  pinned by the Ruby happy-path tests.
+- **Arrow-lambda `do/end` body now triggers `has_block=true` for Ruby.**
+  `->(x) do ... end` puts a `do_block` directly under `lambda`;
+  `do_block` joined the universal body markers so the contract
+  mirrors Kotlin `anonymous_function`.
+
+### Other
+
+- `t2_language_returns_empty_until_rolled_out` canary repointed
+  permanently from Ruby → TOML (a T3 anchor we never plan to fill);
+  pairs with `t3_language_short_circuits_to_empty` on YAML.
+- Phase 11 status: **all 10 items complete** (11.1 type-aware refs,
+  11.2 diff, 11.3 generic implementations, 11.4 structural patterns +
+  T2 train, 11.5 multi-hop, 11.6 metadata filters, 11.7 scope filters,
+  11.8 similar reasoning, 11.9 result-kind ranking, 11.10 MCP arg +
+  `--why`).
+
 ## [1.8.1] - 2026-05-23
 
 Phase 11.4 T2 pattern-skeleton rollout — eight new languages graduate
