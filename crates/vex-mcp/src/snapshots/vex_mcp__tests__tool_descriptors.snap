@@ -1,0 +1,903 @@
+---
+source: crates/vex-mcp/src/main.rs
+expression: descriptors
+---
+[
+  {
+    "description": "Hybrid structural + semantic code search across the indexed codebase. Fuses FST exact + BM25 + semantic channels in a single ranked list (~4ms FST hit, ~7-15ms with semantic). Prefer over grep for symbol or identifier lookup — grep does a full-scan (seconds on large repos) and returns line matches; this returns ranked symbol records with kind, signature, and line ranges. Use this when you need to find a definition by name, signature shape, or meaning rather than guessing a regex.",
+    "inputSchema": {
+      "properties": {
+        "async_only": {
+          "default": false,
+          "description": "Keep only async/suspend functions",
+          "type": "boolean"
+        },
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist results by path glob (wins over include); repeat for multiple globs",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (e.g. 'tests/**'); repeat for multiple globs",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 20,
+          "description": "Max results",
+          "type": "integer"
+        },
+        "no_async": {
+          "default": false,
+          "description": "Exclude async/suspend functions",
+          "type": "boolean"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "query": {
+          "description": "Free-text query: symbol name, partial name, signature snippet, or natural-language description. Not for regex (use grep) or exact-only resolution (use find_symbol).",
+          "type": "string"
+        },
+        "sealed_only": {
+          "default": false,
+          "description": "Keep only sealed (or Java-`final`) types",
+          "type": "boolean"
+        },
+        "semantic": {
+          "default": false,
+          "description": "Enable the semantic vector channel (requires `vex index --semantic`); adds ~3-10ms but lets natural-language queries hit",
+          "type": "boolean"
+        },
+        "static_only": {
+          "default": false,
+          "description": "Keep only static class members",
+          "type": "boolean"
+        },
+        "visibility": {
+          "description": "Keep only symbols whose signature contains this explicit visibility keyword (no inferred defaults)",
+          "enum": [
+            "public",
+            "private",
+            "protected",
+            "internal"
+          ],
+          "type": "string"
+        },
+        "why": {
+          "default": false,
+          "description": "Surface a JSON trace under `_meta.why` in the response: normalized query, per-channel hits (FST/BM25/semantic/fuzzy), filter_applied snapshot",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "search"
+  },
+  {
+    "description": "Resolve a symbol by exact name (with prefix fallback) against the FST inverted index (~4ms). Prefer over search when the symbol name is known and you want exactly that record back, not a fused-rank list. Prefer over grep for `git grep 'class Foo'`-style definition lookup — grep scans every byte; this is a constant-time index probe.",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
+          "type": "string"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "symbol": {
+          "description": "Exact symbol name (function/class/struct/etc.) — canonical key (v1.7+). Use search for partial or fuzzy names.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "type": "object"
+    },
+    "name": "find_symbol"
+  },
+  {
+    "description": "Semantic-only search by natural-language description (e.g. 'payment processing' → ChargeUseCase, BillingService). Uses the HNSW vector index built by `vex index --semantic` (~7-15ms). Prefer over search when you do not know any concrete identifier and want concept-level matching; prefer search when you have a partial name (search fuses semantic + lexical channels for better recall on identifier-shaped queries).",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "query": {
+          "description": "Natural-language description of the concept (not an identifier; use find_symbol for those).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "find_similar"
+  },
+  {
+    "description": "List every symbol (kind + line range) in a single source file via cached tree-sitter parse. Prefer over Read when you only need the file's structure (what's in here?) rather than the full byte stream — outline returns ~50 lines of structured records vs reading thousands of lines of source.",
+    "inputSchema": {
+      "properties": {
+        "file": {
+          "description": "DEPRECATED — use `path`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Filesystem path to the source file — canonical key (v1.7+). Absolute or relative to project_root.",
+          "type": "string"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "outline"
+  },
+  {
+    "description": "Build or rebuild the vex index from scratch. Run once per project; use `update` afterward for incremental refreshes. Set semantic=true to also generate embeddings (slower; required for find_similar / similar / duplicates).",
+    "inputSchema": {
+      "properties": {
+        "project_root": {
+          "description": "Absolute path to the project root to index",
+          "type": "string"
+        },
+        "semantic": {
+          "default": false,
+          "description": "Also generate per-symbol embeddings (enables semantic search / similar / duplicates; adds ~30-90s on a medium repo)",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "project_root"
+      ],
+      "type": "object"
+    },
+    "name": "index"
+  },
+  {
+    "description": "Incremental index refresh: only re-parses files whose mtime changed since the last index. Prefer over `index` when an index already exists — typically <1s on small change sets vs full rebuild cost. Most other tools default to auto_update=true and call this implicitly.",
+    "inputSchema": {
+      "properties": {
+        "project_root": {
+          "description": "Absolute path to the project root whose index should be refreshed",
+          "type": "string"
+        },
+        "semantic": {
+          "default": false,
+          "description": "Also refresh embeddings for changed files",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "project_root"
+      ],
+      "type": "object"
+    },
+    "name": "update"
+  },
+  {
+    "description": "Report index statistics: symbol count, byte size, embedding presence, last-update timestamp. Use to confirm an index exists and is fresh before running search-shaped tools.",
+    "inputSchema": {
+      "properties": {
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "status"
+  },
+  {
+    "description": "Extract the full source body of one or more symbols by name (function, class, struct, etc.) using cached symbol byte-offsets (~4ms per symbol). Prefer over Read when you need a specific definition — show returns just that body, while Read pulls the entire file (often 10-100x more tokens). Accepts an array, so a single call replaces several Read calls.",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 1,
+          "description": "Max bodies returned per symbol name (handles overloads / duplicates)",
+          "type": "integer"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "symbol": {
+          "description": "DEPRECATED — use `symbols: [name]`. Pre-v1.7 singular alias, still accepted; emits a deprecated_args notice in _meta.",
+          "type": "string"
+        },
+        "symbols": {
+          "description": "Exact symbol names to extract — canonical key (v1.7+). Pass the array form even for a single symbol.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "symbols"
+      ],
+      "type": "object"
+    },
+    "name": "show"
+  },
+  {
+    "description": "Find every reference to a symbol across the codebase. Prefer over grep for refactor-style `find all callers` queries — grep on a common identifier returns string-literal and comment noise; usages with strict=true uses the scope-binder to resolve real cross-file refs (Rust/TypeScript/Python/C#/C++). Without strict, runs the legacy refs FST (~4ms) but may include text-only matches.",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Max results",
+          "type": "integer"
+        },
+        "name": {
+          "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
+          "type": "string"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "strict": {
+          "default": false,
+          "description": "Use scope-resolved (type-aware) references from the binder — drops string-literal/comment/wrong-scope noise. Recommended for refactor work; falls back to legacy refs FST on languages without binder support.",
+          "type": "boolean"
+        },
+        "symbol": {
+          "description": "Exact symbol name to find references to — canonical key (v1.7+).",
+          "type": "string"
+        },
+        "why": {
+          "default": false,
+          "description": "Surface a JSON trace under `_meta.why`: mode (strict/text_scan), hits before/after path filter, prefix-suggestion count when no exact hits, filter snapshot.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "type": "object"
+    },
+    "name": "usages"
+  },
+  {
+    "description": "Regex content search across files (ripgrep-equivalent, no index needed). Use this for searching inside string literals, comments, config values, or any non-symbol text. Prefer search / find_symbol / usages for identifier lookups — those are index-backed (~4ms) while grep is a full-scan and returns raw line matches without symbol context.",
+    "inputSchema": {
+      "properties": {
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "filter": {
+          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns).",
+          "type": "string"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Max results",
+          "type": "integer"
+        },
+        "pattern": {
+          "description": "Regex pattern (Rust regex syntax) to match against file contents.",
+          "type": "string"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    },
+    "name": "grep"
+  },
+  {
+    "description": "Find every concrete type that extends a base class / implements a trait / interface. Walks the indexed inheritance edges (covers generic-parameterised bases). Prefer over grep for `find all subclasses of Foo` — grep misses `: Foo<T>`, indirect inheritance, and trait impls; this resolves the real hierarchy.",
+    "inputSchema": {
+      "properties": {
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Max results",
+          "type": "integer"
+        },
+        "name": {
+          "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
+          "type": "string"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "symbol": {
+          "description": "Exact name of the base class / trait / interface — canonical key (v1.7+).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "type": "object"
+    },
+    "name": "implementations"
+  },
+  {
+    "description": "Direct callers of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over grep for `who calls Foo?` — grep on the function name hits doc comments and string literals; the call-graph edges are resolved at parse time. Pair with `paths` for multi-hop chains.",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Max results",
+          "type": "integer"
+        },
+        "name": {
+          "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
+          "type": "string"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "symbol": {
+          "description": "Exact function name — canonical key (v1.7+).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "type": "object"
+    },
+    "name": "callers"
+  },
+  {
+    "description": "Direct callees of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over Read+manual scanning when you want to know what a function calls without reading the whole body — callees gives the resolved outgoing edges as records.",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Max results",
+          "type": "integer"
+        },
+        "name": {
+          "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
+          "type": "string"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "symbol": {
+          "description": "Exact function name — canonical key (v1.7+).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "type": "object"
+    },
+    "name": "callees"
+  },
+  {
+    "description": "Structural AST pattern matching: match code by shape, not text. Metavars: `$NAME` captures an identifier or balanced expression, `$_` is a wildcard, `$$$` is an anonymous ellipsis, `$$$NAME` / `$$NAME` is a named ellipsis that captures multi-line bodies or arg lists, repeated metavars enforce back-reference equality. Composition: space-flanked ` && ` and ` || ` join sub-patterns (AND requires both shapes in the file with shared captures agreeing; OR takes the union). Prefer over grep / ast-grep for cross-language structural queries — grep cannot match nested syntax, and ast-grep needs per-language scripts; vex pattern works on the cached tree-sitter parse with a skeleton prefilter (~10-50ms). Set `why: true` to inspect indexed vs live-scan mode.",
+    "inputSchema": {
+      "properties": {
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "lang": {
+          "description": "Language: rust, python, typescript, go, java, csharp, ruby, kotlin, swift, cpp, php, sql, markdown",
+          "type": "string"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Max matches to return",
+          "type": "integer"
+        },
+        "pattern": {
+          "description": "Structural pattern with $METAVARS (e.g. `fn $NAME($$ARGS) -> Result<$T, $E> { $$$BODY }`, `interface $N || class $N`). NOT regex — see grep for regex.",
+          "type": "string"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "why": {
+          "description": "Surface a ScanTrace under `_meta.why` in the response: mode (indexed/live_scan), root_kind_inferred, candidate_files / total_files, fallback_reason.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pattern",
+        "lang"
+      ],
+      "type": "object"
+    },
+    "name": "pattern"
+  },
+  {
+    "description": "Symbol-level diff between a git revision and the working tree: lists added / removed / moved / body-changed symbols on the touched files. Prefer over `git diff` + manual scanning for PR review — git diff returns line hunks while this returns structured symbol records, so an agent can iterate over changed-functions directly instead of parsing unified-diff text.",
+    "inputSchema": {
+      "properties": {
+        "base": {
+          "description": "Git revision to compare against (e.g. main, HEAD~3, origin/main). Working tree is the new side.",
+          "type": "string"
+        },
+        "exclude": {
+          "description": "Blacklist changes by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist changes by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 500,
+          "description": "Max changes to return",
+          "type": "integer"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "base"
+      ],
+      "type": "object"
+    },
+    "name": "diff"
+  },
+  {
+    "description": "Enumerate every caller chain from `from` to `to` in the persistent call graph (multi-hop, max 6 by default). Prefer over repeated `callers` calls when you need to know how a function gets reached from a known entry point — paths walks the edges itself in a single response. Requires a v4 index with call graph (built without `--no-call-graph`).",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist intermediate steps by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "from": {
+          "description": "Exact name of the starting function (caller / entry point).",
+          "type": "string"
+        },
+        "include": {
+          "description": "Whitelist intermediate steps by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_hops": {
+          "default": 6,
+          "description": "Maximum hops between from and to",
+          "type": "integer"
+        },
+        "max_paths": {
+          "default": 50,
+          "description": "Maximum paths to enumerate (caps output, aborts traversal early)",
+          "type": "integer"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "to": {
+          "description": "Exact name of the destination function (callee being investigated).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "name": "paths"
+  },
+  {
+    "description": "Every symbol that transitively calls `target` (the full upstream blast radius). Prefer over repeated `callers` walks when assessing the impact of changing a function — reachable does the closure in one call. Requires a v4 index with call graph.",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 200,
+          "description": "Max results",
+          "type": "integer"
+        },
+        "max_hops": {
+          "default": 6,
+          "description": "Maximum hops to walk back from target",
+          "type": "integer"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "target": {
+          "description": "Exact symbol name whose callers (direct + transitive) you want.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "name": "reachable"
+  },
+  {
+    "description": "Batch existence probe: confirm whether one or more symbol names exist in the index without paying for body extraction or ranked search (~4ms total). Use before show / usages / callers when working from an unverified list — skip the symbols that don't exist instead of letting downstream tools error.",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "names": {
+          "description": "DEPRECATED — use `symbols`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "symbols": {
+          "description": "Exact symbol names to probe — canonical key (v1.7+).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "symbols"
+      ],
+      "type": "object"
+    },
+    "name": "check"
+  },
+  {
+    "description": "Nearest neighbours of an EXISTING symbol by its stored embedding (HNSW lookup, ~7-15ms). Distinct from find_similar (which embeds a free-text query). Use this when you have a function in hand and want `what else in this repo looks like it?` — useful for dedup, refactor planning, and finding parallel implementations. Requires `vex index --semantic`.",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "explain": {
+          "default": false,
+          "description": "Include reasoning per match: identifier-set Jaccard overlap + truncated unified diff between bodies",
+          "type": "boolean"
+        },
+        "filter": {
+          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns).",
+          "type": "string"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 10,
+          "description": "Max results",
+          "type": "integer"
+        },
+        "name": {
+          "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
+          "type": "string"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "symbol": {
+          "description": "Exact name of an existing indexed symbol to use as the seed — canonical key (v1.7+).",
+          "type": "string"
+        },
+        "threshold": {
+          "default": 0.5,
+          "description": "Minimum cosine similarity (0.0..1.0); raise to tighten matches",
+          "type": "number"
+        },
+        "why": {
+          "default": false,
+          "description": "Surface a JSON trace under `_meta.why`: seed resolution, applied threshold, candidates before/after path filter, filter snapshot.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "type": "object"
+    },
+    "name": "similar"
+  },
+  {
+    "description": "Return vex protocol version + capability matrix for client capability negotiation.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "capabilities"
+  },
+  {
+    "description": "Repo-wide near-duplicate scan: pairs of symbols whose embeddings exceed `threshold`. Use for refactor planning (`where else does this logic live?`) and dedup. Prefer over manual similar-walks — duplicates evaluates all pairs once with `min_body_lines` filtering out trivial bodies. Requires `vex index --semantic`.",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist pairs by path glob — a pair is dropped when either side matches (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "explain": {
+          "default": false,
+          "description": "Include reasoning per pair: identifier-set Jaccard overlap + truncated unified diff between the two bodies",
+          "type": "boolean"
+        },
+        "filter": {
+          "description": "Substring path filter — keep pairs where at least one symbol's path contains this substring.",
+          "type": "string"
+        },
+        "include": {
+          "description": "Whitelist pairs by path glob — a pair is kept when at least one side matches (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Max pairs to return",
+          "type": "integer"
+        },
+        "min_body_lines": {
+          "default": 5,
+          "description": "Skip symbols with body shorter than this many lines (filters trivial wrappers)",
+          "type": "integer"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "threshold": {
+          "default": 0.9,
+          "description": "Minimum cosine similarity (0.0..1.0); 0.9 keeps only very close pairs",
+          "type": "number"
+        },
+        "why": {
+          "default": false,
+          "description": "Surface a JSON trace under `_meta.why`: applied threshold + min_body_lines, pairs before/after path filter, filter snapshot.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "name": "duplicates"
+  }
+]

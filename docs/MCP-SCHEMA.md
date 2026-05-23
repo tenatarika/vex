@@ -10,18 +10,32 @@ standardises the field names while accepting the pre-v1.7 aliases for
 back-compat. Clients using a legacy alias get a deprecation notice via
 the JSON-RPC `_meta.deprecated_args` field on every call.
 
-## Canonical field vocabulary
+## Parameter vocabulary
+
+The MCP tool descriptions are deliberately tuned for LLM tool-selection
+(Phase 13.1, snapshot-locked in
+`crates/vex-mcp/src/snapshots/vex_mcp__tests__tool_descriptors.snap`).
+Every parameter description uses one of the canonical role names below,
+so an agent learning the schema once can reuse the same mental model
+across every tool.
 
 | Field | Type | Meaning | Used by |
 | --- | --- | --- | --- |
-| `query` | string | Free-text search query — symbol name, partial name, or natural language description | `search`, `find_similar` |
-| `symbol` | string | Exact symbol name (function/class/struct/etc.) for resolution-style commands | `find_symbol`, `usages`, `implementations`, `callers`, `callees`, `similar` |
-| `symbols` | string[] | Multiple symbol names (existence-check / batch lookup) | `show`, `check` |
-| `path` | string | Filesystem path to a single source file | `outline` |
-| `pattern` | string | Regex pattern matched against file contents | `grep` |
-| `filter` | string | Substring path filter applied to result paths | `grep`, `similar`, `duplicates` |
-| `include` | string[] | Path-glob whitelist (gitignore syntax, repeatable) | every search-shaped tool |
-| `exclude` | string[] | Path-glob blacklist, wins over `include` | every search-shaped tool |
+| `query` | string | **Free-text** — symbol name, partial name, signature snippet, or natural-language description. Not regex; not for exact resolution. | `search`, `find_similar` |
+| `symbol` | string | **Exact symbol name** (function/class/struct/etc.) — canonical resolution key (v1.7+). | `find_symbol`, `usages`, `implementations`, `callers`, `callees`, `similar` |
+| `symbols` | string[] | Array of exact symbol names — batch lookup / existence probe. | `show`, `check` |
+| `path` | string | Filesystem path to a single source file (absolute or relative to `project_root`). | `outline` |
+| `pattern` | string | Regex pattern (`grep`) *or* structural AST pattern with `$METAVARS` (`pattern`). Tool docstring states which. | `grep`, `pattern` |
+| `filter` | string | Substring path filter applied to result paths (single substring; use `include`/`exclude` for globs). | `grep`, `similar`, `duplicates` |
+| `include` | string[] | Path-glob whitelist (gitignore syntax, repeatable). | every search-shaped tool |
+| `exclude` | string[] | Path-glob blacklist, wins over `include` (repeatable). | every search-shaped tool |
+
+**Convention** (enforced by the 13.1 snapshot test): tool `description`
+fields lead with action verb + indexed-vs-scan tradeoff + latency hint
++ "prefer over X" framing where there's a non-vex alternative (grep,
+Read, git diff, ast-grep). Per-parameter `description` fields point
+back at the right tool when the agent picked the wrong input shape
+(e.g. `query` reminds the agent "use grep for regex").
 
 Other fields (`limit`, `threshold`, `semantic`, `auto_update`, `explain`,
 `min_body_lines`, `project_root`, `strict`) are role-specific and were
