@@ -100,6 +100,10 @@ fn handle_tools_list() -> Result<Value> {
     }))
 }
 
+// TODO: extract the envelope-lifting block (lines around `is_envelope` /
+// `structuredContent` / `_meta` assembly below) into a pure helper so the
+// `mcp_envelope_lifting_logic_mirrors_handle_tool_call` test can exercise the
+// real code path instead of mirroring it.
 fn handle_tool_call(params: &Option<Value>) -> Result<Value> {
     let params = params.as_ref().context("missing params")?;
     let tool_name = params["name"].as_str().context("missing tool name")?;
@@ -1515,8 +1519,17 @@ mod tests {
         );
     }
 
+    // Tautological mirror — this test re-implements the lifting logic instead
+    // of exercising `handle_tool_call`. Real coverage requires a way to inject
+    // a mock CLI stdout (handle_tool_call currently spawns the vex binary via
+    // `Command::new`). TODO: extract the envelope-lifting block into a pure
+    // helper that takes `(content: Value, params: &Value, deprecated_args,
+    // stderr)` and returns the `result` Value, then port this test to call
+    // that helper directly. Until then this test is ignored so it doesn't
+    // misleadingly pass when the production path regresses.
     #[test]
-    fn mcp_response_lifts_protocol_version_to_top_level() {
+    #[ignore = "tautological mirror; real coverage blocked on extracting an envelope-lifting helper from handle_tool_call"]
+    fn mcp_envelope_lifting_logic_mirrors_handle_tool_call() {
         // When the CLI returns a Phase 13 ResponseEnvelope, the MCP layer must
         // surface protocol_version at the top level of result (not nested inside
         // content[0].text only). Replays the lifting logic in handle_tool_call
@@ -1622,6 +1635,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "vacuous absence guard; real coverage in mcp_response_places_signals_inside_structured_content_not_meta"]
     fn mcp_response_meta_does_not_contain_signals() {
         // Companion to mcp_response_places_signals_inside_structured_content_not_meta.
         // Explicit absence guard: _meta must never carry a "signals" key.

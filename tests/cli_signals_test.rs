@@ -41,8 +41,9 @@ fn search_json(dir: &Path, query: &str) -> serde_json::Value {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| panic!("search --format json output is not valid JSON: {e}\n---\n{stdout}"))
+    serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("search --format json output is not valid JSON: {e}\n---\n{stdout}")
+    })
 }
 
 #[test]
@@ -186,6 +187,57 @@ fn search_envelope_rank_percentile_monotonic_descending() {
             percentiles[i - 1],
             percentiles[i]
         );
+    }
+    // Boundary lock: with N >= 2 the top result must be exactly 1.0 and
+    // the bottom exactly 0.0. The earlier `1.0 - i/total` formula gave
+    // `(N-1)/N` for the bottom (e.g. 0.25 for N=4), which this assertion
+    // would have caught.
+    let top = *percentiles.first().expect("non-empty after len>=2 check");
+    let bottom = *percentiles.last().expect("non-empty after len>=2 check");
+    assert!(
+        (top - 1.0).abs() < 1e-6,
+        "top result rank_percentile must be 1.0, got {top}"
+    );
+    assert!(
+        bottom.abs() < 1e-6,
+        "bottom result rank_percentile must be 0.0, got {bottom}"
+    );
+}
+
+/// Backwards-compat opt-out: setting `VEX_JSON_ENVELOPE=0` restores the
+/// pre-Phase-13 bare-array shape so existing scripts piping
+/// `vex search --format json | jq '.[0].name'` keep working.
+#[test]
+fn search_envelope_legacy_mode_emits_bare_array_when_env_var_zero() {
+    let tmp = TempDir::new().unwrap();
+    seed_corpus(tmp.path());
+    let assert = vex_in(tmp.path())
+        .args(["search", "alpha_handler", "--format", "json"])
+        .env("VEX_JSON_ENVELOPE", "0")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("VEX_JSON_ENVELOPE=0 output is not valid JSON: {e}\n---\n{stdout}")
+    });
+    assert!(
+        value.is_array(),
+        "VEX_JSON_ENVELOPE=0 must emit a bare JSON array (pre-1.9 shape), got: {value}"
+    );
+    // Also assert that the bare-array elements look like SearchResult, not
+    // the envelope wrapper. Each element should have `name` directly, not
+    // be wrapped under `results`.
+    if let Some(arr) = value.as_array() {
+        for (i, el) in arr.iter().enumerate() {
+            assert!(
+                el.get("name").is_some(),
+                "VEX_JSON_ENVELOPE=0 element [{i}] must look like a bare SearchResult (have a `name` field), got: {el}"
+            );
+            assert!(
+                el.get("protocol_version").is_none(),
+                "VEX_JSON_ENVELOPE=0 element [{i}] must not carry envelope fields like protocol_version, got: {el}"
+            );
+        }
     }
 }
 

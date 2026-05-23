@@ -33,10 +33,7 @@ fn run_capabilities(dir: &Path) -> serde_json::Value {
 fn capabilities_command_exits_zero() {
     let tmp = TempDir::new().unwrap();
     write_minimal_project(tmp.path());
-    vex_in(tmp.path())
-        .args(["capabilities"])
-        .assert()
-        .success();
+    vex_in(tmp.path()).args(["capabilities"]).assert().success();
 }
 
 #[test]
@@ -88,7 +85,12 @@ fn capabilities_command_bundle_modes_starts_empty() {
     let out = run_capabilities(tmp.path());
     let modes = out["capabilities"]["bundle_modes"]
         .as_array()
-        .unwrap_or_else(|| panic!("expected capabilities.bundle_modes to be an array, got: {}", out));
+        .unwrap_or_else(|| {
+            panic!(
+                "expected capabilities.bundle_modes to be an array, got: {}",
+                out
+            )
+        });
     assert!(
         modes.is_empty(),
         "expected capabilities.bundle_modes == [] before Phase 13.2, got: {modes:?}"

@@ -38,7 +38,10 @@ pub struct Signals {
 
 #[derive(Serialize, Default, Clone, Debug)]
 pub struct MetaEnvelope {
-    #[serde(rename = "vex.dev/index_age_ms", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "vex.dev/index_age_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub index_age_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub traceparent: Option<String>,

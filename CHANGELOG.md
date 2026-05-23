@@ -6,6 +6,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `vex capabilities` CLI subcommand returning the Phase 13 capability
+  matrix as JSON (`protocol_version`, `signals`, `why`, `scope_filters`,
+  `metadata_filters`, `empty_reason`, `bundle_modes`, `auto_update`).
+  Agents can probe this once at startup instead of re-reading help text.
+- Per-result `signals` (`fst_hit`, `bm25_rank`, `semantic_rank`,
+  `fuzzy_distance`) and a normalized `rank_percentile` field in
+  `vex search --format json` envelope. `rank_percentile` spans
+  `[0.0, 1.0]` inclusive — the top result is `1.0`, the bottom is `0.0`,
+  and a lone result is `1.0`.
+- MCP responses now carry `protocol_version`, `capabilities`, and a
+  namespaced `_meta` block (`vex.dev/index_age_ms`, `traceparent`,
+  `ttlMs`, `cacheScope`) on top of `structuredContent.results`. Signals
+  live in `structuredContent` only — `_meta` is invisible to the LLM
+  per the MCP spec.
+
+### Changed
+
+- `vex search --format json` now emits an envelope
+  `{ protocol_version, capabilities, _meta, results: [...] }` instead
+  of a bare array. Set `VEX_JSON_ENVELOPE=0` (also accepts `false` /
+  `off`, case-insensitive) to opt out and restore the pre-1.9
+  bare-array shape. The opt-out is a migration aid only and will be
+  removed in v2.0.
+
 ## [1.8.2] - 2026-05-23
 
 Closes Phase 11.4 T2 with the final four language allowlists (Kotlin /

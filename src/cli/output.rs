@@ -56,21 +56,45 @@ fn compute_index_age_ms(manifest_path: &Path) -> Option<u64> {
     Some(age_s.saturating_mul(1_000))
 }
 
+/// Returns true when `VEX_JSON_ENVELOPE` is set to a disable value
+/// (`0` / `false` / `off`, case-insensitive). The default is to emit the
+/// Phase 13 envelope; the opt-out exists so pre-1.9 scripts that pipe
+/// `vex search --format json | jq '.[0].name'` keep working until v2.0.
+fn envelope_disabled_via_env() -> bool {
+    match std::env::var("VEX_JSON_ENVELOPE").ok().as_deref() {
+        Some(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off"
+        ),
+        None => false,
+    }
+}
+
 /// Emit the Phase 13 response envelope for `vex search --format json`.
 ///
-/// Per-result rank_percentile is `1.0 - i/total` so the top result sits at
-/// `1.0` and order descends to `>= 0.0`. With zero results we emit an empty
-/// payload — callers still see the `protocol_version` and `_meta` block.
+/// Per-result `rank_percentile` spans `[0.0, 1.0]` inclusive: the top result
+/// sits at `1.0` and the bottom at `0.0`. For `N == 1` we emit `1.0` (a lone
+/// result is the best result). With zero results we emit an empty payload —
+/// callers still see the `protocol_version` and `_meta` block.
+///
+/// When `VEX_JSON_ENVELOPE=0` (or `false`/`off`), we fall back to the
+/// pre-Phase-13 bare-array shape so existing pipelines keep working. This
+/// opt-out is slated for removal in v2.0.
 pub fn print_search_envelope(results: &[SearchResult], signals: &[Signals], meta: MetaEnvelope) {
+    if envelope_disabled_via_env() {
+        let json = serde_json::to_string_pretty(results).unwrap_or_default();
+        println!("{json}");
+        return;
+    }
     let total = results.len();
     let payload: Vec<SearchResultWithSignals<'_>> = results
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let rank_percentile = if total > 0 {
-                1.0_f32 - (i as f32 / total as f32)
+            let rank_percentile = if total <= 1 {
+                1.0_f32
             } else {
-                0.0
+                1.0_f32 - (i as f32 / (total - 1) as f32)
             };
             // signals length matches results length when build_signals is
             // called with the same merged slice — fall back to default so a

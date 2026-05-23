@@ -148,7 +148,12 @@ mod tests {
         // Merged result should have both ranks populated and fst_hit == true.
         let r = make_result("shared", "src/shared.rs", 7);
         let merged = vec![r.clone()];
-        let signals = build_signals(&[r.clone()], &[r.clone()], &[], &merged);
+        let signals = build_signals(
+            std::slice::from_ref(&r),
+            std::slice::from_ref(&r),
+            &[],
+            &merged,
+        );
         assert!(
             signals[0].fst_hit,
             "result present in structural list must have fst_hit == true"
