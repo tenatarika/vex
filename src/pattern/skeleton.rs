@@ -559,9 +559,9 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             // deep: the wrapper (`property_declaration` /
             // `const_declaration`) carries modifiers but NO `name:`
             // field — the actual names live one level down on
-            // `property_element` / `const_element` children. We
-            // allowlist the GRANULAR elements only (mirrors the
-            // existing SymbolKind extraction in `queries/php.scm`):
+            // `property_element` / `const_element`. We allowlist
+            // the GRANULAR elements only (mirrors the existing
+            // SymbolKind extraction in `queries/php.scm`):
             //   * Multi-declarator forms (`public $a, $b, $c;`)
             //     emit one skeleton per element with the correct
             //     name (avoids the C++/C#/Java "only-first-name"
@@ -570,18 +570,6 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             //     (`Some("property_declaration")` /
             //     `Some("const_declaration")`) so prefilters can
             //     still narrow on the declaration site.
-            // Ident shape:
-            //   * `property_element.name` is a `variable_name`
-            //     wrapper whose `utf8_text` would surface `$a`
-            //     (with sigil). The `extract_ident` arm walks
-            //     through the wrapper to the bare `name` child so
-            //     the ident is `a` — consistent with every other
-            //     T1/T2a language (none carry language punctuation
-            //     on skeleton idents).
-            //   * `const_element.name` is a positional `name`
-            //     child (NOT a `name:` field on the element). The
-            //     `extract_ident` arm uses `child_by_kind` to
-            //     recover it.
             "property_element",
             "const_element",
             // Enum cases (PHP 8.1+): `case Active;` / backed
@@ -3267,7 +3255,7 @@ mod tests {
         );
         let e = sk.iter().find(|s| s.kind == "enum_declaration").unwrap();
         assert_eq!(e.ident.as_deref(), Some("Status"));
-        assert!(e.has_block, "enum_declaration_list must register as body");
+        assert!(e.has_block, "enum_declaration_list must register as body",);
     }
 
     #[test]
@@ -3389,6 +3377,174 @@ mod tests {
         let c = sk.iter().find(|s| s.kind == "anonymous_class").unwrap();
         assert_eq!(c.ident, None);
         assert!(c.has_block, "anonymous_class body is declaration_list");
+    }
+
+    #[test]
+    fn php_abstract_method_has_no_block() {
+        // Reviewer GAP (rust H1 / aqa H2): the comment in the PHP
+        // allowlist explicitly draws the parallel to Java/Kotlin
+        // abstract fns ("same `has_block=false` signal"), but
+        // without a test the load-bearing has_block contract that
+        // separates abstract members from concrete ones is unpinned.
+        // Both interface methods AND `abstract` keyword-marked
+        // methods exercise the body-less shape.
+        let iface = extract(
+            Language::Php,
+            "<?php interface IFoo {\n    public function run(): void;\n    public function halt(): void;\n}\n",
+        );
+        let iface_methods: Vec<_> = iface
+            .iter()
+            .filter(|s| s.kind == "method_declaration")
+            .collect();
+        assert_eq!(iface_methods.len(), 2);
+        for m in &iface_methods {
+            assert!(
+                !m.has_block,
+                "interface method must report has_block=false, got {:?} for {:?}",
+                m.has_block, m.ident,
+            );
+        }
+        let abs = extract(
+            Language::Php,
+            "<?php abstract class A { abstract public function go(): void; }\n",
+        );
+        let abs_method = abs
+            .iter()
+            .find(|s| s.kind == "method_declaration")
+            .expect("missing abstract method_declaration");
+        assert!(
+            !abs_method.has_block,
+            "abstract class method must report has_block=false",
+        );
+    }
+
+    #[test]
+    fn php_namespace_semicolon_form_has_no_block() {
+        // Reviewer GAP (rust H2 / aqa H3): the PHP allowlist comment
+        // documents that `namespace Foo;` (semicolon form) reports
+        // has_block=false, distinct from the `namespace Foo { ... }`
+        // block form. Without this pin, a grammar bump that injects
+        // a phantom body for the semicolon form would silently flip
+        // the contract.
+        let sk = extract(
+            Language::Php,
+            "<?php namespace App\\Util;\nfunction f() {}\n",
+        );
+        let n = sk
+            .iter()
+            .find(|s| s.kind == "namespace_definition")
+            .unwrap();
+        assert_eq!(
+            n.ident.as_deref(),
+            Some("App\\Util"),
+            "namespace_definition ident must surface the qualified namespace name",
+        );
+        assert!(
+            !n.has_block,
+            "namespace semicolon form has no body — has_block must be false",
+        );
+    }
+
+    #[test]
+    fn php_top_level_decls_have_no_parent_kind() {
+        // Reviewer GAP (aqa H1): root-suppression sweep for every
+        // top-level-emitting PHP kind. tree-sitter-php uses `program`
+        // as the root (covered by the shared `is_root_kind` base
+        // set). A future per-language gate or grammar bump that
+        // renames the root could silently leak
+        // `parent_kind = Some("program")` for all top-level decls.
+        let sk = extract(
+            Language::Php,
+            "<?php class C {}\ninterface I {}\ntrait T {}\nenum E {}\nfunction f() {}\nnamespace N;\n",
+        );
+        for kind in [
+            "class_declaration",
+            "interface_declaration",
+            "trait_declaration",
+            "enum_declaration",
+            "function_definition",
+            "namespace_definition",
+        ] {
+            let s = sk
+                .iter()
+                .find(|s| s.kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind}"));
+            assert_eq!(
+                s.parent_kind, None,
+                "{kind} at file root must report parent_kind=None, got {:?}",
+                s.parent_kind,
+            );
+        }
+    }
+
+    #[test]
+    fn php_const_element_carries_const_declaration_parent_kind() {
+        // Reviewer GAP (aqa M1): the happy-path test pins const
+        // names but not parent_kind. Mirrors the property_element
+        // parent_kind assertion — pin so a future arm refactor
+        // that moves const_element under a different wrapper fails
+        // the test.
+        let sk = extract(Language::Php, "<?php class C { const X = 1, Y = 2; }\n");
+        let elements: Vec<_> = sk.iter().filter(|s| s.kind == "const_element").collect();
+        assert_eq!(elements.len(), 2);
+        assert!(
+            elements
+                .iter()
+                .all(|s| s.parent_kind == Some("const_declaration")),
+            "every const_element nests under const_declaration, got: {:?}",
+            elements.iter().map(|s| s.parent_kind).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn php_enum_case_parent_kind_is_enum_declaration_list() {
+        // Reviewer GAP (aqa M2): enum cases nest under
+        // `enum_declaration_list`. Mirrors the Kotlin/Swift
+        // enum-entry parent_kind pin.
+        let sk = extract(
+            Language::Php,
+            "<?php enum Status { case Active; case Inactive; }\n",
+        );
+        let entry = sk
+            .iter()
+            .find(|s| s.kind == "enum_case" && s.ident.as_deref() == Some("Active"))
+            .expect("missing Active enum_case");
+        assert_eq!(
+            entry.parent_kind,
+            Some("enum_declaration_list"),
+            "enum_case must nest under enum_declaration_list, got {:?}",
+            entry.parent_kind,
+        );
+    }
+
+    #[test]
+    fn php_constructor_promotion_does_not_emit_phantom_property_element() {
+        // Reviewer GAP (aqa M3): PHP 8 constructor promotion
+        // (`public function __construct(public string $name) {}`)
+        // — the promoted parameter parses as
+        // `property_promotion_parameter` inside `formal_parameters`,
+        // NOT as a `property_element` inside `declaration_list`. A
+        // future grammar change that wraps promoted params in a
+        // `property_element`-like node would silently emit a
+        // phantom skeleton; pin the negative contract here.
+        let sk = extract(
+            Language::Php,
+            "<?php class Box { public function __construct(public string $name) {} }\n",
+        );
+        assert!(
+            !sk.iter().any(|s| s.kind == "property_element"),
+            "constructor-promotion parameter must NOT emit a property_element \
+             skeleton (it lives under formal_parameters, not declaration_list); \
+             saw: {:?}",
+            sk.iter()
+                .filter(|s| s.kind == "property_element")
+                .collect::<Vec<_>>(),
+        );
+        let ctor = sk
+            .iter()
+            .find(|s| s.kind == "method_declaration")
+            .expect("missing __construct method_declaration");
+        assert_eq!(ctor.ident.as_deref(), Some("__construct"));
     }
 
     #[test]
