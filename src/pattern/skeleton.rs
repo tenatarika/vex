@@ -15,12 +15,12 @@
 //! Per-language coverage (T1 lands now; T2/T3 in follow-up trains —
 //! see `.claude/Task/PHASE11.4-first-class-pattern.md`):
 //!
-//! | Tier | Languages                                                        | Allowlist     |
-//! |------|------------------------------------------------------------------|---------------|
-//! | T1   | Rust, TypeScript, Python                                         | populated     |
-//! | T2a  | Go, C++, C#, SQL, Markdown, Java, CSS, HTML, Kotlin, Swift, PHP  | populated     |
-//! | T2   | Ruby                                                             | empty for now |
-//! | T3   | YAML, TOML, Bash, Lua                                            | empty (final) |
+//! | Tier | Languages                                                              | Allowlist     |
+//! |------|------------------------------------------------------------------------|---------------|
+//! | T1   | Rust, TypeScript, Python                                               | populated     |
+//! | T2a  | Go, C++, C#, SQL, Markdown, Java, CSS, HTML, Kotlin, Swift, PHP, Ruby  | populated     |
+//! | T2   | (none — all promoted)                                                  | n/a           |
+//! | T3   | YAML, TOML, Bash, Lua                                                  | empty (final) |
 //!
 //! JavaScript shares the TypeScript grammar (`Language::TypeScript`)
 //! via `"js" | "jsx" → TypeScript` in the extension map, so the T1
@@ -100,7 +100,18 @@ fn walk(
     out: &mut Vec<Skeleton>,
 ) {
     let kind = node.kind();
-    if allowlist.contains(&kind) {
+    // Gate emission on named-only nodes. Anonymous keyword tokens
+    // share their kind STRING with the named grammar rule in some
+    // languages — Ruby is the first to actually collide: `class`,
+    // `module`, and `alias` are both named rules AND anonymous
+    // keyword tokens (`class C`, the `class` keyword inside the
+    // `class` rule has `kind() == "class"` with `is_named() == false`).
+    // Without this gate, every Ruby `class`/`module`/`alias` site
+    // would emit TWO skeletons — one for the rule, one for the
+    // keyword token. Every allowlisted kind across T1/T2a is a
+    // named grammar rule, so this gate never drops a legitimate
+    // emission.
+    if allowlist.contains(&kind) && node.is_named() {
         let parent_kind = node
             .parent()
             .map(|p| p.kind())
@@ -604,6 +615,83 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             //   * `declare_statement` (`declare(strict_types=1);`)
             //     — directive, not a definition.
         ],
+        Language::Ruby => &[
+            // Type-ish declarations. Ruby has no separate
+            // interface/struct kinds — modules serve dual duty as
+            // mixins AND namespaces. Both `class` and `module` carry
+            // `name: constant` (e.g. `Foo`) and an optional
+            // `body: body_statement`. `body_statement` is the
+            // Ruby-specific arm in `has_body_block`.
+            //
+            // Note: `class` and `module` are ALSO the keyword tokens
+            // (anonymous, with `is_named()==false`) — the
+            // `is_named()` gate in `walk` keeps the keyword tokens
+            // from emitting a phantom second skeleton per site.
+            "class",
+            "module",
+            // Instance methods (`def foo; end`) and class/module
+            // methods (`def self.foo; end`). Both have a `name:`
+            // field; for singleton_method the `object:` field
+            // carries the receiver (typically `self`) — the
+            // skeleton ident is the method name only, which is the
+            // user-intuitive surface (`vex pattern 'def $NAME'`).
+            //
+            // Operator methods (`def ==(other)`), setter methods
+            // (`def name=(v)`) all flow through `name:` whose text
+            // includes the trailing token (`==`, `name=`) — pinned
+            // by the happy-path tests.
+            "method",
+            "singleton_method",
+            // `class << self; ...; end` — anonymous singleton-class
+            // block. `value:` field is the receiver; no `name:`.
+            "singleton_class",
+            // `alias new_name old_name` — tree-sitter-ruby exposes
+            // BOTH `name:` (the new alias being created) AND
+            // `alias:` (the original target). The generic
+            // `extract_ident` path calls
+            // `child_by_field_name("name")` deterministically, so
+            // the skeleton ident is always the NEW alias name —
+            // the `alias:` field is not surfaced. The bare `alias`
+            // keyword token shares the kind string but is anonymous;
+            // the `is_named()` gate in `walk` suppresses it.
+            "alias",
+            // Anonymous callables. Three forms:
+            //   * `lambda` — `->{ }` / `->(x) { x + 1 }` literal.
+            //   * `block` — `{ |x| ... }` brace-delimited block
+            //     passed to a method call.
+            //   * `do_block` — `do |x| ... end` keyword-delimited
+            //     block, semantically identical to `block`.
+            // All three carry a `body:` field that resolves to a
+            // block-shaped kind (`body_statement` / `block_body` /
+            // `do_block`), so `has_block=true` mirrors Kotlin
+            // `anonymous_function`. Note: arrow-lambda with do/end
+            // body (`->(x) do ... end`) has a `do_block` direct
+            // child — `do_block` is in the universal markers below
+            // for that reason.
+            //
+            // Volume note: Ruby idioms use blocks heavily (every
+            // `each`/`map`/`tap` call carries one), so these
+            // contribute the most skeleton volume of any T2a
+            // language. Accepted as the cost of pattern-targeting
+            // DSL-style code (RSpec `describe`, Rails `validates`,
+            // etc).
+            "lambda",
+            "block",
+            "do_block",
+            // Intentionally absent (deferred / out of scope):
+            //   * `assignment` — too generic; every `x = 1` would
+            //     emit. Pattern targeting via this kind is better
+            //     served by source-text scan.
+            //   * `call` — DSL constructs like `attr_accessor :foo`
+            //     and `validates :email` are method calls, not
+            //     definitions — niche, would explode skeleton
+            //     volume.
+            //   * `begin_block` / `end_block` (`BEGIN { }` /
+            //     `END { }`) — top-level hooks; niche.
+            //   * Constant assignments (`FOO = 1`) parse as
+            //     `assignment`, not a distinct kind; excluded for
+            //     the same volume reason as `assignment`.
+        ],
         _ => &[],
     }
 }
@@ -657,6 +745,15 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
                 // class form `new class { ... }`. None expose a
                 // `name:` field — all three short-circuit here.
                 "anonymous_function" | "arrow_function" | "anonymous_class",
+            )
+            | (
+                Language::Ruby,
+                // Ruby anonymous callables: lambda literals
+                // (`->{}`), brace blocks (`{ |x| ... }`), keyword
+                // blocks (`do |x| ... end`), and the
+                // `class << self` singleton-class form (which has
+                // a `value:` field for the receiver but no `name:`).
+                "lambda" | "block" | "do_block" | "singleton_class",
             )
     );
     if anonymous {
@@ -861,14 +958,16 @@ fn has_body_block(node: Node<'_>) -> bool {
     let found = node.children(&mut cursor).any(|child| {
         matches!(
             child.kind(),
-            // Universal markers across T1 grammars; add per-language
-            // body kind names below this line as T2 languages get
-            // promoted (Ruby T2 train lands in a follow-up). The
-            // `function_body` arm below is shared across SQL
-            // `CREATE FUNCTION`, Kotlin (`function_declaration`
-            // + `anonymous_function`), and Swift (`function_declaration`
-            // + `init_declaration` + `deinit_declaration`) — same
-            // kind name, different grammars.
+            // Universal markers across T1 grammars, plus per-
+            // language body kinds accumulated through the T2a
+            // train. All T2 languages have been promoted; further
+            // additions here only happen if a T3 language flips
+            // (intentionally never, today). The `function_body`
+            // arm below is shared across SQL `CREATE FUNCTION`,
+            // Kotlin (`function_declaration` + `anonymous_function`),
+            // and Swift (`function_declaration` + `init_declaration`
+            // + `deinit_declaration`) — same kind name, different
+            // grammars.
             "block"
                 | "statement_block"
                 | "declaration_list"
@@ -890,6 +989,19 @@ fn has_body_block(node: Node<'_>) -> bool {
                 | "enum_class_body" // Kotlin/Swift `enum class` body
                 | "protocol_body" // Swift `protocol` body
                 | "enum_declaration_list" // PHP `enum` body
+                | "body_statement" // Ruby class/module/method/do_block body
+                | "block_body" // Ruby brace-block + lambda body
+                | "do_block" // Ruby `->(x) do ... end` lambda body kind
+                             // (do_block is itself an allowlisted kind;
+                             // listing it here lets the OUTER `lambda`
+                             // skeleton report has_block=true when its
+                             // body is a do/end form rather than `{}`)
+                             // Note: the string "block" above is shared with Ruby —
+                             // it's a Rust/Python function-body marker AND a Ruby
+                             // brace-block allowlist kind. `pattern_targetable_kinds`
+                             // is lang-gated, so the allowlist path can't collide;
+                             // here in `has_body_block` we only care that the kind
+                             // counts as a block-shaped body in any language.
         )
     });
     found
@@ -987,12 +1099,14 @@ mod tests {
 
     #[test]
     fn t2_language_returns_empty_until_rolled_out() {
-        // Ruby is the LAST still-empty T2 language. PHP used to
-        // live here but moved to T2a; once Ruby rolls out, repoint
-        // at a T3 language we explicitly never plan to fill
-        // (e.g. `Language::Yaml` or `Language::Toml`) so the
-        // canary stops shifting.
-        let sk = extract(Language::Ruby, "class Foo\nend\n");
+        // All T2 languages have been promoted (Ruby was the last
+        // on 2026-05-23). The canary is now permanently anchored
+        // to a T3 language we explicitly never plan to fill —
+        // TOML — so any accidental allowlist entry for it fails
+        // this test loudly instead of silently shifting. Pair
+        // with `t3_language_short_circuits_to_empty` below, which
+        // exercises the same contract via YAML.
+        let sk = extract(Language::Toml, "[section]\nkey = \"value\"\n");
         assert!(sk.is_empty());
     }
 
@@ -3551,6 +3665,174 @@ mod tests {
     fn php_grammar_fingerprint_is_stable_and_nonzero() {
         let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Php);
         let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Php);
+        assert_eq!(a, b, "fingerprint must be deterministic");
+        assert_ne!(a, 0, "zero is reserved as the not-stored sentinel");
+    }
+
+    #[test]
+    fn ruby_class_with_method_emits_both() {
+        let sk = extract(
+            Language::Ruby,
+            "class Server\n  def start\n    42\n  end\nend\n",
+        );
+        let c = sk.iter().find(|s| s.kind == "class").unwrap();
+        assert_eq!(c.ident.as_deref(), Some("Server"));
+        assert!(c.has_block, "body_statement must register as body");
+        assert_eq!(c.parent_kind, None);
+        let m = sk.iter().find(|s| s.kind == "method").unwrap();
+        assert_eq!(m.ident.as_deref(), Some("start"));
+        assert_eq!(m.parent_kind, Some("body_statement"));
+        assert!(m.has_block);
+    }
+
+    #[test]
+    fn ruby_module_emits_with_body_statement_body() {
+        let sk = extract(
+            Language::Ruby,
+            "module Greetable\n  def hello\n    'hi'\n  end\nend\n",
+        );
+        let m = sk.iter().find(|s| s.kind == "module").unwrap();
+        assert_eq!(m.ident.as_deref(), Some("Greetable"));
+        assert!(m.has_block);
+        assert_eq!(m.parent_kind, None);
+    }
+
+    #[test]
+    fn ruby_singleton_method_extracts_method_name_only() {
+        // `def self.create; new; end` — `name:` returns the method
+        // name (`create`), `object:` carries the receiver (`self`).
+        // The user-intuitive surface is the method name alone.
+        let sk = extract(
+            Language::Ruby,
+            "class C\n  def self.create\n    new\n  end\nend\n",
+        );
+        let s = sk.iter().find(|s| s.kind == "singleton_method").unwrap();
+        assert_eq!(s.ident.as_deref(), Some("create"));
+        assert!(s.has_block);
+    }
+
+    #[test]
+    fn ruby_singleton_class_is_anonymous_with_body() {
+        // `class << self; ...; end` — anonymous (has `value:`, no
+        // `name:`). Body is `body_statement`.
+        let sk = extract(
+            Language::Ruby,
+            "class C\n  class << self\n    def ping\n    end\n  end\nend\n",
+        );
+        let s = sk.iter().find(|s| s.kind == "singleton_class").unwrap();
+        assert_eq!(s.ident, None);
+        assert!(s.has_block);
+    }
+
+    #[test]
+    fn ruby_alias_extracts_new_alias_name() {
+        // `alias new_name old_name` — grammar exposes BOTH `name:`
+        // (the new alias being created) AND `alias:` (the original
+        // target). Default extraction returns the `name:` field —
+        // the new name, which is the user-intuitive surface for
+        // `vex pattern 'alias $NAME'`.
+        let sk = extract(Language::Ruby, "alias new_name old_name\n");
+        let a = sk.iter().find(|s| s.kind == "alias").unwrap();
+        assert_eq!(a.ident.as_deref(), Some("new_name"));
+    }
+
+    #[test]
+    fn ruby_do_block_is_anonymous_with_body_statement() {
+        // `array.each do |x| ... end` — anonymous, body is
+        // `body_statement` (universal Ruby body marker).
+        let sk = extract(Language::Ruby, "items.each do |x|\n  puts x\nend\n");
+        let b = sk.iter().find(|s| s.kind == "do_block").unwrap();
+        assert_eq!(b.ident, None);
+        assert!(b.has_block, "do_block body is body_statement");
+    }
+
+    #[test]
+    fn ruby_brace_block_is_anonymous_with_block_body() {
+        // `array.map { |x| x * 2 }` — anonymous, body is
+        // `block_body` (Ruby-specific arm added in this train).
+        let sk = extract(Language::Ruby, "items.map { |x| x * 2 }\n");
+        let b = sk.iter().find(|s| s.kind == "block").unwrap();
+        assert_eq!(b.ident, None);
+        assert!(
+            b.has_block,
+            "brace-block body is block_body — pin so the Ruby arm of \
+             has_body_block stays load-bearing",
+        );
+    }
+
+    #[test]
+    fn ruby_lambda_is_anonymous() {
+        // `->(x) { x * x }` — anonymous lambda literal. Body is
+        // a `block` wrapper which contains `block_body`. `has_body_block`
+        // walks DIRECT children; `block` is a universal marker
+        // (shared with Rust/Python function bodies), so
+        // has_block=true.
+        let sk = extract(Language::Ruby, "squarer = ->(x) { x * x }\n");
+        let l = sk.iter().find(|s| s.kind == "lambda").unwrap();
+        assert_eq!(l.ident, None);
+        assert!(l.has_block, "lambda's direct child is `block`");
+    }
+
+    #[test]
+    fn ruby_operator_method_ident_includes_operator_token() {
+        // `def ==(other)` — `name:` field holds an `operator` node
+        // whose utf8_text is `==`. The skeleton ident surfaces the
+        // operator literally so patterns like `def ==` narrow
+        // correctly.
+        let sk = extract(
+            Language::Ruby,
+            "class C\n  def ==(other)\n    true\n  end\nend\n",
+        );
+        let m = sk.iter().find(|s| s.kind == "method").unwrap();
+        assert_eq!(m.ident.as_deref(), Some("=="));
+        assert!(m.has_block);
+    }
+
+    #[test]
+    fn ruby_setter_method_ident_includes_trailing_equals() {
+        // `def name=(value)` — `name:` field holds a `setter`
+        // wrapper around `(identifier)` whose utf8_text spans
+        // `name=`. Pin so users targeting setters (`def $NAME=`)
+        // get the trailing `=` in the ident.
+        let sk = extract(
+            Language::Ruby,
+            "class C\n  def name=(value)\n    @name = value\n  end\nend\n",
+        );
+        let m = sk.iter().find(|s| s.kind == "method").unwrap();
+        assert_eq!(m.ident.as_deref(), Some("name="));
+    }
+
+    #[test]
+    fn ruby_endless_method_has_no_block_body() {
+        // Ruby 3.0+ endless method: `def foo() = 42`. Body field
+        // resolves to an `_arg` (integer here), NOT a body_statement.
+        // No block-shaped direct child → has_block=false. Pin so a
+        // future arm that fuses `_arg` bodies into the block path
+        // fails loudly.
+        let sk = extract(Language::Ruby, "def foo() = 42\n");
+        let m = sk.iter().find(|s| s.kind == "method").unwrap();
+        assert_eq!(m.ident.as_deref(), Some("foo"));
+        assert!(
+            !m.has_block,
+            "endless-method body is `_arg`, not a block — has_block=false",
+        );
+    }
+
+    #[test]
+    fn ruby_class_with_superclass_still_extracts_bare_name() {
+        // `class Cat < Animal; end` — `superclass:` field is a
+        // sibling of `name:`. The skeleton ident is just `Cat`,
+        // not `Cat < Animal`. Pin so a future arm change can't
+        // accidentally include the superclass.
+        let sk = extract(Language::Ruby, "class Cat < Animal\nend\n");
+        let c = sk.iter().find(|s| s.kind == "class").unwrap();
+        assert_eq!(c.ident.as_deref(), Some("Cat"));
+    }
+
+    #[test]
+    fn ruby_grammar_fingerprint_is_stable_and_nonzero() {
+        let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Ruby);
+        let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Ruby);
         assert_eq!(a, b, "fingerprint must be deterministic");
         assert_ne!(a, 0, "zero is reserved as the not-stored sentinel");
     }
