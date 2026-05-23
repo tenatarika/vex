@@ -208,6 +208,13 @@ pub enum Commands {
         #[arg(long)]
         strict: bool,
 
+        /// Append a JSON usages-trace to stderr after the result list:
+        /// mode (strict vs text_scan), hits before/after path filter,
+        /// "Did you mean" prefix-suggestion count, filter snapshot.
+        /// See `docs/MCP-SCHEMA.md` for the full shape.
+        #[arg(long)]
+        why: bool,
+
         #[command(flatten)]
         scope: ScopeArgs,
     },
@@ -615,6 +622,12 @@ pub enum Commands {
         #[arg(long)]
         no_stale_check: bool,
 
+        /// Append a JSON similar-trace to stderr after the result list:
+        /// seed resolution, applied threshold, candidates before/after
+        /// path filter, filter snapshot. See `docs/MCP-SCHEMA.md`.
+        #[arg(long)]
+        why: bool,
+
         #[command(flatten)]
         scope: ScopeArgs,
     },
@@ -654,6 +667,12 @@ pub enum Commands {
         /// Skip staleness check entirely
         #[arg(long)]
         no_stale_check: bool,
+
+        /// Append a JSON duplicates-trace to stderr after the result
+        /// list: applied threshold + min_body_lines, pairs before/after
+        /// path filter, filter snapshot. See `docs/MCP-SCHEMA.md`.
+        #[arg(long)]
+        why: bool,
 
         #[command(flatten)]
         scope: ScopeArgs,

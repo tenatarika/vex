@@ -72,14 +72,29 @@ in a future major release**; migrate when convenient.
 > field. If MCP later formalises `_meta` in responses we can migrate
 > without a breaking change because the key is already self-describing.
 
-## `--why` / `why: true` — search trace
+## `--why` / `why: true` — diagnostic traces
 
-When a search returns surprising results, set `why: true` (MCP) or pass
-`--why` (CLI) to the `search` tool. The CLI prints a JSON trace to
-**stderr** (so `vex search Foo --why | jq` still works on stdout); the
-MCP wrapper inherits the same stderr emission via the spawned `vex`
-process — and a future MCP iteration may surface the trace in `_meta`
-too.
+When a query returns surprising results, set `why: true` (MCP) or pass
+`--why` (CLI). The CLI prints a one-line JSON trace to **stderr** (so
+`vex search Foo --why | jq` still works on stdout); the MCP wrapper
+picks up the stderr line and surfaces it under `_meta.why` on the
+JSON-RPC response.
+
+Five tools currently support `--why`, each with a domain-specific
+trace shape:
+
+| Tool | Trace shape (high-level) |
+| --- | --- |
+| `search` | `normalized_query`, per-channel hits (FST/BM25/semantic), fallbacks (e.g. `["fuzzy"]`), filter snapshot |
+| `pattern` | `mode` (indexed / live_scan), `root_kind_inferred`, `candidate_files` / `total_files`, `fallback_reason` |
+| `usages` | `mode` (`strict` / `text_scan`), `hits_before_filter`, `hits_after_filter`, `prefix_suggestions` (`"Did you mean"` count when no exact hits), `filter_applied` |
+| `similar` | `seed_resolved`, `threshold_applied`, `candidates_before_filter`, `candidates_after_filter`, `filter_applied` |
+| `duplicates` | `threshold_applied`, `min_body_lines_applied`, `pairs_before_filter`, `pairs_after_filter`, `filter_applied` |
+
+Each trace is built post-hoc from values the handler already has in
+scope — the fast path pays nothing when `--why` is off.
+
+### `search` trace
 
 Shape:
 
@@ -116,6 +131,65 @@ The trace is built post-hoc from the un-truncated channel result lists
 the Search handler already has in scope. Turning the flag on adds a few
 allocations for the channel clones; it is safe to leave on for
 interactive use but off by default in automated pipelines.
+
+### `usages` trace
+
+```json
+{
+  "mode": "text_scan",
+  "hits_before_filter": 17,
+  "hits_after_filter": 4,
+  "prefix_suggestions": null,
+  "filter_applied": {
+    "filter": "src/",
+    "include": ["src/**"],
+    "exclude": []
+  }
+}
+```
+
+- `mode` — `"strict"` when the v5 `reference_edges` section was
+  queried, `"text_scan"` for the legacy refs FST.
+- `hits_before_filter` vs `hits_after_filter` — pin "no refs anywhere"
+  vs "refs dropped by the path filter".
+- `prefix_suggestions` — `n` when zero exact hits and the
+  `Did you mean` prefix-fallback engaged with `n` candidates. `null`
+  when there were exact hits OR `--strict` is in use (the strict path
+  has no prefix-fallback today).
+
+### `similar` trace
+
+```json
+{
+  "seed_resolved": true,
+  "threshold_applied": 0.5,
+  "candidates_before_filter": 12,
+  "candidates_after_filter": 4,
+  "filter_applied": { "include": ["src/billing/**"], "exclude": [] }
+}
+```
+
+- `seed_resolved=false` is the load-bearing signal that the seed
+  symbol didn't match any indexed name — distinct from "threshold
+  filtered everything".
+- `candidates_before_filter` is the HNSW return list after the
+  threshold; `candidates_after_filter` is what remains after path
+  filters + `--limit`.
+
+### `duplicates` trace
+
+```json
+{
+  "threshold_applied": 0.9,
+  "min_body_lines_applied": 5,
+  "pairs_before_filter": 17,
+  "pairs_after_filter": 8,
+  "filter_applied": { "filter": "tests/", "include": [], "exclude": [] }
+}
+```
+
+Lets a caller spot "the threshold ate the result set" vs "the path
+filter narrowed too aggressively" without re-running.
 
 ## Stability guarantees
 

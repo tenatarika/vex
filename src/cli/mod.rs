@@ -1,6 +1,7 @@
 pub mod args;
 pub mod output;
 pub mod scope;
+pub mod trace;
 
 use std::time::Instant;
 
@@ -691,6 +692,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             auto_update,
             no_stale_check,
             strict,
+            why,
             scope,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
@@ -709,6 +711,10 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 .ref_reader()
                 .context("no refs in index — re-run `vex index` to rebuild")?;
             let file_paths = reader.file_paths();
+            // Mode label is fixed up front so `--why` can record which
+            // path the lookup took even when the post-filter list is
+            // empty.
+            let trace_mode: &'static str = if strict { "strict" } else { "text_scan" };
 
             // `--strict` reads from the v5 reference_edges section
             // (binder-resolved refs only). The legacy FST still backs
@@ -739,6 +745,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             } else {
                 ref_reader.find(&name)
             };
+            // Capture the un-filtered hit count up front for `--why`.
+            // Doing it here (rather than after the chain) keeps the
+            // filter-loss visible in the trace even when `total` ends
+            // at zero — the user can tell "no refs at all" from "refs
+            // dropped by the filter".
+            let hits_before_filter = entries.len();
             let entries: Vec<_> = entries
                 .into_iter()
                 .filter(|e| {
@@ -752,6 +764,17 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 .collect();
             let total = entries.len();
             let entries: Vec<_> = entries.into_iter().take(limit).collect();
+
+            // Prefix-suggestion fallback runs ONLY when no exact hits
+            // and only against the text-scan FST (strict-mode doesn't
+            // have a prefix counterpart today). We resolve it once
+            // here so both the Text print and the `--why` trace use
+            // the same vector — without double-querying the FST.
+            let prefix_suggestions = if entries.is_empty() && !strict {
+                Some(ref_reader.find_by_prefix(&name))
+            } else {
+                None
+            };
 
             match &format {
                 OutputFormat::Json => {
@@ -774,11 +797,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     if entries.is_empty() {
                         println!("No usages found for \"{name}\"");
 
-                        let prefix_results = ref_reader.find_by_prefix(&name);
-                        if !prefix_results.is_empty() {
-                            println!("\nDid you mean:");
-                            for (n, refs) in prefix_results.iter().take(5) {
-                                println!("  {n} ({} usages)", refs.len());
+                        if let Some(prefix_results) = prefix_suggestions.as_deref() {
+                            if !prefix_results.is_empty() {
+                                println!("\nDid you mean:");
+                                for (n, refs) in prefix_results.iter().take(5) {
+                                    println!("  {n} ({} usages)", refs.len());
+                                }
                             }
                         }
                     } else {
@@ -793,6 +817,24 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     }
                 }
             }
+
+            // 11.10: structured trace on stderr for `--why`. Captured
+            // post-print so stdout stays a pure result list.
+            if why {
+                let trace = crate::cli::trace::UsagesTrace {
+                    mode: trace_mode,
+                    hits_before_filter,
+                    hits_after_filter: total,
+                    prefix_suggestions: prefix_suggestions.as_ref().map(|v| v.len()),
+                    filter_applied: crate::cli::trace::FilterSnapshot {
+                        filter: filter_path.clone(),
+                        include: scope.include.clone(),
+                        exclude: scope.exclude.clone(),
+                    },
+                };
+                eprintln!("{}", serde_json::to_string(&trace)?);
+            }
+
             Ok(())
         }
         Commands::Pattern {
@@ -1589,6 +1631,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             explain,
             auto_update,
             no_stale_check,
+            why,
             scope,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
@@ -1608,7 +1651,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
 
             let hnsw = config::hnsw_path(&root);
-            let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() {
+            // Over-fetch when a path filter is active so `take(limit)`
+            // after the filter doesn't truncate prematurely. ALSO
+            // over-fetch when `--why` is on so `candidates_before_filter`
+            // reports the un-truncated HNSW return list — without this,
+            // `find_similar`'s internal `truncate(limit)` would cap the
+            // count and the trace would silently misreport
+            // "nothing dropped" when in fact `--limit` ate results.
+            let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() || why {
                 reader.symbol_count()
             } else {
                 limit
@@ -1620,7 +1670,21 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 fetch_limit,
                 threshold,
             )?;
-            let matches: Vec<_> = matches
+            // `find_similar` returns an empty Vec when the seed name
+            // doesn't resolve to a stored vector — `resolve_seed_match`
+            // here distinguishes "no match for seed" from "seed found
+            // but post-threshold filter dropped everything". Cheap
+            // (single FST lookup) and runs only when --why is on; the
+            // explicit `if/else` makes the gating intent obvious vs. a
+            // short-circuit `!why || ...` which inverts the readable
+            // meaning of `seed_resolved`.
+            let seed_resolved = if why {
+                crate::search::similar::resolve_seed_match(&reader, &name).is_some()
+            } else {
+                false
+            };
+            let candidates_before_filter = matches.len();
+            let filtered: Vec<_> = matches
                 .into_iter()
                 .filter(|m| {
                     let filter_ok = filter_path
@@ -1628,8 +1692,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         .map_or(true, |fp| m.path.contains(fp));
                     filter_ok && path_scope.accept(&m.path)
                 })
-                .take(limit)
                 .collect();
+            // Capture post-filter count BEFORE the `take(limit)`
+            // truncation so the trace can distinguish "filter dropped
+            // N" from "--limit truncated N" — mirrors `usages.total`.
+            let candidates_after_filter = filtered.len();
+            let matches: Vec<_> = filtered.into_iter().take(limit).collect();
 
             // Build per-result explanations on demand. The seed body is
             // resolved once via `similar::resolve_seed_match`, which uses
@@ -1669,6 +1737,26 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             };
 
             output::print_similar(&matches, &name, explanations.as_deref(), &format);
+
+            // 11.10: structured trace on stderr for `--why`.
+            // `candidates_after_filter` is the pre-`--limit` count so
+            // it composes with `candidates_before_filter` to surface
+            // filter-drop separately from `--limit` truncation.
+            if why {
+                let trace = crate::cli::trace::SimilarTrace {
+                    seed_resolved,
+                    threshold_applied: threshold,
+                    candidates_before_filter,
+                    candidates_after_filter,
+                    filter_applied: crate::cli::trace::FilterSnapshot {
+                        filter: filter_path.clone(),
+                        include: scope.include.clone(),
+                        exclude: scope.exclude.clone(),
+                    },
+                };
+                eprintln!("{}", serde_json::to_string(&trace)?);
+            }
+
             Ok(())
         }
         Commands::Duplicates {
@@ -1680,6 +1768,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             explain,
             auto_update,
             no_stale_check,
+            why,
             scope,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
@@ -1704,8 +1793,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             // path filter; a narrow filter can drop most pairs. Mirrors
             // `vex similar --filter` (uses `symbol_count()`) but here the
             // upper bound is the pair population, so usize::MAX is the
-            // right cap.
-            let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() {
+            // right cap. Also over-fetch when `--why` is on so
+            // `pairs_before_filter` reports the un-truncated scanner
+            // output — without this, `find_duplicates`' internal
+            // `truncate(limit)` would silently misreport
+            // "nothing dropped" when `--limit` ate results.
+            let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() || why {
                 usize::MAX
             } else {
                 limit
@@ -1717,7 +1810,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 min_body_lines,
                 fetch_limit,
             )?;
-            let pairs: Vec<_> = pairs
+            let pairs_before_filter = pairs.len();
+            let filtered_pairs: Vec<_> = pairs
                 .into_iter()
                 .filter(|(a, b)| {
                     let filter_ok = filter_path
@@ -1725,8 +1819,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         .map_or(true, |fp| a.path.contains(fp) || b.path.contains(fp));
                     filter_ok && path_scope.accept_pair(&a.path, &b.path)
                 })
-                .take(limit)
                 .collect();
+            // Pre-`--limit` count for symmetric trace reporting (see
+            // `similar` handler's `candidates_after_filter` comment).
+            let pairs_after_filter = filtered_pairs.len();
+            let pairs: Vec<_> = filtered_pairs.into_iter().take(limit).collect();
 
             let explanations: Option<Vec<_>> = if explain && !pairs.is_empty() {
                 Some(
@@ -1748,6 +1845,25 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             };
 
             output::print_duplicates(&pairs, explanations.as_deref(), &format);
+
+            // 11.10: structured trace on stderr for `--why`.
+            // `pairs_after_filter` is the pre-`--limit` count for
+            // symmetry with `pairs_before_filter`.
+            if why {
+                let trace = crate::cli::trace::DuplicatesTrace {
+                    threshold_applied: threshold,
+                    min_body_lines_applied: min_body_lines,
+                    pairs_before_filter,
+                    pairs_after_filter,
+                    filter_applied: crate::cli::trace::FilterSnapshot {
+                        filter: filter_path.clone(),
+                        include: scope.include.clone(),
+                        exclude: scope.exclude.clone(),
+                    },
+                };
+                eprintln!("{}", serde_json::to_string(&trace)?);
+            }
+
             Ok(())
         }
 

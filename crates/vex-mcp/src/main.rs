@@ -415,6 +415,11 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             if args["strict"].as_bool() == Some(true) {
                 extra.push("--strict".into());
             }
+            // 11.10: structured trace via stderr — picked up by
+            // `extract_why_trace` and surfaced under `_meta.why`.
+            if args["why"].as_bool().unwrap_or(false) {
+                extra.push("--why".into());
+            }
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
             ("usages".to_string(), extra)
@@ -584,6 +589,9 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             if args["explain"].as_bool().unwrap_or(false) {
                 extra.push("--explain".into());
             }
+            if args["why"].as_bool().unwrap_or(false) {
+                extra.push("--why".into());
+            }
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
             ("similar".to_string(), extra)
@@ -607,6 +615,9 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             }
             if args["explain"].as_bool().unwrap_or(false) {
                 extra.push("--explain".into());
+            }
+            if args["why"].as_bool().unwrap_or(false) {
+                extra.push("--why".into());
             }
             push_auto_update(&mut extra, args);
             push_scope(&mut extra, args);
@@ -751,6 +762,7 @@ fn tool_descriptors() -> Value {
                     "name": { "type": "string", "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta." },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "strict": { "type": "boolean", "description": "Request scope-resolved (type-aware) refs. Until the persistent reference_edges section ships in 11.1.3, this flag prints a deferral notice and still serves from the legacy refs FST.", "default": false },
+                    "why": { "type": "boolean", "description": "Surface a JSON trace under `_meta.why`: mode (strict/text_scan), hits before/after path filter, prefix-suggestion count when no exact hits, filter snapshot.", "default": false },
                     "project_root": { "type": "string", "description": "Project root path" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
@@ -918,6 +930,7 @@ fn tool_descriptors() -> Value {
                     "threshold": { "type": "number", "description": "Minimum cosine similarity (0.0..1.0)", "default": 0.5 },
                     "filter": { "type": "string", "description": "Filter results by path substring" },
                     "explain": { "type": "boolean", "description": "Include reasoning per match: identifier-set Jaccard overlap + truncated unified diff between bodies", "default": false },
+                    "why": { "type": "boolean", "description": "Surface a JSON trace under `_meta.why`: seed resolution, applied threshold, candidates before/after path filter, filter snapshot.", "default": false },
                     "project_root": { "type": "string", "description": "Project root path" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (gitignore syntax)" },
@@ -937,6 +950,7 @@ fn tool_descriptors() -> Value {
                     "min_body_lines": { "type": "integer", "description": "Skip symbols with body shorter than this many lines", "default": 5 },
                     "filter": { "type": "string", "description": "Restrict to pairs where at least one symbol's path contains this substring" },
                     "explain": { "type": "boolean", "description": "Include reasoning per pair: identifier-set Jaccard overlap + truncated unified diff between the two bodies", "default": false },
+                    "why": { "type": "boolean", "description": "Surface a JSON trace under `_meta.why`: applied threshold + min_body_lines, pairs before/after path filter, filter snapshot.", "default": false },
                     "project_root": { "type": "string", "description": "Project root path" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist pairs by path glob — a pair is kept when at least one side matches" },
@@ -1330,5 +1344,86 @@ mod tests {
         assert!(props["pattern"].is_object());
         assert!(props["lang"].is_object());
         assert!(props["project_root"].is_object());
+    }
+
+    // ── 11.10: --why on usages / similar / duplicates ─────────────────────
+
+    #[test]
+    fn usages_why_true_appends_why_flag() {
+        let extra = args_for("usages", json!({"symbol": "Foo", "why": true}));
+        assert!(
+            extra.iter().any(|a| a == "--why"),
+            "usages why=true must add --why; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn usages_why_default_omits_why_flag() {
+        let extra = args_for("usages", json!({"symbol": "Foo"}));
+        assert!(
+            !extra.iter().any(|a| a == "--why"),
+            "usages without why must not pass --why; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn similar_why_true_appends_why_flag() {
+        let extra = args_for("similar", json!({"symbol": "Foo", "why": true}));
+        assert!(
+            extra.iter().any(|a| a == "--why"),
+            "similar why=true must add --why; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn similar_why_default_omits_why_flag() {
+        let extra = args_for("similar", json!({"symbol": "Foo"}));
+        assert!(
+            !extra.iter().any(|a| a == "--why"),
+            "similar without why must not pass --why; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn duplicates_why_true_appends_why_flag() {
+        let extra = args_for("duplicates", json!({"why": true}));
+        assert!(
+            extra.iter().any(|a| a == "--why"),
+            "duplicates why=true must add --why; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn duplicates_why_default_omits_why_flag() {
+        let extra = args_for("duplicates", json!({}));
+        assert!(
+            !extra.iter().any(|a| a == "--why"),
+            "duplicates without why must not pass --why; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn usages_similar_duplicates_schemas_expose_why() {
+        // Schema regression guard: every tool that supports --why
+        // must surface it via tools/list so MCP clients discover the
+        // capability without scraping docs.
+        let desc = tool_descriptors();
+        let tools = desc.as_array().expect("tool_descriptors returns array");
+        for name in ["usages", "similar", "duplicates"] {
+            let entry = tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("missing tool {name}"));
+            let props = &entry["inputSchema"]["properties"];
+            assert!(
+                props["why"].is_object(),
+                "{name} schema must expose `why`: {props}"
+            );
+            assert_eq!(
+                props["why"]["type"].as_str(),
+                Some("boolean"),
+                "{name} `why` must be boolean-typed"
+            );
+        }
     }
 }
