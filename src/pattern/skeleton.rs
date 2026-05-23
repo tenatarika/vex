@@ -15,12 +15,12 @@
 //! Per-language coverage (T1 lands now; T2/T3 in follow-up trains —
 //! see `.claude/Task/PHASE11.4-first-class-pattern.md`):
 //!
-//! | Tier | Languages                                        | Allowlist     |
-//! |------|--------------------------------------------------|---------------|
-//! | T1   | Rust, TypeScript, Python                         | populated     |
-//! | T2a  | Go, C++, C#, SQL, Markdown, Java, CSS, HTML      | populated     |
-//! | T2   | Kotlin, Swift, PHP, Ruby                         | empty for now |
-//! | T3   | YAML, TOML, Bash, Lua                            | empty (final) |
+//! | Tier | Languages                                            | Allowlist     |
+//! |------|------------------------------------------------------|---------------|
+//! | T1   | Rust, TypeScript, Python                             | populated     |
+//! | T2a  | Go, C++, C#, SQL, Markdown, Java, CSS, HTML, Kotlin  | populated     |
+//! | T2   | Swift, PHP, Ruby                                     | empty for now |
+//! | T3   | YAML, TOML, Bash, Lua                                | empty (final) |
 //!
 //! JavaScript shares the TypeScript grammar (`Language::TypeScript`)
 //! via `"js" | "jsx" → TypeScript` in the extension map, so the T1
@@ -396,6 +396,73 @@ fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
             // `defer func() { ... }()` patterns.
             "func_literal",
         ],
+        Language::Kotlin => &[
+            // Type declarations. `class_declaration` is the umbrella
+            // for `class`, `interface`, `data class`, `enum class`,
+            // and `sealed class` — the distinguishing keyword
+            // (`class` / `interface` / `enum class`) is a literal
+            // anonymous child of the node, not part of the kind. A
+            // pattern like `interface $NAME` still narrows to this
+            // kind and matches via source-text at the live-scan
+            // stage, so the prefilter remains correct.
+            "class_declaration",
+            // `object Foo { ... }` singletons and the named/anonymous
+            // `companion object { ... }` form. `companion_object`'s
+            // `name:` field is optional — anonymous companions emit
+            // with `ident=None`, which is the user-intuitive result.
+            "object_declaration",
+            "companion_object",
+            // Functions — top-level, member, and abstract (no body)
+            // all parse as `function_declaration` with `name:
+            // identifier`. Abstract methods on interfaces lack a
+            // `function_body` child, so `has_block=false` separates
+            // them from concrete definitions (mirrors the Java
+            // `abstract_method` and C++ forward-decl contract).
+            "function_declaration",
+            // `val x = 1` / `var y: Int`. Identifier lives under
+            // `variable_declaration > identifier` (no `name:` field
+            // on the property itself) — see `extract_ident` for the
+            // child-walk. Destructuring forms
+            // (`val (a, b) = pair`) use `multi_variable_declaration`
+            // and fall through to `ident=None` for now; revisit if
+            // patterns need them.
+            "property_declaration",
+            // `typealias Foo = Bar` — the alias name lives in the
+            // `type:` field (NOT `name:`). Same shape as the Rust
+            // `impl_item` exception in `extract_ident`.
+            "type_alias",
+            // `constructor(x: Int) : this(x, 0) { ... }` — no
+            // recoverable name on the secondary constructor (the
+            // `constructor` keyword is its identity). Anonymous,
+            // body is a plain `block`.
+            "secondary_constructor",
+            // `enum class Mode { FAST, SLOW }` — each entry parses
+            // as `enum_entry` with a positional `identifier` child
+            // (no `name:` field). Optional `class_body` for entries
+            // with overrides triggers `has_block=true`.
+            "enum_entry",
+            // `init { ... }` instance initializer — anonymous,
+            // block body.
+            "anonymous_initializer",
+            // Anonymous callables: `{ x -> x + 1 }` lambdas and the
+            // older `fun(x) { ... }` anonymous-function form.
+            // `lambda_literal` wraps statements directly (no `block`
+            // child) → `has_block=false`. `anonymous_function`
+            // carries a proper `function_body` → `has_block=true`.
+            "lambda_literal",
+            "anonymous_function",
+            // Intentionally absent (deferred / out of scope):
+            //   * `primary_constructor` — anonymous wrapper whose
+            //     identity is the enclosing class name; nothing
+            //     extra to surface via a separate skeleton.
+            //   * `getter` / `setter` — anonymous accessors that
+            //     live under `property_declaration`; niche surface
+            //     for `vex pattern`.
+            //   * `variable_declaration` / `multi_variable_declaration`
+            //     — too granular; covered by `property_declaration`.
+            //   * `import` / `package_header` — binding sites, not
+            //     pattern targets.
+        ],
         _ => &[],
     }
 }
@@ -418,6 +485,17 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
                 "lambda_expression" | "anonymous_method_expression",
             )
             | (Language::Java, "lambda_expression")
+            | (
+                Language::Kotlin,
+                // `secondary_constructor` has no recoverable name —
+                // the `constructor` keyword is its identity. The
+                // other three are textbook anonymous callables /
+                // initializers.
+                "lambda_literal"
+                    | "anonymous_function"
+                    | "anonymous_initializer"
+                    | "secondary_constructor",
+            )
     );
     if anonymous {
         return None;
@@ -539,8 +617,32 @@ fn extract_ident(node: Node<'_>, source: &str, lang: Language, kind: &str) -> Op
             .and_then(|n| n.utf8_text(source.as_bytes()).ok())
             .map(String::from);
     }
-    // For Rust `impl_item` the identifying field is `type`, not `name`.
-    let field = if matches!((lang, kind), (Language::Rust, "impl_item")) {
+    // Kotlin: `property_declaration` has no `name:` field — the
+    // identifier sits under `variable_declaration > identifier`.
+    // Destructuring forms (`val (a, b) = pair`) parse as
+    // `multi_variable_declaration` instead and fall through to
+    // `ident=None` here.
+    if matches!((lang, kind), (Language::Kotlin, "property_declaration")) {
+        return child_by_kind(node, "variable_declaration")
+            .and_then(|vd| child_by_kind(vd, "identifier"))
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(String::from);
+    }
+    // Kotlin: `enum_entry` exposes its identifier as a positional
+    // `identifier` child (no `name:` field).
+    if matches!((lang, kind), (Language::Kotlin, "enum_entry")) {
+        return child_by_kind(node, "identifier")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(String::from);
+    }
+    // For Rust `impl_item` AND Kotlin `type_alias` the identifying
+    // field is `type`, not `name`. (Note: Go also has a `type_alias`
+    // kind but it uses `name:`, so the Kotlin arm must be language-
+    // gated — same-kind-name-different-field-shape across grammars.)
+    let field = if matches!(
+        (lang, kind),
+        (Language::Rust, "impl_item") | (Language::Kotlin, "type_alias")
+    ) {
         "type"
     } else {
         "name"
@@ -572,8 +674,12 @@ fn has_body_block(node: Node<'_>) -> bool {
             child.kind(),
             // Universal markers across T1 grammars; add per-language
             // body kind names below this line as T2 languages get
-            // promoted (e.g. Java would bring `class_body` flavors,
-            // Kotlin `function_body`, etc.).
+            // promoted (e.g. Swift / PHP / Ruby T2 trains land in
+            // follow-ups). The `function_body` arm below is shared
+            // between SQL `CREATE FUNCTION` and Kotlin — both
+            // grammars wrap a function's body in a node of that
+            // name (Kotlin uses it for `function_declaration` AND
+            // `anonymous_function`).
             "block"
                 | "statement_block"
                 | "declaration_list"
@@ -592,6 +698,7 @@ fn has_body_block(node: Node<'_>) -> bool {
                 | "annotation_type_body" // Java @interface body
                 | "constructor_body" // Java constructor body
                 | "keyframe_block_list" // CSS @keyframes body
+                | "enum_class_body" // Kotlin `enum class` body
         )
     });
     found
@@ -689,14 +796,14 @@ mod tests {
 
     #[test]
     fn t2_language_returns_empty_until_rolled_out() {
-        // Kotlin is still T2 — not yet in the allowlist. Java used
+        // Swift is still T2 — not yet in the allowlist. Kotlin used
         // to live here but moved to T2a; this test will need to
         // repoint at the next still-empty T2 language each time one
-        // rolls out (Swift / PHP / Ruby remain). Once *all* T2
-        // languages are populated, repoint at a T3 language we
-        // explicitly never plan to fill (e.g. `Language::Yaml` or
+        // rolls out (PHP / Ruby remain). Once *all* T2 languages
+        // are populated, repoint at a T3 language we explicitly
+        // never plan to fill (e.g. `Language::Yaml` or
         // `Language::Toml`) so the canary stops shifting.
-        let sk = extract(Language::Kotlin, "class Foo\n");
+        let sk = extract(Language::Swift, "class Foo {}\n");
         assert!(sk.is_empty());
     }
 
@@ -2003,6 +2110,195 @@ mod tests {
         // anchor that we explicitly never plan to populate.
         let sk = extract(Language::Yaml, "key: value\n");
         assert!(sk.is_empty());
+    }
+
+    #[test]
+    fn kotlin_class_with_function_emits_both() {
+        let sk = extract(
+            Language::Kotlin,
+            "class Server {\n    fun start(): Int = 0\n}\n",
+        );
+        let c = sk.iter().find(|s| s.kind == "class_declaration").unwrap();
+        assert_eq!(c.ident.as_deref(), Some("Server"));
+        assert!(c.has_block, "class_body must register as body");
+        assert_eq!(c.parent_kind, None);
+        let f = sk
+            .iter()
+            .find(|s| s.kind == "function_declaration")
+            .unwrap();
+        assert_eq!(f.ident.as_deref(), Some("start"));
+        // Member function sits under the outer class's `class_body`.
+        assert_eq!(f.parent_kind, Some("class_body"));
+    }
+
+    #[test]
+    fn kotlin_interface_parses_as_class_declaration_with_body() {
+        // Interfaces share the `class_declaration` kind — the
+        // distinguishing keyword (`interface`) is a literal
+        // anonymous child of the node. The skeleton ident still
+        // surfaces the name; a `vex pattern 'interface $NAME'`
+        // narrows by kind + source-text.
+        let sk = extract(
+            Language::Kotlin,
+            "interface Repository {\n    fun findById(id: Long): Any?\n}\n",
+        );
+        let c = sk.iter().find(|s| s.kind == "class_declaration").unwrap();
+        assert_eq!(c.ident.as_deref(), Some("Repository"));
+        assert!(c.has_block);
+    }
+
+    #[test]
+    fn kotlin_data_class_and_enum_class_emit_named_skeletons() {
+        let sk = extract(
+            Language::Kotlin,
+            "data class User(val name: String)\n\nenum class Mode { FAST, SLOW }\n",
+        );
+        let classes: Vec<&str> = sk
+            .iter()
+            .filter(|s| s.kind == "class_declaration")
+            .filter_map(|s| s.ident.as_deref())
+            .collect();
+        assert!(classes.contains(&"User"), "got {classes:?}");
+        assert!(classes.contains(&"Mode"), "got {classes:?}");
+        // `enum class Mode { ... }` body is `enum_class_body`, which
+        // must register via the Kotlin-specific arm of has_body_block.
+        let mode = sk
+            .iter()
+            .find(|s| s.kind == "class_declaration" && s.ident.as_deref() == Some("Mode"))
+            .unwrap();
+        assert!(
+            mode.has_block,
+            "enum_class_body must register as body for $$$BODY matching",
+        );
+    }
+
+    #[test]
+    fn kotlin_object_declaration_carries_name() {
+        let sk = extract(
+            Language::Kotlin,
+            "object Config {\n    val baseUrl = \"https://api.example.com\"\n}\n",
+        );
+        let o = sk.iter().find(|s| s.kind == "object_declaration").unwrap();
+        assert_eq!(o.ident.as_deref(), Some("Config"));
+        assert!(o.has_block);
+    }
+
+    #[test]
+    fn kotlin_property_declaration_extracts_variable_name() {
+        // `val x = 1` — name lives under `variable_declaration >
+        // identifier`, NOT in a `name:` field on the property node.
+        // Pin the child-walk so a future grammar shuffle fails loudly.
+        let sk = extract(
+            Language::Kotlin,
+            "val topLevel: Int = 1\nvar mutable = \"hi\"\n",
+        );
+        let props: Vec<_> = sk
+            .iter()
+            .filter(|s| s.kind == "property_declaration")
+            .collect();
+        assert_eq!(props.len(), 2);
+        let names: Vec<&str> = props.iter().filter_map(|s| s.ident.as_deref()).collect();
+        assert!(names.contains(&"topLevel"), "got {names:?}");
+        assert!(names.contains(&"mutable"), "got {names:?}");
+    }
+
+    #[test]
+    fn kotlin_type_alias_uses_type_field_not_name() {
+        // `typealias Foo = Bar` — alias name lives in `type:`, same
+        // shape as the Rust `impl_item` exception. Without the
+        // language-gated arm in `extract_ident` this would silently
+        // emit `ident=None`.
+        let sk = extract(Language::Kotlin, "typealias Handler = (Int) -> Unit\n");
+        let a = sk.iter().find(|s| s.kind == "type_alias").unwrap();
+        assert_eq!(a.ident.as_deref(), Some("Handler"));
+        assert!(!a.has_block, "type alias has no body");
+    }
+
+    #[test]
+    fn kotlin_secondary_constructor_is_anonymous_with_block() {
+        let sk = extract(
+            Language::Kotlin,
+            "class C(val x: Int) {\n    constructor(): this(0) { println(\"\") }\n}\n",
+        );
+        let c = sk
+            .iter()
+            .find(|s| s.kind == "secondary_constructor")
+            .expect("missing secondary_constructor");
+        assert_eq!(c.ident, None);
+        assert!(c.has_block, "secondary constructor body is `block`");
+    }
+
+    #[test]
+    fn kotlin_enum_entry_extracts_identifier() {
+        let sk = extract(
+            Language::Kotlin,
+            "enum class Status { ACTIVE, INACTIVE, PENDING }\n",
+        );
+        let entries: Vec<_> = sk.iter().filter(|s| s.kind == "enum_entry").collect();
+        assert_eq!(entries.len(), 3);
+        let names: Vec<&str> = entries.iter().filter_map(|s| s.ident.as_deref()).collect();
+        assert!(names.contains(&"ACTIVE"), "got {names:?}");
+        assert!(names.contains(&"INACTIVE"), "got {names:?}");
+        assert!(names.contains(&"PENDING"), "got {names:?}");
+    }
+
+    #[test]
+    fn kotlin_anonymous_initializer_is_anonymous_with_block() {
+        // `init { ... }` inside a class body.
+        let sk = extract(
+            Language::Kotlin,
+            "class C {\n    init {\n        println(\"start\")\n    }\n}\n",
+        );
+        let i = sk
+            .iter()
+            .find(|s| s.kind == "anonymous_initializer")
+            .expect("missing anonymous_initializer");
+        assert_eq!(i.ident, None);
+        assert!(i.has_block, "init body is `block`");
+    }
+
+    #[test]
+    fn kotlin_lambda_literal_is_anonymous_without_block_child() {
+        // `{ x -> x + 1 }` — statements live directly under
+        // `lambda_literal`, not wrapped in a named `block` child.
+        // `has_block=false` reflects the AST shape; documented gap
+        // so a pattern like `{ $$$BODY }` falls through to live-scan.
+        let sk = extract(
+            Language::Kotlin,
+            "val plusOne: (Int) -> Int = { x -> x + 1 }\n",
+        );
+        let l = sk.iter().find(|s| s.kind == "lambda_literal").unwrap();
+        assert_eq!(l.ident, None);
+        assert!(
+            !l.has_block,
+            "lambda_literal has no `block` child — pin so $$$BODY \
+             matchers correctly fall through to live-scan",
+        );
+    }
+
+    #[test]
+    fn kotlin_anonymous_function_is_anonymous_with_function_body() {
+        // `fun(x: Int) { ... }` — the older anonymous-function
+        // syntax wraps statements in a `function_body` (reuses the
+        // SQL arm of has_body_block via the shared kind name).
+        let sk = extract(
+            Language::Kotlin,
+            "val handler = fun(x: Int): Int { return x + 1 }\n",
+        );
+        let a = sk
+            .iter()
+            .find(|s| s.kind == "anonymous_function")
+            .expect("missing anonymous_function");
+        assert_eq!(a.ident, None);
+        assert!(a.has_block, "anonymous_function body is function_body");
+    }
+
+    #[test]
+    fn kotlin_grammar_fingerprint_is_stable_and_nonzero() {
+        let a = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Kotlin);
+        let b = crate::store::pattern_skeletons::grammar_fingerprint_for_lang(Language::Kotlin);
+        assert_eq!(a, b, "fingerprint must be deterministic");
+        assert_ne!(a, 0, "zero is reserved as the not-stored sentinel");
     }
 
     #[test]
