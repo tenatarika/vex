@@ -124,3 +124,11 @@ predicates = "3.1"
 insta = "1.41"
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1.5"
+
+# Phase 13.2 Inc 7 — first Criterion benchmark in the repo. Establishes a
+# latency baseline for the `vex bundle` modes (BFS, indegree scan, symbol
+# assembly). Architect-review A10: revisit `pr-impact` rayon-ization if
+# the BFS bench measures > 100 ms on the synthetic 50-change fixture.
+[[bench]]
+name = "bundle"
+harness = false
