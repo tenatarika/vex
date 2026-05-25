@@ -450,10 +450,10 @@ fn resolve_diff_filter(
     }
 }
 
-/// Build the JSON `_meta.diff_filter` block when a diff filter was active.
-/// Returned as a `serde_json::Value` so callers can merge it into the
-/// search-envelope's `_meta` payload without coupling protocol types to
-/// the CLI layer.
+/// Build the JSON `_meta["vex.dev/diff_filter"]` block when a diff filter
+/// was active. Returned as a `serde_json::Value` so callers can merge it
+/// into the search-envelope's `_meta` payload without coupling protocol
+/// types to the CLI layer.
 fn diff_filter_meta(
     diff: &args::DiffFilterArgs,
     changed: Option<&crate::util::git_diff::ChangedPaths>,
@@ -1203,12 +1203,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 None
             };
             if collapsed {
-                tracing::warn!(
-                    "--collapsed pending language-aware implementation; emitting full body"
-                );
-                // Also surface on stderr unconditionally so callers
-                // without a tracing subscriber installed still see the
-                // notice (matches the integration-test expectations).
+                // Single emission via stderr — tracing isn't always
+                // initialized (e.g. under the CLI integration tests),
+                // and emitting twice would risk drift if a test asserts
+                // on exact-string output. The integration test pins the
+                // `pending` substring on stderr, so this stays
+                // observable for both human and automated callers.
                 eprintln!(
                     "warning: --collapsed pending language-aware implementation; emitting full body"
                 );

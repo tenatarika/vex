@@ -136,9 +136,10 @@ fn run_query(reader: &IndexReader, q: &GoldenQuery, fetch_limit: usize) -> Query
     let results = search_for_eval(reader, &q.query, fetch_limit);
     // Normalize result paths for matching. Index paths are stored as
     // forward-slash relative paths; golden-set paths use the same
-    // convention. We compare via `path.contains(acceptable_path)`
-    // because some queries declare a directory prefix or a filename
-    // and we don't want to over-specify exact suffixes.
+    // convention. We compare via `path_matches`, which accepts exact,
+    // trailing-`/file`, or directory-prefix forms — but rejects
+    // substring matches like `src/search` against `src/search_old.rs`
+    // (H2 regression — substring matching silently inflated nDCG).
     let ranked_paths: Vec<String> = results.iter().map(|r| r.path.clone()).collect();
     let relevant: HashSet<String> = q.acceptable_paths.iter().cloned().collect();
 
@@ -175,7 +176,7 @@ fn run_query(reader: &IndexReader, q: &GoldenQuery, fetch_limit: usize) -> Query
     let top1_hit = q.expected_top_path.as_ref().map(|expected| {
         top_path
             .as_deref()
-            .map(|p| p.contains(expected.as_str()))
+            .map(|p| path_matches(p, expected.as_str()))
             .unwrap_or(false)
     });
 
@@ -194,8 +195,25 @@ fn run_query(reader: &IndexReader, q: &GoldenQuery, fetch_limit: usize) -> Query
 fn match_tag(path: &str, acceptable: &[String]) -> Option<String> {
     acceptable
         .iter()
-        .find(|a| path.contains(a.as_str()))
+        .find(|a| path_matches(path, a.as_str()))
         .cloned()
+}
+
+/// Path-prefix matching for golden-set relevance. The earlier
+/// `path.contains(acceptable)` form was H2: `src/search` would match
+/// `src/search_old.rs` and silently inflate nDCG. We accept three
+/// canonical shapes:
+///
+///   1. Exact match — `actual == acceptable`.
+///   2. Trailing match — `actual` ends with `/{acceptable}` (so the
+///      golden can say `mod.rs` and we still match `src/foo/mod.rs`).
+///   3. Directory-prefix match — `actual` starts with `{acceptable}/`
+///      (so a golden of `src/search` matches `src/search/mod.rs` but
+///      NOT `src/search_old.rs`).
+fn path_matches(actual: &str, acceptable: &str) -> bool {
+    actual == acceptable
+        || actual.ends_with(&format!("/{acceptable}"))
+        || actual.starts_with(&format!("{acceptable}/"))
 }
 
 /// Drive the same fused-channel ranking that `vex search` uses, minus
@@ -373,6 +391,48 @@ acceptable_paths = []
             Some("src/foo.rs".to_string())
         );
         assert_eq!(match_tag("src/other.rs", &acceptable), None);
+    }
+
+    #[test]
+    fn match_tag_does_not_match_neighboring_directory() {
+        // H2 regression: substring matching inflated nDCG by counting
+        // `src/search_old.rs` as a hit when acceptable was `src/search`.
+        // Path-prefix semantics must reject that.
+        let acceptable = vec!["src/search".to_string()];
+        assert_eq!(
+            match_tag("src/search_old.rs", &acceptable),
+            None,
+            "neighboring directory must not match"
+        );
+        assert_eq!(
+            match_tag("src/search/mod.rs", &acceptable),
+            Some("src/search".to_string()),
+            "directory prefix must match"
+        );
+
+        // Exact file path should match itself.
+        let acceptable = vec!["src/search/mod.rs".to_string()];
+        assert_eq!(
+            match_tag("src/search/mod.rs", &acceptable),
+            Some("src/search/mod.rs".to_string()),
+            "exact match must hit"
+        );
+
+        // Trailing-suffix form: `mod.rs` accepted against `foo/mod.rs`.
+        let acceptable = vec!["mod.rs".to_string()];
+        assert_eq!(
+            match_tag("src/foo/mod.rs", &acceptable),
+            Some("mod.rs".to_string()),
+            "trailing /file suffix must match"
+        );
+
+        // Substring-but-not-prefix-or-suffix must NOT match.
+        let acceptable = vec!["foo".to_string()];
+        assert_eq!(
+            match_tag("src/foobar.rs", &acceptable),
+            None,
+            "substring without separator must not match"
+        );
     }
 
     #[test]

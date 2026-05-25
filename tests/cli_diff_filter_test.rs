@@ -235,9 +235,12 @@ fn diff_filter_metadata_in_json_envelope() {
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON envelope");
+    // Key is namespaced under `vex.dev/` to match the protocol's
+    // vendor-prefix convention (`vex.dev/index_age_ms`). The slash
+    // requires `~1` escaping in JSON pointer syntax (RFC 6901).
     let df = envelope
-        .pointer("/_meta/diff_filter")
-        .expect("diff_filter present in _meta");
+        .pointer("/_meta/vex.dev~1diff_filter")
+        .expect("vex.dev/diff_filter present in _meta");
     assert_eq!(df["scope"], "since");
     assert!(
         df["changed_paths"].as_u64().unwrap() >= 1,

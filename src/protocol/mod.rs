@@ -53,7 +53,13 @@ pub struct MetaEnvelope {
     /// an untyped JSON blob to avoid coupling the protocol layer to the
     /// CLI's clap struct. Shape: `{ scope, changed_paths, retained, dropped }`.
     /// Only present when a `--since*` / `--changed-only` flag was passed.
-    #[serde(rename = "diff_filter", skip_serializing_if = "Option::is_none")]
+    ///
+    /// Key uses the `vex.dev/` namespace so the protocol's vendor-prefixed
+    /// fields cluster together in JSON output (matches `vex.dev/index_age_ms`).
+    #[serde(
+        rename = "vex.dev/diff_filter",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub diff_filter: Option<serde_json::Value>,
 }
 

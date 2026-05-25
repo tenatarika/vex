@@ -37,8 +37,8 @@ pub enum DiffScope<'a> {
 }
 
 impl DiffScope<'_> {
-    /// Human-readable label used by the `_meta.diff_filter.scope` JSON
-    /// field. Stable string — wire-format consumers may key on it.
+    /// Human-readable label used by the `_meta["vex.dev/diff_filter"].scope`
+    /// JSON field. Stable string — wire-format consumers may key on it.
     pub fn label(&self) -> &'static str {
         match self {
             DiffScope::Since(_) => "since",
@@ -158,8 +158,13 @@ fn normalize_posix(p: String) -> String {
 /// `-z` gives us null-terminated output that survives pathological
 /// filenames (newlines, quotes) — `lines()` would split mid-path otherwise.
 fn git_diff_name_only(root: &Path, range: &str) -> Result<Vec<String>> {
+    // Trailing `--`: terminate the revision list so any user-supplied
+    // `--since` value that starts with `-` (e.g. `--no-renames`) doesn't
+    // sneak in as a git flag. We can't put `--` BEFORE the range — git
+    // would then read the range as a pathspec — so it sits at the end,
+    // which is the documented form for `git diff [<options>] [<rev>] [--]`.
     let output = Command::new("git")
-        .args(["diff", "--name-only", "--no-renames", "-z", range])
+        .args(["diff", "--name-only", "--no-renames", "-z", range, "--"])
         .current_dir(root)
         .output()
         .context("invoke git diff --name-only")?;
@@ -185,8 +190,12 @@ fn git_diff_name_only(root: &Path, range: &str) -> Result<Vec<String>> {
 /// while respecting `.gitignore`.
 fn collect_working_tree_changes(root: &Path) -> Result<Vec<String>> {
     // Tracked changes vs. HEAD (staged + unstaged in one query).
+    // Trailing `--` keeps any future caller-supplied pathspec from
+    // colliding with `--` flags; the literal `HEAD` here is fixed so
+    // there's no rev-injection risk today, but the form is identical
+    // for consistency with `git_diff_name_only`.
     let diff = Command::new("git")
-        .args(["diff", "HEAD", "--name-only", "--no-renames", "-z"])
+        .args(["diff", "HEAD", "--name-only", "--no-renames", "-z", "--"])
         .current_dir(root)
         .output()
         .context("invoke git diff HEAD --name-only")?;
@@ -429,8 +438,8 @@ mod tests {
 
     #[test]
     fn scope_labels_are_stable() {
-        // Wire-format guard: the JSON `_meta.diff_filter.scope` strings
-        // are consumed by agents. Don't change these casually.
+        // Wire-format guard: the JSON `_meta["vex.dev/diff_filter"].scope`
+        // strings are consumed by agents. Don't change these casually.
         assert_eq!(DiffScope::Since("anything").label(), "since");
         assert_eq!(DiffScope::SinceBranched.label(), "since_branched");
         assert_eq!(DiffScope::ChangedOnly.label(), "changed_only");

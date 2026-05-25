@@ -263,10 +263,15 @@ pub fn head_n(body: &str, n: usize) -> TruncatedBody {
 /// We accept:
 /// - blank lines (preserve spacing)
 /// - line comments (`//`, `#`, `///`, `//!`, `--`)
-/// - block-comment markers (`/*`, `*`, `*/`)
+/// - block-comment continuations (`/*`, `*/`, JSDoc-style `* ...`, lone `*`)
 /// - Python triple-quoted docstrings (a line starting with `"""` or
 ///   `'''` after trimming)
 /// - decorators / attributes (`@foo`, `#[derive(...)]`)
+///
+/// The `*` form is deliberately tight: only `* ` (JSDoc continuation
+/// with the conventional space) or a lone `*` line counts. Bare `*ptr`
+/// dereferences and `*char name` pointer types must NOT be picked up
+/// as comment continuations — that was an H1 false positive.
 fn is_leading_line(line: &str) -> bool {
     let t = line.trim_start();
     if t.is_empty() {
@@ -277,7 +282,8 @@ fn is_leading_line(line: &str) -> bool {
         || starts_with("#")
         || starts_with("/*")
         || starts_with("*/")
-        || starts_with("*")
+        || starts_with("* ")
+        || t == "*"
         || starts_with("\"\"\"")
         || starts_with("'''")
         || starts_with("@")
@@ -548,6 +554,30 @@ mod tests {
         assert!(out.body.contains("#[inline]"));
         assert!(out.body.contains("fn foo() -> i32"));
         assert!(!out.body.contains("1\n}"));
+    }
+
+    #[test]
+    fn no_body_does_not_strip_dereference_lines() {
+        // H1 regression: `*ptr` is a Rust dereference, NOT a block-comment
+        // continuation. `is_leading_line` must return false on it so a
+        // body of `*ptr` doesn't get mistaken for a leading-block line.
+        assert!(!is_leading_line("    *ptr"));
+        assert!(!is_leading_line("*ptr"));
+        // C-style pointer declarations: `*char name`, `*self`, etc.
+        assert!(!is_leading_line("*self.field"));
+        assert!(!is_leading_line("*char name"));
+        // Markdown bullet inside a code body shouldn't count either —
+        // `* item` IS treated as a leading line for JSDoc continuations
+        // intentionally; that's the trade-off, but lone-token `*foo`
+        // forms must not.
+        assert!(!is_leading_line("*foo"));
+
+        // Positive cases — these MUST remain leading:
+        assert!(is_leading_line(" * JSDoc continuation"));
+        assert!(is_leading_line("*"));
+        assert!(is_leading_line("    *"));
+        assert!(is_leading_line("/* block start"));
+        assert!(is_leading_line(" */"));
     }
 
     #[test]
