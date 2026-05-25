@@ -3,9 +3,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/tenatarika/vex/actions/workflows/ci.yml/badge.svg)](https://github.com/tenatarika/vex/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
-[![Commands](https://img.shields.io/badge/commands-19-blue.svg)]()
+[![Commands](https://img.shields.io/badge/commands-25-blue.svg)]()
 [![Languages](https://img.shields.io/badge/languages-19-blueviolet.svg)]()
-[![Tests](https://img.shields.io/badge/tests-1172-green.svg)]()
+[![Tests](https://img.shields.io/badge/tests-1727-green.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
@@ -13,27 +13,39 @@ Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
 ```
 $ vex search "TelemetryProcessor"          # 4ms — find symbol definitions
-$ vex search "timeout retry"               # NEW: BM25 finds rare body terms
+$ vex search "timeout retry"               # BM25 finds rare body terms
 $ vex show "TelemetryProcessor"            # extract just the class body (not the whole file)
 $ vex search "handle alert" --semantic     # find by meaning, not just name
 $ vex pattern 'fn $NAME($$$) -> Result'    # AST pattern matching (like ast-grep)
-$ vex usages "Config"                      # who references this symbol?
+$ vex usages "Config"                      # who references this symbol? (+ --strict on Rust/TS/Python/C#/C++)
 $ vex implementations "BaseService"        # who extends/implements this?
-$ vex callers "process_event"              # who calls this function? (~4ms — FST lookup)
-$ vex similar "PaymentService"             # NEW: semantically close symbols
-$ vex duplicates --threshold 0.95          # NEW: near-duplicate pairs
+$ vex callers "process_event"              # who calls this function? (~4ms — function-scope only)
+$ vex similar "PaymentService"             # semantically close symbols
+$ vex duplicates --threshold 0.95          # near-duplicate pairs
 $ vex check "Foo" "Bar" "Baz"              # fast existence check
+$ vex bundle --mode symbol --symbol Foo    # NEW (v1.9): body + callers + callees + similar in 1 call
 ```
 
 ## Why Vex?
 
 - **~4ms search** after indexing — FST-based O(query_len) lookup, not O(symbols). Requires a pre-built index (indexing takes 20ms-600ms+ depending on project size)
 - **3-channel hybrid search** — structural FST (names) + BM25 (rare body terms) + semantic HNSW (meaning), fused via Reciprocal Rank Fusion. Find symbols when you don't know the exact name AND when generic semantic-only search would be too noisy
-- **Persistent call graph** — `vex callers`/`vex callees` reads from an FST built at index time (~4ms), not a live tree-sitter scan (seconds)
+- **Persistent call graph** — `vex callers`/`vex callees` reads from an FST built at index time (~4ms), not a live tree-sitter scan (seconds). **Function-scope only** — module-level expressions and decorator-based dispatch are invisible by construction; see [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
 - **Pluggable embedder** — `Embedder` trait + registry; swap MiniLM-L6-v2 for future code-specific models (BGE, CodeBERT) without touching call sites
-- **Token-efficient** — compact output uses 6-88x fewer tokens than grep, `vex show` extracts just the symbol body instead of the whole file
-- **19 languages** out of the box — Rust, Python, Go, Java, C/C++, C#, Ruby, Swift, Kotlin, TypeScript, SQL, Markdown, PHP, Bash, Lua, CSS, HTML, YAML, TOML
+- **Token-efficient** — compact output saves typically 6-10x fewer tokens than grep on average lookups (up to 88x on minified JS/CSS); `vex show` extracts just the symbol body instead of the whole file
+- **19 languages** indexed via tree-sitter, with three coverage tiers: **type-aware `--strict usages`** on 5 binder languages (Rust / TypeScript / Python / C# / C++); **indexed pattern prefilter** on 12 T1+T2a languages; baseline structural + semantic search on all 19 (see [Supported Languages](#supported-languages) for the matrix)
 - **Single binary, zero config** — no LSP servers, no databases, no Docker. Just `vex index && vex search`
+
+## What Vex isn't
+
+vex is a **static-analysis indexing tool**, not a language server. Set expectations honestly:
+
+- **Not an LSP replacement.** No go-to-definition into third-party packages, no rename refactoring, no type-checking, no hover docs. For those, keep your LSP.
+- **No dynamic-dispatch visibility.** Decorator routing (`@router.get("/path")`), string-resolved factories (`uvicorn.run("main:app")`), reflection (`getattr(obj, name)()`), and macro-expanded references are all invisible to every vex command. `vex grep '\bname\b'` is the textual escape hatch.
+- **`vex callers` is function-scoped.** Module-level expressions like `app = create_app()` at Python module scope, top-level `let server = build_server()` in Rust — these don't show up as callers because they have no enclosing function.
+- **`vex usages` quality varies by language.** 5 binder-supported languages get refactor-grade `--strict` refs; the other 14 use an identifier scanner with a higher false-positive rate.
+
+See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for the full coverage matrix, concrete repros, and recommended workarounds per query type. **Read it before evaluating vex on a Python/FastAPI/Django codebase** — the framework patterns are the most-flagged gaps.
 
 ## How It Compares
 
@@ -127,6 +139,28 @@ vex search "Repository" --include 'src/**' --exclude '**/*.gen.*' --visibility p
 # Why did the search return these results? (v1.7)
 vex search "Foo" --why 2>trace.json
 
+# Bundle: 4 round-trips → 1 envelope (v1.9, Phase 13.2)
+vex bundle --mode symbol --symbol PaymentService          # body + callers + callees + similar
+vex bundle --mode pr-impact --base origin/main            # changed symbols + transitive callers + tests
+vex bundle --mode project --top-n 30                      # top-N by reverse call-graph indegree
+
+# Diff-context filters on every search-shaped command (v1.9, Phase 13.7-D3)
+vex search "Repository" --since-branched                  # only files changed since branching from main
+vex usages "Config" --since HEAD~3                        # refs within the last 3 commits
+vex callers "Foo" --changed-only                          # working-tree changes only
+
+# Smart show truncation for token efficiency (v1.9, Phase 13.3)
+vex show "BigClass" --signature-only                      # just the signature line
+vex show "PaymentService" --head 20                       # first 20 lines of the body
+vex show "Foo" --no-body                                  # signature + docstring, no body
+
+# Ranking-eval harness — CI regression guard (v1.9, Phase 13.12)
+vex eval --bench benches/ranking_golden/queries.toml      # nDCG@10 / recall@10 / MRR per query
+vex eval --min-ndcg 0.85                                  # fail if mean nDCG drops below threshold
+
+# Capability discovery for MCP clients (v1.9, Phase 13.0)
+vex capabilities                                          # JSON: protocol_version, signals, bundle_modes, …
+
 # Fast existence check
 vex check "Foo" "Bar" "Baz"
 
@@ -149,7 +183,7 @@ vex completions zsh > ~/.zfunc/_vex
 |---------|-------------|
 | `vex index [--path .] [--semantic] [--embedder ID]` | Build full index. `--semantic` generates embeddings + HNSW + BM25. `--embedder` selects embedding model (default `minilm-l6-v2`). |
 | `vex search <query> [--semantic] [--no-bm25] [--limit N] [--kind def,fn,…] [--visibility V] [--async-only] [--why]` | Hybrid search: structural + BM25 + semantic (when `--semantic`). 3-way RRF fusion. Multi-value `--kind` (canonical names + meta-selectors `def`/`comment`/`test`/`ref`). Metadata post-filters narrow by signature keywords. `--why` appends a JSON trace to stderr. |
-| `vex show <symbol> [--limit N] [--context N] [--kind fn] [--visibility V] [--async-only]` | Extract symbol body from source (saves tokens vs full file read). Same metadata + kind filters as `search`. |
+| `vex show <symbol> [--limit N] [--context N] [--kind fn] [--visibility V] [--async-only] [--signature-only \| --head N \| --no-body]` | Extract symbol body from source (saves tokens vs full file read). Same metadata + kind filters as `search`. **v1.9 (Phase 13.3):** smart truncation flags — `--signature-only` keeps only the declaration line, `--head N` keeps the first N body lines, `--no-body` returns signature + docstring only. Mutually exclusive. |
 | `vex similar <name> [--limit N] [--min-score T] [--explain]` | Find symbols semantically close to an existing one (HNSW nearest neighbors). `--explain` adds identifier-Jaccard + truncated unified diff per match. `--min-score` is an alias for `--threshold`. |
 | `vex duplicates [--min-score T] [--min-body-lines N] [--explain]` | List near-duplicate symbol pairs by embedding similarity. `--explain` shows what's actually different between the bodies. |
 | `vex usages <name> [--limit N]` | Find all references/usages of a symbol (FST lookup). |
@@ -169,6 +203,9 @@ vex completions zsh > ~/.zfunc/_vex
 | `vex status [--path .]` | Show index stats: symbol count, size, embeddings, call graph, BM25. |
 | `vex completions <shell>` | Generate shell completions (bash, zsh, fish). |
 | `vex init` | Create a default `.vex.toml` config file in the project root. |
+| **`vex capabilities`** | **NEW (v1.9, Phase 13.0).** Print the machine-readable capability matrix (`protocol_version`, `signals`, `why`, `scope_filters`, `metadata_filters`, `empty_reason`, `bundle_modes`, `auto_update`). MCP / agent clients probe this once at startup instead of re-reading help text. |
+| **`vex eval [--bench PATH] [--min-ndcg F] [--json]`** | **NEW (v1.9, Phase 13.12).** Run the ranking-evaluation harness against a hand-curated golden query set; reports nDCG@10 / recall@10 / MRR per query and aggregated. CI regression guard — fails when mean nDCG drops below `--min-ndcg`. Default golden set: `benches/ranking_golden/queries.toml`. |
+| `vex self-update [--check] [--yes]` | Update vex to the latest GitHub release. Replaces the running binary in place. Works on Linux, macOS, and Windows. |
 
 ### Per-query filters (every search-shaped command)
 
