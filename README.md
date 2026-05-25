@@ -523,6 +523,27 @@ Linux:   $XDG_CACHE_HOME/vex/<hash>/index.vex
 
 Each project gets its own index based on a hash of the project root path.
 
+## Known limitations
+
+vex is a static-analysis tool — some real call sites and references are
+invisible by construction. The headline gaps:
+
+- **`vex callers` is function-scoped.** Module-level expressions
+  (`app = create_app()` at the top of a file) and decorator-based
+  dispatch (`@router.get("/foo")`) do NOT register as callers.
+- **`vex usages` quality depends on language.** Rust / TypeScript /
+  Python / C# / C++ get `--strict` (binder-resolved refs from the
+  v5 `reference_edges` section, Phase 11.1). Other languages use a
+  line-based identifier scan with a higher false-positive rate.
+- **Dynamic dispatch is invisible.** String-resolved factories
+  (`uvicorn.run("main:app")`), task queues (`celery_task.delay()`),
+  reflection (`getattr(obj, name)()`) — none of these produce edges.
+- **Workaround**: `vex grep '\bname\b'` is the exhaustive textual
+  fallback. Slower (~50 ms) but never misses a hit.
+
+See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for the full coverage
+matrix, repros, and recommendations per query type.
+
 ## Troubleshooting
 
 ### Surfacing internal warnings
