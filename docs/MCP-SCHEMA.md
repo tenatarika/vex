@@ -22,13 +22,18 @@ across every tool.
 | Field | Type | Meaning | Used by |
 | --- | --- | --- | --- |
 | `query` | string | **Free-text** — symbol name, partial name, signature snippet, or natural-language description. Not regex; not for exact resolution. | `search`, `find_similar` |
-| `symbol` | string | **Exact symbol name** (function/class/struct/etc.) — canonical resolution key (v1.7+). | `find_symbol`, `usages`, `implementations`, `callers`, `callees`, `similar` |
+| `symbol` | string | **Exact symbol name** (function/class/struct/etc.) — canonical resolution key (v1.7+). | `find_symbol`, `usages`, `implementations`, `callers`, `callees`, `similar`, `bundle` |
 | `symbols` | string[] | Array of exact symbol names — batch lookup / existence probe. | `show`, `check` |
 | `path` | string | Filesystem path to a single source file (absolute or relative to `project_root`). | `outline` |
 | `pattern` | string | Regex pattern (`grep`) *or* structural AST pattern with `$METAVARS` (`pattern`). Tool docstring states which. | `grep`, `pattern` |
 | `filter` | string | Substring path filter applied to result paths (single substring; use `include`/`exclude` for globs). | `grep`, `similar`, `duplicates` |
 | `include` | string[] | Path-glob whitelist (gitignore syntax, repeatable). | every search-shaped tool |
 | `exclude` | string[] | Path-glob blacklist, wins over `include` (repeatable). | every search-shaped tool |
+| `mode` | enum | **Bundle assembly mode** — `symbol` / `pr-impact` / `project`. Discriminator for per-mode required fields (see [Bundle modes](#bundle-modes-v19)). | `bundle` |
+| `base` | string | Git base revision to diff against (e.g. `origin/main`, `HEAD~3`, a SHA). | `bundle` (mode: `pr-impact`) |
+| `depth` | integer | Transitive callers walk depth (default 2). | `bundle` (mode: `pr-impact`) |
+| `path_glob` | string | Single path glob applied as a post-rank filter (separate from the universal `include`/`exclude` arrays). | `bundle` (mode: `project`) |
+| `top_n` | integer | Max top-ranked symbols to return (default 30). | `bundle` (mode: `project`) |
 
 **Convention** (enforced by the 13.1 snapshot test): tool `description`
 fields lead with action verb + indexed-vs-scan tradeoff + latency hint
@@ -48,6 +53,119 @@ binder-resolved reference edges. Default `false` keeps the legacy
 behaviour. When set on an index built before v1.8 (no
 `reference_edges` section), the call fails with a "re-run `vex index`"
 error rather than silently returning incomplete results.
+
+## Bundle modes (v1.9+)
+
+The `bundle` tool replaces the 4-round-trip agent loop (`show → callers
+→ callees → similar`) with one call. The MCP schema is **flat**:
+`mode` is the only required field; mode-specific args are validated
+server-side and surface as JSON-RPC errors when missing. (Architect
+decision A4 — zero `oneOf` discriminated unions, mirrors the existing
+flat-schema convention used by every other vex tool.)
+
+### Required + optional fields per mode
+
+| Mode | Required | Optional (mode-specific) |
+| --- | --- | --- |
+| `symbol` | `symbol` | `callers_max` (10), `callees_max` (10), `similar_max` (5) |
+| `pr-impact` | `base` | `depth` (2), `tests_max` (20) |
+| `project` | — | `top_n` (30), `path_glob` |
+
+Universal optional fields (every mode): `project_root`, `auto_update`,
+`include`, `exclude`.
+
+### Response shape
+
+```jsonc
+{
+  "protocol_version": "v1",
+  "capabilities": { "signals": true, "bundle_modes": [...], ... },
+  "_meta": {
+    "vex.dev/index_age_ms": 1200,
+    // pr-impact only:
+    "vex.dev/diff_filter": {
+      "scope": "pr-impact:HEAD",
+      "changed_paths": ["src/lib.rs"],
+      "retained": 4,
+      "dropped": 0
+    }
+  },
+  "results": {
+    "mode": "symbol" | "pr-impact" | "project",
+    "items": [ /* see role enum below */ ],
+    "mode_hints": { /* per-mode keys, see below */ }
+  }
+}
+```
+
+The MCP wrapper lifts `protocol_version` and `capabilities` to the
+JSON-RPC `result` top level and exposes `results` under
+`structuredContent.results`. Signals live in `structuredContent`
+(visible to the LLM); `_meta` is invisible to the LLM per the MCP
+spec — use it for observability (`index_age_ms`, `traceparent`,
+`diff_filter`).
+
+### `items[i].role` enum
+
+Each item carries a `role: &'static str` discriminator naming which
+sub-list of the bundle it came from:
+
+| Role | Emitted by mode | Meaning |
+| --- | --- | --- |
+| `body` | `symbol` | The resolved seed symbol — carries `body: string` with the full source body. |
+| `caller` | `symbol` | A direct caller of the seed. |
+| `callee` | `symbol` | A direct callee of the seed. |
+| `similar` | `symbol` | A semantic-similar match — carries `similarity: f32` (cosine). |
+| `changed` | `pr-impact` | A symbol whose `(name, body)` differs between `base` and the working tree. |
+| `transitive_caller` | `pr-impact` | A non-test symbol that reaches a `changed` symbol within `depth` hops over the call graph. |
+| `test` | `pr-impact` | A test symbol that reaches a `changed` symbol. Heuristic: path contains `/tests/` / `/test/` / `_test.` / `.test.` / `/spec/` / `/__tests__/`, OR signature starts with `#[test]` / `#[tokio::test...]` / `#[cfg(test)]`. |
+| `top` | `project` | A top-N symbol by reverse call-graph indegree. The indegree count is exposed under `signals.indegree` (Phase 13.2 additive field; absent on every other code path). |
+
+`rank_percentile` is **global** monotonic-descending across the full
+`items` array (preserves the v1.9 search-envelope invariant).
+`role_rank` is per-role 0-indexed for callers that want within-bucket
+ordering after sorting the bundle by `rank_percentile`.
+
+### `mode_hints` per-mode shape
+
+```jsonc
+// mode: symbol
+{
+  "callers_count": 2, "callees_count": 2, "similar_count": 0,
+  "callers_truncated": false, "callees_truncated": false, "similar_truncated": false,
+  "has_call_graph": true, "has_vectors": false,
+  "empty_reason": null | "symbol_not_found"
+}
+
+// mode: pr-impact
+{
+  "base": "HEAD", "depth": 2,
+  "changed_count": 1, "transitive_caller_count": 2, "test_count": 1,
+  "tests_truncated": false, "unreachable_changes": [],
+  "empty_reason": null | "no_changes"
+}
+
+// mode: project
+{
+  "scoring": "reverse_indegree", "top_n": 30, "path_glob": null,
+  "total_ranked_symbols": 12, "has_call_graph": true,
+  "empty_reason": null | "no_call_graph" | "no_call_edges" | "path_glob_filtered_all"
+}
+```
+
+### Mode-specific guarantees
+
+- **`symbol`** soft-degrades when the index has no vectors — `similar`
+  block is empty, `has_vectors: false`. NOT an error. Unknown symbol
+  → exit 0 + `empty_reason: "symbol_not_found"`.
+- **`pr-impact`** is the only mode that **hard-errors** when the index
+  was built `--no-call-graph` — the BFS layer requires persistent
+  caller edges. Empty diff → exit 0 + `empty_reason: "no_changes"`.
+- **`project`** soft-degrades on `--no-call-graph` (empty items +
+  `empty_reason: "no_call_graph"`). Indegree scoring is **experimental
+  — structural lower bound**, NOT PageRank (architect decision A5;
+  PageRank revival blocked on the 13.12 ranking-eval harness gaining a
+  project-importance ground truth).
 
 ## Pre-v1.7 aliases (still accepted)
 

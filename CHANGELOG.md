@@ -8,6 +8,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`vex bundle` (Phase 13.2)** — unified multi-source bundle primitive.
+  One command, three modes, replaces the 4-round-trip agent loop
+  `show → callers → callees → similar` with a single call. The MCP
+  surface is one `bundle` tool with a **flat schema** (mode-specific
+  args validated server-side; no JSON-Schema `oneOf`).
+  - `--mode symbol <name>` — body + direct callers + direct callees +
+    semantic-similar matches. Body extraction is full (no truncation;
+    `vex show --signature-only` is the per-symbol truncation surface).
+    Defaults: `--callers-max 10`, `--callees-max 10`, `--similar-max 5`.
+  - `--mode pr-impact --base <rev>` — changed symbols since `<rev>`
+    plus transitive callers (depth=2 default) plus tests that
+    transitively reach the changes. Test classification by path
+    (`/tests/`, `_test.`, `__tests__/`, `spec/`) or signature
+    attribute (`#[test]`, `#[cfg(test)]`, `#[tokio::test...]`).
+    `_meta.vex.dev/diff_filter` carries `{ scope, changed_paths,
+    retained, dropped }` so agents can correlate with `git diff`.
+  - `--mode project [--top-n N] [--path-glob G]` — top-N symbols by
+    **reverse call-graph indegree** (count of distinct callers).
+    Experimental; documented as `scoring: "reverse_indegree"`. No
+    PageRank — see roadmap for revival path under 13.12.
+  - Response envelope reuses Phase 13.0 `{ protocol_version,
+    capabilities, _meta, results }`. `results.items[i]` carries the
+    13.11 `signals` block plus a `role` discriminator (`body | caller
+    | callee | similar | changed | transitive_caller | test | top`),
+    a *global* monotonic-descending `rank_percentile`, and a
+    per-role 0-indexed `role_rank`. `results.mode_hints` is a
+    mode-specific JSON blob (counts, truncation flags, scoring label,
+    `empty_reason` when the items list is empty).
+  - `capabilities.bundle_modes` now advertises `["symbol", "pr-impact",
+    "project"]` (was `[]` in v1.9.0-pre).
+  - Latency baseline (Criterion, `benches/bundle.rs`): pr-impact BFS
+    on 50 changed symbols × depth=2 ≈ **86 µs**; project indegree scan
+    over ~500 functions ≈ **44 µs**; symbol mode full pipeline (FST +
+    body + callers + callees + similar guard) ≈ **139 µs**. All three
+    well under the 100 ms threshold that would justify rayon-izing
+    the pr-impact BFS outer loop.
 - `vex capabilities` CLI subcommand returning the Phase 13 capability
   matrix as JSON (`protocol_version`, `signals`, `why`, `scope_filters`,
   `metadata_filters`, `empty_reason`, `bundle_modes`, `auto_update`).

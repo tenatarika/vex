@@ -161,6 +161,7 @@ vex completions zsh > ~/.zfunc/_vex
 | **`vex paths <from> <to> [--max-hops N]`** | **NEW.** Enumerate all caller chains from `from` to `to` over the persistent call graph. Bounded DFS with cycle prevention; default `--max-hops 6`. |
 | **`vex reachable <target> [--max-hops N] [--limit N]`** | **NEW.** Transitive set of symbols whose callees reach `target`, with the BFS depth labelled per row. Blast-radius analysis. |
 | **`vex diff --base <rev> [--limit N]`** | **NEW.** Symbol-level diff between an arbitrary git revision and the working tree: added / removed / moved-within-file / body-changed entries. `git diff --no-renames` semantics so a `git mv` surfaces both halves. |
+| **`vex bundle --mode <symbol\|pr-impact\|project> [...]`** | **NEW (v1.9, Phase 13.2).** Unified multi-source bundle — replaces 4 round-trips (`show → callers → callees → similar`) with one. `--mode symbol --symbol Foo` returns body + callers + callees + semantic similar. `--mode pr-impact --base origin/main` returns changed symbols + transitive callers (depth=2 default) + tests. `--mode project [--top-n 30]` returns top-N by reverse call-graph indegree (experimental — see `docs/MCP-SCHEMA.md#bundle-modes-v19` for the response shape and `mode_hints` per-mode keys). Always emits the v1 envelope `{ protocol_version, capabilities, _meta, results }`. |
 | `vex check <name> [name...]` | Fast existence check — which symbols exist in the index? |
 | `vex grep <pattern> [--filter path/]` | Regex content search (no index needed). |
 | `vex update [--path .] [--semantic] [--embedder ID]` | Incremental update — re-parse only changed files, reuse unchanged symbols from existing index. |
@@ -171,7 +172,7 @@ vex completions zsh > ~/.zfunc/_vex
 
 ### Per-query filters (every search-shaped command)
 
-All search-shaped commands (`search`, `usages`, `pattern`, `show`, `grep`, `implementations`, `callers`, `callees`, `paths`, `reachable`, `similar`, `duplicates`, `diff`) accept:
+All search-shaped commands (`search`, `usages`, `pattern`, `show`, `grep`, `implementations`, `callers`, `callees`, `paths`, `reachable`, `similar`, `duplicates`, `diff`, `bundle`) accept:
 
 - **`--include <glob>` / `--exclude <glob>`** (repeatable, gitignore syntax) — per-call path scoping that doesn't require re-indexing. `--exclude` wins over `--include`. Example: `vex search Foo --include 'src/**' --exclude '**/*.gen.*'`.
 - **`--filter <substring>`** — older path-substring filter, still supported. Composes AND with the globs.
