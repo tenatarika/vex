@@ -6,6 +6,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-05-25
+
+Windows hotfix for the Phase 13.12 ranking-evaluation harness. v1.9.0's
+`path_matches` compared the index-side host-separator paths
+(`src\store\reader.rs` on Windows) against the forward-slash golden
+TOML entries directly — every shape failed string-equality, so the
+Windows CI run reported `nDCG / recall / MRR = 0.0` on all 16 golden
+queries and tripped the 0.85 regression floor. macOS / Linux were
+unaffected. The README honesty pass that landed alongside the fix is
+also part of this patch.
+
+### Fixed
+
+- **Windows path-separator regression in `vex eval`** — `path_matches`
+  now normalizes `\` → `/` once at the comparison boundary, restoring
+  the cross-platform contract documented in
+  `docs/RANKING-EVAL.md`. Unit test
+  `path_matches_normalizes_windows_separator` pins the four canonical
+  shapes (exact / trailing-`/file` / dir-prefix) against Windows-style
+  paths and re-validates the H2 neighbour-directory protection.
+
+### Documentation
+
+- README v1.9.0 refresh with honest coverage caveats — adds a
+  `## What Vex isn't` section between Why Vex? and How It Compares,
+  names the three language tiers behind `--strict usages` / indexed
+  pattern prefilter / baseline structural search, calls out the
+  function-scope limit on `vex callers`, and replaces the
+  maximum-anchored "6-88x" token-efficiency framing with a
+  median-anchored "typically 6-10x; up to 88x on minified" pair.
+  Quick Start gains a v1.9 section covering bundle / diff-context /
+  show truncation / eval / capabilities. Commands table adds
+  `vex capabilities`, `vex eval`, `vex self-update`, and the Phase
+  13.3 truncation flags on `vex show`.
+
 ## [1.9.0] - 2026-05-25
 
 Phase 13 lands the agent-integration foundation: a versioned response
