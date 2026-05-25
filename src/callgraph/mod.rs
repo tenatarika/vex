@@ -8,6 +8,14 @@ use tree_sitter::{Parser, Query, QueryCursor};
 use crate::parse::language::Language;
 
 pub mod bfs;
+pub mod indegree;
+
+/// Per-step cap when binding `find_callers_fast` as the BFS
+/// `callers_of` closure. Far above any realistic fan-in but bounded
+/// for safety; saturation should surface a stderr warning so an
+/// incomplete walk is visible. Shared across `vex paths`,
+/// `vex reachable`, and `vex bundle --mode pr-impact`.
+pub const CALLERS_FETCH_CAP: usize = 1024;
 
 /// A caller→callee relationship found in source code.
 #[derive(Debug, Clone)]

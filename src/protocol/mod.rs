@@ -34,6 +34,13 @@ pub struct Signals {
     pub fuzzy_distance: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerank_boost: Option<f32>,
+    /// Reverse call-graph indegree (count of *distinct* caller symbol
+    /// indices). Only set by `vex bundle --mode project`; absent
+    /// everywhere else. Additive extension to the locked 13.11
+    /// envelope — `skip_serializing_if = "Option::is_none"` keeps the
+    /// wire format unchanged for existing consumers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indegree: Option<u32>,
 }
 
 #[derive(Serialize, Default, Clone, Debug)]

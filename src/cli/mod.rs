@@ -1,4 +1,5 @@
 pub mod args;
+pub mod cmd_bundle;
 pub mod output;
 pub mod scope;
 pub mod show_truncate;
@@ -51,7 +52,8 @@ fn extract_path_hint(cmd: &Commands) -> Option<std::path::PathBuf> {
         | Commands::Pattern { path, .. }
         | Commands::Similar { path, .. }
         | Commands::Duplicates { path, .. }
-        | Commands::Eval { path, .. } => path.clone(),
+        | Commands::Eval { path, .. }
+        | Commands::Bundle { path, .. } => path.clone(),
         _ => None,
     }
 }
@@ -1667,7 +1669,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             // when we see a node that hits it, we surface a warning so
             // a real saturation event is visible instead of silently
             // dropping callers.
-            const CALLERS_FETCH_CAP: usize = 1024;
+            use crate::callgraph::CALLERS_FETCH_CAP;
             let callers_of = |name: &str| {
                 let callers =
                     crate::store::call_graph::find_callers_fast(&reader, name, CALLERS_FETCH_CAP);
@@ -2156,6 +2158,60 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             &cfg,
             &format,
         ),
+
+        Commands::Bundle {
+            mode,
+            symbol,
+            base,
+            depth,
+            path_glob,
+            top_n,
+            callers_max,
+            callees_max,
+            similar_max,
+            tests_max,
+            path,
+            auto_update,
+            no_stale_check,
+            scope,
+        } => {
+            // Inc 2 — open the index for `--mode symbol`. We pass
+            // `needs_semantic=false` to `ensure_index_ready`: similar
+            // results are best-effort (degrade to empty when the index
+            // has no vectors), not a hard requirement. Other modes plug
+            // into the same plumbing in Inc 3 / Inc 4.
+            let root = cmd_bundle::resolve_bundle_root(path)?.canonicalize()?;
+            let index_path = ensure_index_ready(
+                &root,
+                auto_update,
+                no_stale_check,
+                /*needs_semantic=*/ false,
+                local_cache_active,
+                &cfg,
+            )?;
+            let reader = IndexReader::open(&index_path).context("open index")?;
+            let hnsw_path = config::hnsw_path(&root);
+            let args = cmd_bundle::BundleArgs {
+                mode,
+                symbol: symbol.as_deref(),
+                base: base.as_deref(),
+                depth,
+                path_glob: path_glob.as_deref(),
+                top_n,
+                callers_max,
+                callees_max,
+                similar_max,
+                tests_max,
+            };
+            let ctx = cmd_bundle::BundleCtx {
+                root,
+                scope: &scope,
+                reader: &reader,
+                hnsw_path,
+                excludes,
+            };
+            cmd_bundle::cmd_bundle(args, ctx)
+        }
 
         Commands::SelfUpdate { check, yes } => {
             // Named at the call site so a future refactor cannot silently

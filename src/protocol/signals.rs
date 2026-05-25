@@ -61,6 +61,8 @@ pub fn build_signals(
                 // No distance payload on MatchType::Fuzzy yet — see module doc.
                 fuzzy_distance: None,
                 rerank_boost: None,
+                // Indegree is bundle-only; absent on the search path.
+                indegree: None,
             }
         })
         .collect()

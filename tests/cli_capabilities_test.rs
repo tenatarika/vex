@@ -78,22 +78,28 @@ fn capabilities_command_includes_empty_reason_false() {
 }
 
 #[test]
-fn capabilities_command_bundle_modes_starts_empty() {
-    // bundle_modes fills in 13.2; for now it must be an empty array.
+fn capabilities_command_bundle_modes_lists_phase_13_2_modes() {
+    // Phase 13.2 — `bundle_modes` advertises the three modes shipped by
+    // the `vex bundle` subcommand. Order is locked to mirror
+    // `BundleModeFlag::ALL`; downstream MCP clients may rely on it.
     let tmp = TempDir::new().unwrap();
     write_minimal_project(tmp.path());
     let out = run_capabilities(tmp.path());
-    let modes = out["capabilities"]["bundle_modes"]
+    let modes: Vec<&str> = out["capabilities"]["bundle_modes"]
         .as_array()
         .unwrap_or_else(|| {
             panic!(
                 "expected capabilities.bundle_modes to be an array, got: {}",
                 out
             )
-        });
-    assert!(
-        modes.is_empty(),
-        "expected capabilities.bundle_modes == [] before Phase 13.2, got: {modes:?}"
+        })
+        .iter()
+        .map(|v| v.as_str().expect("bundle_modes entry must be a string"))
+        .collect();
+    assert_eq!(
+        modes,
+        vec!["symbol", "pr-impact", "project"],
+        "capabilities.bundle_modes (Phase 13.2)"
     );
 }
 

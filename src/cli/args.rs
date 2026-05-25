@@ -812,6 +812,72 @@ pub enum Commands {
     /// Print machine-readable capabilities matrix (Phase 13.0).
     Capabilities,
 
+    /// Phase 13.2 — unified multi-source bundle primitive. One command,
+    /// three modes (`symbol`, `pr-impact`, `project`) that assemble a
+    /// structured response from existing v6 index sections. Replaces the
+    /// 4-round-trip agent loop `show → callers → callees → similar`.
+    ///
+    /// Mode-specific args are validated server-side; only `--mode` is
+    /// universally required. See `docs/MCP-SCHEMA.md` for the response
+    /// envelope shape.
+    Bundle {
+        /// Bundle mode selector. One of `symbol`, `pr-impact`, `project`.
+        #[arg(long, value_enum, value_name = "MODE")]
+        mode: crate::cli::cmd_bundle::BundleModeFlag,
+
+        /// (`symbol` mode) Symbol name to resolve.
+        #[arg(long, value_name = "NAME")]
+        symbol: Option<String>,
+
+        /// (`pr-impact` mode) Git base revision to diff against.
+        #[arg(long, value_name = "REV")]
+        base: Option<String>,
+
+        /// (`pr-impact` mode) Transitive callers walk depth.
+        #[arg(long, default_value = "2", value_name = "N")]
+        depth: usize,
+
+        /// (`project` mode) Path glob filter applied to ranked symbols.
+        #[arg(long, value_name = "GLOB")]
+        path_glob: Option<String>,
+
+        /// (`project` mode) Top-N result cap.
+        #[arg(long, default_value = "30", value_name = "N")]
+        top_n: usize,
+
+        /// (`symbol` mode) Max direct callers in the response.
+        #[arg(long, default_value = "10", value_name = "N")]
+        callers_max: usize,
+
+        /// (`symbol` mode) Max direct callees in the response.
+        #[arg(long, default_value = "10", value_name = "N")]
+        callees_max: usize,
+
+        /// (`symbol` mode) Max semantic-similar matches in the response.
+        #[arg(long, default_value = "5", value_name = "N")]
+        similar_max: usize,
+
+        /// (`pr-impact` mode) Max test-classified results.
+        #[arg(long, default_value = "20", value_name = "N")]
+        tests_max: usize,
+
+        /// Project root (defaults to cwd).
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Auto-rebuild the index when staleness is detected.
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip the staleness check entirely (faster, may return stale data).
+        #[arg(long)]
+        no_stale_check: bool,
+
+        /// Path scope filters (`--include`/`--exclude` globs, repeatable).
+        #[command(flatten)]
+        scope: ScopeArgs,
+    },
+
     /// Run the ranking evaluation harness (Phase 13.12). Loads a
     /// hand-curated golden query set, runs every query against the
     /// current index, and reports nDCG@10 / recall@10 / MRR per

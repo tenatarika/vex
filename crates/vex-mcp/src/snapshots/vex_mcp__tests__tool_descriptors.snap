@@ -840,6 +840,92 @@ expression: descriptors
     "name": "capabilities"
   },
   {
+    "description": "Multi-source bundle — replaces 4 round-trips (show → callers → callees → similar) with 1. Three modes: `symbol` (body + callers + callees + similar for a named symbol; ~10ms), `pr-impact` (changed symbols + transitive callers + tests for a git base ref; ~50ms), `project` (top-N symbols by reverse call-graph indegree; ~5ms). Prefer over chaining find_symbol/show/callers/callees when you need cross-section context on one symbol or a PR. Mode-specific args are validated server-side; only `mode` is universally required. Response shape is uniform — `{ protocol_version, capabilities, _meta, results: { mode, items[], mode_hints } }`. Each `items[i]` carries 13.11 signals plus a `role` discriminator (`body | caller | callee | similar | changed | transitive_caller | test | top`).",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "base": {
+          "description": "(mode: pr-impact) Git base revision to diff against (e.g. `origin/main`, `HEAD~3`, a SHA)",
+          "type": "string"
+        },
+        "callees_max": {
+          "default": 10,
+          "description": "(mode: symbol) Max direct callees",
+          "type": "integer"
+        },
+        "callers_max": {
+          "default": 10,
+          "description": "(mode: symbol) Max direct callers",
+          "type": "integer"
+        },
+        "depth": {
+          "default": 2,
+          "description": "(mode: pr-impact) Transitive callers walk depth",
+          "type": "integer"
+        },
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist results by path glob (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "description": "Bundle assembly mode",
+          "enum": [
+            "symbol",
+            "pr-impact",
+            "project"
+          ],
+          "type": "string"
+        },
+        "path_glob": {
+          "description": "(mode: project) Single path glob filter applied to ranked symbols (e.g. `src/**`); separate from the universal `include`/`exclude` arrays",
+          "type": "string"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "similar_max": {
+          "default": 5,
+          "description": "(mode: symbol) Max semantic-similar matches; gated on `vex index --semantic`",
+          "type": "integer"
+        },
+        "symbol": {
+          "description": "(mode: symbol) Symbol name to resolve via the symbol FST",
+          "type": "string"
+        },
+        "tests_max": {
+          "default": 20,
+          "description": "(mode: pr-impact) Max test-classified items",
+          "type": "integer"
+        },
+        "top_n": {
+          "default": 30,
+          "description": "(mode: project) Max number of top-ranked symbols",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "type": "object"
+    },
+    "name": "bundle"
+  },
+  {
     "description": "Repo-wide near-duplicate scan: pairs of symbols whose embeddings exceed `threshold`. Use for refactor planning (`where else does this logic live?`) and dedup. Prefer over manual similar-walks — duplicates evaluates all pairs once with `min_body_lines` filtering out trivial bodies. Requires `vex index --semantic`.",
     "inputSchema": {
       "properties": {

@@ -267,6 +267,7 @@ fn extract_why_trace(stderr: &str) -> Option<Value> {
 /// Output of `build_command`. Carries the resolved vex subcommand plus the
 /// argv to spawn, and a list of legacy MCP arg names the caller used so
 /// the JSON-RPC response can surface a deprecation notice via `_meta`.
+#[derive(Debug)]
 struct BuiltCommand {
     subcommand: String,
     extra_args: Vec<String>,
@@ -691,6 +692,58 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             // `capabilities` subcommand. Argument-free.
             ("capabilities".to_string(), Vec::new())
         }
+        "bundle" => {
+            // Phase 13.2 — flat schema (architect-review A4: no JSON-Schema
+            // `oneOf`, zero precedent in this codebase, untested MCP-client
+            // support for discriminated unions). The MCP layer validates
+            // required-field-per-mode here so the agent sees a clear
+            // error before the CLI subprocess is spawned.
+            let mode = args["mode"].as_str().context("missing `mode`")?;
+            let mut extra: Vec<String> = vec!["--mode".into(), mode.into()];
+            match mode {
+                "symbol" => {
+                    let symbol = args["symbol"]
+                        .as_str()
+                        .context("`mode: symbol` requires the `symbol` field")?;
+                    extra.extend(["--symbol".into(), symbol.into()]);
+                    if let Some(v) = args["callers_max"].as_u64() {
+                        extra.extend(["--callers-max".into(), v.to_string()]);
+                    }
+                    if let Some(v) = args["callees_max"].as_u64() {
+                        extra.extend(["--callees-max".into(), v.to_string()]);
+                    }
+                    if let Some(v) = args["similar_max"].as_u64() {
+                        extra.extend(["--similar-max".into(), v.to_string()]);
+                    }
+                }
+                "pr-impact" => {
+                    let base = args["base"]
+                        .as_str()
+                        .context("`mode: pr-impact` requires the `base` field")?;
+                    extra.extend(["--base".into(), base.into()]);
+                    if let Some(d) = args["depth"].as_u64() {
+                        extra.extend(["--depth".into(), d.to_string()]);
+                    }
+                    if let Some(m) = args["tests_max"].as_u64() {
+                        extra.extend(["--tests-max".into(), m.to_string()]);
+                    }
+                }
+                "project" => {
+                    if let Some(g) = args["path_glob"].as_str() {
+                        extra.extend(["--path-glob".into(), g.into()]);
+                    }
+                    if let Some(n) = args["top_n"].as_u64() {
+                        extra.extend(["--top-n".into(), n.to_string()]);
+                    }
+                }
+                other => anyhow::bail!(
+                    "unknown bundle mode `{other}` — expected one of `symbol`, `pr-impact`, `project`"
+                ),
+            }
+            push_auto_update(&mut extra, args);
+            push_scope(&mut extra, args);
+            ("bundle".to_string(), extra)
+        }
         _ => anyhow::bail!("unknown tool: {tool}"),
     };
     Ok(BuiltCommand {
@@ -1013,6 +1066,30 @@ fn tool_descriptors() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {}
+            }
+        },
+        {
+            "name": "bundle",
+            "description": "Multi-source bundle — replaces 4 round-trips (show → callers → callees → similar) with 1. Three modes: `symbol` (body + callers + callees + similar for a named symbol; ~10ms), `pr-impact` (changed symbols + transitive callers + tests for a git base ref; ~50ms), `project` (top-N symbols by reverse call-graph indegree; ~5ms). Prefer over chaining find_symbol/show/callers/callees when you need cross-section context on one symbol or a PR. Mode-specific args are validated server-side; only `mode` is universally required. Response shape is uniform — `{ protocol_version, capabilities, _meta, results: { mode, items[], mode_hints } }`. Each `items[i]` carries 13.11 signals plus a `role` discriminator (`body | caller | callee | similar | changed | transitive_caller | test | top`).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "mode": { "type": "string", "enum": ["symbol", "pr-impact", "project"], "description": "Bundle assembly mode" },
+                    "symbol": { "type": "string", "description": "(mode: symbol) Symbol name to resolve via the symbol FST" },
+                    "base": { "type": "string", "description": "(mode: pr-impact) Git base revision to diff against (e.g. `origin/main`, `HEAD~3`, a SHA)" },
+                    "depth": { "type": "integer", "description": "(mode: pr-impact) Transitive callers walk depth", "default": 2 },
+                    "path_glob": { "type": "string", "description": "(mode: project) Single path glob filter applied to ranked symbols (e.g. `src/**`); separate from the universal `include`/`exclude` arrays" },
+                    "top_n": { "type": "integer", "description": "(mode: project) Max number of top-ranked symbols", "default": 30 },
+                    "callers_max": { "type": "integer", "description": "(mode: symbol) Max direct callers", "default": 10 },
+                    "callees_max": { "type": "integer", "description": "(mode: symbol) Max direct callees", "default": 10 },
+                    "similar_max": { "type": "integer", "description": "(mode: symbol) Max semantic-similar matches; gated on `vex index --semantic`", "default": 5 },
+                    "tests_max": { "type": "integer", "description": "(mode: pr-impact) Max test-classified items", "default": 20 },
+                    "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap if missing, before running (default: true)", "default": true },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (repeatable)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
+                },
+                "required": ["mode"]
             }
         },
         {
@@ -1680,5 +1757,163 @@ mod tests {
     fn tool_descriptors_snapshot() {
         let descriptors = tool_descriptors();
         insta::assert_json_snapshot!("tool_descriptors", descriptors);
+    }
+
+    // ---------------------------------------------------------------------
+    // Phase 13.2 — `bundle` MCP tool (Inc 5)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn args_for_bundle_symbol() {
+        let extra = args_for(
+            "bundle",
+            json!({
+                "mode": "symbol",
+                "symbol": "MyFunc",
+                "callers_max": 7,
+            }),
+        );
+        // Mode flag is always emitted first; symbol-specific args follow.
+        assert!(extra
+            .windows(2)
+            .any(|w| w[0] == "--mode" && w[1] == "symbol"));
+        assert!(extra
+            .windows(2)
+            .any(|w| w[0] == "--symbol" && w[1] == "MyFunc"));
+        assert!(extra
+            .windows(2)
+            .any(|w| w[0] == "--callers-max" && w[1] == "7"));
+    }
+
+    #[test]
+    fn args_for_bundle_pr_impact_requires_base() {
+        // Missing `base` is a server-side validation failure (architect-
+        // review A4: per-mode required-field validation lives here, not
+        // in JSON-Schema `oneOf`).
+        let err = build_command("bundle", &json!({"mode": "pr-impact"}), "/tmp/proj")
+            .expect_err("pr-impact without base must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.to_lowercase().contains("base"),
+            "error should mention the missing `base` field; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn args_for_bundle_pr_impact_passes_base_and_depth() {
+        let extra = args_for(
+            "bundle",
+            json!({
+                "mode": "pr-impact",
+                "base": "origin/main",
+                "depth": 3,
+            }),
+        );
+        assert!(extra
+            .windows(2)
+            .any(|w| w[0] == "--mode" && w[1] == "pr-impact"));
+        assert!(extra
+            .windows(2)
+            .any(|w| w[0] == "--base" && w[1] == "origin/main"));
+        assert!(extra.windows(2).any(|w| w[0] == "--depth" && w[1] == "3"));
+    }
+
+    #[test]
+    fn args_for_bundle_project_default_top_n() {
+        // `top_n` omitted → no `--top-n` flag is appended; the CLI uses
+        // its own default (30) via clap. Tests that the MCP layer
+        // doesn't force a default and override clap.
+        let extra = args_for("bundle", json!({"mode": "project"}));
+        assert!(extra
+            .windows(2)
+            .any(|w| w[0] == "--mode" && w[1] == "project"));
+        assert!(
+            !extra.iter().any(|a| a == "--top-n"),
+            "project without top_n must not push --top-n; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn args_for_bundle_project_explicit_top_n_and_glob() {
+        let extra = args_for(
+            "bundle",
+            json!({
+                "mode": "project",
+                "top_n": 5,
+                "path_glob": "src/**",
+            }),
+        );
+        assert!(extra.windows(2).any(|w| w[0] == "--top-n" && w[1] == "5"));
+        assert!(extra
+            .windows(2)
+            .any(|w| w[0] == "--path-glob" && w[1] == "src/**"));
+    }
+
+    #[test]
+    fn args_for_bundle_symbol_missing_symbol_errors() {
+        let err = build_command("bundle", &json!({"mode": "symbol"}), "/tmp/proj")
+            .expect_err("symbol mode without `symbol` must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.to_lowercase().contains("symbol"),
+            "error should mention the missing `symbol` field; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn args_for_bundle_unknown_mode_errors() {
+        let err = build_command("bundle", &json!({"mode": "not-a-real-mode"}), "/tmp/proj")
+            .expect_err("unknown bundle mode must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.to_lowercase().contains("not-a-real-mode"),
+            "error should mention the offending mode value; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn args_for_bundle_missing_mode_errors() {
+        let err = build_command("bundle", &json!({"symbol": "Foo"}), "/tmp/proj")
+            .expect_err("bundle without `mode` must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.to_lowercase().contains("mode"),
+            "error should mention the missing `mode` field; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn bundle_schema_uses_flat_structure_no_oneof() {
+        // Locks architect-review A4 — the bundle inputSchema MUST be
+        // flat (no `oneOf` discriminated union). If a future revision
+        // re-introduces `oneOf`, this test catches it.
+        let desc = tool_descriptors();
+        let tools = desc.as_array().expect("tool_descriptors returns array");
+        let bundle = tools
+            .iter()
+            .find(|t| t["name"] == "bundle")
+            .expect("bundle tool descriptor missing");
+        let schema = &bundle["inputSchema"];
+        assert!(
+            schema.get("oneOf").is_none(),
+            "bundle inputSchema must NOT use `oneOf` (A4 — flat schema only); got: {schema}"
+        );
+        // And `mode` must be a top-level enum field.
+        let mode_field = &schema["properties"]["mode"];
+        let modes = mode_field["enum"]
+            .as_array()
+            .expect("bundle.mode must be an enum");
+        let mode_names: Vec<&str> = modes.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(
+            mode_names,
+            vec!["symbol", "pr-impact", "project"],
+            "bundle.mode enum must list the three phase-13.2 modes"
+        );
+        // Only `mode` is required.
+        let required = schema["required"]
+            .as_array()
+            .expect("bundle.required must be present");
+        assert_eq!(required.len(), 1);
+        assert_eq!(required[0], "mode");
     }
 }
