@@ -18,6 +18,61 @@ pub struct ScopeArgs {
     pub exclude: Vec<String>,
 }
 
+/// Diff-context filters (Phase 13.7-D3). Restrict search-shaped commands
+/// to the set of files affected by a git ref-range or working-tree state.
+/// The three variants are mutually exclusive; default (no flag set) means
+/// "no diff filter — return everything".
+///
+/// Empirical anchor: rtk-ai reports -75% PR-review token spend when the
+/// agent filters its `git diff` to changed files only — this is the same
+/// idea applied to vex's symbol/usages/pattern/graph queries.
+#[derive(Args, Clone, Debug, Default)]
+pub struct DiffFilterArgs {
+    /// Restrict results to symbols in files changed between `<rev>..HEAD`.
+    /// Accepts any revision spec `git diff` understands (`main`, `HEAD~3`,
+    /// `origin/main`, a SHA, …).
+    #[arg(long, value_name = "REV", conflicts_with_all = ["since_branched", "changed_only"])]
+    pub since: Option<String>,
+
+    /// Restrict results to symbols in files changed since this branch
+    /// diverged from main/master. Tries `origin/main`, `origin/master`,
+    /// `main`, then `master` in that order.
+    #[arg(long, conflicts_with_all = ["since", "changed_only"])]
+    pub since_branched: bool,
+
+    /// Restrict results to symbols in working-tree changes (staged +
+    /// unstaged + untracked, gitignore-respecting).
+    #[arg(long, conflicts_with_all = ["since", "since_branched"])]
+    pub changed_only: bool,
+}
+
+impl DiffFilterArgs {
+    /// True when any of the three diff scopes is requested. Currently
+    /// consumed by tests + downstream MCP wrappers — keep `pub` so the
+    /// API stays stable even if the local dispatch path inlines the
+    /// equivalent `scope().is_some()` check.
+    #[allow(dead_code)]
+    pub fn has_scope(&self) -> bool {
+        self.since.is_some() || self.since_branched || self.changed_only
+    }
+
+    /// Resolve the active scope into a borrowed enum. Returns `None` when
+    /// no diff filter is requested — callers short-circuit the `git`
+    /// invocation in that case.
+    pub fn scope(&self) -> Option<crate::util::git_diff::DiffScope<'_>> {
+        if let Some(rev) = self.since.as_deref() {
+            return Some(crate::util::git_diff::DiffScope::Since(rev));
+        }
+        if self.since_branched {
+            return Some(crate::util::git_diff::DiffScope::SinceBranched);
+        }
+        if self.changed_only {
+            return Some(crate::util::git_diff::DiffScope::ChangedOnly);
+        }
+        None
+    }
+}
+
 /// Symbol metadata filters (11.6). Post-filter that narrows results
 /// by lexical inspection of each symbol's captured signature line —
 /// no format bump, no re-parsing.
@@ -177,6 +232,9 @@ pub enum Commands {
 
         #[command(flatten)]
         scope: ScopeArgs,
+
+        #[command(flatten)]
+        diff: DiffFilterArgs,
     },
 
     /// Find all usages/references of a symbol
@@ -217,6 +275,9 @@ pub enum Commands {
 
         #[command(flatten)]
         scope: ScopeArgs,
+
+        #[command(flatten)]
+        diff: DiffFilterArgs,
     },
 
     /// Find code matching a structural AST pattern (like ast-grep)
@@ -245,6 +306,9 @@ pub enum Commands {
 
         #[command(flatten)]
         scope: ScopeArgs,
+
+        #[command(flatten)]
+        diff: DiffFilterArgs,
     },
 
     /// Incremental update: only re-index changed files
@@ -440,6 +504,9 @@ pub enum Commands {
 
         #[command(flatten)]
         scope: ScopeArgs,
+
+        #[command(flatten)]
+        diff: DiffFilterArgs,
     },
 
     /// Show index statistics
@@ -464,6 +531,9 @@ pub enum Commands {
 
         #[command(flatten)]
         scope: ScopeArgs,
+
+        #[command(flatten)]
+        diff: DiffFilterArgs,
     },
 
     /// Find all functions that call a given function. Uses the persistent call
@@ -491,6 +561,9 @@ pub enum Commands {
 
         #[command(flatten)]
         scope: ScopeArgs,
+
+        #[command(flatten)]
+        diff: DiffFilterArgs,
     },
 
     /// Find all functions called by a given function. Uses the persistent call
@@ -518,6 +591,9 @@ pub enum Commands {
 
         #[command(flatten)]
         scope: ScopeArgs,
+
+        #[command(flatten)]
+        diff: DiffFilterArgs,
     },
 
     /// Symbol-level diff between an arbitrary git revision and the
@@ -670,6 +746,9 @@ pub enum Commands {
 
         #[command(flatten)]
         scope: ScopeArgs,
+
+        #[command(flatten)]
+        diff: DiffFilterArgs,
     },
 
     /// Find pairs of near-duplicate symbols (requires --semantic index)
@@ -716,6 +795,9 @@ pub enum Commands {
 
         #[command(flatten)]
         scope: ScopeArgs,
+
+        #[command(flatten)]
+        diff: DiffFilterArgs,
     },
 
     /// Generate shell completions

@@ -49,6 +49,12 @@ pub struct MetaEnvelope {
     pub ttl_ms: Option<u32>,
     #[serde(rename = "cacheScope", skip_serializing_if = "Option::is_none")]
     pub cache_scope: Option<String>,
+    /// Phase 13.7-D3: observability for diff-context filters. Carried as
+    /// an untyped JSON blob to avoid coupling the protocol layer to the
+    /// CLI's clap struct. Shape: `{ scope, changed_paths, retained, dropped }`.
+    /// Only present when a `--since*` / `--changed-only` flag was passed.
+    #[serde(rename = "diff_filter", skip_serializing_if = "Option::is_none")]
+    pub diff_filter: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Clone, Debug)]

@@ -41,6 +41,9 @@ pub fn build_search_meta(manifest_path: &Path) -> MetaEnvelope {
         traceparent: None,
         ttl_ms: Some(30_000),
         cache_scope: Some("project".into()),
+        // Phase 13.7-D3 diff-filter observability: caller mutates this
+        // field when a `--since*` / `--changed-only` flag was passed.
+        diff_filter: None,
     }
 }
 

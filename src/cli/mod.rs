@@ -432,6 +432,44 @@ fn apply_path_filters(
         .collect()
 }
 
+/// Phase 13.7-D3: resolve the diff scope once per invocation and return a
+/// concrete `ChangedPaths` set, or `None` when no diff flag was passed.
+///
+/// Keeping resolution at the CLI boundary means each match arm pays at most
+/// one `git` round-trip even when post-filter loops over thousands of
+/// results.
+fn resolve_diff_filter(
+    repo_root: &std::path::Path,
+    diff: &args::DiffFilterArgs,
+) -> Result<Option<crate::util::git_diff::ChangedPaths>> {
+    match diff.scope() {
+        Some(scope) => Ok(Some(crate::util::git_diff::ChangedPaths::resolve(
+            repo_root, scope,
+        )?)),
+        None => Ok(None),
+    }
+}
+
+/// Build the JSON `_meta.diff_filter` block when a diff filter was active.
+/// Returned as a `serde_json::Value` so callers can merge it into the
+/// search-envelope's `_meta` payload without coupling protocol types to
+/// the CLI layer.
+fn diff_filter_meta(
+    diff: &args::DiffFilterArgs,
+    changed: Option<&crate::util::git_diff::ChangedPaths>,
+    retained: usize,
+    dropped: usize,
+) -> Option<serde_json::Value> {
+    let scope = diff.scope()?;
+    let changed_paths = changed.map(|c| c.len()).unwrap_or(0);
+    Some(serde_json::json!({
+        "scope": scope.label(),
+        "changed_paths": changed_paths,
+        "retained": retained,
+        "dropped": dropped,
+    }))
+}
+
 pub fn dispatch(cli: Cli) -> Result<()> {
     // Load project config from .vex.toml — anchored to project root, not cwd
     let root_hint = extract_path_hint(&cli.command);
@@ -536,11 +574,15 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             meta,
             why,
             scope,
+            diff,
         } => {
             let semantic = resolve_semantic(semantic, no_semantic, &cfg);
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let metadata_filter = build_metadata_filter(&meta)?;
             let root = resolve_root(None)?.canonicalize()?;
+            // Resolve the diff scope once per invocation. None when no
+            // `--since*` / `--changed-only` flag was set.
+            let changed_paths = resolve_diff_filter(&root, &diff)?;
             let index_path = ensure_index_ready(
                 &root,
                 auto_update,
@@ -556,12 +598,16 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             // `take(limit)` runs AFTER the results are produced, so a narrow
             // include/exclude or substring would silently truncate matches.
             // Bound by `symbol_count()`, not `usize::MAX`, because index-backed
-            // results cannot exceed the symbol table.
-            let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() {
-                reader.symbol_count()
-            } else {
-                limit
-            };
+            // results cannot exceed the symbol table. The 13.7-D3 diff filter
+            // is treated identically — a `--since` window can be much narrower
+            // than the include/exclude globs, so the same `symbol_count()`
+            // ceiling applies.
+            let fetch_limit =
+                if filter_path.is_some() || !path_scope.is_empty() || changed_paths.is_some() {
+                    reader.symbol_count()
+                } else {
+                    limit
+                };
 
             let structural_results = structural::search_with_fuzzy(&reader, &query, fetch_limit);
 
@@ -642,7 +688,23 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 context_path: context_path.as_deref(),
             };
             let results = crate::search::rerank::rerank(&query, &rerank_ctx, results);
-            let results: Vec<_> = apply_path_filters(results, filter_path.as_deref(), &path_scope)
+            // Phase 13.7-D3: apply the diff filter BEFORE `take(limit)` so a
+            // narrow change-set doesn't first get truncated by `--limit` and
+            // then look smaller than it should.
+            let pre_diff_results = apply_path_filters(results, filter_path.as_deref(), &path_scope);
+            let pre_diff_count = pre_diff_results.len();
+            let post_diff_results: Vec<_> = if let Some(ref cp) = changed_paths {
+                pre_diff_results
+                    .into_iter()
+                    .filter(|r| cp.contains(&r.path))
+                    .collect()
+            } else {
+                pre_diff_results
+            };
+            let post_diff_count = post_diff_results.len();
+            let diff_retained = post_diff_count;
+            let diff_dropped = pre_diff_count.saturating_sub(post_diff_count);
+            let results: Vec<_> = post_diff_results
                 .into_iter()
                 .filter(|r| metadata_filter.matches(r.signature.as_deref()))
                 .take(limit)
@@ -666,6 +728,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 // stderr so `vex search Foo --why | jq` keeps working —
                 // stdout stays a pure result list.
                 eprintln!("{}", serde_json::to_string(&trace)?);
+                if let Some(df) =
+                    diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
+                {
+                    eprintln!("{}", serde_json::to_string(&df)?);
+                }
             }
 
             match &format {
@@ -679,7 +746,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         &results,
                     );
                     let manifest_path = config::manifest_path(&root);
-                    let meta = output::build_search_meta(&manifest_path);
+                    let mut meta = output::build_search_meta(&manifest_path);
+                    meta.diff_filter = diff_filter_meta(
+                        &diff,
+                        changed_paths.as_ref(),
+                        diff_retained,
+                        diff_dropped,
+                    );
                     output::print_search_envelope(&results, &signals, meta);
                 }
                 OutputFormat::Text | OutputFormat::Compact => {
@@ -707,9 +780,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             strict,
             why,
             scope,
+            diff,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(None)?.canonicalize()?;
+            let changed_paths = resolve_diff_filter(&root, &diff)?;
             let index_path = ensure_index_ready(
                 &root,
                 auto_update,
@@ -772,10 +847,17 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         None => return false,
                     };
                     let filter_ok = filter_path.as_deref().map_or(true, |fp| path.contains(fp));
-                    filter_ok && path_scope.accept(path)
+                    let scope_ok = path_scope.accept(path);
+                    // Phase 13.7-D3: apply diff filter alongside path filters
+                    // so the trace's `total` reflects the post-diff count
+                    // exactly like it already reflects the post-scope count.
+                    let diff_ok = changed_paths.as_ref().map_or(true, |cp| cp.contains(path));
+                    filter_ok && scope_ok && diff_ok
                 })
                 .collect();
             let total = entries.len();
+            let diff_retained = total;
+            let diff_dropped = hits_before_filter.saturating_sub(total);
             let entries: Vec<_> = entries.into_iter().take(limit).collect();
 
             // Prefix-suggestion fallback runs ONLY when no exact hits
@@ -846,6 +928,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     },
                 };
                 eprintln!("{}", serde_json::to_string(&trace)?);
+                if let Some(df) =
+                    diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
+                {
+                    eprintln!("{}", serde_json::to_string(&df)?);
+                }
             }
 
             Ok(())
@@ -857,9 +944,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             limit,
             why,
             scope,
+            diff,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(path)?;
+            // Resolve diff filter against the project root. Pattern uses a
+            // non-canonicalized root; that's fine for git, which accepts any
+            // dir inside the work tree.
+            let changed_paths = resolve_diff_filter(&root, &diff)?;
             let language = crate::parse::language::Language::from_extension(&lang)
                 .or(match lang.as_str() {
                     "rust" => Some(crate::parse::language::Language::Rust),
@@ -889,8 +981,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
 
             let start = Instant::now();
             // Over-fetch when scope filters are active so post-filter truncation
-            // does not silently drop matches the user expects to see.
-            let fetch_limit = if path_scope.is_empty() {
+            // does not silently drop matches the user expects to see. Diff
+            // filter is treated identically — see Search handler note.
+            let fetch_limit = if path_scope.is_empty() && changed_paths.is_none() {
                 limit
             } else {
                 usize::MAX
@@ -899,11 +992,24 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let (raw_matches, trace) =
                 crate::pattern::scan_with_mode(&root, &pattern, language, fetch_limit, excludes)?;
 
-            let matches: Vec<_> = raw_matches
+            // Apply scope first, then diff filter. Track counts for the
+            // `--why` diff_filter trace.
+            let pre_diff: Vec<_> = raw_matches
                 .into_iter()
                 .filter(|m| path_scope.accept(&m.path))
-                .take(limit)
                 .collect();
+            let pre_diff_count = pre_diff.len();
+            let post_diff: Vec<_> = if let Some(ref cp) = changed_paths {
+                pre_diff
+                    .into_iter()
+                    .filter(|m| cp.contains(&m.path))
+                    .collect()
+            } else {
+                pre_diff
+            };
+            let diff_retained = post_diff.len();
+            let diff_dropped = pre_diff_count.saturating_sub(diff_retained);
+            let matches: Vec<_> = post_diff.into_iter().take(limit).collect();
             let elapsed = start.elapsed();
 
             match &format {
@@ -950,6 +1056,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 // stderr keeps stdout a pure result stream — mirrors
                 // `vex search --why` so `vex pattern 'pat' --why | jq` works.
                 eprintln!("{}", serde_json::to_string(&trace)?);
+                if let Some(df) =
+                    diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
+                {
+                    eprintln!("{}", serde_json::to_string(&df)?);
+                }
             }
 
             Ok(())
@@ -1326,12 +1437,15 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             filter_path,
             path,
             scope,
+            diff,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(path)?;
+            let changed_paths = resolve_diff_filter(&root, &diff)?;
             // Over-fetch when scope filters are active so post-filter truncation
-            // does not silently drop matches the user expects to see.
-            let fetch_limit = if path_scope.is_empty() {
+            // does not silently drop matches the user expects to see. Same
+            // treatment for the 13.7-D3 diff filter.
+            let fetch_limit = if path_scope.is_empty() && changed_paths.is_none() {
                 limit
             } else {
                 usize::MAX
@@ -1345,7 +1459,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             )?;
             let matches: Vec<_> = matches
                 .into_iter()
-                .filter(|m| path_scope.accept(&m.path))
+                .filter(|m| {
+                    path_scope.accept(&m.path)
+                        && changed_paths
+                            .as_ref()
+                            .map_or(true, |cp| cp.contains(&m.path))
+                })
                 .take(limit)
                 .collect();
 
@@ -1387,11 +1506,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             path,
             limit,
             scope,
+            diff,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(path)?;
+            let changed_paths = resolve_diff_filter(&root, &diff)?;
             let start = Instant::now();
-            let fetch_limit = if path_scope.is_empty() {
+            let fetch_limit = if path_scope.is_empty() && changed_paths.is_none() {
                 limit
             } else {
                 usize::MAX
@@ -1400,7 +1521,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 crate::hierarchy::find_implementations(&root, &name, fetch_limit, excludes)?;
             let matches: Vec<_> = matches
                 .into_iter()
-                .filter(|m| path_scope.accept(&m.path))
+                .filter(|m| {
+                    path_scope.accept(&m.path)
+                        && changed_paths
+                            .as_ref()
+                            .map_or(true, |cp| cp.contains(&m.path))
+                })
                 .take(limit)
                 .collect();
             let elapsed = start.elapsed();
@@ -1449,6 +1575,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             auto_update,
             no_stale_check,
             scope,
+            diff,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             cmd_callgraph(
@@ -1463,6 +1590,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 &format,
                 excludes,
                 &path_scope,
+                &diff,
             )
         }
         Commands::Callees {
@@ -1472,6 +1600,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             auto_update,
             no_stale_check,
             scope,
+            diff,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             cmd_callgraph(
@@ -1486,6 +1615,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 &format,
                 excludes,
                 &path_scope,
+                &diff,
             )
         }
         Commands::Diff {
@@ -1708,9 +1838,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
             why,
             scope,
+            diff,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(path)?.canonicalize()?;
+            let changed_paths = resolve_diff_filter(&root, &diff)?;
             let index_path = ensure_index_ready(
                 &root,
                 auto_update,
@@ -1733,7 +1865,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             // `find_similar`'s internal `truncate(limit)` would cap the
             // count and the trace would silently misreport
             // "nothing dropped" when in fact `--limit` ate results.
-            let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() || why {
+            let fetch_limit = if filter_path.is_some()
+                || !path_scope.is_empty()
+                || changed_paths.is_some()
+                || why
+            {
                 reader.symbol_count()
             } else {
                 limit
@@ -1765,7 +1901,10 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     let filter_ok = filter_path
                         .as_deref()
                         .map_or(true, |fp| m.path.contains(fp));
-                    filter_ok && path_scope.accept(&m.path)
+                    let diff_ok = changed_paths
+                        .as_ref()
+                        .map_or(true, |cp| cp.contains(&m.path));
+                    filter_ok && path_scope.accept(&m.path) && diff_ok
                 })
                 .collect();
             // Capture post-filter count BEFORE the `take(limit)`
@@ -1830,6 +1969,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     },
                 };
                 eprintln!("{}", serde_json::to_string(&trace)?);
+                let diff_retained = candidates_after_filter;
+                let diff_dropped = candidates_before_filter.saturating_sub(candidates_after_filter);
+                if let Some(df) =
+                    diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
+                {
+                    eprintln!("{}", serde_json::to_string(&df)?);
+                }
             }
 
             Ok(())
@@ -1845,9 +1991,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
             why,
             scope,
+            diff,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(path)?.canonicalize()?;
+            let changed_paths = resolve_diff_filter(&root, &diff)?;
             let index_path = ensure_index_ready(
                 &root,
                 auto_update,
@@ -1873,7 +2021,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             // output — without this, `find_duplicates`' internal
             // `truncate(limit)` would silently misreport
             // "nothing dropped" when `--limit` ate results.
-            let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() || why {
+            let fetch_limit = if filter_path.is_some()
+                || !path_scope.is_empty()
+                || changed_paths.is_some()
+                || why
+            {
                 usize::MAX
             } else {
                 limit
@@ -1892,7 +2044,15 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     let filter_ok = filter_path
                         .as_deref()
                         .map_or(true, |fp| a.path.contains(fp) || b.path.contains(fp));
-                    filter_ok && path_scope.accept_pair(&a.path, &b.path)
+                    // Pair semantics for the diff filter: keep the pair when
+                    // EITHER symbol's file is in the change set — mirrors the
+                    // existing `accept_pair` mode and matches how a reviewer
+                    // thinks ("did this PR introduce a near-duplicate of
+                    // anything?").
+                    let diff_ok = changed_paths
+                        .as_ref()
+                        .map_or(true, |cp| cp.contains(&a.path) || cp.contains(&b.path));
+                    filter_ok && path_scope.accept_pair(&a.path, &b.path) && diff_ok
                 })
                 .collect();
             // Pre-`--limit` count for symmetric trace reporting (see
@@ -1937,6 +2097,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     },
                 };
                 eprintln!("{}", serde_json::to_string(&trace)?);
+                let diff_retained = pairs_after_filter;
+                let diff_dropped = pairs_before_filter.saturating_sub(pairs_after_filter);
+                if let Some(df) =
+                    diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
+                {
+                    eprintln!("{}", serde_json::to_string(&df)?);
+                }
             }
 
             Ok(())
@@ -2151,14 +2318,18 @@ fn cmd_callgraph(
     format: &OutputFormat,
     excludes: &[String],
     path_scope: &scope::PathScope,
+    diff: &args::DiffFilterArgs,
 ) -> Result<()> {
     let root = resolve_root(path)?;
+    let changed_paths = resolve_diff_filter(&root, diff)?;
     let label = if is_callers { "callers" } else { "callees" };
     let start = std::time::Instant::now();
     // Over-fetch when scope filters are active. Both the persistent FST and
     // live-scan paths accept `limit` as a hard cap, so without the inflation
-    // a narrow `--include` would silently truncate matches.
-    let fetch_limit = if path_scope.is_empty() {
+    // a narrow `--include` would silently truncate matches. The 13.7-D3
+    // diff filter is treated the same way — a narrow change-set is just a
+    // tighter scope from the perspective of the post-filter.
+    let fetch_limit = if path_scope.is_empty() && changed_paths.is_none() {
         limit
     } else {
         usize::MAX
@@ -2228,7 +2399,12 @@ fn cmd_callgraph(
     };
     let matches: Vec<_> = matches
         .into_iter()
-        .filter(|m| path_scope.accept(&m.path))
+        .filter(|m| {
+            path_scope.accept(&m.path)
+                && changed_paths
+                    .as_ref()
+                    .map_or(true, |cp| cp.contains(&m.path))
+        })
         .take(limit)
         .collect();
     let elapsed = start.elapsed();
