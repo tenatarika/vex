@@ -6,6 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-05-25
+
+Phase 13 lands the agent-integration foundation: a versioned response
+envelope with per-result `signals` and `rank_percentile`, a ranking-
+evaluation harness pinning nDCG@10/recall@10/MRR, smart `show`
+truncation, diff-context filters across every search-shaped command,
+LLM-tuned MCP tool descriptions, and `vex bundle` — one CLI subcommand
+plus one MCP tool that replaces the four-round-trip
+`show → callers → callees → similar` loop with a single envelope.
+Format stays v6; `MIN_SUPPORTED_VERSION` stays at 3 — older indexes
+keep opening. The pre-1.9 bare-array `vex search --format json` shape
+is opt-in via `VEX_JSON_ENVELOPE=0` and slated for removal in v2.0.
+
+Also closes a long-running honesty gap surfaced by the v1.8.2 external
+review: a new `docs/LIMITATIONS.md` documents `callers`-is-function-
+scoped, the T1/T2 `usages` quality tiers, and the dynamic-dispatch
+patterns that static analysis cannot see. `--strict` help text no
+longer promises a deferral that shipped three minors ago.
+
 ### Added
 
 - **`vex bundle` (Phase 13.2)** — unified multi-source bundle primitive.
@@ -67,6 +86,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `off`, case-insensitive) to opt out and restore the pre-1.9
   bare-array shape. The opt-out is a migration aid only and will be
   removed in v2.0.
+
+### Documentation
+
+- New `docs/LIMITATIONS.md` documents static-analysis coverage gaps
+  surfaced by the v1.8.2 external review: `vex callers` is function-
+  scoped (module-level call sites and decorator dispatch are
+  invisible); `vex usages` quality varies across the T1 / T2 language
+  tiers; dynamic dispatch (`getattr`, factory strings, decorator
+  routing) cannot be statically resolved. Includes a coverage matrix,
+  concrete repros, and the `vex grep` escape-hatch recommendation.
+- `--strict` help text on `vex usages` no longer claims the
+  `reference_edges` section is "deferred until 11.1.3" — Phase 11.1
+  shipped in v1.8.0. Replaced with an accurate description that names
+  the five binder-supported languages (Rust / TypeScript / Python /
+  C# / C++) and points at `docs/LIMITATIONS.md`.
+- `--why` help text on `vex usages` documents that the `mode:
+  "text_scan"` label is historical — the underlying data path is the
+  FST lookup, populated from an AST identifier walk on T1 languages
+  and a line-scan on T2.
+- README gains a `## Known limitations` section linking the same
+  surface. `vex callers --help` and `vex usages --help` doc-comments
+  point at `docs/LIMITATIONS.md` so agents reading the schema discover
+  the coverage gaps without a separate fetch.
 
 ## [1.8.2] - 2026-05-23
 
