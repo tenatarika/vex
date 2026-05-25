@@ -210,7 +210,14 @@ fn match_tag(path: &str, acceptable: &[String]) -> Option<String> {
 ///   3. Directory-prefix match — `actual` starts with `{acceptable}/`
 ///      (so a golden of `src/search` matches `src/search/mod.rs` but
 ///      NOT `src/search_old.rs`).
+///
+/// **Cross-platform:** `IndexReader` returns paths with the host
+/// separator — `\` on Windows, `/` elsewhere. Golden-set entries always
+/// use `/`. Normalize `actual` at the comparison boundary so the same
+/// golden set scores identically on every platform; without this, every
+/// query scored nDCG/recall/MRR = 0 on Windows because no shape matched.
 fn path_matches(actual: &str, acceptable: &str) -> bool {
+    let actual = actual.replace('\\', "/");
     actual == acceptable
         || actual.ends_with(&format!("/{acceptable}"))
         || actual.starts_with(&format!("{acceptable}/"))
@@ -432,6 +439,31 @@ acceptable_paths = []
             match_tag("src/foobar.rs", &acceptable),
             None,
             "substring without separator must not match"
+        );
+    }
+
+    #[test]
+    fn path_matches_normalizes_windows_separator() {
+        // IndexReader returns host-separator paths on Windows
+        // (`src\store\reader.rs`). Golden TOML always uses forward
+        // slashes. Without normalization, every comparison failed and
+        // every query reported nDCG/recall/MRR = 0 on Windows CI.
+        assert!(
+            path_matches("src\\store\\reader.rs", "src/store/reader.rs"),
+            "exact-match shape must work across separators"
+        );
+        assert!(
+            path_matches("src\\store\\reader.rs", "store/reader.rs"),
+            "trailing-`/file` shape must work across separators"
+        );
+        assert!(
+            path_matches("src\\store\\reader.rs", "src/store"),
+            "directory-prefix shape must work across separators"
+        );
+        // Neighbour-directory rule still holds after normalization.
+        assert!(
+            !path_matches("src\\search_old.rs", "src/search"),
+            "post-normalize H2 protection must still reject neighbours"
         );
     }
 
