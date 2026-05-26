@@ -174,19 +174,40 @@ jobs:
             vex-*.tar.gz
             vex-*.zip
 
+  # Generate a prebuilt-binary Homebrew formula so `brew install` unpacks
+  # the platform-specific tarball produced by the build matrix above
+  # instead of running `cargo install` from source. Source builds pulled
+  # ~300 deps including ring + fastembed + ort, which OOM-killed clang
+  # on memory-constrained boxes and forced every brew user through a
+  # ~5-minute compile cycle — fixed 2026-05-26 after a tester on M4 Pro
+  # hit the `Killed: 9` failure path.
   update-homebrew:
     needs: release
     runs-on: ubuntu-latest
     steps:
       - name: Get version
         id: version
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+          } >> $GITHUB_OUTPUT
 
-      - name: Download source archive and compute SHA256
+      - name: Download prebuilt archives and compute SHA256s
         id: sha
         run: |
-          curl -sL "https://github.com/tenatarika/vex/archive/refs/tags/${{ steps.version.outputs.tag }}.tar.gz" -o source.tar.gz
-          echo "sha256=$(shasum -a 256 source.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          BASE="https://github.com/tenatarika/vex/releases/download/${{ steps.version.outputs.tag }}"
+
+          curl -sL --fail "${BASE}/vex-aarch64-apple-darwin.tar.gz" -o mac-arm.tar.gz
+          curl -sL --fail "${BASE}/vex-x86_64-unknown-linux-gnu.tar.gz" -o linux-x86.tar.gz
+
+          {
+            echo "mac_arm=$(sha256sum mac-arm.tar.gz | cut -d' ' -f1)"
+            echo "linux_x86=$(sha256sum linux-x86.tar.gz | cut -d' ' -f1)"
+          } >> $GITHUB_OUTPUT
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
@@ -195,11 +216,59 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
-      - name: Update Formula
+      - name: Generate prebuilt-binary Formula
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA_MAC_ARM: ${{ steps.sha.outputs.mac_arm }}
+          SHA_LINUX_X86: ${{ steps.sha.outputs.linux_x86 }}
         run: |
+          set -euo pipefail
           cd homebrew-tap
-          sed -i "s|url \".*\"|url \"https://github.com/tenatarika/vex/archive/refs/tags/${{ steps.version.outputs.tag }}.tar.gz\"|" Formula/vex.rb
-          sed -i "s|sha256 \".*\"|sha256 \"${{ steps.sha.outputs.sha256 }}\"|" Formula/vex.rb
+
+          # Full formula regeneration via heredoc — `sed`-patching only
+          # the url/sha lines (the old approach) couldn't introduce the
+          # `on_macos { on_arm { ... } }` / `on_linux { on_intel { ... } }`
+          # structure needed for platform-specific prebuilt URLs.
+          cat > Formula/vex.rb <<EOF
+          class Vex < Formula
+            desc "Fast hybrid structural + semantic code search (vector + index)"
+            homepage "https://github.com/tenatarika/vex"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/tenatarika/vex/releases/download/${TAG}/vex-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_MAC_ARM}"
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "https://github.com/tenatarika/vex/releases/download/${TAG}/vex-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX_X86}"
+              end
+            end
+
+            head do
+              url "https://github.com/tenatarika/vex.git", branch: "main"
+              depends_on "rust" => :build
+            end
+
+            def install
+              if build.head?
+                system "cargo", "install", *std_cargo_args
+              else
+                bin.install "vex"
+              end
+            end
+
+            test do
+              assert_match "vex #{version}", shell_output("#{bin}/vex --version")
+            end
+          end
+          EOF
           cat Formula/vex.rb
 
       - name: Commit and push
@@ -208,5 +277,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/vex.rb
-          git commit -m "bump vex to ${{ steps.version.outputs.tag }}"
+          git commit -m "bump vex to ${{ steps.version.outputs.tag }} (prebuilt)"
           git push
