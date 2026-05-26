@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Phase 14.4 — wire-format honesty rename.** `usages --why` JSON trace
+  `mode` field now emits `"fst_lookup"` instead of `"text_scan"` on the
+  non-strict path; the underlying data source is and always was an FST
+  lookup, not a text scan. A new `mode_legacy` field carries the v1.8.x
+  label (`"text_scan"`) for back-compat with consumers that learned the
+  contract before the rename. `mode_legacy` will be removed in v1.12.
+
 ### Added
 
 - **Phase 14.1 — module-level callers.** `vex callers <fn>` now reports

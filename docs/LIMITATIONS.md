@@ -95,11 +95,12 @@ C++.
 - Reflection / `getattr` / dynamic imports
 - Macro-expanded references (Rust `macro_rules!`, C++ `#define`)
 
-**`mode: "text_scan"` in `--why` output is a historical label.** The
-underlying data source is the FST, not a live tree-sitter scan. For
-T1 languages the FST itself was populated from an AST walk; for T2 it
-came from a regex. The label name predates the AST walk — kept for
-back-compat with agents that learned the contract in v1.8.0.
+**`mode: "fst_lookup"` in `--why` output** (Phase 14.4 rename, was
+`text_scan` in v1.8 – v1.9). The underlying data source is the refs
+FST, not a live tree-sitter scan. For T1 languages the FST itself was
+populated from an AST walk; for T2 it came from a regex. The legacy
+label is still emitted as `mode_legacy` for v1.9.x consumers — slated
+for removal in v1.12.
 
 **Repro:**
 

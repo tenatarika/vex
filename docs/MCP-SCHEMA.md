@@ -268,7 +268,8 @@ interactive use but off by default in automated pipelines.
 
 ```json
 {
-  "mode": "text_scan",
+  "mode": "fst_lookup",
+  "mode_legacy": "text_scan",
   "hits_before_filter": 17,
   "hits_after_filter": 4,
   "prefix_suggestions": null,
@@ -281,7 +282,12 @@ interactive use but off by default in automated pipelines.
 ```
 
 - `mode` — `"strict"` when the v5 `reference_edges` section was
-  queried, `"text_scan"` for the legacy refs FST.
+  queried, `"fst_lookup"` for the refs FST (Phase 14.4 rename;
+  emitted as `"text_scan"` in v1.8 – v1.9).
+- `mode_legacy` — back-compat alias mirroring `mode`, except it
+  keeps emitting the pre-14.4 label (`"text_scan"`) when `mode ==
+  "fst_lookup"`. Slated for removal in v1.12 — read `mode` if you
+  can; both fields point at the same data path.
 - `hits_before_filter` vs `hits_after_filter` — pin "no refs anywhere"
   vs "refs dropped by the path filter".
 - `prefix_suggestions` — `n` when zero exact hits and the
