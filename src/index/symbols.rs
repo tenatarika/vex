@@ -20,6 +20,10 @@ pub enum SymbolKind {
     Property = 10,
     Package = 11,
     Heading = 12,
+    /// Synthetic per-file symbol (`<module:relpath>`) carrying module-scope
+    /// call edges (Phase 14.1). Excluded from symbol FST, outline, and
+    /// ranked search; surfaces only as a resolved caller in `vex callers`.
+    Module = 13,
 }
 
 impl SymbolKind {
@@ -38,10 +42,15 @@ impl SymbolKind {
             Self::Property => "property",
             Self::Package => "package",
             Self::Heading => "heading",
+            Self::Module => "module",
         }
     }
 }
 
+// User-facing list of `--kind` filter values. `module` accepts via FromStr
+// (kept for as_str/Display roundtrip symmetry) but is intentionally omitted
+// here — `SymbolKind::Module` is a Phase 14.1 synthetic kind, invisible to
+// search/outline, so advertising it as a filter would be misleading.
 #[derive(Debug, thiserror::Error)]
 #[error("unknown symbol kind: \"{0}\". Valid: function (fn), method, struct, class, interface, trait, enum, type_alias (type), impl, constant (const), property (prop), package (pkg), heading (h)")]
 pub struct ParseSymbolKindError(String);
@@ -64,6 +73,7 @@ impl FromStr for SymbolKind {
             "property" | "prop" => Ok(Self::Property),
             "package" | "pkg" => Ok(Self::Package),
             "heading" | "h" => Ok(Self::Heading),
+            "module" => Ok(Self::Module),
             _ => Err(ParseSymbolKindError(s.to_owned())),
         }
     }
@@ -87,6 +97,7 @@ impl TryFrom<u8> for SymbolKind {
             10 => Ok(Self::Property),
             11 => Ok(Self::Package),
             12 => Ok(Self::Heading),
+            13 => Ok(Self::Module),
             other => Err(other),
         }
     }
@@ -157,6 +168,9 @@ mod tests {
             "package".parse::<SymbolKind>().unwrap(),
             SymbolKind::Package
         );
+        // Phase 14.1: "module" is the canonical string for the synthetic
+        // per-file Module kind. FromStr must accept it.
+        assert_eq!("module".parse::<SymbolKind>().unwrap(), SymbolKind::Module);
     }
 
     #[test]
@@ -178,6 +192,8 @@ mod tests {
 
     #[test]
     fn as_str_roundtrip() {
+        // Phase 14.1: Module added as variant 13. The array must include it
+        // so the roundtrip test catches any as_str / FromStr mismatch.
         let all = [
             SymbolKind::Function,
             SymbolKind::Method,
@@ -192,6 +208,7 @@ mod tests {
             SymbolKind::Property,
             SymbolKind::Package,
             SymbolKind::Heading,
+            SymbolKind::Module,
         ];
         for kind in all {
             let parsed: SymbolKind = kind.as_str().parse().unwrap();
@@ -207,6 +224,8 @@ mod tests {
 
     #[test]
     fn try_from_u8_roundtrip() {
+        // Phase 14.1: Module (discriminant 13) added. Include it here so
+        // any TryFrom<u8> arm omission causes this test to fail.
         let all = [
             SymbolKind::Function,
             SymbolKind::Method,
@@ -221,6 +240,7 @@ mod tests {
             SymbolKind::Property,
             SymbolKind::Package,
             SymbolKind::Heading,
+            SymbolKind::Module,
         ];
         for kind in all {
             let val = kind as u8;
@@ -231,8 +251,28 @@ mod tests {
 
     #[test]
     fn try_from_u8_invalid_returns_err() {
+        // 13 is Module (Phase 14.1). Use high values so the next phase
+        // adding `Label = 14` etc. doesn't have to update this probe.
         assert_eq!(SymbolKind::try_from(99), Err(99));
-        assert_eq!(SymbolKind::try_from(13), Err(13));
+        assert_eq!(SymbolKind::try_from(200), Err(200));
+    }
+
+    // --- Phase 14.1 RED tests ---------------------------------------------------
+
+    #[test]
+    fn module_kind_has_discriminant_13() {
+        // The binary format stores kind as a raw u8. Discriminant 13 is
+        // reserved for the synthetic per-file Module symbol that carries
+        // module-scope call edges. Changing this discriminant would be a
+        // binary-format breaking change; pin it explicitly.
+        assert_eq!(SymbolKind::Module as u8, 13);
+    }
+
+    #[test]
+    fn module_kind_display_returns_module() {
+        // Display (and as_str) must return "module" so JSON output and
+        // --kind filters can identify Module symbols by string comparison.
+        assert_eq!(SymbolKind::Module.to_string(), "module");
     }
 }
 

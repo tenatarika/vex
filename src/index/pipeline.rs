@@ -492,6 +492,13 @@ fn vector_dim_for(embedder_id: &str, vectors: &[Vec<f32>]) -> u32 {
 /// Returns `(fst_bytes, postings_bytes, stats_bytes)`. The triple is empty
 /// when there are no documents (no symbols across all parsed files).
 fn build_bm25_index(parsed: &[ParsedFile]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    // `doc_count` counts every `ParsedSymbol`, including synthetic
+    // `SymbolKind::Module` rows (Phase 14.1) that the inner loop skips
+    // when populating term bags. The Module slots still reserve a
+    // zero-length doc-length entry in BM25 stats so that `sym_idx` —
+    // which is incremented for *every* symbol regardless of kind — stays
+    // aligned with `SymbolRecord` positions in the records section. Net
+    // overhead: 2 bytes per indexed file in the stats footer.
     let doc_count: usize = parsed.iter().map(|f| f.symbols.len()).sum();
     if doc_count == 0 {
         return Ok((Vec::new(), Vec::new(), Vec::new()));
@@ -500,6 +507,14 @@ fn build_bm25_index(parsed: &[ParsedFile]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)
     let mut sym_idx: u32 = 0;
     for file in parsed {
         for sym in &file.symbols {
+            // Phase 14.1: synthetic Module symbols carry only call edges,
+            // never BM25 content. Skip the bag-building but advance
+            // `sym_idx` so the doc-id alignment with `SymbolRecord`
+            // positions stays correct (doc slot stays zero-length).
+            if sym.kind == crate::index::symbols::SymbolKind::Module {
+                sym_idx += 1;
+                continue;
+            }
             let mut bag = String::with_capacity(256);
             bag.push_str(&sym.name);
             bag.push(' ');
@@ -554,14 +569,31 @@ fn resolve_call_edges(parsed: &[ParsedFile]) -> Vec<crate::store::call_graph::Ca
         }
     }
 
+    // Phase 14.1: per-file synthetic Module symbol name lookup key. Only
+    // allocate the `<module:path>` string when the file actually contains a
+    // sentinel edge — empty `caller_fn_name` + `caller_fn_line == 0` is the
+    // marker emitted by `callgraph::extract_call_edges` for module-scope
+    // calls. By tree-sitter grammar invariants no real function definition
+    // has an empty name or line 0, so this conjunction is collision-free.
     let mut out = Vec::new();
     for file in parsed {
+        let module_sym_name = file
+            .call_edges
+            .iter()
+            .any(|e| e.caller_fn_name.is_empty() && e.caller_fn_line == 0)
+            .then(|| format!("<module:{}>", file.path));
         for edge in &file.call_edges {
-            let Some(&caller_sym_idx) = sym_idx_of.get(&(
-                file.path.as_str(),
-                edge.caller_fn_name.as_str(),
-                edge.caller_fn_line,
-            )) else {
+            let (caller_name, caller_line) =
+                if edge.caller_fn_name.is_empty() && edge.caller_fn_line == 0 {
+                    // `module_sym_name` is `Some` whenever any sentinel
+                    // exists in this file — proven by the `any(...)` above.
+                    (module_sym_name.as_deref().unwrap_or(""), 1)
+                } else {
+                    (edge.caller_fn_name.as_str(), edge.caller_fn_line)
+                };
+            let Some(&caller_sym_idx) =
+                sym_idx_of.get(&(file.path.as_str(), caller_name, caller_line))
+            else {
                 continue;
             };
             out.push(crate::store::call_graph::CallEdgeBuilder {

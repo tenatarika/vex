@@ -256,13 +256,19 @@ fn write_index_to(
 
     let (fst_bytes, posting_bytes) = refs_fst::build_refs_fst(&refs_input)?;
 
-    // Build symbol FST: name + CamelCase sub-tokens → symbol indices
+    // Build symbol FST: name + CamelCase sub-tokens → symbol indices.
+    // Phase 14.1: skip synthetic `SymbolKind::Module` rows so `<module:path>`
+    // is never returned by `vex search` — but ADVANCE `idx` for them so
+    // every other entry's index keeps aligning with its `SymbolRecord`
+    // position in the records section.
     let sym_entries: Vec<(String, u32)> = {
         let mut entries = Vec::new();
         let mut idx: u32 = 0;
         for file in parsed {
             for sym in &file.symbols {
-                entries.push((sym.name.clone(), idx));
+                if sym.kind != crate::index::symbols::SymbolKind::Module {
+                    entries.push((sym.name.clone(), idx));
+                }
                 idx += 1;
             }
         }

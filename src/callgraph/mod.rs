@@ -203,6 +203,11 @@ pub fn extract_call_edges(content: &str, lang: Language) -> Vec<(String, usize, 
             .min_by_key(|f| f.end_byte - f.start_byte)
         {
             edges.push((f.name.clone(), f.line, call.callee.clone(), call.line));
+        } else {
+            // Phase 14.1: module-scope call site (no enclosing fn). Emit a
+            // sentinel edge — `pipeline::resolve_call_edges` rewrites it to
+            // the synthetic `<module:path>` symbol injected by `parse_file`.
+            edges.push((String::new(), 0, call.callee.clone(), call.line));
         }
     }
     edges

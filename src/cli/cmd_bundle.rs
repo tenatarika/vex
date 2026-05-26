@@ -201,6 +201,18 @@ fn signals_fst_hit() -> Signals {
     }
 }
 
+/// Phase 14.1 — `CallMatch` doesn't carry `SymbolKind`, so derive the
+/// bundled `kind` field from the caller name. Synthetic per-file Module
+/// symbols are named `<module:path>` by `parse::parse_file`; everything
+/// else is a real callable (fn / method / closure).
+fn caller_kind(name: &str) -> &'static str {
+    if name.starts_with("<module:") {
+        "module"
+    } else {
+        "function"
+    }
+}
+
 fn signals_semantic(rank_in_similar: u32) -> Signals {
     Signals {
         fst_hit: false,
@@ -344,8 +356,11 @@ pub fn assemble_symbol(
     for (i, cm) in callers.iter().enumerate() {
         items.push(BundleItem {
             core: BundleCoreItem {
+                // Phase 14.1: synthetic Module callers carry kind="module".
+                // `CallMatch` doesn't carry kind, so derive from the name
+                // prefix — `<module:` is reserved for these synthetic rows.
+                kind: caller_kind(&cm.name).to_string(),
                 name: cm.name.clone(),
-                kind: "function".to_string(),
                 path: cm.path.clone(),
                 line: cm.line,
                 signature: None,
@@ -660,8 +675,8 @@ pub fn assemble_pr_impact(
     for (i, (name, path, line)) in transitive_callers.into_iter().enumerate() {
         items.push(BundleItem {
             core: BundleCoreItem {
+                kind: caller_kind(&name).to_string(),
                 name,
-                kind: "function".to_string(),
                 path,
                 line,
                 signature: None,

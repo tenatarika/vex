@@ -29,6 +29,14 @@ fn indices_to_results(
         .iter()
         .filter_map(|&idx| {
             let rec = reader.symbol(idx as usize)?;
+            // Phase 14.1 — belt-and-braces against a stale FST that still
+            // points at a Module record (e.g. an index written by a
+            // pre-14.1 build but read by a 14.1 binary). The writer
+            // exclusion is the primary defence; this guards the
+            // inverted-index fallback path at line 17 too.
+            if SymbolKind::try_from(rec.kind) == Ok(SymbolKind::Module) {
+                return None;
+            }
             let name = reader.read_string(rec.name_offset).to_string();
             let path = reader.read_string(rec.file_offset).to_string();
             let sig = {

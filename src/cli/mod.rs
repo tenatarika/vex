@@ -2524,6 +2524,9 @@ fn cmd_outline(file: &std::path::Path, kind: Option<&str>, format: &OutputFormat
     let symbols: Vec<_> = parsed
         .symbols
         .iter()
+        // Phase 14.1: synthetic `<module:path>` symbols are invisible to
+        // outline regardless of `--kind` filter.
+        .filter(|s| s.kind != crate::index::symbols::SymbolKind::Module)
         .filter(|s| kind_filter.map_or(true, |k| s.kind == k))
         .collect();
 
