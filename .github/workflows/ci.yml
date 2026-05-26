@@ -33,3 +33,60 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  # Surface CLI / integration test failures as their own PR check.
+  # Duplicates work done in `test` on Linux, but the Swatinem cache
+  # makes the second compile cheap and the separate badge is worth it
+  # for the assert_cmd suites (cli_*_test.rs) which fail in cross-cutting
+  # ways unrelated to unit tests.
+  cli-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: rui314/setup-mold@v1
+      - name: Run cli_*_test.rs suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          FLAGS=()
+          for f in tests/cli_*_test.rs; do
+            FLAGS+=(--test "$(basename "$f" .rs)")
+          done
+          cargo test "${FLAGS[@]}"
+
+  # MSRV gate matches package.rust-version in Cargo.toml. `cargo check`
+  # is enough — running the full test suite on an older toolchain adds
+  # little signal beyond "does it still compile".
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.80
+      - uses: Swatinem/rust-cache@v2
+      - uses: rui314/setup-mold@v1
+      - run: cargo check --workspace --all-targets --locked
+
+  # Beta gives early warning about regressions in upcoming stable.
+  # Allowed to fail — informational only.
+  beta:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@beta
+      - uses: Swatinem/rust-cache@v2
+      - uses: rui314/setup-mold@v1
+      - run: cargo test --workspace
+
+  # Compile benches without running them — catches API drift in
+  # benches/bundle.rs (custom criterion harness) before it lands on main.
+  benches:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: rui314/setup-mold@v1
+      - run: cargo bench --workspace --no-run
