@@ -54,7 +54,7 @@ fn write_and_index_rust_project(dir: &Path) {
 // ── usages ───────────────────────────────────────────────────────────
 
 #[test]
-fn usages_why_emits_text_scan_trace_with_hit_counts() {
+fn usages_why_emits_fst_lookup_trace_with_hit_counts() {
     let tmp = TempDir::new().unwrap();
     write_and_index_rust_project(tmp.path());
 
@@ -65,10 +65,18 @@ fn usages_why_emits_text_scan_trace_with_hit_counts() {
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     let trace = parse_trace(&stderr);
 
+    // Phase 14.4: `mode` carries the new label `fst_lookup` (renamed from
+    // `text_scan`); `mode_legacy` keeps the v1.8.x label for back-compat
+    // until v1.12.
     assert_eq!(
         trace["mode"].as_str(),
+        Some("fst_lookup"),
+        "default usages must run via FST-lookup path; got: {trace}",
+    );
+    assert_eq!(
+        trace["mode_legacy"].as_str(),
         Some("text_scan"),
-        "default usages must run via text-scan path; got: {trace}",
+        "back-compat alias `mode_legacy` must carry the pre-14.4 label; got: {trace}",
     );
     let before = trace["hits_before_filter"]
         .as_u64()
@@ -101,6 +109,8 @@ fn usages_why_strict_records_strict_mode() {
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     let trace = parse_trace(&stderr);
     assert_eq!(trace["mode"].as_str(), Some("strict"));
+    // Phase 14.4: on the strict path the legacy alias mirrors `mode`.
+    assert_eq!(trace["mode_legacy"].as_str(), Some("strict"));
 }
 
 #[test]
@@ -118,14 +128,14 @@ fn usages_why_emits_prefix_suggestions_when_no_exact_hit() {
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     let trace = parse_trace(&stderr);
     assert_eq!(trace["hits_after_filter"].as_u64(), Some(0));
-    // The text_scan path engages prefix-suggestion fallback when
+    // The FST-lookup path engages prefix-suggestion fallback when
     // there are zero exact hits. Pin both shape (present) and that
     // it found at least one suggestion (the `payment_processor`
     // identifier — though the actual count is grammar-driven so we
     // only assert >= 0, not a specific value).
     assert!(
         trace["prefix_suggestions"].is_u64(),
-        "prefix_suggestions must be populated on text_scan zero-hit, got: {trace}",
+        "prefix_suggestions must be populated on fst_lookup zero-hit, got: {trace}",
     );
 }
 

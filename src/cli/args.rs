@@ -279,12 +279,13 @@ pub enum Commands {
         strict: bool,
 
         /// Append a JSON usages-trace to stderr after the result list:
-        /// `mode` (`strict` = v5 binder edges; `text_scan` = legacy
-        /// refs FST — note: name is historical, the FST itself is
+        /// `mode` (`strict` = v5 binder edges; `fst_lookup` = refs FST
         /// populated from AST identifier nodes on T1 languages and
-        /// line-scan on the rest), hits before/after path filter,
-        /// "Did you mean" prefix-suggestion count, filter snapshot.
-        /// See `docs/MCP-SCHEMA.md` for the full shape.
+        /// line-scan on the rest), `mode_legacy` (back-compat alias
+        /// emitting `text_scan` for v1.9.x consumers; removed in
+        /// v1.12), hits before/after path filter, "Did you mean"
+        /// prefix-suggestion count, filter snapshot. See
+        /// `docs/MCP-SCHEMA.md` for the full shape.
         #[arg(long)]
         why: bool,
 

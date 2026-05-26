@@ -1,5 +1,6 @@
 ---
 source: crates/vex-mcp/src/main.rs
+assertion_line: 1759
 expression: descriptors
 ---
 [
@@ -346,7 +347,7 @@ expression: descriptors
         },
         "why": {
           "default": false,
-          "description": "Surface a JSON trace under `_meta.why`: mode (strict/text_scan), hits before/after path filter, prefix-suggestion count when no exact hits, filter snapshot.",
+          "description": "Surface a JSON trace under `_meta.why`: mode (strict/fst_lookup), mode_legacy (back-compat alias for v1.9.x consumers, removed in v1.12), hits before/after path filter, prefix-suggestion count when no exact hits, filter snapshot.",
           "type": "boolean"
         }
       },

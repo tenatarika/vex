@@ -10,8 +10,11 @@
 //!     `extract_why_trace` (in `crates/vex-mcp/src/main.rs`)
 //!
 //! Per-trace shape:
-//!   * `UsagesTrace` — mode (strict / text_scan), hits before/after
+//!   * `UsagesTrace` — mode (strict / fst_lookup), hits before/after
 //!     path filter, prefix-suggestion count when no exact hit.
+//!     `mode_legacy` carries the v1.8.x label (`text_scan`) for back-
+//!     compat with consumers that learned the old name — slated for
+//!     removal in v1.12 (Phase 14.4 rename).
 //!   * `SimilarTrace` — seed resolution, applied threshold,
 //!     candidates before/after path filter.
 //!   * `DuplicatesTrace` — applied threshold + min_body_lines, pairs
@@ -45,17 +48,25 @@ pub struct FilterSnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct UsagesTrace {
     /// `"strict"` when the v5 `reference_edges` section was queried
-    /// (binder-resolved refs only); `"text_scan"` for the legacy refs
-    /// FST that captures CamelCase identifiers across every supported
-    /// language.
+    /// (binder-resolved refs only); `"fst_lookup"` for the refs FST
+    /// that captures CamelCase identifiers across every supported
+    /// language. Phase 14.4 renamed the non-strict value from
+    /// `"text_scan"` → `"fst_lookup"` — the data path is and always
+    /// was an FST lookup, not a text scan.
     pub mode: &'static str,
+    /// Legacy alias for `mode`. Mirrors the value in `mode`, EXCEPT
+    /// when `mode == "fst_lookup"` it carries the old label
+    /// (`"text_scan"`) for back-compat with v1.9.x consumers that
+    /// learned the contract before the rename. Slated for removal
+    /// in v1.12 (one minor after v1.11).
+    pub mode_legacy: &'static str,
     /// Hits returned by the underlying lookup, BEFORE path-filter
     /// narrowing (filter_path + include/exclude).
     pub hits_before_filter: usize,
     /// Hits surviving path-filter narrowing — the count printed in the
     /// result list (modulo `--limit` truncation).
     pub hits_after_filter: usize,
-    /// `Some(n)` when zero exact hits were found in the text-scan
+    /// `Some(n)` when zero exact hits were found in the fst-lookup
     /// path and the prefix-search fallback turned up `n`
     /// "Did you mean" candidates. `None` when no prefix search ran:
     /// either there WERE exact hits, OR `--strict` is in use (the
@@ -105,14 +116,16 @@ mod tests {
         // JSON would carry three empty fields per call, which adds
         // noise for the common no-filter case.
         let t = UsagesTrace {
-            mode: "text_scan",
+            mode: "fst_lookup",
+            mode_legacy: "text_scan",
             hits_before_filter: 5,
             hits_after_filter: 5,
             prefix_suggestions: None,
             filter_applied: FilterSnapshot::default(),
         };
         let s = serde_json::to_string(&t).unwrap();
-        assert!(s.contains(r#""mode":"text_scan""#));
+        assert!(s.contains(r#""mode":"fst_lookup""#));
+        assert!(s.contains(r#""mode_legacy":"text_scan""#));
         assert!(s.contains(r#""filter_applied":{}"#), "got {s}");
         // prefix_suggestions=None must NOT appear (skip_if).
         assert!(!s.contains("prefix_suggestions"), "got {s}");
@@ -126,8 +139,13 @@ mod tests {
         // arm that adds prefix support to strict mode flips this test
         // loudly (rather than silently emitting an `Option::None`-shaped
         // JSON field via skip_serializing_if).
+        //
+        // Phase 14.4: on the strict path `mode` and `mode_legacy` both
+        // carry `"strict"` — the legacy alias only diverges from `mode`
+        // on the non-strict (FST-lookup) path.
         let t = UsagesTrace {
             mode: "strict",
+            mode_legacy: "strict",
             hits_before_filter: 0,
             hits_after_filter: 0,
             prefix_suggestions: None,
@@ -135,6 +153,7 @@ mod tests {
         };
         let s = serde_json::to_string(&t).unwrap();
         assert!(s.contains(r#""mode":"strict""#));
+        assert!(s.contains(r#""mode_legacy":"strict""#));
         assert!(
             !s.contains("prefix_suggestions"),
             "strict mode + None must omit the field, got {s}",
@@ -142,19 +161,23 @@ mod tests {
     }
 
     #[test]
-    fn usages_trace_records_text_scan_prefix_count() {
-        // Mirror of the above for the non-strict (text_scan) path:
+    fn usages_trace_records_fst_lookup_prefix_count() {
+        // Mirror of the above for the non-strict (FST-lookup) path:
         // when zero exact hits land, the handler runs the prefix
-        // fallback and surfaces the suggestion count.
+        // fallback and surfaces the suggestion count. Phase 14.4:
+        // pins both new label (`mode = "fst_lookup"`) AND the back-
+        // compat legacy alias (`mode_legacy = "text_scan"`).
         let t = UsagesTrace {
-            mode: "text_scan",
+            mode: "fst_lookup",
+            mode_legacy: "text_scan",
             hits_before_filter: 0,
             hits_after_filter: 0,
             prefix_suggestions: Some(3),
             filter_applied: FilterSnapshot::default(),
         };
         let s = serde_json::to_string(&t).unwrap();
-        assert!(s.contains(r#""mode":"text_scan""#));
+        assert!(s.contains(r#""mode":"fst_lookup""#));
+        assert!(s.contains(r#""mode_legacy":"text_scan""#));
         assert!(s.contains(r#""prefix_suggestions":3"#));
     }
 

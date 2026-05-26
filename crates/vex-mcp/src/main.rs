@@ -883,7 +883,7 @@ fn tool_descriptors() -> Value {
                     "name": { "type": "string", "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta." },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "strict": { "type": "boolean", "description": "Use scope-resolved (type-aware) references from the binder — drops string-literal/comment/wrong-scope noise. Recommended for refactor work; falls back to legacy refs FST on languages without binder support.", "default": false },
-                    "why": { "type": "boolean", "description": "Surface a JSON trace under `_meta.why`: mode (strict/text_scan), hits before/after path filter, prefix-suggestion count when no exact hits, filter snapshot.", "default": false },
+                    "why": { "type": "boolean", "description": "Surface a JSON trace under `_meta.why`: mode (strict/fst_lookup), mode_legacy (back-compat alias for v1.9.x consumers, removed in v1.12), hits before/after path filter, prefix-suggestion count when no exact hits, filter snapshot.", "default": false },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },

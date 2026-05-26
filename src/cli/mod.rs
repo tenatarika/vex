@@ -804,7 +804,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             // Mode label is fixed up front so `--why` can record which
             // path the lookup took even when the post-filter list is
             // empty.
-            let trace_mode: &'static str = if strict { "strict" } else { "text_scan" };
+            // Phase 14.4: `mode` carries the new label; `mode_legacy` keeps
+            // the v1.8.x value (`text_scan`) for back-compat with consumers
+            // that learned the contract before the rename. Both collapse to
+            // `"strict"` on the strict path. `mode_legacy` slated for removal
+            // in v1.12.
+            let trace_mode: &'static str = if strict { "strict" } else { "fst_lookup" };
+            let trace_mode_legacy: &'static str = if strict { "strict" } else { "text_scan" };
 
             // `--strict` reads from the v5 reference_edges section
             // (binder-resolved refs only). The legacy FST still backs
@@ -863,7 +869,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let entries: Vec<_> = entries.into_iter().take(limit).collect();
 
             // Prefix-suggestion fallback runs ONLY when no exact hits
-            // and only against the text-scan FST (strict-mode doesn't
+            // and only against the FST-lookup path (strict-mode doesn't
             // have a prefix counterpart today). We resolve it once
             // here so both the Text print and the `--why` trace use
             // the same vector — without double-querying the FST.
@@ -920,6 +926,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             if why {
                 let trace = crate::cli::trace::UsagesTrace {
                     mode: trace_mode,
+                    mode_legacy: trace_mode_legacy,
                     hits_before_filter,
                     hits_after_filter: total,
                     prefix_suggestions: prefix_suggestions.as_ref().map(|v| v.len()),
