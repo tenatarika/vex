@@ -17,14 +17,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Phase 14.2 — decorator edges (Python + Java).** Function and method
+  decorators in Python (`@app.get("/x") def list_items()`) and method-level
+  annotations in Java (`@GetMapping("/x") public Response listItems()`)
+  now emit forward call edges `decorated_fn → decorator_target`.
+  `vex callers get` lists every FastAPI route handler; `vex callers
+  GetMapping` lists every Spring handler. Callee resolves to the rightmost
+  identifier of the decorator name (consistent with method-call captures).
+  No format bump — reuses the existing CallEdge shape. Performance
+  budget: re-indexing the vex self-repo stayed within +0% of pre-14.2
+  baseline (mean 280ms vs 297ms — pattern-matching cost is below noise).
+  TypeScript and Rust deferred to Phase 14.2.1 (sibling-adjacency in
+  grammar); Kotlin and C# deferred to Phase 14.2.2 (no base callgraph
+  today); class-level decorators deferred to Phase 14.6.
 - **Phase 14.1 — module-level callers.** `vex callers <fn>` now reports
   module-scope call sites via a synthetic per-file `<module:path>` caller
   (`SymbolKind::Module = 13`). Module symbols are excluded from `vex search`,
   `vex outline`, and ranked search results — they appear only as resolved
   callers in the call graph. Class-body call sites also attribute to the
-  synthetic Module symbol (broader coverage; decorator dispatch and string-
-  resolved refs remain Phase 14.2 / Phase 15 territory). No binary format
-  bump — older readers see `Module` as `kind="unknown"` and gracefully ignore.
+  synthetic Module symbol (broader coverage; string-resolved refs remain
+  Phase 15 territory). No binary format bump — older readers see `Module`
+  as `kind="unknown"` and gracefully ignore.
 - CI on pull requests: separate `cli-tests`, `msrv` (1.80), `beta`
   (informational, allowed to fail), and `benches` (`cargo bench --no-run`)
   jobs.

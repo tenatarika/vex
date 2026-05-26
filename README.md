@@ -19,7 +19,7 @@ $ vex search "handle alert" --semantic     # find by meaning, not just name
 $ vex pattern 'fn $NAME($$$) -> Result'    # AST pattern matching (like ast-grep)
 $ vex usages "Config"                      # who references this symbol? (+ --strict on Rust/TS/Python/C#/C++)
 $ vex implementations "BaseService"        # who extends/implements this?
-$ vex callers "process_event"              # who calls this function? (~4ms — function-scope only)
+$ vex callers "process_event"              # who calls this function? (~4ms; covers module-scope + Python/Java decorators)
 $ vex similar "PaymentService"             # semantically close symbols
 $ vex duplicates --threshold 0.95          # near-duplicate pairs
 $ vex check "Foo" "Bar" "Baz"              # fast existence check
@@ -30,7 +30,7 @@ $ vex bundle --mode symbol --symbol Foo    # NEW (v1.9): body + callers + callee
 
 - **~4ms search** after indexing — FST-based O(query_len) lookup, not O(symbols). Requires a pre-built index (indexing takes 20ms-600ms+ depending on project size)
 - **3-channel hybrid search** — structural FST (names) + BM25 (rare body terms) + semantic HNSW (meaning), fused via Reciprocal Rank Fusion. Find symbols when you don't know the exact name AND when generic semantic-only search would be too noisy
-- **Persistent call graph** — `vex callers`/`vex callees` reads from an FST built at index time (~4ms), not a live tree-sitter scan (seconds). Module-scope expressions are reported via synthetic `<module:path>` callers (Phase 14.1); decorator dispatch remains invisible by construction. See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
+- **Persistent call graph** — `vex callers`/`vex callees` reads from an FST built at index time (~4ms), not a live tree-sitter scan (seconds). Module-scope expressions are reported via synthetic `<module:path>` callers (Phase 14.1); Python and Java function/method decorators emit forward edges to their targets (Phase 14.2). TS/Rust/Kotlin/C# decorators and class-level decorators remain invisible — see [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
 - **Pluggable embedder** — `Embedder` trait + registry; swap MiniLM-L6-v2 for future code-specific models (BGE, CodeBERT) without touching call sites
 - **Token-efficient** — compact output saves typically 6-10x fewer tokens than grep on average lookups (up to 88x on minified JS/CSS); `vex show` extracts just the symbol body instead of the whole file
 - **19 languages** indexed via tree-sitter, with three coverage tiers: **type-aware `--strict usages`** on 5 binder languages (Rust / TypeScript / Python / C# / C++); **indexed pattern prefilter** on 12 T1+T2a languages; baseline structural + semantic search on all 19 (see [Supported Languages](#supported-languages) for the matrix)
@@ -42,7 +42,7 @@ vex is a **static-analysis indexing tool**, not a language server. Set expectati
 
 - **Not an LSP replacement.** No go-to-definition into third-party packages, no rename refactoring, no type-checking, no hover docs. For those, keep your LSP.
 - **No dynamic-dispatch visibility.** Decorator routing (`@router.get("/path")`), string-resolved factories (`uvicorn.run("main:app")`), reflection (`getattr(obj, name)()`), and macro-expanded references are all invisible to every vex command. `vex grep '\bname\b'` is the textual escape hatch.
-- **`vex callers` has gaps outside function scope.** Module-level expressions like `app = create_app()` are now reported via synthetic `<module:path>` callers (Phase 14.1). Decorator-based dispatch (`@router.get("/path")`) and class-body field initialisers are still invisible — those land in Phase 14.2.
+- **`vex callers` has uneven coverage outside function scope.** Module-level expressions like `app = create_app()` are reported via synthetic `<module:path>` callers (Phase 14.1). Python and Java function/method decorators emit forward edges (Phase 14.2) — `vex callers GetMapping` lists every Spring handler. TypeScript / Rust decorators (14.2.1), Kotlin / C# decorators (14.2.2), and class-level decorators (14.6) remain on the roadmap.
 - **`vex usages` quality varies by language.** 5 binder-supported languages get refactor-grade `--strict` refs; the other 14 use an identifier scanner with a higher false-positive rate.
 
 See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for the full coverage matrix, concrete repros, and recommended workarounds per query type. **Read it before evaluating vex on a Python/FastAPI/Django codebase** — the framework patterns are the most-flagged gaps.
@@ -565,10 +565,11 @@ Each project gets its own index based on a hash of the project root path.
 vex is a static-analysis tool — some real call sites and references are
 invisible by construction. The headline gaps:
 
-- **`vex callers` has uneven coverage outside function scope.** Module-level
-  expressions are reported via synthetic `<module:path>` callers
-  (Phase 14.1). Decorator dispatch (`@router.get("/foo")`) and class-body
-  field initialisers do NOT register as callers — Phase 14.2 territory.
+- **`vex callers` outside function scope** — Module-level expressions
+  are reported via synthetic `<module:path>` callers (Phase 14.1).
+  Python and Java function/method decorators emit forward edges
+  (Phase 14.2). Remaining gaps: TypeScript / Rust decorators (14.2.1),
+  Kotlin / C# decorators (14.2.2), and class-level decorators (14.6).
 - **`vex usages` quality depends on language.** Rust / TypeScript /
   Python / C# / C++ get `--strict` (binder-resolved refs from the
   v5 `reference_edges` section, Phase 11.1). Other languages use a

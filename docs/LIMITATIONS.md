@@ -15,13 +15,24 @@ Updated 2026-05-25 after external review of v1.8.2.
 **What works:** every call site that lives inside a `function_definition`
 / `method_definition` / `closure` node is recorded as a caller in the
 v6 persistent call graph. **Module-scope expressions are recorded as a
-synthetic `<module:relpath>` caller (Phase 14.1).**
+synthetic `<module:relpath>` caller (Phase 14.1). Function/method-level
+decorators in Python and Java emit forward edges `decorated_fn →
+decorator_target` (Phase 14.2)** — `vex callers GetMapping` lists every
+Spring handler; `vex callers get` lists every FastAPI route function.
 
 **What is still invisible:**
 
-- **Decorator-based dispatch.** `@app.get("/foo")` does not register
-  the decorated handler as a caller of `app.get`. The decorator
-  invocation lives outside any function body. **Phase 14.2 territory.**
+- **Decorators in TypeScript and Rust** — the `decorator` / `attribute_item`
+  AST node lives as a *sibling* of the method/function, not inside its
+  byte range. The existing inner-fn attribution can't handle sibling
+  adjacency without a separate extractor pass. **Phase 14.2.1 territory.**
+- **Decorators in Kotlin and C#** — these languages have no base
+  callgraph today, so adding decorator-only coverage would emit
+  decorator edges but leave regular method calls invisible. Bundled
+  with full callgraph support in **Phase 14.2.2.**
+- **Class-level decorators / annotations** (`@dataclass class Foo:`,
+  `@RestController class C {}`) — the callgraph model only indexes
+  function/method symbols today. **Phase 14.6 if real users ask.**
 - **String-resolved references.** `"media_server.main:create_app"`
   passed to uvicorn, `task_name="celery_task.fire"` — vex sees the
   string literal, never resolves it. **Phase 15 territory.**
@@ -57,12 +68,43 @@ $ vex callers create_app
 <module:media_server/main.py>  media_server/main.py:411
 ```
 
-**Decorator repro (still invisible until Phase 14.2):**
+**Decorator repro (now resolved for Python + Java):**
 
 ```python
 @app.get("/items")
-def list_items(): ...   # ← decorator dispatch still invisible
+def list_items(): ...   # ← Phase 14.2: edge list_items → get
 ```
+
+```
+$ vex callers get
+list_items  media_server/main.py:411
+```
+
+```java
+class Controller {
+    @GetMapping("/users")
+    public Response listUsers() { ... }   // ← edge listUsers → GetMapping
+}
+```
+
+For TypeScript / Rust decorators, Kotlin / C# annotations, and any
+class-level decorator, the gap remains — see "What is still invisible"
+above for the deferred phase numbers.
+
+**Rightmost-identifier convention has a collision surface.** Because
+`@app.get("/x")` → `get` and a literal `dict.get(key)` call also →
+`get`, `vex callers get` returns both decorator-edge handlers AND any
+function that does a regular `.get(...)` call. Narrow with `--include
+'src/routes/**'` or `--exclude 'src/utils/**'` if the corpus mixes the
+two populations. Same convention applies to method calls already
+(`obj.method() → method`); decorator edges just expand the pool.
+
+**Decorator factories** like `@functools.lru_cache(maxsize=128)`,
+`@click.command()`, `@retry(max_attempts=3)` emit an edge to the
+factory name (`lru_cache` / `command` / `retry`), since the factory
+IS the call expression that wraps the decorated function. Querying
+`vex callers lru_cache` correctly returns every memoised function. In
+`vex callees`, the factory name appears alongside regular body calls.
 
 **Workaround for the remaining gaps:** `vex grep '\bcreate_app\b'`
 returns every textual mention. For the inheritance case specifically
@@ -132,7 +174,10 @@ parse. The following patterns produce no edges in any of `usages` /
 
 | Pattern | Example | vex visibility |
 | --- | --- | --- |
-| Decorator dispatch | `@app.get("/")` | The decorator expression is captured as a ref to `app.get`, but the decorated function is NOT linked as a caller. |
+| Decorator dispatch (Python, Java) | `@app.get("/")`, `@GetMapping("/x")` | Phase 14.2: edge `decorated_fn → decorator_target` (rightmost identifier wins). |
+| Decorator dispatch (TS, Rust) | `@Controller()`, `#[tokio::test]` | Deferred to Phase 14.2.1 — sibling-adjacency in grammar AST. |
+| Decorator dispatch (Kotlin, C#) | `@RestController`, `[HttpGet]` | Deferred to Phase 14.2.2 — no base callgraph today. |
+| Class-level decorator | `@dataclass class Foo:` | Phase 14.6 — callgraph indexes only functions/methods today. |
 | String-resolved factory | `uvicorn.run("main:app")` | Literal string only; no edge from `uvicorn.run` to `main.app`. |
 | Task queues | `celery_task.delay()` | The `.delay()` call site is captured, but the bound task body is not linked. |
 | `getattr` / reflection | `getattr(obj, name)()` | The bound target depends on a runtime value. |
@@ -187,10 +232,11 @@ guidance for agents:
 
 > If `vex callers` returns an empty list AND you have reason to believe
 > the symbol is called somewhere, run `vex grep '\b<name>\b'` before
-> concluding the symbol is unused. The most common remaining false
-> negative source is decorator dispatch (`@app.get(...)`). Module-level
-> call sites are now reported via synthetic `<module:path>` callers
-> (Phase 14.1).
+> concluding the symbol is unused. Module-level call sites are reported
+> via synthetic `<module:path>` callers (Phase 14.1). Python and Java
+> function/method decorators emit forward edges (Phase 14.2). Decorators
+> in TypeScript / Rust / Kotlin / C# and class-level decorators in any
+> language remain invisible — `vex grep` is the workaround there.
 
 ---
 
@@ -200,7 +246,7 @@ guidance for agents:
 | --- | --- | --- | --- | --- | --- | --- |
 | `vex search` | ✅ | ✅ | ✅ | n/a (it finds names) | n/a | n/a |
 | `vex usages` | ✅ binder | ✅ AST idents | ⚠️ regex (FPs) | ✅ if symbol used by name | ❌ | ❌ |
-| `vex callers` | ✅ | ✅ | ✅ | ✅ via `<module:>` (14.1) | ❌ (14.2) | ❌ (15) |
+| `vex callers` | ✅ | ✅ | ✅ | ✅ via `<module:>` (14.1) | ⚠️ Python+Java (14.2); TS/Rust → 14.2.1; Kotlin/C# → 14.2.2 | ❌ (15) |
 | `vex implementations` | ✅ | ✅ | ⚠️ depends on grammar query | n/a | n/a | n/a |
 | `vex grep` | ✅ all | ✅ all | ✅ all | ✅ | ✅ | ✅ (literal) |
 
