@@ -926,7 +926,7 @@ fn tool_descriptors() -> Value {
         },
         {
             "name": "callers",
-            "description": "Direct callers of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over grep for `who calls Foo?` — grep on the function name hits doc comments and string literals; the call-graph edges are resolved at parse time. Pair with `paths` for multi-hop chains.",
+            "description": "Direct callers of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over grep for `who calls Foo?` — grep on the function name hits doc comments and string literals; the call-graph edges are resolved at parse time. Phase 14.2: Python/Java function/method decorators emit forward edges, so `callers GetMapping` lists every Spring handler, `callers get` lists every FastAPI route (the rightmost identifier of `@app.get` becomes the callee). Note the rightmost-identifier convention means `callers get` mixes decorator handlers with any regular `.get()` call — narrow with `include`/`exclude` if needed. Pair with `paths` for multi-hop chains.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -943,7 +943,7 @@ fn tool_descriptors() -> Value {
         },
         {
             "name": "callees",
-            "description": "Direct callees of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over Read+manual scanning when you want to know what a function calls without reading the whole body — callees gives the resolved outgoing edges as records.",
+            "description": "Direct callees of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over Read+manual scanning when you want to know what a function calls without reading the whole body — callees gives the resolved outgoing edges as records. Phase 14.2: Python/Java decorators are surfaced as callees of the decorated function (decorator factories like `@lru_cache(maxsize=128)` appear as the factory name `lru_cache`, alongside regular body calls).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
