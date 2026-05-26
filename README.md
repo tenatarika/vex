@@ -30,7 +30,7 @@ $ vex bundle --mode symbol --symbol Foo    # NEW (v1.9): body + callers + callee
 
 - **~4ms search** after indexing — FST-based O(query_len) lookup, not O(symbols). Requires a pre-built index (indexing takes 20ms-600ms+ depending on project size)
 - **3-channel hybrid search** — structural FST (names) + BM25 (rare body terms) + semantic HNSW (meaning), fused via Reciprocal Rank Fusion. Find symbols when you don't know the exact name AND when generic semantic-only search would be too noisy
-- **Persistent call graph** — `vex callers`/`vex callees` reads from an FST built at index time (~4ms), not a live tree-sitter scan (seconds). **Function-scope only** — module-level expressions and decorator-based dispatch are invisible by construction; see [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
+- **Persistent call graph** — `vex callers`/`vex callees` reads from an FST built at index time (~4ms), not a live tree-sitter scan (seconds). Module-scope expressions are reported via synthetic `<module:path>` callers (Phase 14.1); decorator dispatch remains invisible by construction. See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
 - **Pluggable embedder** — `Embedder` trait + registry; swap MiniLM-L6-v2 for future code-specific models (BGE, CodeBERT) without touching call sites
 - **Token-efficient** — compact output saves typically 6-10x fewer tokens than grep on average lookups (up to 88x on minified JS/CSS); `vex show` extracts just the symbol body instead of the whole file
 - **19 languages** indexed via tree-sitter, with three coverage tiers: **type-aware `--strict usages`** on 5 binder languages (Rust / TypeScript / Python / C# / C++); **indexed pattern prefilter** on 12 T1+T2a languages; baseline structural + semantic search on all 19 (see [Supported Languages](#supported-languages) for the matrix)
@@ -42,7 +42,7 @@ vex is a **static-analysis indexing tool**, not a language server. Set expectati
 
 - **Not an LSP replacement.** No go-to-definition into third-party packages, no rename refactoring, no type-checking, no hover docs. For those, keep your LSP.
 - **No dynamic-dispatch visibility.** Decorator routing (`@router.get("/path")`), string-resolved factories (`uvicorn.run("main:app")`), reflection (`getattr(obj, name)()`), and macro-expanded references are all invisible to every vex command. `vex grep '\bname\b'` is the textual escape hatch.
-- **`vex callers` is function-scoped.** Module-level expressions like `app = create_app()` at Python module scope, top-level `let server = build_server()` in Rust — these don't show up as callers because they have no enclosing function.
+- **`vex callers` has gaps outside function scope.** Module-level expressions like `app = create_app()` are now reported via synthetic `<module:path>` callers (Phase 14.1). Decorator-based dispatch (`@router.get("/path")`) and class-body field initialisers are still invisible — those land in Phase 14.2.
 - **`vex usages` quality varies by language.** 5 binder-supported languages get refactor-grade `--strict` refs; the other 14 use an identifier scanner with a higher false-positive rate.
 
 See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for the full coverage matrix, concrete repros, and recommended workarounds per query type. **Read it before evaluating vex on a Python/FastAPI/Django codebase** — the framework patterns are the most-flagged gaps.
@@ -565,9 +565,10 @@ Each project gets its own index based on a hash of the project root path.
 vex is a static-analysis tool — some real call sites and references are
 invisible by construction. The headline gaps:
 
-- **`vex callers` is function-scoped.** Module-level expressions
-  (`app = create_app()` at the top of a file) and decorator-based
-  dispatch (`@router.get("/foo")`) do NOT register as callers.
+- **`vex callers` has uneven coverage outside function scope.** Module-level
+  expressions are reported via synthetic `<module:path>` callers
+  (Phase 14.1). Decorator dispatch (`@router.get("/foo")`) and class-body
+  field initialisers do NOT register as callers — Phase 14.2 territory.
 - **`vex usages` quality depends on language.** Rust / TypeScript /
   Python / C# / C++ get `--strict` (binder-resolved refs from the
   v5 `reference_edges` section, Phase 11.1). Other languages use a

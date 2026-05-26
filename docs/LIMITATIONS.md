@@ -10,57 +10,64 @@ Updated 2026-05-25 after external review of v1.8.2.
 
 ---
 
-## 1. `vex callers` is function-scoped
+## 1. `vex callers` coverage gaps
 
 **What works:** every call site that lives inside a `function_definition`
 / `method_definition` / `closure` node is recorded as a caller in the
-v6 persistent call graph.
+v6 persistent call graph. **Module-scope expressions are recorded as a
+synthetic `<module:relpath>` caller (Phase 14.1).**
 
-**What is invisible:**
+**What is still invisible:**
 
-- **Module-level expressions.** `app = create_app()` at Python module
-  scope, top-level `let server = build_server()` in Rust, top-level
-  `const router = setup()` in TypeScript.
 - **Decorator-based dispatch.** `@app.get("/foo")` does not register
   the decorated handler as a caller of `app.get`. The decorator
-  invocation lives outside any function body.
-- **Class-body statements.** Field initializers that call something
-  (`x: Foo = make_foo()` in a class body) miss the call graph.
+  invocation lives outside any function body. **Phase 14.2 territory.**
 - **String-resolved references.** `"media_server.main:create_app"`
   passed to uvicorn, `task_name="celery_task.fire"` — vex sees the
-  string literal, never resolves it.
+  string literal, never resolves it. **Phase 15 territory.**
 - **`eval` / `exec` / reflection-style dispatch.** Out of scope by
   construction.
 
+**Class-body call sites** (e.g. `db_url = make_dsn()` inside a class body)
+are currently attributed to the **synthetic `<module:path>` symbol** as
+well — the sentinel fires for any call site outside a `function`/`method`/
+`closure` scope, regardless of whether it's at module scope or inside a
+class body. The `edge.line` still points to the actual call site so the
+location is accurate, but the *caller name* is the module, not the class.
+A follow-up could synthesise a per-class `<class:Foo>` caller; track as
+Phase 14.5 if real users ask.
+
 **Why:** the call-graph extractor walks tree-sitter `call_expression`
-nodes only when they appear under a function-shaped ancestor. This
-matches the data model — a caller is a *symbol*, and module-level
-expressions are not symbols.
+nodes and attributes them to their innermost enclosing function. With
+Phase 14.1 a call site outside any function is now attributed to a
+synthetic `<module:path>` symbol — invisible to `vex search` / `vex
+outline`, but visible as a caller in `vex callers`.
 
-**Workaround:** `vex grep '\bcreate_app\b'` returns every textual
-mention including module-level call sites. For the inheritance case
-specifically (`class Foo(Bar):`), `vex implementations Bar` is the
-right tool — it captures the supertype reference.
-
-**Repro:**
+**Module-scope repro (now resolved):**
 
 ```python
 # media_server/main.py
 def create_app(): ...
 
-app = create_app()   # ← invisible to vex callers create_app
-
-@app.get("/items")
-def list_items(): ...   # ← decorator dispatch invisible
+app = create_app()   # ← now reported as <module:media_server/main.py>
 ```
 
 ```
 $ vex callers create_app
-(empty)
-
-$ vex grep '\bcreate_app\b'
-media_server/main.py:411:app = create_app()    # ← here it is
+<module:media_server/main.py>  media_server/main.py:411
 ```
+
+**Decorator repro (still invisible until Phase 14.2):**
+
+```python
+@app.get("/items")
+def list_items(): ...   # ← decorator dispatch still invisible
+```
+
+**Workaround for the remaining gaps:** `vex grep '\bcreate_app\b'`
+returns every textual mention. For the inheritance case specifically
+(`class Foo(Bar):`), `vex implementations Bar` is the right tool — it
+captures the supertype reference.
 
 ---
 
@@ -179,8 +186,10 @@ guidance for agents:
 
 > If `vex callers` returns an empty list AND you have reason to believe
 > the symbol is called somewhere, run `vex grep '\b<name>\b'` before
-> concluding the symbol is unused. The most common false negative
-> sources are module-level call sites and decorator dispatch.
+> concluding the symbol is unused. The most common remaining false
+> negative source is decorator dispatch (`@app.get(...)`). Module-level
+> call sites are now reported via synthetic `<module:path>` callers
+> (Phase 14.1).
 
 ---
 
@@ -190,7 +199,7 @@ guidance for agents:
 | --- | --- | --- | --- | --- | --- | --- |
 | `vex search` | ✅ | ✅ | ✅ | n/a (it finds names) | n/a | n/a |
 | `vex usages` | ✅ binder | ✅ AST idents | ⚠️ regex (FPs) | ✅ if symbol used by name | ❌ | ❌ |
-| `vex callers` | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| `vex callers` | ✅ | ✅ | ✅ | ✅ via `<module:>` (14.1) | ❌ (14.2) | ❌ (15) |
 | `vex implementations` | ✅ | ✅ | ⚠️ depends on grammar query | n/a | n/a | n/a |
 | `vex grep` | ✅ all | ✅ all | ✅ all | ✅ | ✅ | ✅ (literal) |
 

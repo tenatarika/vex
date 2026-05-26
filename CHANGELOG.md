@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Phase 14.1 — module-level callers.** `vex callers <fn>` now reports
+  module-scope call sites via a synthetic per-file `<module:path>` caller
+  (`SymbolKind::Module = 13`). Module symbols are excluded from `vex search`,
+  `vex outline`, and ranked search results — they appear only as resolved
+  callers in the call graph. Class-body call sites also attribute to the
+  synthetic Module symbol (broader coverage; decorator dispatch and string-
+  resolved refs remain Phase 14.2 / Phase 15 territory). No binary format
+  bump — older readers see `Module` as `kind="unknown"` and gracefully ignore.
+- CI on pull requests: separate `cli-tests`, `msrv` (1.80), `beta`
+  (informational, allowed to fail), and `benches` (`cargo bench --no-run`)
+  jobs.
+
 ## [1.9.1] - 2026-05-25
 
 Windows hotfix for the Phase 13.12 ranking-evaluation harness. v1.9.0's
