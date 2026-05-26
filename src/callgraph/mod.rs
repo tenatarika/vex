@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
 use rayon::prelude::*;
@@ -149,8 +151,26 @@ fn callees_in_source(content: &str, lang: Language, path: &str, target: &str) ->
         None => return Vec::new(),
     };
 
-    // Find the target function definition
-    let target_fn = match fns.iter().find(|f| f.name == target) {
+    // Find the target function definition. Phase 14.2 introduced a
+    // "Double FnDef" invariant for Python: each decorated function
+    // produces both an inner `function_definition` (small range, body
+    // only) AND an outer `decorated_definition` (larger range, covers
+    // both decorators and body). For `callees`, we want the LARGEST
+    // range — that way decorator targets (`@app.get` → `get`) AND body
+    // calls both attribute to the function. Picking the smallest range
+    // would drop decorator edges because the decorator's byte_offset
+    // sits outside the inner function_definition.
+    //
+    // Note: this is the OPPOSITE of `callers_in_source` / `extract_call_edges`,
+    // which use `min_by_key` because there we ask "which fn contains
+    // this call site?" — innermost enclosing scope wins. Here we ask
+    // "which range covers all my callees?" — outermost FnDef for the
+    // same name wins.
+    let target_fn = match fns
+        .iter()
+        .filter(|f| f.name == target)
+        .max_by_key(|f| f.end_byte - f.start_byte)
+    {
         Some(f) => f,
         None => return Vec::new(),
     };
@@ -213,12 +233,46 @@ pub fn extract_call_edges(content: &str, lang: Language) -> Vec<(String, usize, 
     edges
 }
 
+/// Per-language compiled callgraph `Query`. Phase 14.2 grew the Python
+/// query from 3 patterns to 7 and Java from 1 to 5, which made the
+/// per-file `Query::new` cost (called inside `par_iter` from
+/// `find_callers` / `find_callees`) a real hot-path concern on
+/// Python-heavy repos. The map is built lazily on first access; each
+/// entry is compiled once and reused across every subsequent file.
+/// `Query` is `Send + Sync` (read-only after compile).
+static COMPILED_QUERIES: LazyLock<HashMap<Language, Query>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    for lang in [
+        Language::Rust,
+        Language::Python,
+        Language::Java,
+        Language::TypeScript,
+        Language::Go,
+        Language::Cpp,
+    ] {
+        if let Some(src) = callgraph_query(lang) {
+            match Query::new(&lang.ts_language(), src) {
+                Ok(q) => {
+                    m.insert(lang, q);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        lang = lang.as_str(),
+                        error = %e,
+                        "failed to compile callgraph query at startup; \
+                         per-file extraction will return empty for this language"
+                    );
+                }
+            }
+        }
+    }
+    m
+});
+
 /// Extract function definitions and call expressions from source.
 fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<Call>)> {
-    let query_src = callgraph_query(lang)?;
+    let query = COMPILED_QUERIES.get(&lang)?;
     let ts_lang = lang.ts_language();
-
-    let query = Query::new(&ts_lang, query_src).ok()?;
 
     let mut parser = Parser::new();
     parser.set_language(&ts_lang).ok()?;
@@ -229,7 +283,7 @@ fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<C
     let call_name_idx = query.capture_index_for_name("call.name")?;
 
     let mut cursor = QueryCursor::new();
-    let mut query_matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
+    let mut query_matches = cursor.matches(query, tree.root_node(), content.as_bytes());
 
     let mut fns = Vec::new();
     let mut calls = Vec::new();
@@ -303,6 +357,42 @@ fn callgraph_query(lang: Language) -> Option<&'static str> {
 
             (call function: (attribute
               attribute: (identifier) @call.name))
+
+            ; Phase 14.2 — decorator edges. `@fn.decl` captures the OUTER
+            ; `decorated_definition` so the decorator call site (which
+            ; lives outside the inner function_definition byte range)
+            ; attributes to the wrapped function via `min_by_key`. The
+            ; existing `function_definition` pattern also fires for the
+            ; inner span — the smaller range wins for in-body calls.
+            ; Callee = rightmost identifier (consistent with method calls).
+
+            ; @app.get("/x") — call with attribute target
+            (decorated_definition
+              (decorator
+                (call function: (attribute
+                  attribute: (identifier) @call.name)))
+              definition: (function_definition
+                name: (identifier) @fn.name)) @fn.decl
+
+            ; @login_required() — call with bare-identifier target
+            (decorated_definition
+              (decorator
+                (call function: (identifier) @call.name))
+              definition: (function_definition
+                name: (identifier) @fn.name)) @fn.decl
+
+            ; @login_required — bare identifier, no parens
+            (decorated_definition
+              (decorator (identifier) @call.name)
+              definition: (function_definition
+                name: (identifier) @fn.name)) @fn.decl
+
+            ; @app.router — bare attribute, no parens
+            (decorated_definition
+              (decorator
+                (attribute attribute: (identifier) @call.name))
+              definition: (function_definition
+                name: (identifier) @fn.name)) @fn.decl
             "#,
         ),
         Language::Java => Some(
@@ -311,6 +401,36 @@ fn callgraph_query(lang: Language) -> Option<&'static str> {
             (constructor_declaration name: (identifier) @fn.name) @fn.decl
 
             (method_invocation name: (identifier) @call.name)
+
+            ; Phase 14.2 — annotation edges. `@fn.decl` is the
+            ; method_declaration itself: the `modifiers` child (which
+            ; carries the annotations) is already INSIDE the method's
+            ; byte range, so the inner-fn attribution works without a
+            ; wider capture. Callee = rightmost identifier of the
+            ; annotation name (consistent with method-call convention).
+
+            ; @Override / @Deprecated — marker_annotation, bare identifier
+            (method_declaration
+              (modifiers (marker_annotation name: (identifier) @call.name))
+              name: (identifier) @fn.name) @fn.decl
+
+            ; @org.junit.Test — marker_annotation with scoped name (rightmost)
+            (method_declaration
+              (modifiers (marker_annotation name: (scoped_identifier
+                name: (identifier) @call.name)))
+              name: (identifier) @fn.name) @fn.decl
+
+            ; @GetMapping("/x") — annotation with arguments, bare name
+            (method_declaration
+              (modifiers (annotation name: (identifier) @call.name))
+              name: (identifier) @fn.name) @fn.decl
+
+            ; @org.springframework.web.bind.annotation.GetMapping(...) —
+            ; annotation with arguments + scoped name (rightmost)
+            (method_declaration
+              (modifiers (annotation name: (scoped_identifier
+                name: (identifier) @call.name)))
+              name: (identifier) @fn.name) @fn.decl
             "#,
         ),
         Language::TypeScript => Some(
@@ -539,5 +659,377 @@ function main() {
     fn unsupported_language_returns_empty() {
         let matches = callers("CREATE TABLE foo (id INT);", Language::Sql, "foo");
         assert!(matches.is_empty());
+    }
+
+    // ---- Phase 14.2 decorator edges — Python (RED) -------------------------
+
+    /// `@app.get("/x")` decorator → `vex callees list_items` includes `get`
+    /// (rightmost identifier in the decorator target path) AND
+    /// `vex callers get` includes `list_items`.
+    #[test]
+    fn python_decorator_with_attribute_target() {
+        let src = r#"
+def list_items():
+    pass
+
+@app.get("/x")
+def fetch_one():
+    pass
+"#;
+        let callee_matches = callees(src, Language::Python, "fetch_one");
+        let names: Vec<&str> = callee_matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"get"),
+            "expected `get` in callees(fetch_one), got: {names:?}"
+        );
+
+        let caller_matches = callers(src, Language::Python, "get");
+        let caller_names: Vec<&str> = caller_matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            caller_names.contains(&"fetch_one"),
+            "expected `fetch_one` in callers(get), got: {caller_names:?}"
+        );
+    }
+
+    /// Bare-name decorator without parens: `@login_required def view(): ...`
+    /// (no call wrapping; just an identifier reference).
+    #[test]
+    fn python_bare_decorator() {
+        let src = r#"
+@login_required
+def view():
+    pass
+"#;
+        let callee_matches = callees(src, Language::Python, "view");
+        let names: Vec<&str> = callee_matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"login_required"),
+            "expected `login_required` in callees(view), got: {names:?}"
+        );
+    }
+
+    /// Bare-attribute decorator: `@app.router def f(): ...` — no call,
+    /// just an attribute expression. Rightmost identifier wins.
+    #[test]
+    fn python_bare_attribute_decorator() {
+        let src = r#"
+@app.router
+def f():
+    pass
+"#;
+        let callee_matches = callees(src, Language::Python, "f");
+        let names: Vec<&str> = callee_matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"router"),
+            "expected `router` in callees(f), got: {names:?}"
+        );
+    }
+
+    /// Multi-decorator stack must produce exactly one edge per decorator.
+    /// Locks the OUTERMOST-FIRST ordering invariant from the task file —
+    /// when sorted by line, the outer decorator (smaller line number)
+    /// comes before the inner.
+    #[test]
+    fn python_multi_decorator_stack_outermost_first() {
+        let src = r#"
+@outer_dec
+@inner_dec
+def handler():
+    pass
+"#;
+        let mut callee_matches = callees(src, Language::Python, "handler");
+        callee_matches.sort_by_key(|m| m.line);
+        let pairs: Vec<(&str, usize)> = callee_matches
+            .iter()
+            .map(|m| (m.name.as_str(), m.line))
+            .collect();
+        // Filter to just decorator edges (exclude any noise from grammar
+        // quirks if extra captures appear).
+        let decorator_pairs: Vec<&(&str, usize)> = pairs
+            .iter()
+            .filter(|(n, _)| *n == "outer_dec" || *n == "inner_dec")
+            .collect();
+        assert_eq!(
+            decorator_pairs.len(),
+            2,
+            "expected exactly 2 decorator edges (outer_dec, inner_dec), got: {pairs:?}"
+        );
+        assert_eq!(
+            decorator_pairs[0].0, "outer_dec",
+            "outermost decorator must come first by line: {pairs:?}"
+        );
+        assert_eq!(decorator_pairs[1].0, "inner_dec");
+        assert!(
+            decorator_pairs[0].1 < decorator_pairs[1].1,
+            "outer line must be < inner line: {pairs:?}"
+        );
+    }
+
+    /// `edge.line` must point at the decorator's source line, NOT the
+    /// `def` line. Locks the per-task-file invariant.
+    #[test]
+    fn python_decorator_edge_line_is_decorator_not_def() {
+        // Decorator on line 2, def on line 3. The edge line MUST be 2.
+        let src = "\n@my_decorator\ndef target():\n    pass\n";
+        let callee_matches = callees(src, Language::Python, "target");
+        let dec_edge = callee_matches
+            .iter()
+            .find(|m| m.name == "my_decorator")
+            .unwrap_or_else(|| {
+                panic!("expected `my_decorator` edge from `target`, got: {callee_matches:?}")
+            });
+        assert_eq!(
+            dec_edge.line, 2,
+            "edge.line must be the decorator's row (2), not the def row (3); got: {dec_edge:?}"
+        );
+    }
+
+    /// Method decorator inside a class body must attribute to the method,
+    /// NOT to the module sentinel (Phase 14.1 coexistence invariant).
+    /// The class-as-FnDef is out of scope (Phase 14.6) — but the method
+    /// IS a FnDef and must own its decorator edge.
+    #[test]
+    fn python_method_decorator_in_class_attributes_to_method() {
+        let src = r#"
+class C:
+    @staticmethod
+    def helper():
+        pass
+"#;
+        let callee_matches = callees(src, Language::Python, "helper");
+        let names: Vec<&str> = callee_matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"staticmethod"),
+            "method decorator must attribute to enclosing method, got: {names:?}"
+        );
+
+        // Negative: `staticmethod` must NOT appear in any other fn's callees,
+        // because there's only one decorated method here.
+        let caller_matches = callers(src, Language::Python, "staticmethod");
+        let caller_names: Vec<&str> = caller_matches.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(
+            caller_names,
+            vec!["helper"],
+            "staticmethod must have exactly one caller (`helper`), got: {caller_names:?}"
+        );
+    }
+
+    // ---- Phase 14.2 decorator edges — Java (RED) ---------------------------
+
+    /// `@Override` marker annotation → callees(run) includes `Override`,
+    /// callers(Override) includes `run`. No call args.
+    #[test]
+    fn java_marker_annotation() {
+        let src = r#"
+class Worker {
+    @Override
+    public void run() {
+    }
+}
+"#;
+        let callee_matches = callees(src, Language::Java, "run");
+        let names: Vec<&str> = callee_matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"Override"),
+            "expected `Override` in callees(run), got: {names:?}"
+        );
+
+        let caller_matches = callers(src, Language::Java, "Override");
+        let caller_names: Vec<&str> = caller_matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            caller_names.contains(&"run"),
+            "expected `run` in callers(Override), got: {caller_names:?}"
+        );
+    }
+
+    /// `@GetMapping("/x")` annotation with arguments → emits edge to
+    /// the rightmost identifier (`GetMapping`), same convention as
+    /// method calls.
+    #[test]
+    fn java_annotation_with_arguments() {
+        let src = r#"
+class Controller {
+    @GetMapping("/items")
+    public Response listItems() {
+        return null;
+    }
+}
+"#;
+        let callee_matches = callees(src, Language::Java, "listItems");
+        let names: Vec<&str> = callee_matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"GetMapping"),
+            "expected `GetMapping` in callees(listItems), got: {names:?}"
+        );
+    }
+
+    /// Qualified annotation name `@org.junit.Test` must capture the
+    /// rightmost identifier (`Test`), matching the existing method-call
+    /// convention.
+    #[test]
+    fn java_qualified_annotation_rightmost_identifier() {
+        let src = r#"
+class MyTest {
+    @org.junit.Test
+    public void shouldDoIt() {
+    }
+}
+"#;
+        let callee_matches = callees(src, Language::Java, "shouldDoIt");
+        let names: Vec<&str> = callee_matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"Test"),
+            "expected rightmost identifier `Test` (not `org` or `junit`) in callees(shouldDoIt), got: {names:?}"
+        );
+        assert!(
+            !names.contains(&"org") && !names.contains(&"junit"),
+            "intermediate path identifiers must not appear as edges: {names:?}"
+        );
+    }
+
+    /// Multi-annotation stack on a single method produces one edge per
+    /// annotation. Java has no defined stacking order beyond source-order,
+    /// so we assert presence + outer-first by line.
+    #[test]
+    fn java_multi_annotation_stack() {
+        let src = r#"
+class Worker {
+    @Override
+    @Deprecated
+    public void run() {
+    }
+}
+"#;
+        let mut callee_matches = callees(src, Language::Java, "run");
+        callee_matches.sort_by_key(|m| m.line);
+        let annotation_pairs: Vec<(&str, usize)> = callee_matches
+            .iter()
+            .filter(|m| m.name == "Override" || m.name == "Deprecated")
+            .map(|m| (m.name.as_str(), m.line))
+            .collect();
+        assert_eq!(
+            annotation_pairs.len(),
+            2,
+            "expected exactly 2 annotation edges, got: {callee_matches:?}"
+        );
+        assert_eq!(annotation_pairs[0].0, "Override");
+        assert_eq!(annotation_pairs[1].0, "Deprecated");
+    }
+
+    // ---- Phase 14.2 decorator edges — back to Python -----------------------
+
+    /// Phase 14.2 review regression: `callees_in_source` MUST use the
+    /// LARGEST FnDef range when the same name has multiple entries
+    /// (the Double FnDef invariant). With min/find-first selection,
+    /// the inner `function_definition` span would be picked — but its
+    /// byte range starts AFTER the decorator, so decorator calls
+    /// would fall outside and be silently dropped from callees output.
+    /// Pin both: decorator edge IS in callees, AND body call IS too.
+    #[test]
+    fn python_callees_includes_both_decorator_and_body_calls() {
+        let src = r#"
+@app.get("/x")
+def handler():
+    validate()
+"#;
+        let matches = callees(src, Language::Python, "handler");
+        let callee_names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            callee_names.contains(&"get"),
+            "decorator edge `handler → get` must appear in callees (max-range FnDef \
+             covers the decorator byte range): {callee_names:?}"
+        );
+        assert!(
+            callee_names.contains(&"validate"),
+            "body call `handler → validate` must coexist with decorator edge: {callee_names:?}"
+        );
+    }
+
+    /// Phase 14.1 ↔ 14.2 coexistence: a module-level call to a
+    /// module-level decorated function must hit BOTH:
+    /// - the decorator edge `handler → get` (14.2)
+    /// - the sentinel edge `<empty> → handler` from the module-scope
+    ///   call site `result = handler()` (14.1 sentinel; pipeline
+    ///   rewrites the empty caller to `<module:path>`)
+    ///
+    /// Both edges must be emitted independently — pinned by
+    /// `extract_call_edges` direct inspection.
+    #[test]
+    fn python_module_level_call_to_decorated_fn_coexists_with_decorator_edge() {
+        let src = r#"
+@app.get("/x")
+def handler():
+    pass
+
+result = handler()
+"#;
+        let edges = extract_call_edges(src, Language::Python);
+        // Decorator edge from 14.2: handler → get
+        assert!(
+            edges
+                .iter()
+                .any(|(caller, _, callee, _)| caller == "handler" && callee == "get"),
+            "expected decorator edge `handler → get`, got: {edges:?}"
+        );
+        // Sentinel edge from 14.1: module-scope call → handler
+        // (sentinel = caller_fn_name.is_empty() && caller_fn_line == 0)
+        assert!(
+            edges
+                .iter()
+                .any(|(caller, line, callee, _)| caller.is_empty()
+                    && *line == 0
+                    && callee == "handler"),
+            "expected module-scope sentinel edge `<empty> → handler`, got: {edges:?}"
+        );
+    }
+
+    /// Decorator factory (`@functools.lru_cache(maxsize=128)`) — the
+    /// outermost call wraps a real-decorator-returning function. Per
+    /// the rightmost-identifier convention, we emit edge `f → lru_cache`.
+    /// Pinned because it's a common pattern (`@click.command()`,
+    /// `@retry(max=3)`, `@app.route("/x")`).
+    #[test]
+    fn python_decorator_factory_with_kwarg() {
+        let src = r#"
+@functools.lru_cache(maxsize=128)
+def memoized():
+    return None
+"#;
+        let matches = callees(src, Language::Python, "memoized");
+        let callee_names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            callee_names.contains(&"lru_cache"),
+            "decorator factory edge `memoized → lru_cache` expected: {callee_names:?}"
+        );
+    }
+
+    /// Calls inside the decorated function's BODY must still attribute to
+    /// the function (not the outer decorated_definition wrapping range).
+    /// This pins the "double FnDef invariant" from the task file:
+    /// `min_by_key(end - start)` picks the inner function_definition span
+    /// over the outer decorated_definition span for body calls.
+    #[test]
+    fn python_calls_in_decorated_body_attribute_to_inner_fn() {
+        let src = r#"
+@app.get("/x")
+def handler():
+    validate()
+    transform()
+"#;
+        let validate_callers = callers(src, Language::Python, "validate");
+        let names: Vec<&str> = validate_callers.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["handler"],
+            "body call must attribute to handler exactly once (inner FnDef wins via min_by_key): {names:?}"
+        );
+
+        // The decorator edge for `get` is independent — still present.
+        let get_callers = callers(src, Language::Python, "get");
+        let get_names: Vec<&str> = get_callers.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            get_names.contains(&"handler"),
+            "decorator edge for `get` must coexist with body-call edges: {get_names:?}"
+        );
     }
 }
