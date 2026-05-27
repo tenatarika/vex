@@ -18,21 +18,29 @@ v6 persistent call graph. **Module-scope expressions are recorded as a
 synthetic `<module:relpath>` caller (Phase 14.1). Function/method-level
 decorators in Python and Java emit forward edges `decorated_fn →
 decorator_target` (Phase 14.2); Kotlin annotations and C# method/
-constructor attributes do the same (Phase 14.2.2)** — `vex callers
-GetMapping` lists every Spring handler; `vex callers get` lists every
-FastAPI route function; `vex callers HttpGet` lists every ASP.NET
-controller action; `vex callers JvmStatic` lists every Kotlin
-companion-object helper.
+constructor attributes do the same (Phase 14.2.2); TypeScript method
+decorators and Rust outer attributes on fns/methods do the same via
+sibling-adjacency pairing (Phase 14.2.1)** — `vex callers GetMapping`
+lists every Spring handler; `vex callers get` lists every FastAPI
+route function; `vex callers HttpGet` lists every ASP.NET controller
+action; `vex callers JvmStatic` lists every Kotlin function annotated
+`@JvmStatic`; `vex callers Get` lists every Nest.js method-level
+`@Get`; `vex callers test` lists every Rust `#[tokio::test]`.
 
 **What is still invisible:**
 
-- **Decorators in TypeScript and Rust** — the `decorator` / `attribute_item`
-  AST node lives as a *sibling* of the method/function, not inside its
-  byte range. The existing inner-fn attribution can't handle sibling
-  adjacency without a separate extractor pass. **Phase 14.2.1 territory.**
 - **Class-level decorators / annotations** (`@dataclass class Foo:`,
-  `@RestController class C {}`) — the callgraph model only indexes
-  function/method symbols today. **Phase 14.6 if real users ask.**
+  `@RestController class C {}`, `@Controller() class Foo {}`) — the
+  callgraph model only indexes function / method / constructor
+  symbols today. **Phase 14.6 if real users ask.**
+- **TypeScript property / parameter decorators** (`@inject() svc: Svc;`,
+  `constructor(@inject() svc: Svc)`) — common in Nest.js DI but
+  properties / parameters are not FnDef symbols, so the decorator
+  has no anchor. **Phase 14.6 territory.**
+- **Rust `#[derive(...)]` macros** — intentionally filtered out by
+  attribute path-head name. Compile-time codegen, not runtime call
+  edges. Other Rust attributes (`#[tokio::test]`, `#[serde(...)]`,
+  `#[wasm_bindgen]`, `#[allow(...)]`, etc.) are kept.
 - **String-resolved references.** `"media_server.main:create_app"`
   passed to uvicorn, `task_name="celery_task.fire"` — vex sees the
   string literal, never resolves it. **Phase 15 territory.**
@@ -72,7 +80,7 @@ $ vex callers create_app
 <module:media_server/main.py>  media_server/main.py:411
 ```
 
-**Decorator repro (now resolved for Python + Java + Kotlin + C#):**
+**Decorator repro (now resolved for Python + Java + Kotlin + C# + TypeScript + Rust):**
 
 ```python
 @app.get("/items")
@@ -101,9 +109,21 @@ fun helper() { ... }   // ← Phase 14.2.2: edge helper → JvmStatic
 public Response GetUsers() { ... }   // ← edge GetUsers → HttpGet
 ```
 
-For TypeScript / Rust decorators and any class-level decorator the gap
-remains — see "What is still invisible" above for the deferred phase
-numbers.
+```typescript
+class C {
+    @Get("/x")
+    handler() { ... }   // ← Phase 14.2.1: edge handler → Get
+}
+```
+
+```rust
+#[tokio::test]
+fn it_works() { ... }   // ← Phase 14.2.1: edge it_works → test
+```
+
+For class-level decorators, TS property/parameter decorators, and Rust
+`#[derive(...)]` the gap remains — see "What is still invisible" above
+for the deferred phase numbers and the intentional exclusions.
 
 **Rightmost-identifier convention has a collision surface.** Because
 `@app.get("/x")` → `get` and a literal `dict.get(key)` call also →
@@ -112,6 +132,27 @@ function that does a regular `.get(...)` call. Narrow with `--include
 'src/routes/**'` or `--exclude 'src/utils/**'` if the corpus mixes the
 two populations. Same convention applies to method calls already
 (`obj.method() → method`); decorator edges just expand the pool.
+
+**Self-edge artifact when fn name matches decorator-rightmost id.** A
+fn whose name happens to equal the rightmost identifier of its own
+decorator/attribute produces a self-edge. The most common real case
+is Rust's `#[tokio::main] fn main()` → edge `main → main`; Python's
+`def get(): @app.get(...)` would similarly emit `get → get`. The
+self-edge is technically correct under the rightmost-id convention
+and would be wrong to suppress generically (a fn named `get` that
+genuinely calls `something.get(...)` in its body MUST have a `get`
+callee), so we accept the artifact. `vex callees main` on a tokio
+binary will show one synthetic `main` entry alongside the function's
+real body calls; readers should expect this. Same pattern applies to
+`#[test] fn test()`, `@bound fn bound()`, etc.
+
+**Double-invocation decorators silently dropped.** TypeScript's
+`@factory()(arg)` form — a decorator factory immediately invoked
+with a second argument — has the outer `call_expression`'s
+`function:` slot as another `call_expression` (not an `identifier`
+or `member_expression`). Our SCM patterns require the function slot
+to be a name node, so this pattern produces no edge. Rare in
+practice; track separately if real reports surface.
 
 **Decorator factories** like `@functools.lru_cache(maxsize=128)`,
 `@click.command()`, `@retry(max_attempts=3)` emit an edge to the
@@ -188,8 +229,7 @@ parse. The following patterns produce no edges in any of `usages` /
 
 | Pattern | Example | vex visibility |
 | --- | --- | --- |
-| Decorator dispatch (Python, Java, Kotlin, C#) | `@app.get("/")`, `@GetMapping("/x")`, `@JvmStatic`, `[HttpGet("/x")]` | Phase 14.2 (Python+Java) + Phase 14.2.2 (Kotlin+C#): edge `decorated_fn → decorator_target` (rightmost identifier wins). |
-| Decorator dispatch (TS, Rust) | `@Controller()`, `#[tokio::test]` | Deferred to Phase 14.2.1 — sibling-adjacency in grammar AST. |
+| Decorator dispatch (Python, Java, Kotlin, C#, TS, Rust) | `@app.get("/")`, `@GetMapping("/x")`, `@JvmStatic`, `[HttpGet("/x")]`, `@Get("/x")`, `#[tokio::test]` | Phase 14.2 (Python+Java) + Phase 14.2.2 (Kotlin+C#) + Phase 14.2.1 (TS+Rust sibling-adjacency): edge `decorated_fn → decorator_target` (rightmost identifier of path wins; args ignored). |
 | Class-level decorator | `@dataclass class Foo:` | Phase 14.6 — callgraph indexes only functions/methods today. |
 | String-resolved factory | `uvicorn.run("main:app")` | Literal string only; no edge from `uvicorn.run` to `main.app`. |
 | Task queues | `celery_task.delay()` | The `.delay()` call site is captured, but the bound task body is not linked. |
@@ -247,10 +287,10 @@ guidance for agents:
 > the symbol is called somewhere, run `vex grep '\b<name>\b'` before
 > concluding the symbol is unused. Module-level call sites are reported
 > via synthetic `<module:path>` callers (Phase 14.1). Python, Java,
-> Kotlin, and C# function/method decorators emit forward edges
-> (Phase 14.2 + 14.2.2). Decorators in TypeScript / Rust and class-level
-> decorators in any language remain invisible — `vex grep` is the
-> workaround there.
+> Kotlin, C#, TypeScript, and Rust function/method decorators emit
+> forward edges (Phase 14.2 + 14.2.2 + 14.2.1). Class-level decorators
+> in any language and Rust `#[derive(...)]` macros remain invisible —
+> `vex grep` is the workaround there.
 
 ---
 
@@ -260,7 +300,7 @@ guidance for agents:
 | --- | --- | --- | --- | --- | --- | --- |
 | `vex search` | ✅ | ✅ | ✅ | n/a (it finds names) | n/a | n/a |
 | `vex usages` | ✅ binder | ✅ AST idents | ⚠️ regex (FPs) | ✅ if symbol used by name | ❌ | ❌ |
-| `vex callers` | ✅ | ✅ | ✅ | ✅ via `<module:>` (14.1) | ⚠️ Python+Java (14.2), Kotlin+C# (14.2.2); TS/Rust → 14.2.1 | ❌ (15) |
+| `vex callers` | ✅ | ✅ | ✅ | ✅ via `<module:>` (14.1) | ⚠️ Python+Java (14.2), Kotlin+C# (14.2.2), TS+Rust (14.2.1); class-level → 14.6 | ❌ (15) |
 | `vex implementations` | ✅ | ✅ | ⚠️ depends on grammar query | n/a | n/a | n/a |
 | `vex grep` | ✅ all | ✅ all | ✅ all | ✅ | ✅ | ✅ (literal) |
 

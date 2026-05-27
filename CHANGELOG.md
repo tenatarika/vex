@@ -17,6 +17,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Phase 14.2.1 — TypeScript + Rust decorator edges via sibling
+  adjacency.** TypeScript method decorators on class methods
+  (`class C { @Get("/x") handler() {} }`) and Rust outer attributes on
+  function / method items (`#[tokio::test] fn it_works() {}`,
+  `impl Foo { #[wasm_bindgen] fn bar() {} }`) now emit forward call
+  edges `decorated_fn → decorator_target`. Unlike Python/Java/Kotlin/C#
+  where the decorator/annotation lives INSIDE the function's byte range,
+  TS `decorator` and Rust `attribute_item` nodes are SIBLINGS of the
+  function under a shared parent (`class_body` / `source_file` /
+  `declaration_list`). The new sibling-adjacency pass in
+  `extract_callgraph` walks each captured decorator host forward to
+  find the next function-shaped sibling and remaps the synthetic
+  call's `byte_offset` onto the function's start so the existing
+  attribution logic lands the edge on the right caller. Callee = the
+  rightmost identifier of the decorator/attribute PATH (the part
+  before the optional argument list). For multi-segment paths the
+  rightmost wins: `@nest.Get("/x")` → `Get`, `#[tokio::test]` →
+  `test`. For single-segment paths the path itself is the callee:
+  `@bound` → `bound`, `#[wasm_bindgen]` → `wasm_bindgen`. Arguments
+  are NEVER part of the path: `#[serde(rename = "x")]` → `serde`
+  (not `rename`); `#[allow(dead_code)]` → `allow` (not `dead_code`).
+  Rust `#[derive(...)]` is filtered out by attribute-path head-name
+  (compile-time codegen, not runtime call edges); arguments to other
+  attributes are never inspected, so `#[some_attr(derive = "x")]`
+  still emits an edge to `some_attr`. JavaScript files inherit the
+  same decorator coverage via the TSX grammar. Class-level decorators,
+  TS property/parameter decorators, and `#[derive(...)]` remain out of
+  scope (Phase 14.6 / intentional exclusion). Performance budget:
+  re-indexing the vex self-repo gave median **306.56ms** vs 14.2.2
+  baseline 287.5ms (+6.6%), within the ≤317ms +10% ceiling; the
+  cost driver is a per-call-capture ancestor walk that guards against
+  the standard `call_expression` pattern double-firing inside
+  decorators.
 - **Phase 14.2.2 — Kotlin + C# call graph and annotation edges.** Kotlin
   and C# now have first-class callgraph support: `function_declaration`,
   `method_declaration`, and `constructor_declaration` produce caller
