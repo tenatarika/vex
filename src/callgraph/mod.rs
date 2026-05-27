@@ -283,6 +283,11 @@ fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<C
     let fn_name_idx = query.capture_index_for_name("fn.name")?;
     let fn_body_idx = query.capture_index_for_name("fn.decl")?;
     let call_name_idx = query.capture_index_for_name("call.name")?;
+    // Phase 14.2.1 — sibling-adjacency captures (TypeScript decorators,
+    // Rust attribute_items). May or may not be present in this language's
+    // query — `None` cleanly disables the sibling-pair branch.
+    let sibling_target_idx = query.capture_index_for_name("sibling.target");
+    let sibling_host_idx = query.capture_index_for_name("sibling.host");
 
     let mut cursor = QueryCursor::new();
     let mut query_matches = cursor.matches(query, tree.root_node(), content.as_bytes());
@@ -309,6 +314,8 @@ fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<C
         let mut call_name = None;
         let mut call_line = 0;
         let mut call_offset = 0;
+        let mut sibling_target: Option<&str> = None;
+        let mut sibling_host_node: Option<tree_sitter::Node> = None;
 
         for capture in m.captures {
             let text = &content[capture.node.byte_range()];
@@ -318,9 +325,27 @@ fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<C
             } else if capture.index == fn_body_idx {
                 fn_body_range = Some((capture.node.start_byte(), capture.node.end_byte()));
             } else if capture.index == call_name_idx {
+                // Phase 14.2.1 — skip standard `call_expression` /
+                // `(member_expression property: ...)` captures whose
+                // ancestor is a `decorator` (TypeScript) or
+                // `attribute_item` / `attribute` (Rust). Those identifiers
+                // are already covered by the sibling-adjacency pattern
+                // with `byte_offset` remapped onto the next fn's start,
+                // so emitting them here too would land a duplicate Call
+                // whose byte_offset sits OUTSIDE any fn body — the
+                // Phase 14.1 sentinel path would then attribute it to
+                // `<module:path>`, producing a phantom caller alongside
+                // the correct decorator edge. Filter at capture-time.
+                if call_capture_inside_sibling_host(capture.node, lang) {
+                    continue;
+                }
                 call_name = Some(text);
                 call_line = capture.node.start_position().row + 1;
                 call_offset = capture.node.start_byte();
+            } else if Some(capture.index) == sibling_target_idx {
+                sibling_target = Some(text);
+            } else if Some(capture.index) == sibling_host_idx {
+                sibling_host_node = Some(capture.node);
             }
         }
 
@@ -342,9 +367,132 @@ fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<C
                 byte_offset: call_offset,
             });
         }
+
+        // Phase 14.2.1 — sibling-adjacency emission. When a match has
+        // both `@sibling.host` (the decorator / attribute_item node) and
+        // `@sibling.target` (the rightmost identifier of the path),
+        // walk the host's next named siblings to find the next function-
+        // shaped node, then synthesise a `Call` with `byte_offset =
+        // next_fn.start_byte` so the standard FnDef attribution picks it
+        // up. The Rust-derive filter runs here before emit.
+        if let (Some(target), Some(host)) = (sibling_target, sibling_host_node) {
+            if !rust_derive_filter_skip(lang, host, content) {
+                if let Some(next_fn) = next_function_sibling(lang, host) {
+                    calls.push(Call {
+                        callee: target.to_string(),
+                        line: host.start_position().row + 1,
+                        byte_offset: next_fn.start_byte(),
+                    });
+                }
+            }
+        }
     }
 
     Some((fns, calls))
+}
+
+/// Walk `host`'s next named siblings under the same parent and return
+/// the first node that is a function-shaped declaration for `lang`.
+/// Used by Phase 14.2.1 sibling-adjacency edges to pair a decorator /
+/// `attribute_item` with the function it decorates. Intermediate
+/// decorators or `attribute_item`s are tolerated (multi-stack support).
+fn next_function_sibling(lang: Language, host: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let parent = host.parent()?;
+    let target_kinds: &[&str] = match lang {
+        Language::TypeScript => &["method_definition"],
+        Language::Rust => &["function_item"],
+        _ => return None,
+    };
+    let mut cursor = parent.walk();
+    let mut found_host = false;
+    for child in parent.named_children(&mut cursor) {
+        if !found_host {
+            if child == host {
+                found_host = true;
+            }
+            continue;
+        }
+        if target_kinds.contains(&child.kind()) {
+            return Some(child);
+        }
+    }
+    None
+}
+
+/// Returns true if `node` (a captured `@call.name` identifier) has an
+/// ancestor that is the host of a sibling-adjacency decorator/attribute
+/// pattern. Used to suppress spurious duplicate edges that the standard
+/// `call_expression`-based callgraph patterns would otherwise emit for
+/// identifiers living INSIDE a decorator's call_expression (TypeScript)
+/// or — defensively, for future grammars — inside Rust `attribute_item`
+/// nodes (Rust attribute paths are not call_expressions today, so this
+/// is a no-op for Rust).
+///
+/// **Depth bound — why 8 is enough.** The capture patterns that feed
+/// this filter only fire on `function:` slots of `call_expression`
+/// (TS) and on `function:`/scoped name slots of `call_expression` /
+/// `field_expression` (Rust). A captured identifier is always
+/// `parent_call_expression → identifier` (depth 2 from the call's
+/// own parent). Each additional level of decorator-argument nesting
+/// (`@d(a(b(c())))`) adds two AST levels (`call_expression` +
+/// `arguments`). At 8 hops we accommodate ~3 levels of nested calls
+/// inside a decorator argument list, which exceeds anything seen in
+/// real codebases. The bound holds because we never capture
+/// identifiers in argument position — only function-slot identifiers,
+/// which are by construction shallow under their enclosing call.
+///
+/// **PERF.** Called once per `@call.name` capture during indexing.
+/// On a TypeScript-heavy monorepo this is the dominant cost of the
+/// 14.2.1 work (~+6% wall time on vex self-repo). A future
+/// optimisation could memoise "this subtree contains no decorator
+/// ancestor" once per outer scope (class_body / source_file /
+/// declaration_list) — tracked informally as a follow-up; not on
+/// the 14.x train.
+fn call_capture_inside_sibling_host(node: tree_sitter::Node, lang: Language) -> bool {
+    let host_kinds: &[&str] = match lang {
+        Language::TypeScript => &["decorator"],
+        Language::Rust => &["attribute_item", "attribute"],
+        _ => return false,
+    };
+    let mut current = node.parent();
+    for _ in 0..8 {
+        let Some(p) = current else { return false };
+        if host_kinds.contains(&p.kind()) {
+            return true;
+        }
+        current = p.parent();
+    }
+    false
+}
+
+/// Rust-specific: drop `#[derive(...)]` attributes entirely. The filter
+/// runs at attribute-extraction time, BEFORE the rightmost-id projection.
+/// It looks at the FIRST identifier descendant of the `attribute` child
+/// of the `attribute_item` host — i.e. the path HEAD — and skips when
+/// that text is exactly `"derive"`. Arguments inside the `token_tree`
+/// child are never inspected, so an attribute like
+/// `#[some_attr(derive = "x")]` still emits an edge to `some_attr`.
+fn rust_derive_filter_skip(lang: Language, host: tree_sitter::Node, content: &str) -> bool {
+    if lang != Language::Rust {
+        return false;
+    }
+    if host.kind() != "attribute_item" {
+        return false;
+    }
+    let Some(attribute) = host.named_child(0) else {
+        return false;
+    };
+    // First named child of `attribute` is either an `identifier` (bare
+    // path: `#[derive(...)]`) or a `scoped_identifier` (qualified path:
+    // `#[serde::Serialize]`). For `derive`, only the bare form is real —
+    // there's no `std::derive`. Anything else short-circuits to "keep".
+    let Some(first) = attribute.named_child(0) else {
+        return false;
+    };
+    if first.kind() != "identifier" {
+        return false;
+    }
+    &content[first.byte_range()] == "derive"
 }
 
 fn callgraph_query(lang: Language) -> Option<&'static str> {
@@ -363,6 +511,41 @@ fn callgraph_query(lang: Language) -> Option<&'static str> {
             (call_expression
               function: (field_expression
                 field: (field_identifier) @call.name))
+
+            ; Phase 14.2.1 — sibling-adjacency attribute edges.
+            ; `attribute_item` is a sibling of `function_item` under
+            ; `source_file` (top-level) or `declaration_list` (inside
+            ; an `impl` block). The host is captured with `@sibling.host`
+            ; so the extractor can walk forward to find the next
+            ; function_item sibling and remap the call's byte_offset.
+            ; The path's rightmost identifier is captured as
+            ; `@sibling.target` (the callee name). Single-identifier
+            ; paths and `scoped_identifier` paths are handled by
+            ; separate patterns; for scoped paths the trailing `.`
+            ; anchor inside `(scoped_identifier (identifier) @x .)`
+            ; locks rightmost-wins (same trick as Kotlin user_type).
+
+            ; top-level: #[wasm_bindgen] / #[serde(...)] / #[allow(...)]
+            (source_file
+              (attribute_item
+                (attribute (identifier) @sibling.target)) @sibling.host)
+
+            ; top-level: #[tokio::test] etc. — scoped path, rightmost wins
+            (source_file
+              (attribute_item
+                (attribute (scoped_identifier
+                  (identifier) @sibling.target .))) @sibling.host)
+
+            ; impl method: #[wasm_bindgen] fn ... inside impl block
+            (declaration_list
+              (attribute_item
+                (attribute (identifier) @sibling.target)) @sibling.host)
+
+            ; impl method: #[tokio::test] fn ... inside impl block
+            (declaration_list
+              (attribute_item
+                (attribute (scoped_identifier
+                  (identifier) @sibling.target .))) @sibling.host)
             "#,
         ),
         Language::Python => Some(
@@ -460,6 +643,34 @@ fn callgraph_query(lang: Language) -> Option<&'static str> {
             (call_expression
               function: (member_expression
                 property: (property_identifier) @call.name))
+
+            ; Phase 14.2.1 — sibling-adjacency decorator edges.
+            ; Method-level decorators live under `class_body` as siblings
+            ; of `method_definition`. Class-level decorators live under
+            ; `class_declaration` and are intentionally NOT matched —
+            ; class-level decorators are Phase 14.6 territory.
+            ; `@sibling.host` is the decorator node; extractor walks
+            ; forward to find the next method_definition sibling and
+            ; remaps the call's byte_offset so existing FnDef attribution
+            ; works. `@sibling.target` is the path's rightmost identifier.
+
+            ; @bound method() — bare identifier
+            (class_body
+              (decorator (identifier) @sibling.target) @sibling.host)
+
+            ; @d1() method() — call with bare identifier
+            (class_body
+              (decorator
+                (call_expression
+                  function: (identifier) @sibling.target)) @sibling.host)
+
+            ; @nest.Get("/x") method() — call with member_expression,
+            ; rightmost property_identifier wins
+            (class_body
+              (decorator
+                (call_expression
+                  function: (member_expression
+                    property: (property_identifier) @sibling.target))) @sibling.host)
             "#,
         ),
         Language::Go => Some(
@@ -1396,6 +1607,401 @@ class Controller {
         assert!(
             !names.contains(&"System") && !names.contains(&"Web") && !names.contains(&"Mvc"),
             "intermediate qualified-name segments must not leak: {names:?}"
+        );
+    }
+
+    // ---- Phase 14.2.1 — TypeScript decorator edges (RED) -----------------
+
+    /// Persistent-index path equivalence: `extract_call_edges` must
+    /// produce a `("handler", _, "Get", _)` tuple for a TS decorated
+    /// method, NOT a `("", 0, ...)` sentinel. Pins parity between live
+    /// `callers_in_source` and the indexed `extract_call_edges` path.
+    #[test]
+    fn typescript_decorator_via_extract_call_edges() {
+        let src = "class C {\n    @Get(\"/items\")\n    handler() {}\n}\n";
+        let edges = extract_call_edges(src, Language::TypeScript);
+        eprintln!("TS edges: {edges:?}");
+        assert!(
+            edges
+                .iter()
+                .any(|(caller, _, callee, _)| caller == "handler" && callee == "Get"),
+            "expected ('handler', _, 'Get', _) in edges: {edges:?}"
+        );
+        assert!(
+            !edges
+                .iter()
+                .any(|(caller, line, callee, _)| caller.is_empty()
+                    && *line == 0
+                    && callee == "Get"),
+            "must NOT emit a sentinel edge for `Get`: {edges:?}"
+        );
+    }
+
+    /// `class C { @Get("/x") handler() {} }` — method-level decorator
+    /// produces forward edge `handler → Get`.
+    #[test]
+    fn typescript_decorator_with_call_target() {
+        let src = r#"
+class C {
+    @Get("/x")
+    handler() {}
+}
+"#;
+        let matches = callees(src, Language::TypeScript, "handler");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"Get"),
+            "expected `Get` in callees(handler): {names:?}"
+        );
+
+        let caller_matches = callers(src, Language::TypeScript, "Get");
+        let caller_names: Vec<&str> = caller_matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            caller_names.contains(&"handler"),
+            "expected `handler` in callers(Get): {caller_names:?}"
+        );
+    }
+
+    /// `@nest.Get("/x")` — qualified decorator path; rightmost
+    /// identifier wins, intermediate `nest` must NOT appear.
+    #[test]
+    fn typescript_qualified_decorator_rightmost() {
+        let src = r#"
+class C {
+    @nest.Get("/x")
+    handler() {}
+}
+"#;
+        let matches = callees(src, Language::TypeScript, "handler");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"Get"),
+            "rightmost `Get` must appear: {names:?}"
+        );
+        assert!(
+            !names.contains(&"nest"),
+            "intermediate `nest` must NOT leak: {names:?}"
+        );
+    }
+
+    /// Bare-identifier decorator `@bound method()` — no `()` invocation,
+    /// edge resolves to the identifier itself.
+    #[test]
+    fn typescript_bare_identifier_decorator() {
+        let src = r#"
+class C {
+    @bound
+    method() {}
+}
+"#;
+        let matches = callees(src, Language::TypeScript, "method");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"bound"),
+            "bare-identifier decorator must produce edge `method → bound`: {names:?}"
+        );
+    }
+
+    /// Multi-decorator stack `@d1() @d2() m()` — exactly two edges,
+    /// outermost-first by line. Pins the source-order emission via
+    /// tree-sitter cursor walk.
+    #[test]
+    fn typescript_multi_decorator_stack_outermost_first() {
+        let src = r#"
+class C {
+    @d1()
+    @d2()
+    m() {}
+}
+"#;
+        let mut matches = callees(src, Language::TypeScript, "m");
+        matches.sort_by_key(|m| m.line);
+        let pairs: Vec<(&str, usize)> = matches
+            .iter()
+            .filter(|m| m.name == "d1" || m.name == "d2")
+            .map(|m| (m.name.as_str(), m.line))
+            .collect();
+        assert_eq!(
+            pairs.len(),
+            2,
+            "expected exactly 2 decorator edges: {matches:?}"
+        );
+        assert_eq!(pairs[0].0, "d1", "outermost decorator must come first");
+        assert_eq!(pairs[1].0, "d2");
+        assert!(
+            pairs[0].1 < pairs[1].1,
+            "outer line must be < inner line: {pairs:?}"
+        );
+    }
+
+    /// Class-level decorator `@Controller() class Foo {}` — OUT OF SCOPE
+    /// for the callgraph (class is not a FnDef). The class-level
+    /// decorator must NOT leak edges to the class body's methods AND
+    /// must NOT produce any caller for `Controller` itself. Reviewer
+    /// noted the prior single-assertion form was vacuously true (even
+    /// if the SCM had matched, `next_function_sibling` walking under
+    /// `class_declaration` would skip over the `class_body` and find
+    /// nothing); the explicit `callers("Controller")` empty assertion
+    /// catches grammar-shape regressions directly via `extract_call_edges`.
+    #[test]
+    fn typescript_class_level_decorator_not_indexed() {
+        let src = r#"
+@Controller()
+class Foo {
+    handler() {}
+}
+"#;
+        // Negative #1: `handler` callees must not include `Controller`.
+        let matches = callees(src, Language::TypeScript, "handler");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            !names.contains(&"Controller"),
+            "class-level `Controller` must not leak to method `handler`: {names:?}"
+        );
+
+        // Negative #2: NO edge in the entire file may have `Controller`
+        // as callee. Stronger than #1: catches a hypothetical regression
+        // where the SCM matched class-level decorators and emitted an
+        // edge under some OTHER caller (or even the module sentinel).
+        let edges = extract_call_edges(src, Language::TypeScript);
+        assert!(
+            !edges.iter().any(|(_, _, callee, _)| callee == "Controller"),
+            "class-level `Controller` must produce zero callgraph edges: {edges:?}"
+        );
+    }
+
+    /// Property decorator `@inject() svc: Svc` — properties are NOT
+    /// indexed as FnDefs, so the decorator has no anchor. Negative
+    /// pin: the SCM must not synthesise a sentinel edge.
+    #[test]
+    fn typescript_property_decorator_not_indexed() {
+        let src = r#"
+class C {
+    @inject()
+    svc: Svc;
+
+    handler() {}
+}
+"#;
+        // `handler` is a real method but its callees should NOT
+        // include `inject` (which belongs to the property, not
+        // to handler).
+        let matches = callees(src, Language::TypeScript, "handler");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            !names.contains(&"inject"),
+            "property decorator must not leak to adjacent method: {names:?}"
+        );
+        // `inject` should also have no callers — there's no method
+        // to attribute the property's decorator to.
+        let inject_callers = callers(src, Language::TypeScript, "inject");
+        let inject_caller_names: Vec<&str> =
+            inject_callers.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            !inject_caller_names.contains(&"handler"),
+            "property decorator must not attribute to neighbouring method: {inject_caller_names:?}"
+        );
+    }
+
+    /// `edge.line` for a TS decorator edge must point at the decorator
+    /// line, NOT the method line. Same invariant as Phase 14.2 Python.
+    #[test]
+    fn typescript_decorator_edge_line_is_decorator_not_method() {
+        // Decorator on line 3, method on line 4 (1-indexed,
+        // accounting for the leading empty line in the r#"..."# string).
+        let src = "\nclass C {\n    @MyDecorator()\n    handler() {}\n}\n";
+        let matches = callees(src, Language::TypeScript, "handler");
+        let dec_edge = matches
+            .iter()
+            .find(|m| m.name == "MyDecorator")
+            .unwrap_or_else(|| {
+                panic!("expected `MyDecorator` edge from `handler`, got: {matches:?}")
+            });
+        assert_eq!(
+            dec_edge.line, 3,
+            "edge.line must be decorator row (3), not method row (4); got: {dec_edge:?}"
+        );
+    }
+
+    // ---- Phase 14.2.1 — Rust attribute edges (RED) -----------------------
+
+    /// `#[tokio::test] fn it_works()` — scoped attribute path, rightmost
+    /// identifier (`test`) wins.
+    #[test]
+    fn rust_scoped_attribute_rightmost() {
+        let src = r#"
+#[tokio::test]
+fn it_works() {}
+"#;
+        let matches = callees(src, Language::Rust, "it_works");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"test"),
+            "rightmost `test` of #[tokio::test] must appear: {names:?}"
+        );
+        assert!(
+            !names.contains(&"tokio"),
+            "intermediate `tokio` must NOT leak: {names:?}"
+        );
+    }
+
+    /// `#[wasm_bindgen] fn foo()` — bare-identifier attribute path.
+    #[test]
+    fn rust_bare_identifier_attribute() {
+        let src = r#"
+#[wasm_bindgen]
+fn foo() {}
+"#;
+        let matches = callees(src, Language::Rust, "foo");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"wasm_bindgen"),
+            "bare-id attribute must produce edge `foo → wasm_bindgen`: {names:?}"
+        );
+    }
+
+    /// `#[serde(rename = "x")] fn bar()` — args are in `token_tree`,
+    /// the identifier `rename` inside the token_tree MUST NOT be
+    /// captured as a callee. Path head `serde` is the only callee.
+    #[test]
+    fn rust_attribute_args_not_captured_as_callees() {
+        let src = r#"
+#[serde(rename = "x")]
+fn bar() {}
+"#;
+        let matches = callees(src, Language::Rust, "bar");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"serde"),
+            "path-head `serde` must appear: {names:?}"
+        );
+        assert!(
+            !names.contains(&"rename"),
+            "arg identifier `rename` (inside token_tree) must NOT be captured: {names:?}"
+        );
+    }
+
+    /// `#[derive(Debug, Clone)] fn buggy()` — derive filter drops the
+    /// whole attribute; neither `derive` nor the derived trait names
+    /// `Debug`/`Clone` may appear as callees.
+    #[test]
+    fn rust_derive_filtered_out() {
+        let src = r#"
+#[derive(Debug, Clone)]
+fn buggy() {}
+"#;
+        let matches = callees(src, Language::Rust, "buggy");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            !names.contains(&"derive"),
+            "derive filter must skip the attribute entirely: {names:?}"
+        );
+        assert!(
+            !names.contains(&"Debug") && !names.contains(&"Clone"),
+            "derived trait names must NOT appear as callees: {names:?}"
+        );
+    }
+
+    /// Multi-attribute stack `#[a] #[b] fn f()` — exactly 2 edges,
+    /// outermost-first by line.
+    #[test]
+    fn rust_multi_attribute_outermost_first() {
+        let src = r#"
+#[a]
+#[b]
+fn f() {}
+"#;
+        let mut matches = callees(src, Language::Rust, "f");
+        matches.sort_by_key(|m| m.line);
+        let pairs: Vec<(&str, usize)> = matches
+            .iter()
+            .filter(|m| m.name == "a" || m.name == "b")
+            .map(|m| (m.name.as_str(), m.line))
+            .collect();
+        assert_eq!(
+            pairs.len(),
+            2,
+            "expected exactly 2 attribute edges: {matches:?}"
+        );
+        assert_eq!(pairs[0].0, "a", "outermost attribute must come first");
+        assert_eq!(pairs[1].0, "b");
+        assert!(
+            pairs[0].1 < pairs[1].1,
+            "outer line must be < inner line: {pairs:?}"
+        );
+    }
+
+    /// Attribute on method inside `impl` block — the `attribute_item`
+    /// sits under `declaration_list`, NOT directly under `impl_item`.
+    /// SCM patterns must root on BOTH `source_file` (for top-level fns)
+    /// AND `declaration_list` (for `impl` methods).
+    #[test]
+    fn rust_attribute_inside_impl_method() {
+        let src = r#"
+struct Foo;
+
+impl Foo {
+    #[tokio::test]
+    fn bar() {}
+}
+"#;
+        let matches = callees(src, Language::Rust, "bar");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"test"),
+            "attribute on `impl` method must produce edge `bar → test`: {names:?}"
+        );
+    }
+
+    /// Phase 14.1 ↔ 14.2.1 coexistence: a top-level attributed fn must
+    /// produce the decorator edge (`fn → attr_target`) and MUST NOT
+    /// produce a Phase 14.1 sentinel edge (`<empty> → attr_target`) for
+    /// the synthetic call. The byte_offset remap in `extract_callgraph`
+    /// ensures the call falls inside the fn body range, so `min_by_key`
+    /// attribution picks the fn — not the module sentinel. Uses
+    /// `fn run` (not `fn main`) so the assertion focuses on the
+    /// sentinel-absence invariant and isn't entangled with the
+    /// fn-name-equals-attr-rightmost self-edge artifact documented in
+    /// `docs/LIMITATIONS.md` (rightmost-id collision section).
+    #[test]
+    fn rust_attribute_does_not_leak_to_module_sentinel() {
+        let src = r#"
+#[tokio::main]
+fn run() {}
+"#;
+        let edges = extract_call_edges(src, Language::Rust);
+        // Decorator edge: run → main (rightmost of #[tokio::main]).
+        assert!(
+            edges
+                .iter()
+                .any(|(caller, _, callee, _)| caller == "run" && callee == "main"),
+            "expected attribute edge `run → main`, got: {edges:?}"
+        );
+        // Sentinel guard: NO edge with empty caller for any callee
+        // produced by the attribute path (`tokio` or `main`).
+        for (caller, line, callee, _) in &edges {
+            assert!(
+                !(caller.is_empty() && *line == 0 && (callee == "main" || callee == "tokio")),
+                "attribute call must not leak to <module:> sentinel: {edges:?}"
+            );
+        }
+    }
+
+    /// `edge.line` for a Rust attribute edge must point at the attribute
+    /// line, NOT the `fn` line.
+    #[test]
+    fn rust_attribute_edge_line_is_attribute_not_fn() {
+        // Attribute on line 2, fn on line 3 (1-indexed, accounting
+        // for the leading "\n" in the source literal).
+        let src = "\n#[MyAttr]\nfn target() {}\n";
+        let matches = callees(src, Language::Rust, "target");
+        let edge = matches
+            .iter()
+            .find(|m| m.name == "MyAttr")
+            .unwrap_or_else(|| panic!("expected `MyAttr` edge from `target`, got: {matches:?}"));
+        assert_eq!(
+            edge.line, 2,
+            "edge.line must be attribute row (2), not fn row (3); got: {edge:?}"
         );
     }
 }
