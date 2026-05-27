@@ -1,17 +1,17 @@
-//! CLI integration tests for Phase 14.2 / 14.2.2 — decorator /
-//! annotation / attribute edges.
+//! CLI integration tests for Phase 14.2 / 14.2.2 / 14.2.1 — decorator /
+//! annotation / attribute / sibling-adjacency edges.
 //!
 //! Each test indexes a tiny tempdir project containing a decorated
-//! function (Python), annotated method (Java / Kotlin), or attributed
-//! method (C#) and then asserts via `vex callers --format json` /
-//! `vex callees --format json` that the forward edge
-//! `decorated_fn → decorator_target` is reachable through the persistent
-//! call-graph section.
+//! function (Python), annotated method (Java / Kotlin), attributed
+//! method (C#), or sibling-adjacency decorated/attributed function
+//! (TypeScript / JavaScript / Rust) and then asserts via
+//! `vex callers --format json` / `vex callees --format json` that the
+//! forward edge `decorated_fn → decorator_target` is reachable through
+//! the persistent call-graph section.
 //!
-//! In-scope per task files: Python + Java (Phase 14.2) and Kotlin + C#
-//! (Phase 14.2.2). TypeScript + Rust deferred to Phase 14.2.1 (sibling
-//! adjacency model) — they'll get their own integration suite when
-//! that lands.
+//! In-scope per task files: Python + Java (Phase 14.2), Kotlin + C#
+//! (Phase 14.2.2), TypeScript + Rust (Phase 14.2.1). All function /
+//! method-level decorator-dispatch gaps closed.
 
 use std::path::Path;
 
@@ -518,5 +518,264 @@ fn csharp_constructor_appears_as_caller_of_body_call() {
     assert!(
         names.iter().any(|n| n == "Service"),
         "constructor `Service` must appear as caller of `Init`; got: {names:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TypeScript — method decorator with call target (Phase 14.2.1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn typescript_callers_of_get_decorator_lists_handler() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::write(
+        tmp.path().join("controller.ts"),
+        "class C {\n    @Get(\"/items\")\n    handler() { return []; }\n}\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let out = vex_in(tmp.path())
+        .args(["callers", "Get", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let names = names_of(&parse_json_array(&out));
+    assert!(!names.is_empty(), "callers(Get) must not be empty");
+    assert!(
+        names.iter().any(|n| n == "handler"),
+        "expected `handler` in callers(Get); got: {names:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TypeScript — qualified decorator @nest.Get, rightmost wins
+// ---------------------------------------------------------------------------
+
+#[test]
+fn typescript_qualified_decorator_uses_rightmost_identifier() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::write(
+        tmp.path().join("routes.ts"),
+        "class Routes {\n    @nest.Get(\"/x\")\n    handler() {}\n}\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    // Rightmost id `Get` must reach `handler`.
+    let out_right = vex_in(tmp.path())
+        .args(["callers", "Get", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let names_right = names_of(&parse_json_array(&out_right));
+    assert!(!names_right.is_empty(), "callers(Get) must not be empty");
+    assert!(
+        names_right.iter().any(|n| n == "handler"),
+        "rightmost `Get` must list `handler` as caller; got: {names_right:?}"
+    );
+
+    // Intermediate `nest` must NOT list `handler` as caller.
+    let out_nest = vex_in(tmp.path())
+        .args(["callers", "nest", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let names_nest = names_of(&parse_json_array(&out_nest));
+    assert!(
+        !names_nest.iter().any(|n| n == "handler"),
+        "intermediate `nest` must NOT list `handler` as caller; got: {names_nest:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// JavaScript smoke (Q4 from 14.2.1 task file) — TSX grammar handles `.js`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn javascript_decorator_via_tsx_grammar_smoke() {
+    // Load-bearing regression guard for the `.js` → TSX-grammar
+    // routing in `src/parse/language.rs::from_extension`. This is the
+    // ONLY test that verifies a `.js` file with a TC39-stage-3
+    // decorator exercises the same sibling-adjacency SCM patterns as
+    // `.ts`. If file-extension dispatch is ever refactored into a
+    // dedicated `Language::JavaScript` variant, this test is the
+    // safety net. The `assert!(!names.is_empty())` guard distinguishes
+    // "grammar wired correctly but SCM missed" (would FAIL with a
+    // non-empty names list lacking `index`) from "grammar not wired
+    // at all" (empty names list).
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::write(
+        tmp.path().join("app.js"),
+        "class App {\n    @Route(\"/\")\n    index() {}\n}\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let out = vex_in(tmp.path())
+        .args(["callers", "Route", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let names = names_of(&parse_json_array(&out));
+    assert!(!names.is_empty(), "callers(Route) must not be empty");
+    assert!(
+        names.iter().any(|n| n == "index"),
+        "JS decorator edge must work via TSX grammar; got: {names:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Rust — scoped attribute path #[tokio::test] (Phase 14.2.1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rust_callers_of_scoped_attribute_lists_function() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::write(
+        tmp.path().join("tests.rs"),
+        "#[tokio::test]\nfn it_works() {}\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let out = vex_in(tmp.path())
+        .args(["callers", "test", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let names = names_of(&parse_json_array(&out));
+    assert!(!names.is_empty(), "callers(test) must not be empty");
+    assert!(
+        names.iter().any(|n| n == "it_works"),
+        "expected `it_works` in callers(test); got: {names:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Rust — attribute on method inside `impl` (declaration_list parent)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rust_attribute_on_impl_method_lists_method_as_caller() {
+    // Pins the `declaration_list` SCM root — without it, attributes on
+    // methods inside an `impl` block would never match and the edge
+    // would be silently dropped.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::write(
+        tmp.path().join("svc.rs"),
+        "struct Foo;\n\nimpl Foo {\n    #[wasm_bindgen]\n    fn bar() {}\n}\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let out = vex_in(tmp.path())
+        .args(["callers", "wasm_bindgen", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let names = names_of(&parse_json_array(&out));
+    assert!(!names.is_empty(), "callers(wasm_bindgen) must not be empty");
+    assert!(
+        names.iter().any(|n| n == "bar"),
+        "expected `bar` in callers(wasm_bindgen); got: {names:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Rust — #[derive(...)] filter (no edge for derive nor derived traits)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rust_derive_attribute_is_filtered_at_cli_layer() {
+    // Pins the head-name filter end-to-end. `#[derive(Debug, Clone)]`
+    // must NOT produce edges to `derive`, `Debug`, or `Clone` for the
+    // attached fn — compile-time codegen, not call edges.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::write(
+        tmp.path().join("types.rs"),
+        "#[derive(Debug, Clone)]\nfn buggy() {}\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    for callee in ["derive", "Debug", "Clone"] {
+        let out = vex_in(tmp.path())
+            .args(["callers", callee, "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let names = names_of(&parse_json_array(&out));
+        assert!(
+            !names.iter().any(|n| n == "buggy"),
+            "derive filter must drop callers({callee})/buggy edge; got: {names:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rust — #[serde(rename = "x")]: args in token_tree must NOT be callees
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rust_attribute_args_not_captured_at_cli_layer() {
+    // Pins that the `rename` identifier inside the `token_tree` arg
+    // list is NOT projected as a callee. Only the path-head `serde`
+    // is captured.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::write(
+        tmp.path().join("model.rs"),
+        "#[serde(rename = \"x\")]\nfn bar() {}\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let out_path_head = vex_in(tmp.path())
+        .args(["callers", "serde", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let names_serde = names_of(&parse_json_array(&out_path_head));
+    assert!(!names_serde.is_empty(), "callers(serde) must not be empty");
+    assert!(
+        names_serde.iter().any(|n| n == "bar"),
+        "path-head `serde` must list `bar` as caller; got: {names_serde:?}"
+    );
+
+    // `rename` (arg identifier) must NOT have `bar` as caller.
+    let out_arg = vex_in(tmp.path())
+        .args(["callers", "rename", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let names_rename = names_of(&parse_json_array(&out_arg));
+    assert!(
+        !names_rename.iter().any(|n| n == "bar"),
+        "arg identifier `rename` must NOT list `bar` as caller; got: {names_rename:?}"
     );
 }
