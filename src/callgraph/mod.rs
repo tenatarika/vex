@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -249,6 +249,8 @@ static COMPILED_QUERIES: LazyLock<HashMap<Language, Query>> = LazyLock::new(|| {
         Language::TypeScript,
         Language::Go,
         Language::Cpp,
+        Language::Kotlin,
+        Language::CSharp,
     ] {
         if let Some(src) = callgraph_query(lang) {
             match Query::new(&lang.ts_language(), src) {
@@ -287,6 +289,18 @@ fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<C
 
     let mut fns = Vec::new();
     let mut calls = Vec::new();
+    // Multi-annotation / multi-decorator functions re-emit `@fn.decl` +
+    // `@fn.name` for the same function once per matching pattern (Kotlin
+    // `@Inject @Named("svc") fun foo()` → 3 matches with identical
+    // ranges; Python `@a @b @c def f()` → 3 matches with identical
+    // outer `decorated_definition` ranges). Same-range duplicates would
+    // make `max_by_key` / `min_by_key` in `callers_in_source` /
+    // `callees_in_source` iteration-order-dependent if a future grammar
+    // tweak ever makes the ranges drift apart; collapse them up front.
+    // The Python "Double FnDef" invariant (different ranges for the
+    // inner `function_definition` and the outer `decorated_definition`)
+    // is preserved — those entries have distinct `(start, end)` pairs.
+    let mut seen_fns: HashSet<(usize, usize, String)> = HashSet::new();
 
     while let Some(m) = query_matches.next() {
         let mut fn_name = None;
@@ -311,12 +325,14 @@ fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<C
         }
 
         if let (Some(name), Some((start, end))) = (fn_name, fn_body_range) {
-            fns.push(FnDef {
-                name: name.to_string(),
-                line: fn_line,
-                start_byte: start,
-                end_byte: end,
-            });
+            if seen_fns.insert((start, end, name.to_string())) {
+                fns.push(FnDef {
+                    name: name.to_string(),
+                    line: fn_line,
+                    start_byte: start,
+                    end_byte: end,
+                });
+            }
         }
 
         if let Some(callee) = call_name {
@@ -480,6 +496,94 @@ fn callgraph_query(lang: Language) -> Option<&'static str> {
             (call_expression
               function: (field_expression
                 field: (field_identifier) @call.name))
+            "#,
+        ),
+        Language::Kotlin => Some(
+            r#"
+            ; Function declaration (Phase 14.2.2).
+            ; NOTE: `init { ... }` blocks, `getter`/`setter` accessors, and
+            ; lambda invocations are intentionally NOT indexed as FnDef.
+            ; Calls from those sites fall to the Phase 14.1 synthetic
+            ; `<module:path>` caller — documented in docs/LIMITATIONS.md.
+            (function_declaration name: (identifier) @fn.name) @fn.decl
+
+            ; Bare call: foo()
+            (call_expression (identifier) @call.name)
+
+            ; Member access call: obj.method() — trailing identifier wins.
+            ; navigation_expression has two `identifier` children separated
+            ; by a literal `.` token; the SECOND identifier is the callee.
+            (call_expression
+              (navigation_expression
+                (identifier)
+                (identifier) @call.name))
+
+            ; Annotation edges (Phase 14.2.2).
+            ; @JvmStatic — bare type. tree-sitter-kotlin-ng uses
+            ; `identifier` (not `type_identifier`) inside `user_type`.
+            ; For qualified annotations like @kotlin.jvm.JvmStatic the
+            ; user_type contains multiple identifiers separated by `.`
+            ; tokens; the trailing `.` anchor matches only the LAST
+            ; named child (rightmost wins).
+            (function_declaration
+              (modifiers (annotation
+                (user_type (identifier) @call.name .)))
+              name: (identifier) @fn.name) @fn.decl
+
+            ; @Named("svc") — constructor_invocation (annotation with args).
+            ; `constructor_invocation` has no fields; the first child is a
+            ; `user_type` (concrete subtype of the `type` supertype).
+            (function_declaration
+              (modifiers (annotation
+                (constructor_invocation
+                  (user_type (identifier) @call.name .))))
+              name: (identifier) @fn.name) @fn.decl
+            "#,
+        ),
+        Language::CSharp => Some(
+            r#"
+            ; Method + constructor declarations (Phase 14.2.2).
+            ; NOTE: property accessors (`get =>`, `set { ... }`), local
+            ; functions, indexer / event accessors, and lambda invocations
+            ; are intentionally NOT indexed as FnDef. Calls from those
+            ; sites fall to the Phase 14.1 synthetic `<module:path>`
+            ; caller — documented in docs/LIMITATIONS.md.
+            (method_declaration name: (identifier) @fn.name) @fn.decl
+            (constructor_declaration name: (identifier) @fn.name) @fn.decl
+
+            ; Bare invocation: Foo()
+            (invocation_expression function: (identifier) @call.name)
+
+            ; Member access invocation: obj.Method()
+            ; `member_access_expression` has a `name:` field that gives
+            ; the trailing identifier — same convention as Java/TS.
+            (invocation_expression
+              function: (member_access_expression
+                name: (identifier) @call.name))
+
+            ; Attribute edges (Phase 14.2.2).
+            ; [HttpGet("/x")] / [Authorize] — bare attribute name.
+            (method_declaration
+              (attribute_list (attribute name: (identifier) @call.name))
+              name: (identifier) @fn.name) @fn.decl
+
+            (constructor_declaration
+              (attribute_list (attribute name: (identifier) @call.name))
+              name: (identifier) @fn.name) @fn.decl
+
+            ; [System.Web.Mvc.HttpGet] — qualified attribute, rightmost
+            ; identifier wins. In tree-sitter-c-sharp `qualified_name`
+            ; recurses: outer `name:` field walks toward the trailing
+            ; identifier leaf.
+            (method_declaration
+              (attribute_list (attribute name: (qualified_name
+                name: (identifier) @call.name)))
+              name: (identifier) @fn.name) @fn.decl
+
+            (constructor_declaration
+              (attribute_list (attribute name: (qualified_name
+                name: (identifier) @call.name)))
+              name: (identifier) @fn.name) @fn.decl
             "#,
         ),
         _ => None,
@@ -1030,6 +1134,268 @@ def handler():
         assert!(
             get_names.contains(&"handler"),
             "decorator edge for `get` must coexist with body-call edges: {get_names:?}"
+        );
+    }
+
+    // ---- Phase 14.2.2 — Kotlin base callgraph + annotations (RED) ---------
+
+    /// Basic Kotlin call: `fun foo() { bar() }` — caller is `foo`,
+    /// callee is `bar`. Pins the `function_declaration` capture +
+    /// `call_expression`-via-`identifier` capture.
+    #[test]
+    fn kotlin_basic_callers_and_callees() {
+        let src = r#"
+fun bar() {}
+
+fun foo() {
+    bar()
+}
+"#;
+        let caller_matches = callers(src, Language::Kotlin, "bar");
+        assert_eq!(caller_matches.len(), 1, "callers(bar): {caller_matches:?}");
+        assert_eq!(caller_matches[0].name, "foo");
+
+        let callee_matches = callees(src, Language::Kotlin, "foo");
+        let names: Vec<&str> = callee_matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"bar"), "callees(foo): {names:?}");
+    }
+
+    /// `obj.method()` — rightmost identifier in `navigation_expression`
+    /// wins. Mirrors the convention used by Java / TypeScript.
+    #[test]
+    fn kotlin_member_access_call() {
+        let src = r#"
+fun caller() {
+    obj.helper()
+}
+"#;
+        let matches = callees(src, Language::Kotlin, "caller");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"helper"),
+            "navigation_expression rightmost id must be captured: {names:?}"
+        );
+        // Receiver `obj` must NOT appear as a callee. The bare
+        // `(call_expression (identifier) @call.name)` pattern only fires
+        // when the direct child of `call_expression` is an `identifier`;
+        // for `obj.helper()` the direct child is `navigation_expression`
+        // so the bare pattern is skipped. Pin this against grammar drift.
+        assert!(
+            !names.contains(&"obj"),
+            "receiver identifier `obj` must not appear as callee: {names:?}"
+        );
+    }
+
+    /// `@JvmStatic fun foo()` — marker annotation. Edge `foo → JvmStatic`.
+    #[test]
+    fn kotlin_annotation_marker() {
+        let src = r#"
+@JvmStatic
+fun foo() {}
+"#;
+        let matches = callees(src, Language::Kotlin, "foo");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"JvmStatic"),
+            "callees(foo) must include `JvmStatic`: {names:?}"
+        );
+    }
+
+    /// Multi-annotation stack. Two edges, outer-first by line.
+    #[test]
+    fn kotlin_multi_annotation_stack() {
+        let src = r#"
+@Inject
+@Named("svc")
+fun setService() {}
+"#;
+        let mut matches = callees(src, Language::Kotlin, "setService");
+        matches.sort_by_key(|m| m.line);
+        let pairs: Vec<(&str, usize)> = matches
+            .iter()
+            .filter(|m| m.name == "Inject" || m.name == "Named")
+            .map(|m| (m.name.as_str(), m.line))
+            .collect();
+        assert_eq!(
+            pairs.len(),
+            2,
+            "expected exactly 2 annotation edges, got: {matches:?}"
+        );
+        assert_eq!(pairs[0].0, "Inject", "outermost annotation must come first");
+    }
+
+    /// Qualified annotation `@kotlin.jvm.JvmStatic` — rightmost wins
+    /// (`JvmStatic`), intermediate `kotlin`/`jvm` MUST NOT appear.
+    #[test]
+    fn kotlin_qualified_annotation_rightmost() {
+        let src = r#"
+@kotlin.jvm.JvmStatic
+fun foo() {}
+"#;
+        let matches = callees(src, Language::Kotlin, "foo");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"JvmStatic"),
+            "rightmost `JvmStatic` must appear: {names:?}"
+        );
+        assert!(
+            !names.contains(&"kotlin") && !names.contains(&"jvm"),
+            "intermediate path identifiers must not leak: {names:?}"
+        );
+    }
+
+    // ---- Phase 14.2.2 — C# base callgraph + attributes (RED) --------------
+
+    /// Basic C# invocation: `void Foo() { Bar(); }`. Caller is `Foo`,
+    /// callee `Bar`.
+    #[test]
+    fn csharp_basic_callers_and_callees() {
+        let src = r#"
+class App {
+    void Bar() {}
+
+    void Foo() {
+        Bar();
+    }
+}
+"#;
+        let caller_matches = callers(src, Language::CSharp, "Bar");
+        assert_eq!(caller_matches.len(), 1, "callers(Bar): {caller_matches:?}");
+        assert_eq!(caller_matches[0].name, "Foo");
+
+        let callee_matches = callees(src, Language::CSharp, "Foo");
+        let names: Vec<&str> = callee_matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"Bar"), "callees(Foo): {names:?}");
+    }
+
+    /// `obj.Method()` — `member_access_expression name:` field gives
+    /// the rightmost identifier as the callee.
+    #[test]
+    fn csharp_member_access_invocation() {
+        let src = r#"
+class App {
+    void Caller() {
+        obj.Helper();
+    }
+}
+"#;
+        let matches = callees(src, Language::CSharp, "Caller");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"Helper"),
+            "rightmost id of member_access_expression: {names:?}"
+        );
+    }
+
+    /// Constructor declarations produce a FnDef. `Foo` constructor
+    /// calling `Init()` from its body is captured via `callees(Foo)`.
+    #[test]
+    fn csharp_constructor_indexed() {
+        let src = r#"
+class App {
+    public App() {
+        Init();
+    }
+
+    void Init() {}
+}
+"#;
+        let matches = callees(src, Language::CSharp, "App");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"Init"),
+            "constructor body call must be a callee of the constructor: {names:?}"
+        );
+    }
+
+    /// `[HttpGet("/users")]` attribute → callee `HttpGet`.
+    #[test]
+    fn csharp_attribute_marker() {
+        let src = r#"
+class Controller {
+    [HttpGet("/users")]
+    public Response GetUsers() {
+        return null;
+    }
+}
+"#;
+        let matches = callees(src, Language::CSharp, "GetUsers");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"HttpGet"),
+            "method attribute must produce edge to `HttpGet`: {names:?}"
+        );
+    }
+
+    /// Multi-attribute on one method: `[Route("/x")] [Authorize]`.
+    #[test]
+    fn csharp_multi_attribute_stack() {
+        let src = r#"
+class Controller {
+    [Route("/x")]
+    [Authorize]
+    public Response Handle() {
+        return null;
+    }
+}
+"#;
+        let matches = callees(src, Language::CSharp, "Handle");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"Route") && names.contains(&"Authorize"),
+            "both attribute edges expected: {names:?}"
+        );
+    }
+
+    /// 2-level qualified attribute `[System.HttpGet]` — at this depth
+    /// the outer `attribute` `name:` field IS a `qualified_name` (so the
+    /// bare-identifier branch does NOT fire), but the qualified branch's
+    /// `name: (identifier)` capture still resolves to the rightmost leaf
+    /// `HttpGet`. Pins the qualified branch on the minimum-depth case
+    /// because the 3-level test below has more redundancy.
+    #[test]
+    fn csharp_two_level_qualified_attribute_rightmost() {
+        let src = r#"
+class Controller {
+    [System.HttpGet]
+    public Response Handle() {
+        return null;
+    }
+}
+"#;
+        let matches = callees(src, Language::CSharp, "Handle");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"HttpGet"),
+            "rightmost `HttpGet` of 2-level qualified attribute must appear: {names:?}"
+        );
+        assert!(
+            !names.contains(&"System"),
+            "intermediate `System` must not leak: {names:?}"
+        );
+    }
+
+    /// Qualified attribute name `[System.Web.Mvc.HttpGet]` — rightmost
+    /// wins, intermediates do NOT appear.
+    #[test]
+    fn csharp_qualified_attribute_rightmost() {
+        let src = r#"
+class Controller {
+    [System.Web.Mvc.HttpGet]
+    public Response Get() {
+        return null;
+    }
+}
+"#;
+        let matches = callees(src, Language::CSharp, "Get");
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"HttpGet"),
+            "rightmost `HttpGet` must appear: {names:?}"
+        );
+        assert!(
+            !names.contains(&"System") && !names.contains(&"Web") && !names.contains(&"Mvc"),
+            "intermediate qualified-name segments must not leak: {names:?}"
         );
     }
 }
