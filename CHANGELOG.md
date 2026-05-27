@@ -17,6 +17,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Phase 14.2.2 — Kotlin + C# call graph and annotation edges.** Kotlin
+  and C# now have first-class callgraph support: `function_declaration`,
+  `method_declaration`, and `constructor_declaration` produce caller
+  FnDefs; direct calls, `navigation_expression` (`obj.method()`), and
+  `invocation_expression` over `member_access_expression`
+  (`obj.Method()`) produce callee edges. On top of the base callgraph,
+  Kotlin annotations (`@JvmStatic fun foo()`) and C# method/constructor
+  attributes (`[HttpGet("/x")] public Response GetUsers()`) emit forward
+  edges `annotated_fn → annotation_target`. Qualified names follow the
+  rightmost-identifier convention from Phase 14.2 —
+  `@kotlin.jvm.JvmStatic` → `JvmStatic`, `[System.Web.Mvc.HttpGet]` →
+  `HttpGet`. Both languages join the `COMPILED_QUERIES` LazyLock so the
+  added query compiles stay off the hot path. No format bump — reuses
+  the existing CallEdge shape. Performance budget: re-indexing the vex
+  self-repo, release binary, 6 cold-cache runs over 3668 symbols, gave
+  median **287.5ms** (+2.7% vs the 14.2 baseline of 280ms; well under
+  the +10% ceiling), best **268.01ms** (−4.3%). Remaining gaps:
+  TypeScript / Rust decorators (Phase 14.2.1) and class-level decorators
+  (Phase 14.6).
 - **Phase 14.2 — decorator edges (Python + Java).** Function and method
   decorators in Python (`@app.get("/x") def list_items()`) and method-level
   annotations in Java (`@GetMapping("/x") public Response listItems()`)
@@ -28,8 +47,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   budget: re-indexing the vex self-repo stayed within +0% of pre-14.2
   baseline (mean 280ms vs 297ms — pattern-matching cost is below noise).
   TypeScript and Rust deferred to Phase 14.2.1 (sibling-adjacency in
-  grammar); Kotlin and C# deferred to Phase 14.2.2 (no base callgraph
-  today); class-level decorators deferred to Phase 14.6.
+  grammar); class-level decorators deferred to Phase 14.6.
 - **Phase 14.1 — module-level callers.** `vex callers <fn>` now reports
   module-scope call sites via a synthetic per-file `<module:path>` caller
   (`SymbolKind::Module = 13`). Module symbols are excluded from `vex search`,

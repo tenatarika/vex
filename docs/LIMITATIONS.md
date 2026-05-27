@@ -17,8 +17,12 @@ Updated 2026-05-25 after external review of v1.8.2.
 v6 persistent call graph. **Module-scope expressions are recorded as a
 synthetic `<module:relpath>` caller (Phase 14.1). Function/method-level
 decorators in Python and Java emit forward edges `decorated_fn →
-decorator_target` (Phase 14.2)** — `vex callers GetMapping` lists every
-Spring handler; `vex callers get` lists every FastAPI route function.
+decorator_target` (Phase 14.2); Kotlin annotations and C# method/
+constructor attributes do the same (Phase 14.2.2)** — `vex callers
+GetMapping` lists every Spring handler; `vex callers get` lists every
+FastAPI route function; `vex callers HttpGet` lists every ASP.NET
+controller action; `vex callers JvmStatic` lists every Kotlin
+companion-object helper.
 
 **What is still invisible:**
 
@@ -26,10 +30,6 @@ Spring handler; `vex callers get` lists every FastAPI route function.
   AST node lives as a *sibling* of the method/function, not inside its
   byte range. The existing inner-fn attribution can't handle sibling
   adjacency without a separate extractor pass. **Phase 14.2.1 territory.**
-- **Decorators in Kotlin and C#** — these languages have no base
-  callgraph today, so adding decorator-only coverage would emit
-  decorator edges but leave regular method calls invisible. Bundled
-  with full callgraph support in **Phase 14.2.2.**
 - **Class-level decorators / annotations** (`@dataclass class Foo:`,
   `@RestController class C {}`) — the callgraph model only indexes
   function/method symbols today. **Phase 14.6 if real users ask.**
@@ -43,10 +43,14 @@ Spring handler; `vex callers get` lists every FastAPI route function.
 are currently attributed to the **synthetic `<module:path>` symbol** as
 well — the sentinel fires for any call site outside a `function`/`method`/
 `closure` scope, regardless of whether it's at module scope or inside a
-class body. The `edge.line` still points to the actual call site so the
-location is accurate, but the *caller name* is the module, not the class.
-A follow-up could synthesise a per-class `<class:Foo>` caller; track as
-Phase 14.5 if real users ask.
+class body. The same applies to Kotlin class-body initializers
+(`class Foo { val x = compute() }`), Kotlin `init { … }` blocks, C#
+static field initializers (`static int x = Init();`), and C# property
+getters/setters — all attribute to `<module:path>` rather than to the
+enclosing class. The `edge.line` still points to the actual call site
+so the location is accurate, but the *caller name* is the module, not
+the class. A follow-up could synthesise a per-class `<class:Foo>`
+caller; track as Phase 14.5 if real users ask.
 
 **Why:** the call-graph extractor walks tree-sitter `call_expression`
 nodes and attributes them to their innermost enclosing function. With
@@ -68,7 +72,7 @@ $ vex callers create_app
 <module:media_server/main.py>  media_server/main.py:411
 ```
 
-**Decorator repro (now resolved for Python + Java):**
+**Decorator repro (now resolved for Python + Java + Kotlin + C#):**
 
 ```python
 @app.get("/items")
@@ -87,9 +91,19 @@ class Controller {
 }
 ```
 
-For TypeScript / Rust decorators, Kotlin / C# annotations, and any
-class-level decorator, the gap remains — see "What is still invisible"
-above for the deferred phase numbers.
+```kotlin
+@JvmStatic
+fun helper() { ... }   // ← Phase 14.2.2: edge helper → JvmStatic
+```
+
+```csharp
+[HttpGet("/users")]
+public Response GetUsers() { ... }   // ← edge GetUsers → HttpGet
+```
+
+For TypeScript / Rust decorators and any class-level decorator the gap
+remains — see "What is still invisible" above for the deferred phase
+numbers.
 
 **Rightmost-identifier convention has a collision surface.** Because
 `@app.get("/x")` → `get` and a literal `dict.get(key)` call also →
@@ -174,9 +188,8 @@ parse. The following patterns produce no edges in any of `usages` /
 
 | Pattern | Example | vex visibility |
 | --- | --- | --- |
-| Decorator dispatch (Python, Java) | `@app.get("/")`, `@GetMapping("/x")` | Phase 14.2: edge `decorated_fn → decorator_target` (rightmost identifier wins). |
+| Decorator dispatch (Python, Java, Kotlin, C#) | `@app.get("/")`, `@GetMapping("/x")`, `@JvmStatic`, `[HttpGet("/x")]` | Phase 14.2 (Python+Java) + Phase 14.2.2 (Kotlin+C#): edge `decorated_fn → decorator_target` (rightmost identifier wins). |
 | Decorator dispatch (TS, Rust) | `@Controller()`, `#[tokio::test]` | Deferred to Phase 14.2.1 — sibling-adjacency in grammar AST. |
-| Decorator dispatch (Kotlin, C#) | `@RestController`, `[HttpGet]` | Deferred to Phase 14.2.2 — no base callgraph today. |
 | Class-level decorator | `@dataclass class Foo:` | Phase 14.6 — callgraph indexes only functions/methods today. |
 | String-resolved factory | `uvicorn.run("main:app")` | Literal string only; no edge from `uvicorn.run` to `main.app`. |
 | Task queues | `celery_task.delay()` | The `.delay()` call site is captured, but the bound task body is not linked. |
@@ -233,10 +246,11 @@ guidance for agents:
 > If `vex callers` returns an empty list AND you have reason to believe
 > the symbol is called somewhere, run `vex grep '\b<name>\b'` before
 > concluding the symbol is unused. Module-level call sites are reported
-> via synthetic `<module:path>` callers (Phase 14.1). Python and Java
-> function/method decorators emit forward edges (Phase 14.2). Decorators
-> in TypeScript / Rust / Kotlin / C# and class-level decorators in any
-> language remain invisible — `vex grep` is the workaround there.
+> via synthetic `<module:path>` callers (Phase 14.1). Python, Java,
+> Kotlin, and C# function/method decorators emit forward edges
+> (Phase 14.2 + 14.2.2). Decorators in TypeScript / Rust and class-level
+> decorators in any language remain invisible — `vex grep` is the
+> workaround there.
 
 ---
 
@@ -246,7 +260,7 @@ guidance for agents:
 | --- | --- | --- | --- | --- | --- | --- |
 | `vex search` | ✅ | ✅ | ✅ | n/a (it finds names) | n/a | n/a |
 | `vex usages` | ✅ binder | ✅ AST idents | ⚠️ regex (FPs) | ✅ if symbol used by name | ❌ | ❌ |
-| `vex callers` | ✅ | ✅ | ✅ | ✅ via `<module:>` (14.1) | ⚠️ Python+Java (14.2); TS/Rust → 14.2.1; Kotlin/C# → 14.2.2 | ❌ (15) |
+| `vex callers` | ✅ | ✅ | ✅ | ✅ via `<module:>` (14.1) | ⚠️ Python+Java (14.2), Kotlin+C# (14.2.2); TS/Rust → 14.2.1 | ❌ (15) |
 | `vex implementations` | ✅ | ✅ | ⚠️ depends on grammar query | n/a | n/a | n/a |
 | `vex grep` | ✅ all | ✅ all | ✅ all | ✅ | ✅ | ✅ (literal) |
 
