@@ -289,6 +289,19 @@ fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<C
     let sibling_target_idx = query.capture_index_for_name("sibling.target");
     let sibling_host_idx = query.capture_index_for_name("sibling.host");
 
+    // Phase 14.2.1 perf gate. The per-`@call.name` ancestor walk inside
+    // `call_capture_inside_sibling_host` only does work when this file
+    // actually contains a decorator/attribute host. Most files don't —
+    // a one-shot `content.contains()` byte-scan over the source short-
+    // circuits the walks for the common case. The marker is the SOURCE
+    // syntax (`@` in TS/JS, `#[` in Rust), not an AST kind, so the
+    // check stays cheap (no extra tree walk, no extra parse).
+    let has_sibling_host = match lang {
+        Language::TypeScript => content.contains('@'),
+        Language::Rust => content.contains("#["),
+        _ => false,
+    };
+
     let mut cursor = QueryCursor::new();
     let mut query_matches = cursor.matches(query, tree.root_node(), content.as_bytes());
 
@@ -336,7 +349,9 @@ fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<C
                 // Phase 14.1 sentinel path would then attribute it to
                 // `<module:path>`, producing a phantom caller alongside
                 // the correct decorator edge. Filter at capture-time.
-                if call_capture_inside_sibling_host(capture.node, lang) {
+                // `has_sibling_host` short-circuits the walk on files
+                // that contain no decorators/attributes at all.
+                if has_sibling_host && call_capture_inside_sibling_host(capture.node, lang) {
                     continue;
                 }
                 call_name = Some(text);
