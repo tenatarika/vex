@@ -2318,12 +2318,29 @@ const VEX_RELEASE_PUBKEY: &[u8] = &[
     0x38, 0xc9, 0x35, 0xc0, 0xe2, 0x05, 0xcc, 0x9d, 0x0e, 0x31, 0xf9, 0x66, 0x7d, 0xa6, 0x49, 0x51,
 ];
 
+// S5 — compile-time guard. ed25519 public keys are exactly 32 bytes; if
+// someone edits `VEX_RELEASE_PUBKEY` above and the byte count drifts,
+// the build fails with this message instead of panicking at runtime
+// inside `cmd_self_update`. Replaces the previous
+// `.expect("VEX_RELEASE_PUBKEY must be 32 bytes")` runtime check.
+const _: () = assert!(
+    VEX_RELEASE_PUBKEY.len() == 32,
+    "VEX_RELEASE_PUBKEY must be exactly 32 bytes (ed25519 public key)"
+);
+
 /// Update the running binary from the latest GitHub release. The
 /// self_update crate handles platform detection (target triple), archive
 /// download, ed25519 signature verification, atomic file replacement,
 /// and Windows-specific in-use-binary swap via a temp rename.
 fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
+    // SAFETY of the `try_into` below: the byte count is asserted at
+    // compile time by the `const _: () = assert!(...)` above. The
+    // `unwrap()` here is provably unreachable — if the slice were the
+    // wrong length, the crate wouldn't compile.
+    let pubkey: [u8; 32] = VEX_RELEASE_PUBKEY
+        .try_into()
+        .expect("checked at compile time");
     let status = self_update::backends::github::Update::configure()
         .repo_owner("tenatarika")
         .repo_name("vex")
@@ -2331,8 +2348,7 @@ fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> {
         .current_version(current)
         .show_download_progress(true)
         .no_confirm(no_confirm)
-        .verifying_keys([*<&[u8; 32]>::try_from(VEX_RELEASE_PUBKEY)
-            .expect("VEX_RELEASE_PUBKEY must be 32 bytes")])
+        .verifying_keys([pubkey])
         .build()
         .context("configure self-update client")?;
 
