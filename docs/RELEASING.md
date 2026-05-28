@@ -105,3 +105,26 @@ follow the conventional-commit prefixes (`feat`, `fix`, `docs`,
 `chore`, etc.). The `chore: bump version` and `docs: prepare vX
 release notes` commits are filtered out of the auto-generated body —
 see `cliff.toml`.
+
+## Internal format versions
+
+Some on-disk format versions live as constants in source rather than in
+the v6 binary header — bump them when their backing shape changes,
+otherwise stale entries on user machines will deserialize into the wrong
+struct.
+
+- `CACHE_FORMAT_VERSION` (`src/index/parse_cache/mod.rs`, u16) —
+  bump on any structural change to `ParsedFile` or any of its
+  transitively serialized members (`ParsedSymbol`, `ParsedRef`,
+  `RawCallEdge`, `BoundRef`, `BindTarget`, `RefKind`, `UsePath`,
+  `Skeleton`, `SymbolKind`). New variant on a serialized enum,
+  field added or removed on a serialized struct, changed `repr` on
+  a `#[repr(u8)]` enum — all qualify. The blob cache treats a
+  version mismatch as a miss and overwrites lazily, so missing a
+  bump only costs cache invalidation work on the next user run,
+  not a correctness incident — but the bump is still cheap
+  insurance.
+
+The v6 binary index, by contrast, carries grammar fingerprints inline
+and self-invalidates without a manual bump — see
+`src/store/pattern_skeletons.rs`.

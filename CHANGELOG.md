@@ -17,6 +17,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Phase 14.7 — blob-SHA addressed parse cache.** `vex index` and
+  `vex update` now consult a content-addressed cache keyed by the git
+  blob SHA of each tracked file before invoking tree-sitter. Cache
+  layout: `<platform_cache_root>/vex/blobs/<sha[0..2]>/<sha>.bin`, one
+  serialized `ParsedFile` per blob. Cache key is `(blob_sha,
+  CACHE_FORMAT_VERSION, grammar_fingerprint(lang))` so a grammar
+  upgrade that changes tree-sitter output (new node kinds) invalidates
+  entries automatically; stale entries are silently skipped and lazily
+  overwritten. Tracked-file discovery uses a single `git ls-files -s`
+  call at the top of indexing; untracked files keep the existing xxh3
+  fallback path. Files with **uncommitted working-tree changes** are
+  detected via `git diff-files --name-only -z` and excluded from cache
+  reads/writes so the cache cannot be poisoned by parses of dirty
+  content under their staged blob SHA. LRU eviction sweeps the blob
+  directory at the start of each `vex index` / `vex update`; default
+  size cap is **1 GiB**, overridable via `VEX_BLOB_CACHE_CAP_BYTES`.
+  Cache writes are routed through a single background drain thread
+  (one `std::thread::scope` + `mpsc` channel per `parse_files` call)
+  so per-file serialize + write + atomic rename costs stay off the
+  rayon parse closure's critical path; the drain thread is joined
+  before `parse_files` returns, guaranteeing all writes have committed
+  in time for a subsequent `vex update` to observe them. Performance
+  on the vex self-repo (3762 symbols, release binary): warm `vex
+  index` (full blob cache hit) drops from ~498ms to **~250ms**
+  (**−50%**, exceeds the ≥40% Step 1 target); the cold path (empty
+  blob cache, every file writes back) is **~562ms** (~+11%) — a small
+  one-time overhead per machine/repo that pays back on every
+  subsequent run, CI re-run, IDE reopen, or fresh Claude Code agent
+  session. Largest user-visible win is the CI re-run + Claude Code
+  cross-project agent flow where the global cache hits shared
+  vendored / pinned-version blobs across projects.
 - **Phase 14.2.1 — TypeScript + Rust decorator edges via sibling
   adjacency.** TypeScript method decorators on class methods
   (`class C { @Get("/x") handler() {} }`) and Rust outer attributes on
