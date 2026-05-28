@@ -3,12 +3,21 @@
 // Raise the crate-level recursion limit so the macro fits.
 #![recursion_limit = "512"]
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, ErrorKind, Write};
 use std::process::Command;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// Hard cap on the raw input fragment we echo back in a `-32700` parse
+/// error response. Keeps a megabyte of garbage from being copied verbatim
+/// into the error frame, which would just exhaust the client's buffer.
+/// 512 Unicode scalar values is enough to point a developer at the offending
+/// fragment (~512 bytes for ASCII input, up to 2 KiB for all-emoji / 4-byte
+/// UTF-8 sequences — the cap is applied via `.chars().take(...)` so it
+/// counts code points, not bytes).
+const PARSE_ERROR_ECHO_CAP: usize = 512;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -18,9 +27,48 @@ fn main() -> Result<()> {
 
     let stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
+    run_loop(stdin, &mut stdout)
+}
 
-    for line in stdin.lines() {
-        let line = line.context("read stdin")?;
+/// Read-and-dispatch loop. Extracted from `main()` so integration tests
+/// can feed canned input + capture output without spawning a subprocess.
+///
+/// Per JSON-RPC 2.0 + MCP semantics, the loop is resilient by design:
+///   * `BrokenPipe` / `UnexpectedEof` on stdin → clean shutdown
+///     (the client closed its end). Return `Ok(())`.
+///   * Any other `io::Error` → log and continue. Tearing down the
+///     server on a transient read hiccup would drop every in-flight
+///     tool call (C4 fix).
+///   * Parse failure on a non-empty line → emit a spec-compliant
+///     `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,...}}`
+///     response so the client doesn't hang waiting for `id: N`.
+fn run_loop<R: BufRead, W: Write>(reader: R, writer: &mut W) -> Result<()> {
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(e) if is_clean_shutdown(&e) => {
+                tracing::debug!(error = %e, "stdin closed; shutting down");
+                return Ok(());
+            }
+            Err(e) => {
+                // Transient read error — log and keep serving. The next
+                // iteration will retry. Bailing out here would drop every
+                // in-flight tool call.
+                //
+                // Subtle gotcha (pre-existing in `BufReader::lines`): on
+                // `ErrorKind::Interrupted` (EINTR), `BufRead::lines()` has
+                // already consumed the partial line and advanced past the
+                // next `\n`, so this `continue` drops whatever bytes the
+                // interrupted read returned. In practice EINTR is rare
+                // under MCP's stdio shape, and the next line will produce
+                // a `-32700` if it lands mid-record — keeping the client
+                // informed. Documented for the next reader; not patched
+                // here because the fix is upstream in std.
+                tracing::warn!(error = %e, "stdin read error; continuing");
+                continue;
+            }
+        };
+
         if line.trim().is_empty() {
             continue;
         }
@@ -29,6 +77,11 @@ fn main() -> Result<()> {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("invalid JSON-RPC: {e}");
+                // JSON-RPC 2.0 §5.1: parse error → `-32700`, `id: null`
+                // (we can't read the id from input we couldn't parse).
+                // Without this, MCP clients hang on `id: N` forever.
+                let response = parse_error_response(&line);
+                emit_response(writer, &response)?;
                 continue;
             }
         };
@@ -40,11 +93,46 @@ fn main() -> Result<()> {
         }
 
         let response = handle_request(&request);
-        let json = serde_json::to_string(&response)?;
-        writeln!(stdout, "{json}")?;
-        stdout.flush()?;
+        emit_response(writer, &response)?;
     }
 
+    Ok(())
+}
+
+/// Stdin closed cleanly by the client. Both kinds surface when the MCP
+/// host process exits or closes its pipe while we're mid-`read_line`.
+fn is_clean_shutdown(e: &io::Error) -> bool {
+    matches!(e.kind(), ErrorKind::BrokenPipe | ErrorKind::UnexpectedEof)
+}
+
+/// Build the JSON-RPC 2.0 `-32700` Parse-error frame. `id` is always
+/// `null` because we couldn't parse the input far enough to recover one.
+/// The `data` field carries a truncated echo of the offending input so
+/// the developer doesn't have to consult their MCP transport logs.
+fn parse_error_response(raw_input: &str) -> JsonRpcResponse {
+    let echo: String = raw_input.chars().take(PARSE_ERROR_ECHO_CAP).collect();
+    JsonRpcResponse {
+        jsonrpc: "2.0".into(),
+        // JSON-RPC §5.1: id is `null` when the request couldn't be parsed.
+        // We serialize it explicitly (not skipped) so clients can
+        // distinguish "couldn't recover the id" from a notification.
+        id: Some(Value::Null),
+        result: None,
+        error: Some(JsonRpcError {
+            code: -32700,
+            message: "Parse error".into(),
+            data: Some(Value::String(echo)),
+        }),
+    }
+}
+
+/// Write `response` to `writer` as newline-delimited JSON. Pulled into a
+/// helper so both the happy path and the parse-error path use exactly
+/// the same flushing discipline.
+fn emit_response<W: Write>(writer: &mut W, response: &JsonRpcResponse) -> Result<()> {
+    let json = serde_json::to_string(response).context("serialize JSON-RPC response")?;
+    writeln!(writer, "{json}")?;
+    writer.flush()?;
     Ok(())
 }
 
@@ -62,6 +150,7 @@ fn handle_request(req: &JsonRpcRequest) -> JsonRpcResponse {
                 error: Some(JsonRpcError {
                     code: -32601, // Method not found (JSON-RPC 2.0 spec)
                     message: format!("unknown method: {unknown}"),
+                    data: None,
                 }),
             };
         }
@@ -81,6 +170,7 @@ fn handle_request(req: &JsonRpcRequest) -> JsonRpcResponse {
             error: Some(JsonRpcError {
                 code: -32000,
                 message: format!("{e:#}"),
+                data: None,
             }),
         },
     }
@@ -1384,6 +1474,12 @@ struct JsonRpcResponse {
 struct JsonRpcError {
     code: i32,
     message: String,
+    /// JSON-RPC 2.0 §5.1 allows an optional `data` member for
+    /// implementation-defined error detail. Used by the `-32700` path
+    /// to echo a truncated copy of the unparseable input so the client
+    /// dev can debug without consulting transport logs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
 }
 
 #[cfg(test)]
@@ -3168,5 +3264,104 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------
+    // C4 — JSON-RPC parse-error response + stdin-error resilience.
+    // Regression guard: a malformed input line must produce a
+    // spec-compliant `-32700` frame with `id: null`, and the loop must
+    // continue serving subsequent valid requests.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn malformed_line_produces_parse_error_then_keeps_serving() {
+        // Two lines: garbage (must elicit -32700) + a valid `ping`
+        // request (must get its normal response). The loop must NOT
+        // terminate on the parse error.
+        let input = b"{not valid json\n\
+            {\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"ping\"}\n"
+            .to_vec();
+        let reader = std::io::BufReader::new(&input[..]);
+        let mut output: Vec<u8> = Vec::new();
+        run_loop(reader, &mut output).expect("loop exits cleanly");
+
+        let stdout = String::from_utf8(output).expect("stdout is utf8");
+        let mut lines = stdout.lines();
+
+        // Frame 1 — parse error.
+        let parse_err: Value =
+            serde_json::from_str(lines.next().expect("parse-error frame present"))
+                .expect("frame 1 is JSON");
+        assert_eq!(parse_err["jsonrpc"].as_str(), Some("2.0"));
+        // §5.1: id is explicitly null (not omitted).
+        assert!(
+            parse_err["id"].is_null(),
+            "parse-error id must be JSON null, got: {}",
+            parse_err["id"]
+        );
+        assert_eq!(parse_err["error"]["code"].as_i64(), Some(-32700));
+        assert_eq!(parse_err["error"]["message"].as_str(), Some("Parse error"));
+        // The truncated echo is best-effort but must be present so a
+        // future regression that drops it surfaces here.
+        assert!(
+            parse_err["error"]["data"].is_string(),
+            "parse-error data must echo the raw input fragment, got: {}",
+            parse_err["error"]["data"]
+        );
+
+        // Frame 2 — valid `ping` request still gets answered.
+        let ping_resp: Value = serde_json::from_str(lines.next().expect("ping response present"))
+            .expect("frame 2 is JSON");
+        assert_eq!(ping_resp["jsonrpc"].as_str(), Some("2.0"));
+        assert_eq!(ping_resp["id"].as_i64(), Some(42));
+        assert!(
+            ping_resp["error"].is_null(),
+            "ping must return result, not error: {ping_resp}"
+        );
+        assert!(
+            ping_resp["result"].is_object(),
+            "ping result must be a JSON object: {ping_resp}"
+        );
+
+        assert!(
+            lines.next().is_none(),
+            "exactly two response frames expected"
+        );
+    }
+
+    #[test]
+    fn parse_error_echo_truncated_to_cap() {
+        // Garbage payload longer than the echo cap. The data field must
+        // not exceed PARSE_ERROR_ECHO_CAP chars — protects clients from
+        // multi-megabyte echo storms when an upstream sends junk.
+        let huge = "x".repeat(PARSE_ERROR_ECHO_CAP * 4);
+        let response = parse_error_response(&huge);
+        let echo = response
+            .error
+            .as_ref()
+            .expect("parse-error response carries error")
+            .data
+            .as_ref()
+            .expect("parse-error data present")
+            .as_str()
+            .expect("parse-error data is string");
+        assert!(
+            echo.chars().count() <= PARSE_ERROR_ECHO_CAP,
+            "echo must be ≤ PARSE_ERROR_ECHO_CAP chars, got {}",
+            echo.chars().count()
+        );
+    }
+
+    #[test]
+    fn clean_shutdown_recognized_for_broken_pipe_and_eof() {
+        // Both kinds count as a clean shutdown (client closed its pipe).
+        let bp = io::Error::new(ErrorKind::BrokenPipe, "pipe");
+        assert!(is_clean_shutdown(&bp));
+        let eof = io::Error::new(ErrorKind::UnexpectedEof, "eof");
+        assert!(is_clean_shutdown(&eof));
+        // Other I/O errors are NOT clean shutdowns — the loop should
+        // keep serving past them.
+        let other = io::Error::other("transient");
+        assert!(!is_clean_shutdown(&other));
     }
 }
