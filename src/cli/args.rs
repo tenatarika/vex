@@ -530,6 +530,14 @@ pub enum Commands {
         /// Project root path (defaults to cwd)
         #[arg(short, long)]
         path: Option<PathBuf>,
+
+        /// Emit an index-coverage diagnostic: files indexed (per language),
+        /// files discovered but not indexed (with reason), and files in
+        /// the manifest that no longer exist on disk. Useful when
+        /// `auto_update` silently misses something or a new file type
+        /// appears in the tree.
+        #[arg(long)]
+        coverage: bool,
     },
 
     /// Find all types that inherit from / implement a base class, trait, or interface (no index needed)

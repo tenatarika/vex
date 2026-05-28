@@ -3,6 +3,7 @@ pub mod cmd_bundle;
 pub mod output;
 pub mod scope;
 pub mod show_truncate;
+pub(crate) mod status_coverage;
 pub mod trace;
 
 use std::time::Instant;
@@ -1388,7 +1389,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Commands::Status { path } => {
+        Commands::Status { path, coverage } => {
             let root = resolve_root(path)?
                 .canonicalize()
                 .context("canonicalize root")?;
@@ -1409,10 +1410,15 @@ pub fn dispatch(cli: Cli) -> Result<()> {
 
             let meta = std::fs::metadata(&index_path)?;
             let reader = IndexReader::open(&index_path)?;
+            let coverage_report = if coverage {
+                Some(status_coverage::collect(&root, &reader, excludes)?)
+            } else {
+                None
+            };
 
             match &format {
                 OutputFormat::Json => {
-                    let json = serde_json::json!({
+                    let mut json = serde_json::json!({
                         "project": root.to_string_lossy(),
                         "index": index_path.to_string_lossy(),
                         "size_bytes": meta.len(),
@@ -1421,6 +1427,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         "call_graph": reader.has_call_graph(),
                         "bm25": reader.has_bm25(),
                     });
+                    if let Some(c) = &coverage_report {
+                        json["coverage"] = serde_json::to_value(c)?;
+                    }
                     println!("{}", serde_json::to_string_pretty(&json)?);
                 }
                 OutputFormat::Text | OutputFormat::Compact => {
@@ -1440,6 +1449,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         "BM25:       {}",
                         if reader.has_bm25() { "yes" } else { "no" }
                     );
+                    if let Some(c) = &coverage_report {
+                        status_coverage::render_text(c);
+                    }
                 }
             }
             Ok(())
