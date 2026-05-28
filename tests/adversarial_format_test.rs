@@ -436,28 +436,29 @@ fn exact_header_size_valid_no_crash() {
     let _ = result.map_err(|e| e.to_string());
 }
 
-/// Legacy version 2 (accepted by the reader per the compatibility comment)
-/// with otherwise valid zero-filled fields must not panic.
+/// Legacy version 2 is no longer special-cased after v1.10.1 (H3 cleanup).
+/// The reader must reject it with a clean version-mismatch error — never panic
+/// — so users get a clear "re-run `vex index`" message instead of the silent
+/// degradation that came from `has_symbol_fst()` rejecting v2 downstream.
 #[test]
-fn legacy_version_2_no_crash() {
+fn legacy_version_2_rejected_with_version_error() {
     assert_header_size();
     let mut buf = minimal_valid_header_bytes();
-    // Override version to 2 (the legacy accepted value)
     write_u32_le(&mut buf, 4, 2);
 
     let f = write_tmp(&buf);
-    let result = IndexReader::open(f.path());
-    // v2 is explicitly supported — must not return a version-mismatch error.
-    match result {
-        Ok(_) => {}
-        Err(e) => {
-            let msg = e.to_string();
-            assert!(
-                !msg.contains("version") && !msg.contains("mismatch"),
-                "v2 index should not fail with a version error, got: {msg}"
-            );
-        }
-    }
+    let err = IndexReader::open(f.path())
+        .err()
+        .expect("v2 must be rejected with an error, not opened");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("version mismatch") && msg.contains("found v2"),
+        "v2 should fail with a version-mismatch error mentioning v2, got: {msg}"
+    );
+    assert!(
+        msg.contains("Re-run `vex index`"),
+        "v2 rejection should point users at the recovery action, got: {msg}"
+    );
 }
 
 /// 10.6 regression: every IndexReader::open failure must surface the index

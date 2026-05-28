@@ -40,15 +40,17 @@ impl IndexReader {
         if &header.magic != super::format::MAGIC {
             bail!("index file at {p} is corrupted (bad magic). Re-run `vex index` to rebuild.");
         }
-        // Accept any version in [MIN_SUPPORTED_VERSION ..= VERSION], plus
-        // legacy v2 (pre-FST). `has_symbol_fst()` / `has_call_graph_header()`
-        // gate the optional sections that may be missing in older versions.
+        // Accept any version in [MIN_SUPPORTED_VERSION ..= VERSION]. The
+        // pre-v3 (v2) special-case was dropped in v1.10.1 — the reader still
+        // opened v2 files but `has_symbol_fst()` then refused them, leaving
+        // search in a silently-degraded state. v2 is pre-Phase 9 (>= 6
+        // minors ago); anyone on a v2 index re-runs `vex index` to rebuild
+        // at the current format.
         let v = header.version;
-        let supported =
-            v == 2 || (super::format::MIN_SUPPORTED_VERSION..=super::format::VERSION).contains(&v);
+        let supported = (super::format::MIN_SUPPORTED_VERSION..=super::format::VERSION).contains(&v);
         if !supported {
             bail!(
-                "index version mismatch at {p} (found v{}, this build supports v2 or v{}..v{}). Re-run `vex index` to rebuild.",
+                "index version mismatch at {p} (found v{}, this build supports v{}..v{}). Re-run `vex index` to rebuild.",
                 v,
                 super::format::MIN_SUPPORTED_VERSION,
                 super::format::VERSION
