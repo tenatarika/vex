@@ -166,12 +166,12 @@ impl ScopeTree {
 /// A dotted import path. Cross-file resolution (`UsePath` → global
 /// symbol idx) lands in 11.1.3 alongside the persistent
 /// `reference_edges` section.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UsePath {
     pub segments: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BindTarget {
     /// Resolved to a local definition at the given scope.
     Local(ScopeId),
@@ -183,7 +183,7 @@ pub enum BindTarget {
     Unresolved,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RefKind {
     Type,
     Value,
@@ -191,7 +191,7 @@ pub enum RefKind {
     Macro,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BoundRef {
     pub name: String,
     pub line: usize,

@@ -442,6 +442,26 @@ pub fn embed_cache_dir() -> PathBuf {
     root.join("embeddings")
 }
 
+/// Cache directory for the Phase 14.7 blob-SHA addressed parse cache.
+///
+/// Mirrors [`embed_cache_dir`]: lives at `<cache-root>/blobs/` and is shared
+/// across all projects on the machine. Content-addressed by git blob SHA, so
+/// vendored dependencies present in multiple projects deduplicate naturally.
+///
+/// When `set_cache_override` is installed (e.g. project-local cache via
+/// `local_cache = true` or a `VEX_CACHE_DIR` override), the blob cache moves
+/// with the override root. The `BlobCache` rooted here writes entries to
+/// `<root>/<sha[0..2]>/<sha>.bin` — the shard layer is `<sha[0..2]>/`; this
+/// function owns the `blobs/` segment so `BlobCache` does not add a second
+/// one.
+pub fn blob_cache_dir() -> PathBuf {
+    let root = match CACHE_OVERRIDE.get() {
+        Some(layout) => layout.root.clone(),
+        None => default_cache_root(),
+    };
+    root.join("blobs")
+}
+
 /// Platform-default cache root with the `vex/` segment appended.
 fn default_cache_root() -> PathBuf {
     platform_cache_base().join("vex")

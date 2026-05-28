@@ -283,7 +283,7 @@ mod tests {
 /// functions with the same name (e.g. overloaded methods, duplicate impl
 /// blocks). The pair `(path, name, line)` uniquely identifies a symbol.
 /// Resolution to `caller_sym_idx` happens during writer assembly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RawCallEdge {
     pub caller_fn_name: String,
     pub caller_fn_line: usize,
@@ -292,7 +292,7 @@ pub struct RawCallEdge {
 }
 
 /// Result of parsing a single file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParsedFile {
     pub path: String,
     pub symbols: Vec<ParsedSymbol>,
