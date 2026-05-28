@@ -430,7 +430,7 @@ fn apply_path_filters(
     }
     results
         .into_iter()
-        .filter(|r| filter.map_or(true, |fp| r.path.contains(fp)) && scope.accept(&r.path))
+        .filter(|r| filter.is_none_or(|fp| r.path.contains(fp)) && scope.accept(&r.path))
         .collect()
 }
 
@@ -854,12 +854,12 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         Some(p) => p.as_str(),
                         None => return false,
                     };
-                    let filter_ok = filter_path.as_deref().map_or(true, |fp| path.contains(fp));
+                    let filter_ok = filter_path.as_deref().is_none_or(|fp| path.contains(fp));
                     let scope_ok = path_scope.accept(path);
                     // Phase 13.7-D3: apply diff filter alongside path filters
                     // so the trace's `total` reflects the post-diff count
                     // exactly like it already reflects the post-scope count.
-                    let diff_ok = changed_paths.as_ref().map_or(true, |cp| cp.contains(path));
+                    let diff_ok = changed_paths.as_ref().is_none_or(|cp| cp.contains(path));
                     filter_ok && scope_ok && diff_ok
                 })
                 .collect();
@@ -1470,9 +1470,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 .into_iter()
                 .filter(|m| {
                     path_scope.accept(&m.path)
-                        && changed_paths
-                            .as_ref()
-                            .map_or(true, |cp| cp.contains(&m.path))
+                        && changed_paths.as_ref().is_none_or(|cp| cp.contains(&m.path))
                 })
                 .take(limit)
                 .collect();
@@ -1535,9 +1533,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 .into_iter()
                 .filter(|m| {
                     path_scope.accept(&m.path)
-                        && changed_paths
-                            .as_ref()
-                            .map_or(true, |cp| cp.contains(&m.path))
+                        && changed_paths.as_ref().is_none_or(|cp| cp.contains(&m.path))
                 })
                 .take(limit)
                 .collect();
@@ -1910,12 +1906,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             let filtered: Vec<_> = matches
                 .into_iter()
                 .filter(|m| {
-                    let filter_ok = filter_path
-                        .as_deref()
-                        .map_or(true, |fp| m.path.contains(fp));
-                    let diff_ok = changed_paths
-                        .as_ref()
-                        .map_or(true, |cp| cp.contains(&m.path));
+                    let filter_ok = filter_path.as_deref().is_none_or(|fp| m.path.contains(fp));
+                    let diff_ok = changed_paths.as_ref().is_none_or(|cp| cp.contains(&m.path));
                     filter_ok && path_scope.accept(&m.path) && diff_ok
                 })
                 .collect();
@@ -2055,7 +2047,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 .filter(|(a, b)| {
                     let filter_ok = filter_path
                         .as_deref()
-                        .map_or(true, |fp| a.path.contains(fp) || b.path.contains(fp));
+                        .is_none_or(|fp| a.path.contains(fp) || b.path.contains(fp));
                     // Pair semantics for the diff filter: keep the pair when
                     // EITHER symbol's file is in the change set — mirrors the
                     // existing `accept_pair` mode and matches how a reviewer
@@ -2063,7 +2055,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                     // anything?").
                     let diff_ok = changed_paths
                         .as_ref()
-                        .map_or(true, |cp| cp.contains(&a.path) || cp.contains(&b.path));
+                        .is_none_or(|cp| cp.contains(&a.path) || cp.contains(&b.path));
                     filter_ok && path_scope.accept_pair(&a.path, &b.path) && diff_ok
                 })
                 .collect();
@@ -2483,9 +2475,7 @@ fn cmd_callgraph(
         .into_iter()
         .filter(|m| {
             path_scope.accept(&m.path)
-                && changed_paths
-                    .as_ref()
-                    .map_or(true, |cp| cp.contains(&m.path))
+                && changed_paths.as_ref().is_none_or(|cp| cp.contains(&m.path))
         })
         .take(limit)
         .collect();
@@ -2553,7 +2543,7 @@ fn cmd_outline(file: &std::path::Path, kind: Option<&str>, format: &OutputFormat
         // Phase 14.1: synthetic `<module:path>` symbols are invisible to
         // outline regardless of `--kind` filter.
         .filter(|s| s.kind != crate::index::symbols::SymbolKind::Module)
-        .filter(|s| kind_filter.map_or(true, |k| s.kind == k))
+        .filter(|s| kind_filter.is_none_or(|k| s.kind == k))
         .collect();
 
     print_outline(&symbols, file, kind_filter, format);
