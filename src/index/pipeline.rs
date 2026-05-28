@@ -177,10 +177,12 @@ pub fn update(
     let changed_paths: Vec<std::path::PathBuf> = files
         .iter()
         .filter(|p| {
-            p.strip_prefix(&root)
-                .ok()
-                .and_then(|r| r.to_str())
-                .is_some_and(|r| changed_set.contains(r))
+            // Use the POSIX-normalized rel so the lookup matches what
+            // `hash_files` inserted into `changed_set` — without normalization
+            // Windows backslashes leak into the filter key and the set lookup
+            // silently under-matches.
+            crate::util::paths::to_rel_posix(p, &root)
+                .is_some_and(|r| changed_set.contains(r.as_str()))
         })
         .cloned()
         .collect();
@@ -415,7 +417,7 @@ fn hash_files(root: &Path, files: &[std::path::PathBuf]) -> Vec<(String, u64)> {
         .par_iter()
         .filter_map(|path| {
             let content = std::fs::read(path).ok()?;
-            let rel = path.strip_prefix(root).ok()?.to_string_lossy().to_string();
+            let rel = crate::util::paths::to_rel_posix(path, root)?;
             let hash = hasher::content_hash(&content);
             Some((rel, hash))
         })
@@ -485,7 +487,7 @@ fn parse_files(
                     let ext = path.extension()?.to_str()?;
                     let lang = Language::from_extension(ext)?;
 
-                    let rel = path.strip_prefix(root).ok()?.to_string_lossy().to_string();
+                    let rel = crate::util::paths::to_rel_posix(path, root)?;
 
                     // Phase 14.7 — try the blob-SHA cache first for tracked files.
                     // The cache is keyed by absolute canonical path because the

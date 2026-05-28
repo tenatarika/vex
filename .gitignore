@@ -34,3 +34,7 @@ CLAUDE.md
 fuzz/artifacts/
 fuzz/corpus/
 fuzz/target/
+# fuzz/ is NOT a workspace member, so it doesn't need a committed lockfile
+# for `cargo check --workspace --locked`. Contributors regenerate it locally
+# when running `cargo fuzz run`.
+fuzz/Cargo.lock
