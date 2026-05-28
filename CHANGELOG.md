@@ -16,6 +16,54 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   specific shape now explicitly pass `--format json` (or `--format text`);
   none broke on the flip. JSON envelope output is unaffected.
 
+### Fixed
+
+- **H3 — drop the v2 legacy-version special-case in the reader.** Pre-v1.10.1
+  the reader accepted any version in `{2} ∪ [MIN_SUPPORTED_VERSION..=VERSION]`,
+  but `has_symbol_fst()` then refused v2 downstream — search silently degraded
+  on v2 indexes instead of asking the user to rebuild. The reader now rejects
+  v2 with a clean `index version mismatch … Re-run \`vex index\`` error.
+- **H9 — aggregate node cap on `vex bundle --mode pr-impact`.** The BFS bound
+  was per-changed-symbol via `CALLERS_FETCH_CAP`, so a refactor PR touching
+  N symbols could pull `N × 1024` callers — well past agent-friendly bundle
+  sizes. Introduced `MAX_PR_IMPACT_NODES = 5_000` as an aggregate ceiling
+  across changed + transitive + test items; surfaced via
+  `mode_hints.budget_exceeded` (bool) + `mode_hints.max_pr_impact_nodes`.
+  When the cap fires before any items land at all, `mode_hints.empty_reason`
+  reports `pr_impact_budget_exceeded`.
+- **S8.1 — tag MCP `--why` traces with `VEX_WHY:`.** Before v1.10.1 the MCP
+  wrapper's `extract_why_trace` picked the first `{`-prefixed line on stderr
+  and parsed it as JSON, so an early `tracing::warn!` JSON line (e.g. the
+  "cannot determine index freshness" warning) could shadow the real trace
+  and surface under `_meta.why`. The CLI now prefixes its trace with
+  `VEX_WHY: { … }` (single emission helper `cli::trace::emit_why_trace`); the
+  MCP extractor scans for the tagged line first. The untagged-fallback path
+  now picks the **last** JSON-shaped line rather than the first, so earlier
+  diagnostic objects no longer shadow the trace even on older binaries.
+  Companion `VEX_DIFF:` tag added to the `diff_filter_meta` envelopes the
+  CLI emits alongside `--why` traces, so those payloads can't be confused
+  with a trace by the legacy fallback either.
+
+### Added
+
+- **FU-5 — `vex status --coverage` index-coverage diagnostic.** New flag on
+  `vex status` that walks the project with the indexer's `walk_builder` and
+  cross-references the result against `IndexReader::file_paths()` to surface
+  three buckets:
+  - `indexed_files` plus a `by_language` breakdown,
+  - `discovered_not_indexed` with a sample list tagged with one of
+    `unsupported_extension` / `too_large` / `not_yet_indexed`,
+  - `missing_from_disk` for paths in the index that no longer exist on disk.
+  Answers "what's on disk but unindexed?" — useful when `auto_update`
+  silently misses something or a new file type appears in the tree.
+- **FU-6 — directory-symbol-density tree in `vex bundle --mode project`.**
+  `mode_hints.directory_tree` lists `{path, file_count, symbol_count,
+  recursive_symbol_count}` per directory, sorted by `recursive_symbol_count`
+  descending and capped at `--directory-tree-top` (default 30). New flag
+  `--directory-tree-only` short-circuits the indegree walk and emits only
+  the tree (`items: []`) so architecture-orientation calls don't pay for
+  the call-graph traversal.
+
 ## [1.10.0] - 2026-05-28
 
 v1.10.0 lands two parallel feature trains plus a folded-in external-review
