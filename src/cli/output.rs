@@ -9,6 +9,38 @@ use crate::search::explain::Explanation;
 use crate::search::similar::SimilarMatch;
 use crate::search::SearchResult;
 
+/// Generic Phase 13 envelope printer.
+///
+/// **Current scope (v1.9.2)**: used by `search` (via [`print_search_envelope`])
+/// and `bundle`. Every other JSON-emitting subcommand (`show`, `usages`,
+/// `pattern`, `grep`, `implementations`, `callers`, `callees`, `paths`,
+/// `reachable`, `check`, `similar`, `duplicates`, `diff`, `outline`) still
+/// emits bare arrays via `serde_json::to_string_pretty` — the Phase 13
+/// envelope contract is not yet uniform across the CLI surface. Migration
+/// of the remaining arms is blocked behind S1 (`cli/mod.rs` decomposition);
+/// see `.claude/Task/REVIEW-v1.9.1-external-feedback.md` H5 (full).
+///
+/// `search` has its own envelope path because it injects per-result
+/// `signals` + `rank_percentile` — see [`print_search_envelope`].
+///
+/// Failures in `serde_json::to_string_pretty` collapse to an empty object;
+/// the only way this fires is if a nested `Serialize` impl panics, which
+/// none of ours do — but we still avoid `unwrap()` on the output path.
+pub(crate) fn print_envelope<T: Serialize>(
+    results: T,
+    capabilities: crate::protocol::Capabilities,
+    meta: MetaEnvelope,
+) {
+    let envelope = ResponseEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        capabilities,
+        meta,
+        results,
+    };
+    let json = serde_json::to_string_pretty(&envelope).unwrap_or_else(|_| "{}".to_string());
+    println!("{json}");
+}
+
 /// Envelope payload for `vex search --format json`: each result carries the
 /// original `SearchResult` shape (via `#[serde(flatten)]`) plus the Phase 13
 /// `signals` block and a normalized `rank_percentile`.

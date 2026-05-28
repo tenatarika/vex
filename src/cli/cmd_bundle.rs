@@ -16,8 +16,9 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::cli::args::ScopeArgs;
+use crate::cli::output::print_envelope;
 use crate::parse::language::Language;
-use crate::protocol::{capabilities, MetaEnvelope, ResponseEnvelope, Signals, PROTOCOL_VERSION};
+use crate::protocol::{capabilities, MetaEnvelope, Signals};
 use crate::search::SearchResult;
 use crate::store::reader::IndexReader;
 
@@ -155,15 +156,13 @@ pub fn cmd_bundle(args: BundleArgs<'_>, ctx: BundleCtx<'_>) -> Result<()> {
         ..MetaEnvelope::default()
     };
 
-    let envelope = ResponseEnvelope {
-        protocol_version: PROTOCOL_VERSION,
-        capabilities: capabilities::current(),
-        meta,
-        results: response,
-    };
-
-    let json = serde_json::to_string_pretty(&envelope).unwrap_or_else(|_| "{}".to_string());
-    println!("{json}");
+    // Phase 13 envelope contract: every bundle mode (symbol / pr-impact /
+    // project) emits through the shared `print_envelope` helper so the
+    // wire shape stays aligned with the rest of the CLI surface. The
+    // review caller (H5 partial) explicitly required that no bundle arm
+    // emit raw `serde_json::to_string_pretty` — every mode flows through
+    // this one call site.
+    print_envelope(response, capabilities::current(), meta);
     Ok(())
 }
 

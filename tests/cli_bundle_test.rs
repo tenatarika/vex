@@ -788,3 +788,58 @@ fn bundle_project_scoring_label_is_reverse_indegree() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// H5 (partial) — envelope-contract uniformity across bundle modes.
+// Phase 13 envelope must surface `protocol_version: "v1"` from every
+// bundle arm (symbol / pr-impact / project), not just `symbol`. Regression
+// guard for the review finding: "envelope contract only honored by
+// `search` (and partly `bundle`)".
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bundle_project_mode_emits_protocol_version_v1() {
+    let tmp = TempDir::new().unwrap();
+    seed_indexed_project(tmp.path());
+    let out = run_bundle(tmp.path(), &["bundle", "--mode", "project", "--top-n", "5"]);
+    assert_eq!(
+        out["protocol_version"].as_str(),
+        Some("v1"),
+        "project mode must surface protocol_version=v1 (H5 envelope contract)"
+    );
+    // `results` is the bundle payload — assert shape so a future refactor
+    // that accidentally returns the bare payload (no envelope) trips here.
+    assert_eq!(out["results"]["mode"].as_str(), Some("project"));
+    assert!(
+        out["capabilities"].is_object(),
+        "envelope must carry the capabilities block"
+    );
+}
+
+#[test]
+fn bundle_pr_impact_mode_emits_protocol_version_v1() {
+    // Seed a tiny git repo + commit + change so pr-impact has something
+    // to diff. Mirrors the `assemble_pr_impact_*` happy path above.
+    let tmp = TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+    seed_indexed_project(tmp.path());
+    commit_all(tmp.path(), "init");
+    // Touch the file so the diff against HEAD~0 yields at least the
+    // working-tree-modified path; pr-impact mode tolerates an empty
+    // diff (it just produces an empty items list) so even a no-op call
+    // still emits the envelope.
+    let out = run_bundle(
+        tmp.path(),
+        &["bundle", "--mode", "pr-impact", "--base", "HEAD"],
+    );
+    assert_eq!(
+        out["protocol_version"].as_str(),
+        Some("v1"),
+        "pr-impact mode must surface protocol_version=v1 (H5 envelope contract)"
+    );
+    assert_eq!(out["results"]["mode"].as_str(), Some("pr-impact"));
+    assert!(
+        out["capabilities"].is_object(),
+        "envelope must carry the capabilities block"
+    );
+}
