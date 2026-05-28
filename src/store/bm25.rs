@@ -236,7 +236,16 @@ impl<'a> Bm25Reader<'a> {
             }
         }
         let mut ranked: Vec<(u32, f32)> = scores.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // Tie-break on sym_idx so equal-score postings produce a
+        // deterministic order across runs (HashMap iteration is not
+        // stable). Downstream RRF already tie-breaks on (path, name,
+        // line), but the per-channel ranking still needs a total order
+        // before fusion so `rank` itself is reproducible.
+        ranked.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
         ranked.truncate(top_k);
         ranked
     }

@@ -130,7 +130,25 @@ fn search_brute_force(reader: &IndexReader, query_vec: &[f32], top_k: usize) -> 
         }
     }
 
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    // Tie-break on symbol index so equal-similarity scores produce a
+    // deterministic ordering across runs. Without this, two `vex search
+    // --semantic` invocations on the same index can disagree at the
+    // tie-break boundary.
+    //
+    // Note: `docs/RANKING-EVAL.md` specifies `(path, name, line)` as the
+    // canonical total-order secondary key. This per-channel pre-fusion
+    // sort uses `sym_idx` instead because (a) the surrounding `fuse_many`
+    // re-applies the `(path, name, line)` order at the fusion layer where
+    // results have a `SearchResult` shape, and (b) resolving the symbol
+    // index back to a `SearchResult` here would require an extra reader
+    // lookup per comparison. `sym_idx` is itself deterministic (writer
+    // assembly order is fixed), so the contract is preserved end-to-end
+    // even though this specific sort uses a coarser key.
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
     scored.truncate(top_k);
     scored
 }

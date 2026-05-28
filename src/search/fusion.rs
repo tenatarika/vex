@@ -39,10 +39,17 @@ pub fn fuse_many(lists: Vec<Vec<SearchResult>>, limit: usize) -> Vec<SearchResul
         })
         .collect();
 
+    // Tie-break on (path, name, line) so equal-score entries get a total
+    // order independent of `HashMap` iteration. Without this, two runs over
+    // the same inputs can produce different result orderings and break the
+    // `rank_percentile_monotonic_descending` contract.
     results.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.line.cmp(&b.line))
     });
     results.truncate(limit);
     results
@@ -103,5 +110,47 @@ mod tests {
         // Bar appears in both lists, should rank highest
         assert_eq!(fused[0].name, "Bar");
         assert!(matches!(fused[0].match_type, MatchType::Hybrid));
+    }
+
+    fn at(name: &str, path: &str, line: usize) -> SearchResult {
+        SearchResult {
+            name: name.to_string(),
+            kind: "function".to_string(),
+            path: path.to_string(),
+            line,
+            signature: None,
+            score: 0.0,
+            match_type: MatchType::Structural,
+        }
+    }
+
+    #[test]
+    fn fuse_is_deterministic_for_equal_scores() {
+        // H6 regression: when every result has identical RRF rank (e.g.
+        // each list contributes one disjoint result at rank 0), the
+        // final ordering must be a stable function of `(path, name,
+        // line)` rather than `HashMap` iteration order.
+        let make = || {
+            vec![
+                vec![at("alpha", "z.rs", 10)],
+                vec![at("beta", "a.rs", 20)],
+                vec![at("gamma", "m.rs", 5)],
+                vec![at("delta", "b.rs", 1)],
+            ]
+        };
+        let first = fuse_many(make(), 10);
+        for _ in 0..16 {
+            let next = fuse_many(make(), 10);
+            let names_first: Vec<_> = first.iter().map(|r| (&r.path, &r.name, r.line)).collect();
+            let names_next: Vec<_> = next.iter().map(|r| (&r.path, &r.name, r.line)).collect();
+            assert_eq!(
+                names_first, names_next,
+                "fuse_many produced different orderings across runs"
+            );
+        }
+        // The deterministic ordering is `(path, name, line)` ascending
+        // when all scores tie. `a.rs` < `b.rs` < `m.rs` < `z.rs`.
+        let paths: Vec<&str> = first.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(paths, vec!["a.rs", "b.rs", "m.rs", "z.rs"]);
     }
 }

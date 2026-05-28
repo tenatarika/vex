@@ -183,8 +183,17 @@ pub fn find_duplicates(
         }
     }
 
-    // Sort descending by similarity.
-    pairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Sort descending by similarity. Tie-break on the canonical
+    // `(low_sym_idx, high_sym_idx)` pair so equal-similarity duplicates
+    // produce a deterministic ordering across runs — `seen` is a
+    // `HashSet` whose iteration order would otherwise leak into the
+    // final list.
+    pairs.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
     pairs.truncate(limit);
 
     let result = pairs
