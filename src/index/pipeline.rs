@@ -58,9 +58,15 @@ pub fn run(
     let files = discover_files(&root, excludes)?;
     tracing::info!(count = files.len(), "discovered files");
 
+    // Phase 14.7 — blob-SHA parse cache. Construct once per index run and
+    // share across the parse loop. The cache is best-effort; failures only
+    // cost a re-parse, never correctness.
+    let cache = build_blob_cache();
+    let blob_map = crate::index::parse_cache::git_blobs::discover_tracked_blobs(&root);
+
     // Hash and parse in one pass to avoid reading files twice
     let file_hashes = hash_files(&root, &files);
-    let all_parsed = parse_files(&root, &files)?;
+    let all_parsed = parse_files(&root, &files, &blob_map, &cache)?;
     let symbol_count: usize = all_parsed.iter().map(|f| f.symbols.len()).sum();
 
     let vectors = if opts.with_embeddings && symbol_count > 0 {
@@ -119,6 +125,12 @@ pub fn update(
     let files = discover_files(&root, excludes)?;
     let file_hashes = hash_files(&root, &files);
 
+    // Phase 14.7 — same blob cache as `run`. `vex update` benefits when
+    // the user reverts changes or jumps between branches whose blobs were
+    // already parsed in earlier sessions.
+    let cache = build_blob_cache();
+    let blob_map = crate::index::parse_cache::git_blobs::discover_tracked_blobs(&root);
+
     let diff = manifest::diff_files(&file_hashes, &old_manifest);
 
     if diff.changed.is_empty() && diff.deleted.is_empty() {
@@ -173,7 +185,7 @@ pub fn update(
         .cloned()
         .collect();
 
-    let newly_parsed = parse_files(&root, &changed_paths)?;
+    let newly_parsed = parse_files(&root, &changed_paths, &blob_map, &cache)?;
     let new_sym_count: usize = newly_parsed.iter().map(|f| f.symbols.len()).sum();
 
     // Generate embeddings only for new/changed symbols
@@ -358,6 +370,32 @@ fn reconstruct_unchanged(
     (parsed_files, vectors)
 }
 
+/// Phase 14.7 — build the global blob-SHA parse cache and run a
+/// best-effort LRU eviction sweep up front.
+///
+/// Default cap is 1 GiB (`1024 * 1024 * 1024`). Override at runtime via
+/// `VEX_BLOB_CACHE_CAP_BYTES=<bytes>`; a value that fails to parse is
+/// silently ignored and the default is used. Failures from the eviction
+/// sweep are logged at `warn!` and swallowed — the cache must stay
+/// best-effort.
+fn build_blob_cache() -> crate::index::parse_cache::BlobCache {
+    const DEFAULT_CAP_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
+
+    let cache_root = config::blob_cache_dir();
+    let cache = crate::index::parse_cache::BlobCache::new(cache_root);
+
+    let cap = std::env::var("VEX_BLOB_CACHE_CAP_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_CAP_BYTES);
+
+    if let Err(e) = cache.evict_to_cap(cap) {
+        tracing::warn!(error = %e, "blob cache eviction failed");
+    }
+
+    cache
+}
+
 fn hash_files(root: &Path, files: &[std::path::PathBuf]) -> Vec<(String, u64)> {
     files
         .par_iter()
@@ -370,7 +408,12 @@ fn hash_files(root: &Path, files: &[std::path::PathBuf]) -> Vec<(String, u64)> {
         .collect()
 }
 
-fn parse_files(root: &Path, files: &[std::path::PathBuf]) -> Result<Vec<ParsedFile>> {
+fn parse_files(
+    root: &Path,
+    files: &[std::path::PathBuf],
+    blob_map: &HashMap<std::path::PathBuf, String>,
+    cache: &crate::index::parse_cache::BlobCache,
+) -> Result<Vec<ParsedFile>> {
     let counter = AtomicUsize::new(0);
     let total = files.len();
     let mut all_parsed = Vec::new();
@@ -379,56 +422,169 @@ fn parse_files(root: &Path, files: &[std::path::PathBuf]) -> Result<Vec<ParsedFi
     // in per-file warnings the user usually has filtered out.
     let grammar_failures: Mutex<HashMap<Language, (String, usize)>> = Mutex::new(HashMap::new());
 
-    for chunk in files.chunks(CHUNK_SIZE) {
-        let parsed: Vec<ParsedFile> = chunk
-            .par_iter()
-            .filter_map(|path| {
-                let ext = path.extension()?.to_str()?;
-                let lang = Language::from_extension(ext)?;
-                let content = read_capped(path)?;
+    // Phase 14.7 Step 7-opt — background-drain blob-cache writer.
+    //
+    // The rayon parse closure used to call `cache.insert(sha, lang, &parsed)`
+    // synchronously, blocking the parse worker on a ~16 KB bincode serialize
+    // plus an `fs::write` + atomic `fs::rename` (two syscalls). Bench showed
+    // the cold path (every file is a cache miss) regressed by ~13% over the
+    // pre-14.7 baseline because of these inline writes.
+    //
+    // Split insert into its two halves and run each where it pays off most:
+    //   * Bincode serialize (CPU-bound, scales with parallelism) stays on
+    //     the rayon parse worker — same thread that produced `parsed`,
+    //     no value clone needed.
+    //   * `fs::write` + `fs::rename` (I/O syscalls — APFS coalesces, so
+    //     parallelism doesn't help and the single-thread serialize avoids
+    //     contention on the shard directory) move to a dedicated background
+    //     drain thread fed by an mpsc channel.
+    //
+    // `std::thread::scope` lets the drain thread borrow
+    // `cache: &BlobCache` directly — no Arc, no `'static` lifetime, no new
+    // dependencies. Dropping the sender at the end of the scope closes the
+    // channel and the drain thread joins, guaranteeing every accepted entry
+    // is durable before `parse_files` returns (this preserves the Step 4b
+    // mtime-stable rerun semantics).
+    //
+    // Tradeoff considered & rejected: sending `(sha, lang, ParsedFile)` and
+    // doing serialize + write on the drain thread. That moves CPU work to a
+    // single thread, losing the rayon parallelism on bincode encode; benches
+    // showed it stayed at the same +12.9% cold regression. Sending the
+    // pre-encoded byte buffer keeps serialize parallel and only the cheap
+    // syscalls are serialized on the drain thread.
+    type CacheJob = (String, Vec<u8>);
+    let (tx, rx) = std::sync::mpsc::channel::<CacheJob>();
 
-                // Skip likely binary/minified files (high ratio of non-ASCII or very long lines)
-                if looks_binary(&content) {
-                    return None;
+    let parsed_files = std::thread::scope(|s| -> Result<Vec<ParsedFile>> {
+        let drain_handle = s.spawn(move || {
+            while let Ok((sha, buf)) = rx.recv() {
+                if let Err(e) = cache.write_entry_bytes(&sha, &buf) {
+                    tracing::warn!(sha = %sha, error = %e, "blob cache write failed");
                 }
+            }
+        });
 
-                let rel = path.strip_prefix(root).ok()?.to_string_lossy().to_string();
+        for chunk in files.chunks(CHUNK_SIZE) {
+            let parsed: Vec<ParsedFile> = chunk
+                .par_iter()
+                .filter_map(|path| {
+                    let ext = path.extension()?.to_str()?;
+                    let lang = Language::from_extension(ext)?;
 
-                let done = counter.fetch_add(1, Ordering::Relaxed);
-                if done % 500 == 0 && done > 0 {
-                    tracing::info!("{done}/{total} files parsed");
-                }
+                    let rel = path.strip_prefix(root).ok()?.to_string_lossy().to_string();
 
-                // SAFETY: parse_file borrows &rel and &content read-only.
-                // A panic from tree-sitter does not leave any shared mutable state
-                // partially modified, so unwinding is safe to catch.
-                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    parse::parse_file(&rel, &content, lang)
-                })) {
-                    Ok(Ok(parsed)) => Some(parsed),
-                    Ok(Err(e)) => {
-                        if let Some(g) = e.downcast_ref::<parse::extractor::GrammarLoadError>() {
-                            // Recover from a poisoned mutex — never block aggregation
-                            // for a downstream caller because of an unrelated panic.
-                            let mut map = grammar_failures
-                                .lock()
-                                .unwrap_or_else(|poison| poison.into_inner());
-                            map.entry(g.lang).or_insert_with(|| (g.reason.clone(), 0)).1 += 1;
-                        } else {
-                            tracing::warn!(path = %rel, error = %e, "parse failed, skipping");
+                    // Phase 14.7 — try the blob-SHA cache first for tracked files.
+                    // The cache is keyed by absolute canonical path because the
+                    // tracked-blob map is built from `git ls-files` output rooted
+                    // at the same canonical `root`. A cache hit short-circuits
+                    // both the file read and the tree-sitter parse.
+                    let blob_sha = blob_map.get(path);
+                    if let Some(sha) = blob_sha {
+                        if let Some(mut cached) = cache.lookup(sha, lang) {
+                            cached.path = rel.clone();
+                            let done = counter.fetch_add(1, Ordering::Relaxed);
+                            if done % 500 == 0 && done > 0 {
+                                tracing::info!("{done}/{total} files parsed");
+                            }
+                            return Some(cached);
                         }
-                        None
                     }
-                    Err(_) => {
-                        tracing::warn!(path = %rel, "parse panicked, skipping");
-                        None
-                    }
-                }
-            })
-            .collect();
 
-        all_parsed.extend(parsed);
-    }
+                    let content = read_capped(path)?;
+
+                    // Skip likely binary/minified files (high ratio of non-ASCII or very long lines)
+                    if looks_binary(&content) {
+                        return None;
+                    }
+
+                    let done = counter.fetch_add(1, Ordering::Relaxed);
+                    if done % 500 == 0 && done > 0 {
+                        tracing::info!("{done}/{total} files parsed");
+                    }
+
+                    // SAFETY: parse_file borrows &rel and &content read-only.
+                    // A panic from tree-sitter does not leave any shared mutable state
+                    // partially modified, so unwinding is safe to catch.
+                    let parsed_result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            parse::parse_file(&rel, &content, lang)
+                        }));
+
+                    match parsed_result {
+                        Ok(Ok(parsed)) => {
+                            // Encode the cache entry here (CPU-bound, runs in
+                            // parallel across rayon workers) and hand the bytes
+                            // off to the single drain thread for the syscalls.
+                            // `send` only fails if the receiver has hung up,
+                            // which only happens after we drop `tx` below —
+                            // by then no parse worker is still running, so
+                            // any failure here is unreachable. Encoding
+                            // failures are warn-and-continue.
+                            if let Some(sha) = blob_sha {
+                                match crate::index::parse_cache::encode_entry(lang, &parsed) {
+                                    Ok(buf) => {
+                                        // `send` only fails if the drain thread
+                                        // is gone. The thread is dropped at scope
+                                        // exit, after every parse worker is done,
+                                        // so a `SendError` here indicates the
+                                        // drain panicked or returned early — log
+                                        // it so the failure mode is visible
+                                        // instead of silently dropping writes.
+                                        if tx.send((sha.clone(), buf)).is_err() {
+                                            tracing::warn!(
+                                                path = %rel,
+                                                "blob cache drain thread closed unexpectedly; dropping write"
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            path = %rel,
+                                            error = %e,
+                                            "blob cache encode failed"
+                                        );
+                                    }
+                                }
+                            }
+                            Some(parsed)
+                        }
+                        Ok(Err(e)) => {
+                            if let Some(g) = e.downcast_ref::<parse::extractor::GrammarLoadError>()
+                            {
+                                // Recover from a poisoned mutex — never block aggregation
+                                // for a downstream caller because of an unrelated panic.
+                                let mut map = grammar_failures
+                                    .lock()
+                                    .unwrap_or_else(|poison| poison.into_inner());
+                                map.entry(g.lang).or_insert_with(|| (g.reason.clone(), 0)).1 += 1;
+                            } else {
+                                tracing::warn!(path = %rel, error = %e, "parse failed, skipping");
+                            }
+                            None
+                        }
+                        Err(_) => {
+                            tracing::warn!(path = %rel, "parse panicked, skipping");
+                            None
+                        }
+                    }
+                })
+                .collect();
+
+            all_parsed.extend(parsed);
+        }
+
+        // Close the channel and wait for the drain thread to finish so all
+        // accepted writes are durable before `parse_files` returns. This
+        // preserves the mtime-stable rerun semantics asserted by the Step 4b
+        // integration test — without the join, a fast subsequent
+        // `pipeline::run` could observe an incomplete cache.
+        drop(tx);
+        if let Err(panic) = drain_handle.join() {
+            tracing::warn!("blob cache drain thread panicked: {panic:?}");
+        }
+
+        Ok(all_parsed)
+    })?;
 
     let failures = grammar_failures
         .into_inner()
@@ -445,7 +601,7 @@ fn parse_files(root: &Path, files: &[std::path::PathBuf]) -> Result<Vec<ParsedFi
         );
     }
 
-    Ok(all_parsed)
+    Ok(parsed_files)
 }
 
 /// Read a file as UTF-8, refusing to allocate more than `MAX_FILE_BYTES`.
