@@ -3046,4 +3046,127 @@ mod tests {
             "eval schema must NOT mark any field required"
         );
     }
+
+    // ── FU-4: include / exclude glob parity across all path-aware tools ──
+    // Every MCP tool whose CLI variant flattens `ScopeArgs` in
+    // `src/cli/args.rs` must (a) forward the `include` / `exclude` arrays
+    // verbatim through `push_scope`, and (b) advertise both fields in its
+    // inputSchema so MCP clients can discover them via `tools/list`.
+    //
+    // The three tests below are dispatch-presence + dispatch-presence +
+    // schema-regression guards. The shared `push_scope` helper means one
+    // tool's presence test already covers the wiring; the table form here
+    // is belt-and-suspenders against an arm forgetting the helper call
+    // after a copy-paste of an unrelated dispatch path.
+
+    /// Single source of truth for the 16 tools that the FU-4 audit
+    /// confirmed accept `--include` / `--exclude` on the CLI side. Used
+    /// by both the presence tests and the schema regression guard so
+    /// drift in one place is caught by the others.
+    fn fu4_scope_aware_tool_cases() -> Vec<(&'static str, Value)> {
+        vec![
+            ("search", json!({"query": "Foo"})),
+            ("find_symbol", json!({"symbol": "Foo"})),
+            ("find_similar", json!({"query": "Foo"})),
+            ("show", json!({"symbols": ["Foo"]})),
+            ("usages", json!({"symbol": "Foo"})),
+            ("grep", json!({"pattern": "Foo"})),
+            ("implementations", json!({"symbol": "Foo"})),
+            ("callers", json!({"symbol": "Foo"})),
+            ("callees", json!({"symbol": "Foo"})),
+            ("pattern", json!({"pattern": "fn $N()", "lang": "rust"})),
+            ("diff", json!({"base": "main"})),
+            ("paths", json!({"from": "A", "to": "B"})),
+            ("reachable", json!({"target": "Foo"})),
+            ("similar", json!({"symbol": "Foo"})),
+            ("duplicates", json!({})),
+            ("bundle", json!({"mode": "project"})),
+        ]
+    }
+
+    #[test]
+    fn include_glob_pushes_include_flag_across_tools() {
+        // Each glob round-trips as a separate `--include` flag so clap's
+        // `Vec<String>` accumulator on the CLI side sees one value per
+        // flag (the standard repeatable-arg shape).
+        for (tool, base_args) in fu4_scope_aware_tool_cases() {
+            let mut args = base_args.clone();
+            args["include"] = json!(["foo/**", "bar/**"]);
+            let extra = args_for(tool, args);
+            let pairs: Vec<&str> = extra.iter().map(String::as_str).collect();
+            let window =
+                |flag: &str, val: &str| pairs.windows(2).any(|w| w[0] == flag && w[1] == val);
+            assert!(
+                window("--include", "foo/**"),
+                "{tool} include[0] must surface as --include foo/**; got: {pairs:?}"
+            );
+            assert!(
+                window("--include", "bar/**"),
+                "{tool} include[1] must surface as --include bar/**; got: {pairs:?}"
+            );
+            let occurrences = pairs.iter().filter(|a| **a == "--include").count();
+            assert_eq!(
+                occurrences, 2,
+                "{tool} should push exactly two --include flags; got: {pairs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exclude_glob_pushes_exclude_flag_across_tools() {
+        for (tool, base_args) in fu4_scope_aware_tool_cases() {
+            let mut args = base_args.clone();
+            args["exclude"] = json!(["**/generated/**", "vendor/**"]);
+            let extra = args_for(tool, args);
+            let pairs: Vec<&str> = extra.iter().map(String::as_str).collect();
+            let window =
+                |flag: &str, val: &str| pairs.windows(2).any(|w| w[0] == flag && w[1] == val);
+            assert!(
+                window("--exclude", "**/generated/**"),
+                "{tool} exclude[0] must surface as --exclude **/generated/**; got: {pairs:?}"
+            );
+            assert!(
+                window("--exclude", "vendor/**"),
+                "{tool} exclude[1] must surface as --exclude vendor/**; got: {pairs:?}"
+            );
+            let occurrences = pairs.iter().filter(|a| **a == "--exclude").count();
+            assert_eq!(
+                occurrences, 2,
+                "{tool} should push exactly two --exclude flags; got: {pairs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn include_exclude_schemas_complete_across_tools() {
+        // Schema-regression guard: every FU-4 scope-aware tool must
+        // expose both `include` and `exclude` as `array<string>` so the
+        // MCP client's `tools/list` view advertises the filter shape.
+        let desc = tool_descriptors();
+        let tools = desc.as_array().expect("tool_descriptors returns array");
+        for (name, _) in fu4_scope_aware_tool_cases() {
+            let entry = tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("missing tool {name}"));
+            let props = &entry["inputSchema"]["properties"];
+            for field in ["include", "exclude"] {
+                let prop = &props[field];
+                assert!(
+                    prop.is_object(),
+                    "{name} schema is missing {field}: {props}"
+                );
+                assert_eq!(
+                    prop["type"].as_str(),
+                    Some("array"),
+                    "{name}.{field} must be type=array"
+                );
+                assert_eq!(
+                    prop["items"]["type"].as_str(),
+                    Some("string"),
+                    "{name}.{field}.items must be type=string"
+                );
+            }
+        }
+    }
 }
