@@ -342,6 +342,67 @@ fn callees_auto_update_flag_bootstraps_missing_index() {
 }
 
 #[test]
+fn implementations_no_stale_check_parses_and_runs() {
+    // FU-2: Commands::Implementations now declares --no-stale-check.
+    // Verify clap accepts the flag and the handler still executes
+    // `find_implementations` without erroring out.
+    let tmp = TempDir::new().unwrap();
+    write_project(
+        tmp.path(),
+        "local_cache = true\n",
+        "lib.rs",
+        "trait Foo {}\nstruct Bar;\nimpl Foo for Bar {}\n",
+    );
+
+    let assert = vex_in(tmp.path())
+        .args(["implementations", "Foo", "--no-stale-check"])
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        !stderr.contains("auto-updating"),
+        "--no-stale-check must skip the staleness probe: {stderr}"
+    );
+    assert!(
+        stdout.contains("Bar"),
+        "implementations should still resolve `Bar` as an impl of `Foo`: {stdout}"
+    );
+}
+
+#[test]
+fn implementations_auto_update_flag_bootstraps_missing_index() {
+    // FU-2: --auto-update on `implementations` must trigger the bootstrap
+    // hook in handle_staleness just like callers/callees.
+    let tmp = TempDir::new().unwrap();
+    write_project(
+        tmp.path(),
+        "local_cache = true\n",
+        "lib.rs",
+        "trait Foo {}\nstruct Bar;\nimpl Foo for Bar {}\n",
+    );
+
+    let assert = vex_in(tmp.path())
+        .args(["implementations", "Foo", "--auto-update"])
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    // Implementations is live-scan so it does not need the index to find
+    // results, but --auto-update should still drive the staleness/bootstrap
+    // probe rather than silently no-op the way Commands::Implementations used
+    // to before FU-2 wired the helper.
+    assert!(
+        stdout.contains("Bar"),
+        "implementations --auto-update should still resolve `Bar`: {stdout}"
+    );
+    assert!(
+        !stderr.contains("error"),
+        "no error should surface from staleness wiring: {stderr}"
+    );
+}
+
+#[test]
 fn callers_without_auto_update_falls_back_to_live_scan() {
     // Pre-10.2 UX must be preserved: `vex callers Foo` in a project
     // without an index and without auto_update enabled should NOT bail

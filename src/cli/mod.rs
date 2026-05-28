@@ -1514,11 +1514,14 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             name,
             path,
             limit,
+            auto_update,
+            no_stale_check,
             scope,
             diff,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             let root = resolve_root(path)?;
+            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
             let changed_paths = resolve_diff_filter(&root, &diff)?;
             let start = Instant::now();
             let fetch_limit = if path_scope.is_empty() && changed_paths.is_none() {

@@ -545,6 +545,14 @@ pub enum Commands {
         #[arg(short, long, default_value = "50")]
         limit: usize,
 
+        /// Auto-update index if stale (or bootstrap if missing) before searching.
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
+
         #[command(flatten)]
         scope: ScopeArgs,
 
