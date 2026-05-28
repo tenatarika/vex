@@ -138,7 +138,7 @@ impl IndexReader {
                     (header.vector_dim as u64).saturating_mul(std::mem::size_of::<f32>() as u64);
                 let max_vector_bytes = header.symbol_count.saturating_mul(vec_byte_size);
                 if vec_byte_size == 0
-                    || vectors_byte_len % vec_byte_size != 0
+                    || !vectors_byte_len.is_multiple_of(vec_byte_size)
                     || vectors_byte_len > max_vector_bytes
                 {
                     bail!("index file at {p} is corrupted (vectors section size {} is not aligned to vector_dim={} or exceeds symbol_count). Re-run `vex index` to rebuild.",

@@ -312,7 +312,7 @@ impl<'a> PatternSkeletonReader<'a> {
         file_index_data: &'a [u8],
         fingerprints: [u32; 32],
     ) -> Result<Self> {
-        if skeleton_data.len() % SR::SIZE != 0 {
+        if !skeleton_data.len().is_multiple_of(SR::SIZE) {
             bail!(
                 "skeleton_data length {} is not a multiple of SkeletonRecord::SIZE ({})",
                 skeleton_data.len(),

@@ -499,7 +499,7 @@ fn parse_files(
                         if let Some(mut cached) = cache.lookup(sha, lang) {
                             cached.path = rel.clone();
                             let done = counter.fetch_add(1, Ordering::Relaxed);
-                            if done % 500 == 0 && done > 0 {
+                            if done.is_multiple_of(500) && done > 0 {
                                 tracing::info!("{done}/{total} files parsed");
                             }
                             return Some(cached);
@@ -514,7 +514,7 @@ fn parse_files(
                     }
 
                     let done = counter.fetch_add(1, Ordering::Relaxed);
-                    if done % 500 == 0 && done > 0 {
+                    if done.is_multiple_of(500) && done > 0 {
                         tracing::info!("{done}/{total} files parsed");
                     }
 

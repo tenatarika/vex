@@ -4,7 +4,7 @@ Thanks for your interest in vex. This doc covers the local development loop: bui
 
 ## Prerequisites
 
-- **Rust ≥ 1.85** (MSRV pinned in [`Cargo.toml`](Cargo.toml) `rust-version = "1.85"`). Bumped from 1.80 in v1.10.0 because the `fastembed → image → moxcms → pxfm` dep chain moved to `edition2024` (stabilized in Cargo 1.85) and pre-1.85 versions of those crates are no longer maintained. Install via [rustup](https://rustup.rs):
+- **Rust ≥ 1.88** (MSRV pinned in [`Cargo.toml`](Cargo.toml) `rust-version = "1.88"`). Bumped from 1.80 in v1.10.0 because the `fastembed → image / ort` dep chain requires Rust 1.88 (image 0.25.10, ort 2.0.0-rc.12, built 0.8.1). Earlier versions of these crates either don't exist or break vex's semantic-search feature, so pinning back is not an option. Install via [rustup](https://rustup.rs):
 
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -83,9 +83,9 @@ For language-specific grammar regression, the per-language `tests/<lang>_query_t
 
 ### Lockfile / MSRV policy
 
-`Cargo.lock` is checked in (since v1.10.0) so `cargo check --workspace --all-targets --locked` works on the CI runner's fresh clone. The MSRV gate is **Rust 1.85**, enforced by the `msrv` job in `.github/workflows/ci.yml`.
+`Cargo.lock` is checked in (since v1.10.0) so `cargo check --workspace --all-targets --locked` works on the CI runner's fresh clone. The MSRV gate is **Rust 1.88**, enforced by the `msrv` job in `.github/workflows/ci.yml`.
 
-**Re-verify the MSRV gate** when running `cargo update` locally: `cargo +1.85 check --workspace --all-targets --locked`. If a transitive dep starts requiring Rust > 1.85 (e.g. by declaring `edition2024+future` once that lands), the check fires immediately rather than at the next CI run. Prefer `cargo update --precise <version> <crate>` over bare `cargo update` so a one-off bump doesn't cascade.
+**Re-verify the MSRV gate** when running `cargo update` locally: `cargo +1.88 check --workspace --all-targets --locked`. The MSRV-aware resolver (default since Rust 1.84) will surface dep-tree floor breaches at `cargo update` time, but local stable-channel builds skip that gate — so a CI failure shows up only if you didn't reproduce locally. Prefer `cargo update --precise <version> <crate>` over bare `cargo update` so a one-off bump doesn't cascade.
 
 ## Adding a new language
 
