@@ -63,50 +63,43 @@ jobs:
       - name: Package (windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
-        # 7z (preinstalled on windows-latest) with explicit -mm=Deflate
-        # avoids the Deflate64 archives that `Compress-Archive` emits on
-        # some pwsh 7.x configurations — those decompress fine with .NET
-        # but fail in the zip crate used by self_update with
-        # "Compression method not supported". v1.6.2 self-update was
-        # bitten by this on Windows. Push-Location keeps the archive
-        # entry as bare `vex.exe`, not `target/.../release/vex.exe`.
+        # Switched from .zip → .tar.gz at v1.9.2 (review Section 7 fix).
+        # `self_update 0.42/0.44` does not strip zipsign's 80-byte signature
+        # prefix before handing the file to `ZipArchive::new`, breaking
+        # `vex self-update` for every Windows user since v1.8.2 with
+        # "Compression method not supported". The tar.gz path used on
+        # macOS / Linux works end-to-end (zipsign + self_update both
+        # handle tar.gz correctly), so we unify on it. `tar` is
+        # preinstalled on windows-latest runners (bsdtar). Push-Location
+        # keeps the archive entry as bare `vex.exe`, not
+        # `target/.../release/vex.exe`.
         run: |
           Push-Location target/${{ matrix.target }}/release
-          7z a -tzip -mm=Deflate -mx=5 "../../../vex-${{ matrix.target }}.zip" vex.exe
+          tar -czf "../../../vex-${{ matrix.target }}.tar.gz" vex.exe
           Pop-Location
 
-      # Regression guard for the v1.6.2 Windows self-update failure: every
-      # entry in the release zip MUST use compression method 8 (Deflate).
-      # Method 9 (Deflate64) is silently emitted by some Compress-Archive
-      # configurations and breaks `vex self-update` even though .NET
-      # extraction works. Fails the release loudly instead.
-      - name: Verify zip uses Deflate (not Deflate64)
+      # Post-pack smoke test: extract the freshly packed tarball into a
+      # scratch dir and assert `vex.exe` is present. Catches the class
+      # of bug Section 7 documented — a packaging step that "succeeds"
+      # but emits an archive `self_update` can't reopen. Sign-time
+      # verification happens later in the `release` job; this guard
+      # runs before upload-artifact so a bad pack fails the matrix leg.
+      - name: Verify Windows tarball is extractable
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          python -c @"
-          import sys, zipfile
-          archive = 'vex-${{ matrix.target }}.zip'
-          z = zipfile.ZipFile(archive)
-          names = {8: 'Deflate', 9: 'Deflate64', 0: 'Stored', 12: 'Bzip2', 14: 'LZMA', 93: 'Zstd'}
-          bad = []
-          for info in z.infolist():
-              if info.compress_type != 8:
-                  method_name = names.get(info.compress_type, 'unknown')
-                  bad.append(f'{info.filename}: method={info.compress_type} ({method_name})')
-          if bad:
-              print(f'FAIL: {archive} has entries not using Deflate:')
-              for b in bad: print(f'  {b}')
-              sys.exit(1)
-          print(f'OK: {len(z.namelist())} entry(ies) in {archive} use Deflate (method 8)')
-          "@
+          New-Item -ItemType Directory -Force -Path smoke-extract | Out-Null
+          tar -xzf "vex-${{ matrix.target }}.tar.gz" -C smoke-extract
+          if (-not (Test-Path "smoke-extract/vex.exe")) {
+            Write-Error "FAIL: smoke-extract/vex.exe missing after tar extract"
+            exit 1
+          }
+          Write-Host "OK: vex-${{ matrix.target }}.tar.gz extracts cleanly"
 
       - uses: actions/upload-artifact@v4
         with:
           name: vex-${{ matrix.target }}
-          path: |
-            vex-${{ matrix.target }}.tar.gz
-            vex-${{ matrix.target }}.zip
+          path: vex-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
   release:
@@ -145,11 +138,11 @@ jobs:
           keyfile="$(mktemp)"
           trap 'shred -u "$keyfile" 2>/dev/null || rm -f "$keyfile"' EXIT
           printf '%s' "$ZIPSIGN_PRIVATE_KEY_B64" | base64 -d > "$keyfile"
+          # Section 7 fix (v1.9.2): every platform now ships as .tar.gz.
+          # The previous .zip path on Windows is gone — see
+          # `Package (windows)` in the `build` job for the rationale.
           for f in vex-*.tar.gz; do
             [ -f "$f" ] && zipsign sign tar "$f" "$keyfile"
-          done
-          for f in vex-*.zip; do
-            [ -f "$f" ] && zipsign sign zip "$f" "$keyfile"
           done
 
       # orhun/git-cliff-action@v3 was originally used here, but its
@@ -170,9 +163,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           body_path: release-body.md
-          files: |
-            vex-*.tar.gz
-            vex-*.zip
+          files: vex-*.tar.gz
 
   # Generate a prebuilt-binary Homebrew formula so `brew install` unpacks
   # the platform-specific tarball produced by the build matrix above
