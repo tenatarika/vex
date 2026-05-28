@@ -733,11 +733,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 );
                 // stderr so `vex search Foo --why | jq` keeps working —
                 // stdout stays a pure result list.
-                eprintln!("{}", serde_json::to_string(&trace)?);
+                crate::cli::trace::emit_why_trace(&trace)?;
                 if let Some(df) =
                     diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
                 {
-                    eprintln!("{}", serde_json::to_string(&df)?);
+                    crate::cli::trace::emit_diff_filter(&df)?;
                 }
             }
 
@@ -940,11 +940,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         exclude: scope.exclude.clone(),
                     },
                 };
-                eprintln!("{}", serde_json::to_string(&trace)?);
+                crate::cli::trace::emit_why_trace(&trace)?;
                 if let Some(df) =
                     diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
                 {
-                    eprintln!("{}", serde_json::to_string(&df)?);
+                    crate::cli::trace::emit_diff_filter(&df)?;
                 }
             }
 
@@ -1068,11 +1068,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             if why {
                 // stderr keeps stdout a pure result stream — mirrors
                 // `vex search --why` so `vex pattern 'pat' --why | jq` works.
-                eprintln!("{}", serde_json::to_string(&trace)?);
+                crate::cli::trace::emit_why_trace(&trace)?;
                 if let Some(df) =
                     diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
                 {
-                    eprintln!("{}", serde_json::to_string(&df)?);
+                    crate::cli::trace::emit_diff_filter(&df)?;
                 }
             }
 
@@ -1976,13 +1976,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         exclude: scope.exclude.clone(),
                     },
                 };
-                eprintln!("{}", serde_json::to_string(&trace)?);
+                crate::cli::trace::emit_why_trace(&trace)?;
                 let diff_retained = candidates_after_filter;
                 let diff_dropped = candidates_before_filter.saturating_sub(candidates_after_filter);
                 if let Some(df) =
                     diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
                 {
-                    eprintln!("{}", serde_json::to_string(&df)?);
+                    crate::cli::trace::emit_diff_filter(&df)?;
                 }
             }
 
@@ -2104,13 +2104,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                         exclude: scope.exclude.clone(),
                     },
                 };
-                eprintln!("{}", serde_json::to_string(&trace)?);
+                crate::cli::trace::emit_why_trace(&trace)?;
                 let diff_retained = pairs_after_filter;
                 let diff_dropped = pairs_before_filter.saturating_sub(pairs_after_filter);
                 if let Some(df) =
                     diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
                 {
-                    eprintln!("{}", serde_json::to_string(&df)?);
+                    crate::cli::trace::emit_diff_filter(&df)?;
                 }
             }
 

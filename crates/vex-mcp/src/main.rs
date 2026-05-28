@@ -349,12 +349,30 @@ fn handle_tool_call(params: &Option<Value>) -> Result<Value> {
     Ok(result)
 }
 
-/// Extract the `--why` ScanTrace JSON from a vex CLI's stderr. The CLI
-/// emits one `{...}` line via `eprintln!` after the result list; we
-/// pick the first such line that parses as JSON. Returns `None` when no
-/// trace is present (the common case — `--why` wasn't passed).
+/// Extract the `--why` ScanTrace JSON from a vex CLI's stderr.
+///
+/// **v1.10.1 (review S8.1)**: the CLI now tags the trace line with
+/// `VEX_WHY:` (see `src/cli/trace.rs::WHY_TRACE_PREFIX`). Before that,
+/// any early `tracing::warn!` JSON on stderr (e.g. the "cannot
+/// determine index freshness" warning) could shadow the real trace
+/// because we picked the first `{`-prefixed line. We scan for the
+/// tagged line first; if none is present (older `vex` binary on PATH
+/// at MCP-spawn time, no `--why` was passed, or the CLI failed before
+/// the emit site) we fall back to the legacy behaviour — picking the
+/// LAST line that parses as JSON, so that any earlier diagnostic
+/// objects no longer override the trace.
 fn extract_why_trace(stderr: &str) -> Option<Value> {
-    stderr.lines().find_map(|line| {
+    const PREFIX: &str = "VEX_WHY:";
+    for line in stderr.lines() {
+        if let Some(rest) = line.trim_start().strip_prefix(PREFIX) {
+            if let Ok(v) = serde_json::from_str::<Value>(rest.trim()) {
+                return Some(v);
+            }
+        }
+    }
+    // Legacy fallback: scan bottom-up so a later `--why` trace beats
+    // an earlier `tracing::warn!` JSON object even on un-tagged output.
+    stderr.lines().rev().find_map(|line| {
         let trimmed = line.trim_start();
         if !trimmed.starts_with('{') {
             return None;
@@ -1807,7 +1825,13 @@ mod tests {
     // ── extract_why_trace — wrapper stderr → _meta.why plumbing ────────────
 
     #[test]
-    fn extract_why_trace_picks_first_json_line() {
+    fn extract_why_trace_legacy_untagged_single_line_still_parses() {
+        // Legacy fallback: an untagged JSON line still parses (older
+        // CLIs on PATH at MCP-spawn time). v1.10.1 changed the legacy
+        // scan from "first `{`-line" to "last `{`-line" so a leading
+        // tracing::warn JSON doesn't shadow the trace — see
+        // `extract_why_trace_falls_back_to_last_json_when_untagged`
+        // for the load-bearing multi-line case.
         let stderr = "some warning\n{\"mode\":\"indexed\",\"candidate_files\":12}\nmore noise\n";
         let trace = extract_why_trace(stderr).expect("should extract");
         assert_eq!(trace["mode"].as_str(), Some("indexed"));
@@ -1822,9 +1846,53 @@ mod tests {
 
     #[test]
     fn extract_why_trace_ignores_non_parseable_brace_lines() {
-        // A `{` that doesn't open a valid JSON object must not throw.
         let stderr = "{ not really json\n";
         assert!(extract_why_trace(stderr).is_none());
+    }
+
+    #[test]
+    fn extract_why_trace_prefers_vex_why_tag_over_earlier_json() {
+        // Review S8.1 (v1.10.1): an early tracing::warn JSON line used to
+        // shadow the real --why trace under _meta.why. With the
+        // `VEX_WHY:` tag the extractor must pick the tagged line even
+        // when an earlier `{`-prefixed line parses as JSON.
+        let stderr = "\
+{\"level\":\"WARN\",\"message\":\"cannot determine index freshness\"}\n\
+VEX_WHY: {\"mode\":\"strict\",\"hits_before_filter\":3,\"hits_after_filter\":2}\n\
+INFO trailing line\n\
+";
+        let trace = extract_why_trace(stderr).expect("tagged trace must be picked");
+        assert_eq!(trace["mode"].as_str(), Some("strict"));
+        assert_eq!(trace["hits_before_filter"].as_u64(), Some(3));
+        assert!(
+            trace.get("level").is_none(),
+            "early warn-shaped JSON must not leak into the extracted trace; got: {trace}"
+        );
+    }
+
+    #[test]
+    fn extract_why_trace_falls_back_to_last_json_when_untagged() {
+        // Older CLIs on PATH at MCP-spawn time emit the trace without
+        // the `VEX_WHY:` tag — fall back to the last JSON-shaped line so
+        // a leading warning doesn't shadow the real trace.
+        let stderr = "\
+{\"level\":\"WARN\",\"message\":\"cannot determine index freshness\"}\n\
+{\"mode\":\"fst_lookup\",\"hits_before_filter\":7}\n\
+";
+        let trace = extract_why_trace(stderr).expect("legacy fallback must still find a trace");
+        assert_eq!(trace["mode"].as_str(), Some("fst_lookup"));
+        assert_eq!(trace["hits_before_filter"].as_u64(), Some(7));
+    }
+
+    #[test]
+    fn extract_why_trace_tolerates_extra_whitespace_around_tag() {
+        // Belt-and-suspenders: a leading space before `VEX_WHY:` or
+        // trailing whitespace between the tag and the JSON must not
+        // defeat extraction.
+        let stderr =
+            "   VEX_WHY:   {\"mode\":\"strict\",\"hits_before_filter\":1,\"hits_after_filter\":1}\n";
+        let trace = extract_why_trace(stderr).expect("whitespace must not defeat the tag");
+        assert_eq!(trace["mode"].as_str(), Some("strict"));
     }
 
     #[test]

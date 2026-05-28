@@ -54,15 +54,27 @@ fn why_flag_emits_json_trace_on_stderr() {
     let _parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("stdout is valid JSON array");
 
-    // Locate the trace line — stderr may also contain warnings; the
-    // trace is the line that parses as JSON.
-    let trace_line = stderr
+    // Locate the trace line. v1.10.1 tags it `VEX_WHY: { … }` (review
+    // S8.1); legacy "first `{`-line" shape is honoured as a fallback so
+    // this test stays useful if the prefix ever has to ship behind a
+    // capability flag.
+    const PREFIX: &str = "VEX_WHY:";
+    let trace: serde_json::Value = if let Some(rest) = stderr
         .lines()
-        .find(|l| {
-            l.trim_start().starts_with('{') && serde_json::from_str::<serde_json::Value>(l).is_ok()
-        })
-        .unwrap_or_else(|| panic!("expected JSON trace line on stderr, got: {stderr}"));
-    let trace: serde_json::Value = serde_json::from_str(trace_line).unwrap();
+        .find_map(|l| l.trim_start().strip_prefix(PREFIX))
+    {
+        serde_json::from_str(rest.trim())
+            .unwrap_or_else(|e| panic!("VEX_WHY trace did not parse as JSON ({e}): {stderr}"))
+    } else {
+        let trace_line = stderr
+            .lines()
+            .find(|l| {
+                l.trim_start().starts_with('{')
+                    && serde_json::from_str::<serde_json::Value>(l).is_ok()
+            })
+            .unwrap_or_else(|| panic!("expected JSON trace line on stderr, got: {stderr}"));
+        serde_json::from_str(trace_line).unwrap()
+    };
 
     assert_eq!(
         trace["normalized_query"].as_str().unwrap(),
@@ -98,8 +110,18 @@ fn no_why_leaves_stderr_quiet() {
         .assert()
         .success();
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
-    // No JSON trace line should appear without --why. Warnings are
-    // allowed, but they don't start with `{`.
+    // No `VEX_WHY:`-tagged line should appear without --why. Warnings
+    // are allowed, but they don't carry the tag (review S8.1, v1.10.1).
+    const PREFIX: &str = "VEX_WHY:";
+    let tagged: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.trim_start().starts_with(PREFIX))
+        .collect();
+    assert!(
+        tagged.is_empty(),
+        "expected no VEX_WHY trace without --why, got: {tagged:?}"
+    );
+    // Belt-and-suspenders: no bare JSON object line either.
     let trace_lines: Vec<&str> = stderr
         .lines()
         .filter(|l| {

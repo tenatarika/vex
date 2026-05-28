@@ -25,6 +25,50 @@
 
 use serde::Serialize;
 
+/// Stderr prefix the MCP wrapper looks for when extracting `--why`
+/// traces (review S8.1, v1.10.1).
+///
+/// Before v1.10.1 `crates/vex-mcp::extract_why_trace` picked the first
+/// stderr line that started with `{` and tried to parse it as JSON —
+/// any earlier `tracing::warn!` JSON (e.g. the "cannot determine
+/// index freshness" warning) would shadow the real trace and surface
+/// under `_meta.why`. Tagging the trace with `VEX_WHY:` makes the
+/// extractor unambiguous: it scans for this prefix specifically and
+/// only falls back to the legacy last-`{`-line behaviour when the
+/// prefix is absent (older CLIs on PATH at MCP-spawn time).
+pub const WHY_TRACE_PREFIX: &str = "VEX_WHY:";
+
+/// Stderr prefix for the diff-filter envelope CLI users get alongside
+/// `--why`. Distinct from [`WHY_TRACE_PREFIX`] so the MCP's legacy
+/// fallback (last `{`-line) can't mistake one for the other.
+///
+/// The diff-filter JSON also flows through the response envelope's
+/// `_meta.vex.dev/diff_filter` field, so the stderr emission is purely
+/// for `vex … --why 2>&1 | jq` CLI consumers. Tagging it here means
+/// the MCP wrapper would have to opt in to pick it up.
+pub const DIFF_FILTER_PREFIX: &str = "VEX_DIFF:";
+
+/// Emit a `--why` trace on stderr tagged with [`WHY_TRACE_PREFIX`].
+///
+/// Replacing every `eprintln!("{}", serde_json::to_string(&trace)?)`
+/// call site with this helper guarantees the MCP wrapper picks up
+/// the right line even when earlier stderr output (tracing warnings,
+/// auto-update banners) emits JSON-shaped text first.
+pub fn emit_why_trace<T: Serialize + ?Sized>(trace: &T) -> anyhow::Result<()> {
+    let json = serde_json::to_string(trace)?;
+    eprintln!("{WHY_TRACE_PREFIX} {json}");
+    Ok(())
+}
+
+/// Emit a `diff_filter_meta` envelope on stderr tagged with
+/// [`DIFF_FILTER_PREFIX`]. Mirrors [`emit_why_trace`] so the legacy
+/// MCP fallback never confuses the two payloads.
+pub fn emit_diff_filter<T: Serialize + ?Sized>(meta: &T) -> anyhow::Result<()> {
+    let json = serde_json::to_string(meta)?;
+    eprintln!("{DIFF_FILTER_PREFIX} {json}");
+    Ok(())
+}
+
 /// Snapshot of the scope filters that narrowed a result set —
 /// reused across all three trace types in this module.
 ///

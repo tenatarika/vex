@@ -23,10 +23,20 @@ fn vex_in(dir: &Path) -> Command {
     cmd
 }
 
-/// First `{`-prefixed line on stderr that parses as JSON — the `--why`
-/// emission contract. Panics with the full stderr for fast debugging
-/// when the trace is missing (the most common test failure here).
+/// Extract the `--why` trace from stderr. v1.10.1 tags the trace line
+/// with `VEX_WHY:` (review S8.1) so an earlier `tracing::warn!` JSON
+/// line can't shadow it. Falls back to the legacy "first `{`-line"
+/// shape for tolerance against older binaries. Panics with the full
+/// stderr for fast debugging when the trace is missing.
 fn parse_trace(stderr: &str) -> serde_json::Value {
+    const PREFIX: &str = "VEX_WHY:";
+    if let Some(rest) = stderr
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix(PREFIX))
+    {
+        return serde_json::from_str(rest.trim())
+            .unwrap_or_else(|e| panic!("VEX_WHY trace did not parse as JSON ({e}):\n{stderr}"));
+    }
     let line = stderr
         .lines()
         .find(|l| {
