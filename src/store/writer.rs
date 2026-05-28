@@ -185,6 +185,18 @@ pub fn write_index_with_call_graph_and_skeletons_and_fingerprints(
     }
     std::fs::rename(&tmp_path, output)
         .with_context(|| format!("rename {} → {}", tmp_path.display(), output.display()))?;
+    // On POSIX, fsync the parent directory so the rename itself is
+    // durable across crashes. Windows has no equivalent operation —
+    // ReplaceFile / MoveFileEx already provide the durability guarantee.
+    // Best-effort: some filesystems (tmpfs) don't support directory fsync.
+    #[cfg(unix)]
+    {
+        if let Some(parent) = output.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+    }
     Ok(())
 }
 
@@ -614,7 +626,17 @@ fn write_index_to(
     w.write_all(&skel_section.ident_pool)?;
     w.write_all(&skel_section.file_index)?;
 
-    w.flush()?;
+    // Flush the BufWriter, then recover the inner File so we can fsync it
+    // before the caller atomic-renames. Without sync_all() between flush
+    // and rename, a crash/power-loss between rename and writeback can
+    // leave the destination pointing at garbage — readers then mmap
+    // arbitrary bytes as symbol records / offsets.
+    let file = w
+        .into_inner()
+        .map_err(|e| anyhow::anyhow!("flush index temp file: {}", e.error()))?;
+    file.sync_all()
+        .context("fsync index temp file before rename")?;
+    drop(file);
 
     let ref_count: usize = parsed.iter().map(|f| f.refs.len()).sum();
     tracing::info!(

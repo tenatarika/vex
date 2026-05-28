@@ -55,6 +55,28 @@ impl IndexReader {
             );
         }
 
+        // Cap the embedding dimension up front. The writer ships a fixed
+        // 384-dim model today; anything wildly higher is a corrupt header
+        // (or a malicious file) that would let `vector()` size a per-symbol
+        // slice large enough to alias the next section's bytes.
+        const MAX_VECTOR_DIM: u32 = 4096;
+        if header.vector_dim > MAX_VECTOR_DIM {
+            bail!(
+                "index file at {p} is corrupted (vector_dim {} exceeds cap {MAX_VECTOR_DIM}). Re-run `vex index` to rebuild.",
+                header.vector_dim
+            );
+        }
+        // Reject `vector_dim = 0` when symbols claim to exist: `vector()` would
+        // silently return empty slices for every symbol instead of erroring.
+        // A legitimately vectors-less index has `vectors_offset == strings_offset`
+        // (no vectors section); that path is fine. The bad case is "vectors
+        // section claims length but dim is zero".
+        if header.vector_dim == 0 && header.vectors_offset != header.strings_offset {
+            bail!(
+                "index file at {p} is corrupted (vector_dim is 0 but a non-empty vectors section is present). Re-run `vex index` to rebuild."
+            );
+        }
+
         // Validate that claimed sections fit within the file
         let mmap_len = reader.mmap.len() as u64;
         let sym_end = header.symbols_offset.saturating_add(
@@ -87,6 +109,67 @@ impl IndexReader {
             || sym_post_end > mmap_len
         {
             bail!("index file at {p} is corrupted (section offsets exceed file size). Re-run `vex index` to rebuild.");
+        }
+
+        // Monotone-offset invariants: the writer emits sections in a fixed
+        // increasing order. Without these checks a crafted header with
+        // overlapping offsets (e.g. `vectors_offset == 0`) would let the
+        // reader pun bytes between sections — vector reads would alias
+        // symbol-record bytes as f32, etc.
+        //
+        // Vectors → strings: this ordering is a structural invariant of
+        // the format regardless of how many symbols are present, because
+        // `read_string` indexes off `strings_offset` and `vector` reads
+        // off `vectors_offset`. A reversed pair lets vector reads alias
+        // strings-section bytes.
+        if header.vectors_offset > header.strings_offset {
+            bail!("index file at {p} is corrupted (vectors_offset > strings_offset). Re-run `vex index` to rebuild.");
+        }
+        if header.symbol_count > 0 {
+            // The vectors section has no explicit `vector_count` field —
+            // when present it holds one f32-vector per symbol, when
+            // absent `vectors_offset == strings_offset` (zero bytes
+            // between them). Derive the actual byte length from that
+            // delta rather than the (max-possible) `symbol_count *
+            // vector_dim * 4`.
+            let vectors_byte_len = header.strings_offset.saturating_sub(header.vectors_offset);
+            if vectors_byte_len > 0 {
+                let vec_byte_size =
+                    (header.vector_dim as u64).saturating_mul(std::mem::size_of::<f32>() as u64);
+                let max_vector_bytes = header.symbol_count.saturating_mul(vec_byte_size);
+                if vec_byte_size == 0
+                    || vectors_byte_len % vec_byte_size != 0
+                    || vectors_byte_len > max_vector_bytes
+                {
+                    bail!("index file at {p} is corrupted (vectors section size {} is not aligned to vector_dim={} or exceeds symbol_count). Re-run `vex index` to rebuild.",
+                        vectors_byte_len, header.vector_dim);
+                }
+            }
+            // symbols → vectors. The symbol records must not overlap
+            // the vectors section.
+            if sym_end > header.vectors_offset {
+                bail!("index file at {p} is corrupted (symbols section overlaps vectors_offset). Re-run `vex index` to rebuild.");
+            }
+        }
+        // For every variable-length post-vectors section, only enforce
+        // monotone ordering when the section actually carries bytes.
+        // The minimal-fixture path (test-only / legacy) leaves the
+        // trailing offsets at zero, which is still safe because every
+        // `*_len` is also zero.
+        if header.fst_len > 0 && header.strings_offset > header.fst_offset {
+            bail!("index file at {p} is corrupted (strings section overlaps refs FST). Re-run `vex index` to rebuild.");
+        }
+        if header.postings_len > 0 && fst_end > header.postings_offset {
+            bail!("index file at {p} is corrupted (refs FST overlaps refs postings). Re-run `vex index` to rebuild.");
+        }
+        if header.file_table_count > 0 && postings_end > header.file_table_offset {
+            bail!("index file at {p} is corrupted (refs postings overlap file table). Re-run `vex index` to rebuild.");
+        }
+        if header.sym_fst_len > 0 && file_table_end > header.sym_fst_offset {
+            bail!("index file at {p} is corrupted (file table overlaps symbol FST). Re-run `vex index` to rebuild.");
+        }
+        if header.sym_postings_len > 0 && sym_fst_end > header.sym_postings_offset {
+            bail!("index file at {p} is corrupted (symbol FST overlaps symbol postings). Re-run `vex index` to rebuild.");
         }
 
         // v4: validate CallGraphHeader fits AND its sections fit. Reuse the
@@ -204,7 +287,12 @@ impl IndexReader {
         Some(unsafe { &*(ptr as *const SymbolRecord) })
     }
 
-    /// Read a null-terminated string from the strings section.
+    /// Read a null-terminated string from the strings section. Returns
+    /// `""` when the offset is `u32::MAX` (canonical "no string"
+    /// sentinel) OR when the bytes fail UTF-8 decoding — in the latter
+    /// case we emit a `tracing::warn!` so a `RUST_LOG=warn` run can
+    /// surface silent index corruption rather than letting an empty
+    /// string propagate into rebuilds and effectively delete symbols.
     pub fn read_string(&self, offset: u32) -> &str {
         if offset == u32::MAX {
             return "";
@@ -212,14 +300,41 @@ impl IndexReader {
         let header = self.header();
         let base = match (header.strings_offset as usize).checked_add(offset as usize) {
             Some(b) => b,
-            None => return "",
+            None => {
+                tracing::warn!(
+                    offset,
+                    strings_offset = header.strings_offset,
+                    "read_string: offset overflows usize — returning empty string"
+                );
+                return "";
+            }
         };
         if base >= self.mmap.len() {
+            tracing::warn!(
+                offset,
+                base,
+                mmap_len = self.mmap.len(),
+                "read_string: offset past end of mmap — returning empty string"
+            );
             return "";
         }
         let data = &self.mmap[base..];
         let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-        std::str::from_utf8(&data[..end]).unwrap_or("")
+        match std::str::from_utf8(&data[..end]) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    offset,
+                    base,
+                    len = end,
+                    error = %e,
+                    "read_string: invalid UTF-8 in strings section — returning empty string; \
+                     callers using the result as a symbol name MUST skip the record \
+                     instead of persisting an empty name."
+                );
+                ""
+            }
+        }
     }
 
     /// Read the embedding vector for a symbol by its vector_index.
@@ -235,6 +350,14 @@ impl IndexReader {
             .checked_mul(vec_byte_size)?
             .checked_add(header.vectors_offset as usize)?;
         let end = byte_offset.checked_add(vec_byte_size)?;
+        // Never read past the end of the vectors section (the strings
+        // section starts at `strings_offset`). The monotone-offset guard
+        // in `open()` proves `strings_offset <= mmap.len()`, so this is
+        // tighter than the mmap-length check below for malformed
+        // `vector_index` values.
+        if end > header.strings_offset as usize {
+            return None;
+        }
         if end > self.mmap.len() {
             return None;
         }
@@ -638,4 +761,183 @@ fn slice_or_empty(mmap: &[u8], offset: usize, len: usize) -> Option<&[u8]> {
         return None;
     }
     Some(&mmap[offset..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::format::{
+        CallGraphHeader, Header, PatternSkeletonHeader, V5SectionHeader, MAGIC, VERSION,
+    };
+
+    /// Build a minimal but byte-valid v6 index header block on disk so we
+    /// can mutate one field at a time and assert `IndexReader::open`
+    /// rejects the corrupted file with a typed error rather than
+    /// silently allowing overlapping sections.
+    fn write_minimal_index(tmp: &Path, mutate: impl FnOnce(&mut Header)) -> std::path::PathBuf {
+        let total_header = Header::SIZE
+            + CallGraphHeader::SIZE
+            + V5SectionHeader::SIZE
+            + PatternSkeletonHeader::SIZE;
+        let symbols_offset = total_header as u64;
+        let mut header = Header {
+            magic: *MAGIC,
+            version: VERSION,
+            symbol_count: 0,
+            vector_dim: 384,
+            _padding: 0,
+            symbols_offset,
+            vectors_offset: symbols_offset,
+            strings_offset: symbols_offset,
+            inverted_offset: 0,
+            hnsw_offset: 0,
+            fst_offset: symbols_offset,
+            fst_len: 0,
+            postings_offset: symbols_offset,
+            postings_len: 0,
+            file_table_offset: symbols_offset,
+            file_table_count: 0,
+            _padding2: 0,
+            sym_fst_offset: symbols_offset,
+            sym_fst_len: 0,
+            sym_postings_offset: symbols_offset,
+            sym_postings_len: 0,
+        };
+        mutate(&mut header);
+
+        let cg = CallGraphHeader {
+            call_edges_offset: symbols_offset,
+            call_edges_len: 0,
+            callers_fst_offset: symbols_offset,
+            callers_fst_len: 0,
+            callers_postings_offset: symbols_offset,
+            callers_postings_len: 0,
+            callees_fst_offset: symbols_offset,
+            callees_fst_len: 0,
+            callees_postings_offset: symbols_offset,
+            callees_postings_len: 0,
+            bm25_fst_offset: symbols_offset,
+            bm25_fst_len: 0,
+            bm25_postings_offset: symbols_offset,
+            bm25_postings_len: 0,
+            bm25_stats_offset: symbols_offset,
+            bm25_stats_len: 0,
+        };
+        let v5 = V5SectionHeader {
+            ref_edges_offset: symbols_offset,
+            ref_edges_len: 0,
+            ref_edges_fst_offset: symbols_offset,
+            ref_edges_fst_len: 0,
+            ref_edges_postings_offset: symbols_offset,
+            ref_edges_postings_len: 0,
+        };
+        let pat = PatternSkeletonHeader {
+            skeletons_offset: symbols_offset,
+            skeletons_len: 0,
+            kind_path_offset: symbols_offset,
+            kind_path_len: 0,
+            ident_pool_offset: symbols_offset,
+            ident_pool_len: 0,
+            file_index_offset: symbols_offset,
+            file_index_len: 0,
+            grammar_fingerprints: [0u32; 32],
+        };
+
+        let mut bytes = Vec::with_capacity(total_header);
+        // SAFETY: all four structs are `#[repr(C)]` with stable layouts;
+        // we're reading their bytes for a write-then-read round-trip.
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(&header as *const Header as *const u8, Header::SIZE)
+        });
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &cg as *const CallGraphHeader as *const u8,
+                CallGraphHeader::SIZE,
+            )
+        });
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &v5 as *const V5SectionHeader as *const u8,
+                V5SectionHeader::SIZE,
+            )
+        });
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &pat as *const PatternSkeletonHeader as *const u8,
+                PatternSkeletonHeader::SIZE,
+            )
+        });
+
+        let path = tmp.join("index.vex");
+        std::fs::write(&path, &bytes).expect("write minimal index");
+        path
+    }
+
+    #[test]
+    fn open_accepts_minimal_valid_header() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index(tmp.path(), |_| {});
+        let reader = IndexReader::open(&path).expect("minimal v6 header is valid");
+        assert_eq!(reader.symbol_count(), 0);
+    }
+
+    #[test]
+    fn open_rejects_oversized_vector_dim() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index(tmp.path(), |h| {
+            // Anything > 4096 must fail the cap check.
+            h.vector_dim = 1_000_000;
+        });
+        let err = match IndexReader::open(&path) {
+            Ok(_) => panic!("oversized vector_dim must be rejected"),
+            Err(e) => e,
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("vector_dim") || msg.contains("exceeds cap"),
+            "expected dim-cap error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn open_rejects_vectors_offset_below_symbols_end() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index(tmp.path(), |h| {
+            // Pretend we have one symbol but vectors_offset overlaps with
+            // the symbol record bytes — exactly the C3 attack: vector
+            // reads alias symbol-record bytes as f32.
+            h.symbol_count = 1;
+            h.vectors_offset = 0; // way before symbols_offset
+        });
+        let err = match IndexReader::open(&path) {
+            Ok(_) => panic!("vectors_offset overlapping symbols must be rejected"),
+            Err(e) => e,
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("non-monotone")
+                || msg.contains("vectors_offset")
+                || msg.contains("truncated"),
+            "expected monotone-offset error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn open_rejects_strings_offset_before_vectors() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index(tmp.path(), |h| {
+            // strings_offset must be >= vectors_offset.
+            h.vectors_offset = 1024;
+            h.strings_offset = 512;
+        });
+        let err = match IndexReader::open(&path) {
+            Ok(_) => panic!("strings before vectors must be rejected"),
+            Err(e) => e,
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("vectors_offset") || msg.contains("non-monotone"),
+            "expected monotone-offset error, got: {msg}"
+        );
+    }
 }

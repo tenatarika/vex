@@ -294,6 +294,20 @@ fn reconstruct_unchanged(
         current_path = path;
 
         let name = reader.read_string(rec.name_offset).to_string();
+        // Skip records whose name decoded to "" — that's the signal
+        // `read_string` raises when the strings section is corrupt.
+        // Persisting an empty-name record here would effectively delete
+        // the symbol on the next rebuild and silently shrink the index.
+        if name.is_empty() {
+            tracing::warn!(
+                file = %current_path,
+                line = rec.line,
+                name_offset = rec.name_offset,
+                "reconstruct_unchanged: dropping symbol with empty/corrupt name — \
+                 the file will be re-parsed on next full index"
+            );
+            continue;
+        }
         let kind = SymbolKind::try_from(rec.kind).unwrap_or(SymbolKind::Function);
         let sig = {
             let s = reader.read_string(rec.signature_offset);
