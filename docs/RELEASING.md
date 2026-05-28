@@ -12,8 +12,11 @@ A push of `v<X>.<Y>.<Z>` to GitHub triggers `.github/workflows/release.yml`:
    if any platform breaks.
 2. **`build`** — cross-compiles release binaries for three triples:
    `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`,
-   `x86_64-pc-windows-msvc`. Archives are `.tar.gz` on Unix and `.zip`
-   on Windows; each contains a single `vex` (or `vex.exe`) binary.
+   `x86_64-pc-windows-msvc`. Archives are `.tar.gz` on every platform
+   (Windows switched from `.zip` to `.tar.gz` in v1.9.2 — the `self_update`
+   crate could not strip zipsign's signed-zip prefix, leaving Windows
+   self-update broken since v1.8.2); each contains a single `vex` (or
+   `vex.exe`) binary.
 3. **`release`** —
    1. downloads all archives,
    2. installs `zipsign`,

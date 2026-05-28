@@ -85,8 +85,8 @@ cp target/release/vex ~/.local/bin/
 
 Pre-built `vex.exe` ships in every GitHub Release.
 
-1. Download `vex-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/tenatarika/vex/releases/latest)
-2. Extract `vex.exe` somewhere stable (e.g. `C:\Users\<you>\bin\`)
+1. Download `vex-x86_64-pc-windows-msvc.tar.gz` from the [latest release](https://github.com/tenatarika/vex/releases/latest)
+2. Extract `vex.exe` somewhere stable (e.g. `C:\Users\<you>\bin\`) — `tar -xzf vex-x86_64-pc-windows-msvc.tar.gz` from a recent PowerShell, or 7-Zip / WinRAR via right-click.
 3. Add that folder to `PATH` (System Properties → Environment Variables → edit `Path` → add the folder)
 4. Open a fresh terminal and run `vex --version`
 
