@@ -671,13 +671,6 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             ("grep".to_string(), extra)
         }
         "implementations" => {
-            // NB: `Commands::Implementations` in src/cli/args.rs does NOT
-            // declare `auto_update` / `no_stale_check`, and its handler runs
-            // `find_implementations` directly without a staleness hook. Adding
-            // those flags at the MCP layer would forward unknown args to clap
-            // and cause a hard CLI error. Keep them off until the CLI gains
-            // the equivalent of `cmd_callgraph`'s staleness wiring — see the
-            // follow-up note in the audit report.
             let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)
                 .context("missing symbol")?;
             let limit = args["limit"].as_u64().unwrap_or(50);
@@ -688,6 +681,8 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 "--limit".into(),
                 limit.to_string(),
             ];
+            push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
             ("implementations".to_string(), extra)
         }
@@ -1138,6 +1133,8 @@ fn tool_descriptors() -> Value {
                     "name": { "type": "string", "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta." },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
                 },
@@ -2402,9 +2399,7 @@ mod tests {
             ("find_similar", json!({"query": "Foo"})),
             ("show", json!({"symbols": ["Foo"]})),
             ("usages", json!({"symbol": "Foo"})),
-            // `implementations` deliberately omitted — CLI Commands::Implementations
-            // does not declare auto_update / no_stale_check yet; see the
-            // build_command arm for the rationale.
+            ("implementations", json!({"symbol": "Foo"})),
             ("callers", json!({"symbol": "Foo"})),
             ("callees", json!({"symbol": "Foo"})),
             ("paths", json!({"from": "A", "to": "B"})),
@@ -2437,8 +2432,10 @@ mod tests {
             ),
             ("show", json!({"symbols": ["Foo"], "no_stale_check": true})),
             ("usages", json!({"symbol": "Foo", "no_stale_check": true})),
-            // `implementations` deliberately omitted — see the matching note
-            // in `no_stale_check_default_omits_flag_across_tools`.
+            (
+                "implementations",
+                json!({"symbol": "Foo", "no_stale_check": true}),
+            ),
             ("callers", json!({"symbol": "Foo", "no_stale_check": true})),
             ("callees", json!({"symbol": "Foo", "no_stale_check": true})),
             (
@@ -2476,8 +2473,7 @@ mod tests {
             "find_similar",
             "show",
             "usages",
-            // `implementations` deliberately omitted — CLI Commands::Implementations
-            // does not declare auto_update / no_stale_check yet.
+            "implementations",
             "callers",
             "callees",
             "paths",

@@ -543,6 +543,11 @@ expression: descriptors
     "description": "Find every concrete type that extends a base class / implements a trait / interface. Walks the indexed inheritance edges (covers generic-parameterised bases). Prefer over grep for `find all subclasses of Foo` — grep misses `: Foo<T>`, indirect inheritance, and trait impls; this resolves the real hierarchy.",
     "inputSchema": {
       "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
         "exclude": {
           "description": "Blacklist results by path glob; wins over include (repeatable)",
           "items": {
@@ -565,6 +570,11 @@ expression: descriptors
         "name": {
           "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
           "type": "string"
+        },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
         },
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
