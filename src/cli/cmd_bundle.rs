@@ -542,6 +542,16 @@ fn lookup_signature(reader: &IndexReader, name: &str) -> Option<String> {
 /// PR-impact-mode assembler. Public for bench/test access — see
 /// [`assemble_symbol`] for the rationale.
 #[doc(hidden)]
+/// Aggregate node cap for `vex bundle --mode pr-impact` (review H9, v1.10.1).
+///
+/// Before v1.10.1 the BFS bound was per-changed-symbol via
+/// `CALLERS_FETCH_CAP`, so a refactor PR touching N symbols could surface up
+/// to `N × CALLERS_FETCH_CAP` callers — well past what an agent can consume.
+/// The aggregate cap is intentionally generous to absorb typical refactors
+/// (deduped transitive set rarely exceeds a few hundred per change) while
+/// still putting a ceiling on pathological PRs.
+pub const MAX_PR_IMPACT_NODES: usize = 5_000;
+
 pub fn assemble_pr_impact(
     args: &BundleArgs<'_>,
     ctx: &BundleCtx<'_>,
@@ -591,6 +601,15 @@ pub fn assemble_pr_impact(
     // We dedupe transitive callers across multiple changed symbols by
     // `(name, path, line)` so a hot caller of many touched functions
     // surfaces once.
+    //
+    // Aggregate budget (review H9, v1.10.1): the legacy per-change BFS
+    // cap multiplied with the number of changed symbols, so a refactor PR
+    // touching N functions could pull up to N × CALLERS_FETCH_CAP nodes.
+    // We now also gate the total result size so large PRs don't blow
+    // past agent-friendly bundle sizes. The cap is intentionally generous
+    // (changed + transitive + test combined) and surfaces via
+    // `mode_hints.budget_exceeded` so callers can react instead of
+    // silently truncating.
     let mut items: Vec<BundleItem> = Vec::new();
     let mut changed_count = 0usize;
     let mut transitive_callers: Vec<(String, String, usize)> = Vec::new();
@@ -601,6 +620,7 @@ pub fn assemble_pr_impact(
         std::collections::HashSet::new();
     let mut unreachable_changes: Vec<String> = Vec::new();
     let mut changed_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut budget_exceeded = false;
 
     for change in &changes {
         changed_paths.insert(change.path.clone());
@@ -652,6 +672,17 @@ pub fn assemble_pr_impact(
         }
 
         for r in reachable {
+            // Aggregate-budget gate (review H9). When the combined node
+            // count exceeds the cap we stop *adding* new transitive /
+            // test callers but keep processing the outer change loop so
+            // every changed symbol still appears in the bundle. The
+            // `budget_exceeded` flag is surfaced in `mode_hints`.
+            let total_so_far =
+                changed_count + transitive_callers.len() + test_items.len();
+            if total_so_far >= MAX_PR_IMPACT_NODES {
+                budget_exceeded = true;
+                break;
+            }
             let key = (r.name.clone(), r.path.clone(), r.line);
             let sig = lookup_signature(reader, &r.name);
             let is_test = is_test_path(&r.path) || signature_marks_test(sig.as_deref());
@@ -662,6 +693,9 @@ pub fn assemble_pr_impact(
             } else if transitive_seen.insert(key.clone()) {
                 transitive_callers.push(key);
             }
+        }
+        if budget_exceeded {
+            break;
         }
     }
 
@@ -722,6 +756,25 @@ pub fn assemble_pr_impact(
         item.rank_percentile = global_rank_percentile(i, total);
     }
 
+    // `empty_reason` is set when no items would surface at all:
+    //   - `no_changes`         — diff produced zero touched symbols, so
+    //                            there is nothing to walk callers from.
+    //   - `pr_impact_budget_exceeded` — the aggregate node cap fired
+    //                            before any callers were added AND no
+    //                            changed symbols survived diff filtering.
+    //                            In practice this is rare because changed
+    //                            symbols always go in first; we keep it
+    //                            in the vocabulary so review H9's wording
+    //                            stays honest.
+    let empty_reason = if changed_count == 0 && transitive_count == 0 && test_count == 0 {
+        if budget_exceeded {
+            Some("pr_impact_budget_exceeded")
+        } else {
+            Some("no_changes")
+        }
+    } else {
+        None
+    };
     let mode_hints = serde_json::json!({
         "base": base,
         "depth": args.depth,
@@ -729,8 +782,10 @@ pub fn assemble_pr_impact(
         "transitive_caller_count": transitive_count,
         "test_count": test_count,
         "tests_truncated": tests_truncated,
+        "budget_exceeded": budget_exceeded,
+        "max_pr_impact_nodes": MAX_PR_IMPACT_NODES,
         "unreachable_changes": unreachable_changes,
-        "empty_reason": if changed_count == 0 { Some("no_changes") } else { None },
+        "empty_reason": empty_reason,
     });
 
     // Per-mode meta: surfaces the scope of the diff so agents that

@@ -585,6 +585,41 @@ fn bundle_pr_impact_empty_diff_returns_envelope_with_empty_items() {
 }
 
 #[test]
+fn bundle_pr_impact_surfaces_budget_fields_when_within_cap() {
+    // H9 regression (v1.10.1): the aggregate-node cap and its sentinel
+    // fields must always appear in `mode_hints` so callers can branch
+    // on `budget_exceeded` without a guard for "field present?". A
+    // small PR stays well under the cap — `budget_exceeded` is `false`
+    // and `max_pr_impact_nodes` reflects the configured ceiling.
+    let tmp = TempDir::new().unwrap();
+    seed_pr_impact_repo(tmp.path());
+    std::fs::write(
+        tmp.path().join("src").join("lib.rs"),
+        "pub fn target() { let _ = 5; }\n\
+         pub fn caller_b() { target(); }\n\
+         pub fn caller_a() { caller_b(); }\n\
+         pub fn unrelated() {}\n",
+    )
+    .unwrap();
+
+    let out = run_bundle(
+        tmp.path(),
+        &["bundle", "--mode", "pr-impact", "--base", "HEAD"],
+    );
+    let hints = &out["results"]["mode_hints"];
+    assert_eq!(
+        hints["budget_exceeded"].as_bool(),
+        Some(false),
+        "small PR must not exceed budget; got mode_hints: {hints}"
+    );
+    let cap = hints["max_pr_impact_nodes"].as_u64();
+    assert!(
+        cap.is_some_and(|c| c >= 1_000),
+        "max_pr_impact_nodes must be surfaced as a positive integer; got mode_hints: {hints}"
+    );
+}
+
+#[test]
 fn bundle_pr_impact_populates_diff_filter_meta() {
     let tmp = TempDir::new().unwrap();
     seed_pr_impact_repo(tmp.path());
