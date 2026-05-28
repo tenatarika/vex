@@ -244,8 +244,9 @@ exclude = [
     "*.generated.go",
 ]
 
-# Default output format: "text", "json", or "compact"
-format = "compact"
+# Output format — "compact" (default since v1.10.1; single-line records),
+# "text" (verbose multi-line), or "json" (envelope for MCP / tools).
+# format = "text"
 
 # Enable semantic embeddings by default
 semantic = true
@@ -283,15 +284,17 @@ vex search "Config" --no-stale-check
 ## Output Formats
 
 ```bash
-# Human-readable (default)
+# Compact single-line records — default since v1.10.1 (token-efficient, agent-friendly)
 vex search "Foo"
 
-# JSON (for MCP/tool integration)
-vex search "Foo" --format json
+# Verbose multi-line / human-readable
+vex search "Foo" --format text
 
-# Compact (token-efficient, optimized for LLM context)
-vex search "Foo" --format compact
+# JSON envelope (for MCP / tool integration; what `vex-mcp` parses)
+vex search "Foo" --format json
 ```
+
+Pin a different default in `.vex.toml` via `format = "text"` if you want the verbose multi-line view at the terminal.
 
 ## How Search Works
 
@@ -637,7 +640,7 @@ Then add `.vex.toml` config for auto-update so Claude always searches a fresh in
 ```toml
 # .vex.toml
 auto_update = true
-format = "compact"
+# format = "compact"   # already the default since v1.10.1 — set "text" if you'd rather see verbose output
 ```
 
 ### Claude Code (MCP Server)

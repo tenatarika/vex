@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Default output format flipped `text` → `compact`.** Vex's CLI now emits
+  single-line records by default; the verbose multi-line `text` form stays
+  available via `--format text` or `.vex.toml`'s `format = "text"`. Every
+  honest agent / LLM workflow was already setting `format = "compact"` in
+  `.vex.toml`; this just makes the de-facto default real. Tests that need a
+  specific shape now explicitly pass `--format json` (or `--format text`);
+  none broke on the flip. JSON envelope output is unaffected.
+
 ## [1.10.0] - 2026-05-28
 
 v1.10.0 lands two parallel feature trains plus a folded-in external-review
@@ -46,6 +56,14 @@ first time since v1.8.2.
 
 ### Changed
 
+- **Default output format flipped `text` → `compact`.** Vex's CLI now emits
+  single-line records by default; the verbose multi-line `text` form stays
+  available via `--format text` or `.vex.toml`'s `format = "text"`. Pin
+  added in v1.7+ documentation, finally made the de-facto default — every
+  honest agent / LLM workflow was already setting `format = "compact"` in
+  `.vex.toml`. Tests that need a specific shape now explicitly pass
+  `--format json` (or `--format text`); none broke on the flip. JSON
+  envelope output is unaffected.
 - **Phase 14.4 — wire-format honesty rename.** `usages --why` JSON trace
   `mode` field now emits `"fst_lookup"` instead of `"text_scan"` on the
   non-strict path; the underlying data source is and always was an FST

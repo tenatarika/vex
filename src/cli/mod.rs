@@ -117,18 +117,22 @@ fn check_embedder_match(root: &std::path::Path, requested: &str) -> Result<()> {
         .with_context(|| format!("manifest: {}", manifest_path.display()))
 }
 
-/// Resolve output format: CLI flag wins, else config, else Text.
+/// Resolve output format: CLI flag wins, else config, else Compact.
+///
+/// Compact is the default since v1.10.1 — single-line records, optimized for
+/// LLM / agent token efficiency. The verbose multi-line `Text` form stays
+/// available via `.vex.toml`'s `format = "text"` or `--format text`.
 fn resolve_format(cli: Option<OutputFormat>, cfg: &config::VexConfig) -> OutputFormat {
     if let Some(f) = cli {
         return f;
     }
     match cfg.format.as_deref() {
         Some("json") => OutputFormat::Json,
-        Some("compact") => OutputFormat::Compact,
-        Some("text") | None => OutputFormat::Text,
+        Some("text") => OutputFormat::Text,
+        Some("compact") | None => OutputFormat::Compact,
         Some(other) => {
-            eprintln!("warning: unknown format \"{other}\" in .vex.toml, using \"text\"");
-            OutputFormat::Text
+            eprintln!("warning: unknown format \"{other}\" in .vex.toml, using \"compact\"");
+            OutputFormat::Compact
         }
     }
 }
