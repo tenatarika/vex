@@ -661,27 +661,32 @@ cargo build --release -p vex-mcp
 }
 ```
 
-**MCP Tools (20):**
-- `search` — 3-way hybrid (structural + BM25 + semantic); accepts `--why` trace, metadata filters
+**MCP Tools (23):**
+- `search` — 3-way hybrid (structural + BM25 + semantic); accepts `filter` / `include` / `exclude` / `kind` / `context_path` / `no_bm25` / `--why` / metadata filters / diff-scope (`since` / `since_branched` / `changed_only`)
 - `find_symbol` — exact name lookup
 - `find_similar` — semantic search by free-form description
-- `similar` — nearest neighbors of an existing symbol (`explain` adds Jaccard + diff)
-- `duplicates` — near-duplicate symbol pairs (`explain` shows what differs)
-- `show` — extract symbol body from source
+- `similar` — nearest neighbors of an existing symbol (`explain` adds Jaccard + diff); diff-scope
+- `duplicates` — near-duplicate symbol pairs (`explain` shows what differs); diff-scope
+- `show` — extract symbol body from source; Phase 13.3 truncation flags (`signature_only` / `head` / `no_body` / `collapsed`, mutually exclusive)
 - `outline` — file structure
-- `usages` — find all references to a symbol
+- `usages` — find all references to a symbol; `filter` / `--strict` / `--why`
 - `grep` — regex content search
-- `pattern` — AST pattern matching with metavar back-references
-- `implementations` — find types extending a base class/trait/interface (incl. generics)
-- `callers` / `callees` — direct callgraph navigation (fast path via persistent index)
+- `pattern` — AST pattern matching with metavar back-references; diff-scope; `--why`
+- `implementations` — find types extending a base class/trait/interface (incl. generics); diff-scope
+- `callers` / `callees` — direct callgraph navigation (fast path via persistent index); diff-scope
 - `paths` — enumerate caller chains between two functions
 - `reachable` — transitive callers of a target
 - `diff` — symbol-level diff between a git revision and the working tree
 - `check` — fast symbol existence check
+- `bundle` — unified multi-source bundle (`mode: symbol | pr-impact | project`), Phase 13 envelope
+- `eval` — ranking-evaluation harness (`bench` / `min_ndcg`), MCP defaults `json: true` so agents get a structured `EvalReport`
+- `capabilities` — machine-readable capability matrix (`protocol_version`, `signals`, `bundle_modes`, etc.)
 - `index` / `update` — build/rebuild index
 - `status` — index statistics
 
-The schemas follow a canonical vocabulary (`query` / `symbol` / `symbols` / `path` / `pattern` / `filter` / `include` / `exclude`); pre-v1.7 aliases (`name`, `file`, `names`, etc.) still work and emit `_meta.deprecated_args: [...]` in the JSON-RPC response. See [`docs/MCP-SCHEMA.md`](docs/MCP-SCHEMA.md).
+**MCP ↔ CLI parity (v1.10):** the schemas now mirror the CLI surface for every path-aware tool. Glob filters (`include` / `exclude`), substring `filter`, `kind` boost, `context_path` proximity hint, `no_bm25`, Phase 13.3 truncation, diff-scope, and `no_stale_check` are exposed everywhere the CLI accepts them — agents no longer need to drop to bash for "Rust files under `crates/api/` since `main`"-style scoping.
+
+The schemas follow a canonical vocabulary (`query` / `symbol` / `symbols` / `path` / `pattern` / `filter` / `include` / `exclude`); pre-v1.7 aliases (`name`, `file`, `names`, etc.) still work and emit `_meta.deprecated_args: [...]` in the JSON-RPC response. Malformed JSON-RPC input now returns the spec-compliant `-32700 Parse error` response (v1.9.2 fix) with a 512-codepoint echo of the offending line in the `data` field; broken-pipe / EOF on stdin cleanly shuts down the server instead of dropping in-flight tool calls. See [`docs/MCP-SCHEMA.md`](docs/MCP-SCHEMA.md).
 
 ### Shell Integration
 
@@ -730,8 +735,13 @@ Use vex for code search instead of grep or manual file reading:
 - `vex similar "SymbolName"` — semantically close symbols (requires --semantic index)
 - `vex duplicates --threshold 0.95` — near-duplicate symbol pairs
 - `vex check "A" "B" "C"` — fast symbol existence check
+- `vex paths "from" "to"` — enumerate caller chains between two functions (multi-hop)
+- `vex reachable "Target"` — transitive callers of a target (blast-radius analysis)
+- `vex diff --base main` — symbol-level diff against a branch (added / removed / moved / body-changed)
+- `vex bundle --mode symbol --symbol Foo` — single-call body + callers + callees + similar (replaces 4 round-trips)
+- `vex bundle --mode pr-impact --base origin/main` — changed symbols + transitive callers + tests on the current branch
 
-All commands support `--filter "path/"` to narrow results to a directory.
+All commands support `--filter "path/"` to narrow results to a directory. Most search-shaped commands also accept `--since <rev>` / `--since-branched` / `--changed-only` for diff-scoping.
 
 ### Rules
 - **Always prefer `vex show` over `Read`** when you need a specific function or class
