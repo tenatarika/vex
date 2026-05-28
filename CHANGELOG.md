@@ -6,6 +6,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-05-28
+
+v1.10.0 lands two parallel feature trains plus a folded-in external-review
+patch series. **Phase 14** closes the function/method-level decorator-dispatch
+coverage gap across Python + Java + Kotlin + C# + TypeScript + Rust
+(14.1 / 14.2 / 14.2.1 / 14.2.2) and ships **Phase 14.7**, a content-addressed
+blob-SHA parse cache that halves warm-path `vex index` wall time on the vex
+self-repo (~498ms → ~250ms). The **MCP server** gains close-to-full CLI
+parity: `search` / `show` / `usages` / `pattern` / `similar` / `duplicates`
+now expose the missing `filter` / `kind` / `context_path` / `no_bm25` /
+Phase-13.3 truncation / diff-scope / `no_stale_check` flags; `eval` and
+`implementations` grow first-class MCP tools. The release also folds in the
+**v1.9.2 external-review patch train** — 4 Critical correctness fixes
+(tracing → stderr, durable writes, reader range guards, MCP JSON-RPC
+parse-error responses) plus the **Windows release-artifact switch from
+`.zip` to `.tar.gz`** that unblocks `vex self-update` on Windows for the
+first time since v1.8.2.
+
 ### Fixed
 
 - **v1.9.2 patch train — external-review correctness fixes.** Closes 4 Critical + several High items from Alexei Dolgolyov's independent review at tag `v1.9.1`:
@@ -19,6 +37,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **`vex bundle` honors the Phase 13 envelope.** `cmd_bundle` now routes its JSON output through the new `print_envelope<T>` helper so `protocol_version: "v1"` and `capabilities` are present on every bundle response — same contract `search` has always honored. Migration of the remaining JSON-emitting subcommands (`show`, `usages`, `pattern`, `grep`, `implementations`, `callers`, `callees`, `paths`, `reachable`, `check`, `similar`, `duplicates`, `diff`, `outline`) is blocked behind a `cli/mod.rs` decomposition refactor scheduled for v1.10.
   - **Compile-time pubkey length assert.** `VEX_RELEASE_PUBKEY` length check is now a `const _: () = assert!(...)` — a runtime `expect()` panic is no longer reachable.
 - **Windows release artifact switched from `.zip` to `.tar.gz`.** The reproducible `self_update` regression Alexei documented — `self_update 0.42/0.44` does not strip zipsign's 80-byte signature prefix before handing the file to `ZipArchive::new`, producing `ZipError: Compression method not supported` — broke `vex self-update` on Windows from v1.8.2 through v1.9.1 inclusive. Switching to `.tar.gz` (the same path already proven on macOS / Linux) sidesteps the upstream bug entirely. Manual installers should download `vex-x86_64-pc-windows-msvc.tar.gz` and extract via `tar -xzf` (recent PowerShell ships bsdtar) or 7-Zip / WinRAR. The `archive-zip` feature is dropped from the `self_update` dependency.
+- **Homebrew formula tracks prebuilt binaries instead of source.** The
+  release workflow's `update-homebrew` step was generating a source-only
+  formula that forced `brew install vex` to build from `cargo install`,
+  failing on machines without a Rust toolchain. The formula now pins the
+  released archive URLs + SHA-256 sums so `brew install` lands the signed
+  binary directly.
 
 ### Changed
 
@@ -31,6 +55,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **MCP ↔ CLI parity train.** The MCP server gains the missing CLI flags
+  that previously forced agents to drop to bash for nontrivial workflows.
+  `search`, `show`, `usages`, `pattern`, `similar`, `duplicates` now expose
+  `filter` (substring path filter), `kind` (array, multi-value), and
+  `context_path` (proximity hint); `search` additionally gains `no_bm25`.
+  `show` expands to the full Phase 13.3 truncation suite — `signature_only`,
+  `head <N>`, `no_body`, `collapsed` — with server-side mutual exclusion
+  enforcement that returns a structured error instead of letting clap dump
+  its `conflicts_with` template into the response body. Diff scoping (`since`,
+  `since_branched`, `changed_only`, mutually exclusive) lands across
+  `pattern`, `similar`, `duplicates`, `callers`, `callees`, `implementations`
+  so `vex callers Foo --since main` works through MCP. Every tool whose CLI
+  variant already accepted `auto_update` now also exposes `no_stale_check`
+  (12 tools) so agents can skip the per-call staleness check on a known-fresh
+  index. The shared helpers `push_diff_scope`, `push_show_truncate`,
+  `push_kind`, and `push_no_stale_check` are the single enforcement point;
+  the `tool_descriptors_snapshot` regression guard locks the schemas against
+  drift.
+- **MCP `eval` tool wrapper.** New first-class MCP tool forwarding
+  `vex eval --bench <PATH> --min-ndcg <FLOAT> --json --path <ROOT>`. MCP
+  defaults `json` to `true` (agents want structured `EvalReport`); clients
+  can flip back to the human-readable summary with `json: false`. Closes the
+  audit-flagged CRITICAL gap that left the ranking-eval harness unavailable
+  to agent workflows.
+- **`Commands::Implementations` CLI parity** with the rest of the call-graph
+  tools. The variant gains `auto_update` + `no_stale_check`, and its handler
+  routes through `handle_staleness` before `find_implementations` (same
+  staleness hook that `cmd_callgraph` already used for `callers` / `callees`).
+  The MCP `implementations` tool re-enables the corresponding flag forwarding
+  that was deliberately disabled until the CLI side landed.
 - **Phase 14.7 — blob-SHA addressed parse cache.** `vex index` and
   `vex update` now consult a content-addressed cache keyed by the git
   blob SHA of each tracked file before invoking tree-sitter. Cache
