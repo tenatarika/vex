@@ -1,3 +1,8 @@
+// `tool_descriptors()` builds a single large `serde_json::json!([...])`
+// macro tree; each property added pushes the macro expansion deeper.
+// Raise the crate-level recursion limit so the macro fits.
+#![recursion_limit = "512"]
+
 use std::io::{self, BufRead, Write};
 use std::process::Command;
 
@@ -288,6 +293,116 @@ fn push_auto_update(extra: &mut Vec<String>, args: &Value) {
     }
 }
 
+/// Translate the optional `no_stale_check: bool` MCP arg into the CLI
+/// `--no-stale-check` flag. Defaults to `false` (i.e. stale check runs)
+/// so existing clients see no behavior change. Note: when `auto_update`
+/// is also true the CLI already refreshes the index, making this flag
+/// redundant; we still forward it because the CLI accepts the
+/// combination and the precedence is the CLI's call to make.
+fn push_no_stale_check(extra: &mut Vec<String>, args: &Value) {
+    if args["no_stale_check"].as_bool().unwrap_or(false) {
+        extra.push("--no-stale-check".into());
+    }
+}
+
+/// Translate the diff-scope MCP args (`since` / `since_branched` /
+/// `changed_only`) into the matching CLI flags. The three are mutually
+/// exclusive on the CLI side (clap `conflicts_with_all`); we surface
+/// the conflict as an MCP-layer error so the agent gets an intent-aware
+/// message rather than clap's templated output. Empirical anchor: same
+/// "diff-scoped query" pattern that rtk-ai reports cuts PR-review token
+/// spend by ~75%.
+fn push_diff_scope(extra: &mut Vec<String>, args: &Value) -> Result<()> {
+    let since = args["since"].as_str();
+    let since_branched = args["since_branched"].as_bool().unwrap_or(false);
+    let changed_only = args["changed_only"].as_bool().unwrap_or(false);
+
+    let active = [since.is_some(), since_branched, changed_only]
+        .into_iter()
+        .filter(|b| *b)
+        .count();
+    if active > 1 {
+        anyhow::bail!("`since`, `since_branched`, and `changed_only` are mutually exclusive");
+    }
+
+    if let Some(rev) = since {
+        extra.extend(["--since".into(), rev.to_string()]);
+    } else if since_branched {
+        extra.push("--since-branched".into());
+    } else if changed_only {
+        extra.push("--changed-only".into());
+    }
+    Ok(())
+}
+
+/// Translate the Phase 13.3 `show` truncation MCP args
+/// (`signature_only` / `head` / `no_body` / `collapsed`) into the
+/// matching CLI flags. The four are mutually exclusive on the CLI
+/// side (clap `conflicts_with_all`); we surface the conflict as an
+/// MCP-layer error so the agent sees a clear message rather than
+/// clap's templated output.
+fn push_show_truncate(extra: &mut Vec<String>, args: &Value) -> Result<()> {
+    let signature_only = args["signature_only"].as_bool().unwrap_or(false);
+    // Parse `head` strictly: silently accepting `head: 0`, `head: -1`, or
+    // `head: 5.5` would let invalid input through (the CLI rejects 0 and
+    // clap rejects negatives/floats — but `serde_json::Value::as_u64()`
+    // returns `None` on the negative/float case, which would *drop* the
+    // value rather than surface the misuse). Fail loudly instead.
+    let head_raw = &args["head"];
+    let head: Option<u64> = if head_raw.is_null() {
+        None
+    } else {
+        let n = head_raw.as_u64().ok_or_else(|| {
+            anyhow::anyhow!("`head` must be a positive integer (got: {head_raw})")
+        })?;
+        if n == 0 {
+            anyhow::bail!("`head` must be a positive integer (got: 0)");
+        }
+        Some(n)
+    };
+    let no_body = args["no_body"].as_bool().unwrap_or(false);
+    let collapsed = args["collapsed"].as_bool().unwrap_or(false);
+
+    let active = [signature_only, head.is_some(), no_body, collapsed]
+        .into_iter()
+        .filter(|b| *b)
+        .count();
+    if active > 1 {
+        anyhow::bail!(
+            "`signature_only`, `head`, `no_body`, and `collapsed` are mutually exclusive"
+        );
+    }
+
+    if signature_only {
+        extra.push("--signature-only".into());
+    } else if let Some(n) = head {
+        extra.extend(["--head".into(), n.to_string()]);
+    } else if no_body {
+        extra.push("--no-body".into());
+    } else if collapsed {
+        extra.push("--collapsed".into());
+    }
+    Ok(())
+}
+
+/// Push the `kind: string[]` MCP arg as one `--kind <value>` pair per
+/// element. Mirrors `push_scope_field`. Mirrors clap's repeatable
+/// `Vec<String>` accumulator on the CLI side.
+fn push_kind(extra: &mut Vec<String>, args: &Value) {
+    let Some(arr) = args["kind"].as_array() else {
+        return;
+    };
+    for v in arr {
+        match v.as_str() {
+            Some(s) => extra.extend(["--kind".into(), s.to_string()]),
+            None => tracing::warn!(
+                value = ?v,
+                "ignoring non-string element in MCP kind array"
+            ),
+        }
+    }
+}
+
 /// Pull `include: string[]` and `exclude: string[]` off the JSON-RPC args
 /// and append them as repeated `--include` / `--exclude` flags. Mirrors
 /// the CLI scope filter and shares the same gitignore-style glob syntax.
@@ -397,9 +512,21 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             if args["why"].as_bool().unwrap_or(false) {
                 extra.push("--why".into());
             }
+            if let Some(filter) = args["filter"].as_str() {
+                extra.extend(["--filter".into(), filter.to_string()]);
+            }
+            push_kind(&mut extra, args);
+            if let Some(cp) = args["context_path"].as_str() {
+                extra.extend(["--context-path".into(), cp.to_string()]);
+            }
+            if args["no_bm25"].as_bool().unwrap_or(false) {
+                extra.push("--no-bm25".into());
+            }
             push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
             push_metadata(&mut extra, args)?;
+            push_diff_scope(&mut extra, args)?;
             ("search".to_string(), extra)
         }
         "find_symbol" => {
@@ -407,6 +534,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 .context("missing symbol")?;
             let mut extra = vec![symbol.to_string(), "--limit".into(), "10".into()];
             push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
             push_metadata(&mut extra, args)?;
             ("search".to_string(), extra)
@@ -420,6 +548,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 "10".into(),
             ];
             push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
             push_metadata(&mut extra, args)?;
             ("search".to_string(), extra)
@@ -466,7 +595,16 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             let limit = args["limit"].as_u64().unwrap_or(1);
             let mut extra = symbols;
             extra.extend(["--limit".into(), limit.to_string()]);
+            if let Some(filter) = args["filter"].as_str() {
+                extra.extend(["--filter".into(), filter.to_string()]);
+            }
+            push_kind(&mut extra, args);
+            if let Some(cp) = args["context_path"].as_str() {
+                extra.extend(["--context-path".into(), cp.to_string()]);
+            }
+            push_show_truncate(&mut extra, args)?;
             push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
             push_metadata(&mut extra, args)?;
             ("show".to_string(), extra)
@@ -484,8 +622,13 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             if args["why"].as_bool().unwrap_or(false) {
                 extra.push("--why".into());
             }
+            if let Some(filter) = args["filter"].as_str() {
+                extra.extend(["--filter".into(), filter.to_string()]);
+            }
             push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
+            push_diff_scope(&mut extra, args)?;
             ("usages".to_string(), extra)
         }
         "grep" => {
@@ -505,6 +648,13 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             ("grep".to_string(), extra)
         }
         "implementations" => {
+            // NB: `Commands::Implementations` in src/cli/args.rs does NOT
+            // declare `auto_update` / `no_stale_check`, and its handler runs
+            // `find_implementations` directly without a staleness hook. Adding
+            // those flags at the MCP layer would forward unknown args to clap
+            // and cause a hard CLI error. Keep them off until the CLI gains
+            // the equivalent of `cmd_callgraph`'s staleness wiring — see the
+            // follow-up note in the audit report.
             let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)
                 .context("missing symbol")?;
             let limit = args["limit"].as_u64().unwrap_or(50);
@@ -530,6 +680,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 limit.to_string(),
             ];
             push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
             ("callers".to_string(), extra)
         }
@@ -545,6 +696,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 limit.to_string(),
             ];
             push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
             ("callees".to_string(), extra)
         }
@@ -567,6 +719,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 extra.push("--why".into());
             }
             push_scope(&mut extra, args);
+            push_diff_scope(&mut extra, args)?;
             ("pattern".to_string(), extra)
         }
         "diff" => {
@@ -599,6 +752,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 max_paths.to_string(),
             ];
             push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
             ("paths".to_string(), extra)
         }
@@ -616,6 +770,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 limit.to_string(),
             ];
             push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
             ("reachable".to_string(), extra)
         }
@@ -631,6 +786,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             }
             let mut extra = symbols;
             push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             ("check".to_string(), extra)
         }
         "similar" => {
@@ -657,7 +813,9 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 extra.push("--why".into());
             }
             push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
+            push_diff_scope(&mut extra, args)?;
             ("similar".to_string(), extra)
         }
         "duplicates" => {
@@ -684,7 +842,9 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 extra.push("--why".into());
             }
             push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
+            push_diff_scope(&mut extra, args)?;
             ("duplicates".to_string(), extra)
         }
         "capabilities" => {
@@ -741,6 +901,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 ),
             }
             push_auto_update(&mut extra, args);
+            push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
             ("bundle".to_string(), extra)
         }
@@ -757,7 +918,7 @@ fn tool_descriptors() -> Value {
     serde_json::json!([
         {
             "name": "search",
-            "description": "Hybrid structural + semantic code search across the indexed codebase. Fuses FST exact + BM25 + semantic channels in a single ranked list (~4ms FST hit, ~7-15ms with semantic). Prefer over grep for symbol or identifier lookup — grep does a full-scan (seconds on large repos) and returns line matches; this returns ranked symbol records with kind, signature, and line ranges. Use this when you need to find a definition by name, signature shape, or meaning rather than guessing a regex.",
+            "description": "Hybrid structural + semantic code search across the indexed codebase. Fuses FST exact + BM25 + semantic channels in a single ranked list (~4ms FST hit, ~7-15ms with semantic). Prefer over grep for symbol or identifier lookup — grep does a full-scan (seconds on large repos) and returns line matches; this returns ranked symbol records with kind, signature, and line ranges. Use this when you need to find a definition by name, signature shape, or meaning rather than guessing a regex. Supports `filter` (substring path filter), `kind` (kind-boost / restrict), `context_path` (proximity hint), `no_bm25` (disable BM25 channel), and `no_stale_check` (skip pre-call staleness probe).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -765,15 +926,23 @@ fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 20 },
                     "semantic": { "type": "boolean", "description": "Enable the semantic vector channel (requires `vex index --semantic`); adds ~3-10ms but lets natural-language queries hit", "default": false },
                     "why": { "type": "boolean", "description": "Surface a JSON trace under `_meta.why` in the response: normalized query, per-channel hits (FST/BM25/semantic/fuzzy), filter_applied snapshot", "default": false },
+                    "filter": { "type": "string", "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns)." },
+                    "kind": { "type": "array", "items": { "type": "string" }, "description": "Boost results matching one or more kinds (repeatable). Canonical names (function, struct, class, …) plus aliases: def, comment, test, ref." },
+                    "context_path": { "type": "string", "description": "Boost results near this file path (e.g. the agent's current editor file)." },
+                    "no_bm25": { "type": "boolean", "description": "Disable the BM25 channel for this query (auto-on when the index has BM25 data otherwise).", "default": false },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true (which already refreshes).", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (e.g. 'tests/**'); repeat for multiple globs" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include); repeat for multiple globs" },
                     "visibility": { "type": "string", "enum": ["public", "private", "protected", "internal"], "description": "Keep only symbols whose signature contains this explicit visibility keyword (no inferred defaults)" },
                     "async_only": { "type": "boolean", "description": "Keep only async/suspend functions", "default": false },
                     "no_async": { "type": "boolean", "description": "Exclude async/suspend functions", "default": false },
                     "static_only": { "type": "boolean", "description": "Keep only static class members", "default": false },
-                    "sealed_only": { "type": "boolean", "description": "Keep only sealed (or Java-`final`) types", "default": false }
+                    "sealed_only": { "type": "boolean", "description": "Keep only sealed (or Java-`final`) types", "default": false },
+                    "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
+                    "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
+                    "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
                 },
                 "required": ["query"]
             }
@@ -788,6 +957,7 @@ fn tool_descriptors() -> Value {
                     "name": { "type": "string", "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta." },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
                 },
@@ -803,6 +973,7 @@ fn tool_descriptors() -> Value {
                     "query": { "type": "string", "description": "Natural-language description of the concept (not an identifier; use find_symbol for those)." },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
                 },
@@ -858,15 +1029,23 @@ fn tool_descriptors() -> Value {
         },
         {
             "name": "show",
-            "description": "Extract the full source body of one or more symbols by name (function, class, struct, etc.) using cached symbol byte-offsets (~4ms per symbol). Prefer over Read when you need a specific definition — show returns just that body, while Read pulls the entire file (often 10-100x more tokens). Accepts an array, so a single call replaces several Read calls.",
+            "description": "Extract the full source body of one or more symbols by name (function, class, struct, etc.) using cached symbol byte-offsets (~4ms per symbol). Prefer over Read when you need a specific definition — show returns just that body, while Read pulls the entire file (often 10-100x more tokens). Accepts an array, so a single call replaces several Read calls. Phase 13.3 truncation: `signature_only` (signature line only), `head` (first N body lines), `no_body` (signature + leading doc only), `collapsed` (collapse nested methods — v1.9 NO-OP). Also supports `filter` (substring path filter), `kind` (kind-restrict), `context_path` (proximity hint), and `no_stale_check`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "symbols": { "type": "array", "items": { "type": "string" }, "description": "Exact symbol names to extract — canonical key (v1.7+). Pass the array form even for a single symbol." },
                     "symbol": { "type": "string", "description": "DEPRECATED — use `symbols: [name]`. Pre-v1.7 singular alias, still accepted; emits a deprecated_args notice in _meta." },
                     "limit": { "type": "integer", "description": "Max bodies returned per symbol name (handles overloads / duplicates)", "default": 1 },
+                    "filter": { "type": "string", "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns)." },
+                    "kind": { "type": "array", "items": { "type": "string" }, "description": "Boost results matching one or more kinds (repeatable). Same vocabulary as `search.kind`." },
+                    "context_path": { "type": "string", "description": "Boost results near this file path (e.g. the agent's current editor file)." },
+                    "signature_only": { "type": "boolean", "description": "Phase 13.3: print only the signature line(s). Mutually exclusive with `head`, `no_body`, `collapsed`.", "default": false },
+                    "head": { "type": "integer", "minimum": 1, "description": "Phase 13.3: print only the first N body lines and append `... (M more lines)`. Mutually exclusive with `signature_only`, `no_body`, `collapsed`." },
+                    "no_body": { "type": "boolean", "description": "Phase 13.3: print signature + leading docstring only; drop the body. Mutually exclusive with `signature_only`, `head`, `collapsed`.", "default": false },
+                    "collapsed": { "type": "boolean", "description": "Phase 13.3: collapse nested methods inside a class/impl/module. v1.9 NO-OP (flag-shape stable; emits a stderr warning). Mutually exclusive with `signature_only`, `head`, `no_body`.", "default": false },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
                 },
@@ -875,7 +1054,7 @@ fn tool_descriptors() -> Value {
         },
         {
             "name": "usages",
-            "description": "Find every reference to a symbol across the codebase. Prefer over grep for refactor-style `find all callers` queries — grep on a common identifier returns string-literal and comment noise; usages with strict=true uses the scope-binder to resolve real cross-file refs (Rust/TypeScript/Python/C#/C++). Without strict, runs the legacy refs FST (~4ms) but may include text-only matches.",
+            "description": "Find every reference to a symbol across the codebase. Prefer over grep for refactor-style `find all callers` queries — grep on a common identifier returns string-literal and comment noise; usages with strict=true uses the scope-binder to resolve real cross-file refs (Rust/TypeScript/Python/C#/C++). Without strict, runs the legacy refs FST (~4ms) but may include text-only matches. Supports `filter` (substring path filter) and `no_stale_check`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -884,10 +1063,15 @@ fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "strict": { "type": "boolean", "description": "Use scope-resolved (type-aware) references from the binder — drops string-literal/comment/wrong-scope noise. Recommended for refactor work; falls back to legacy refs FST on languages without binder support.", "default": false },
                     "why": { "type": "boolean", "description": "Surface a JSON trace under `_meta.why`: mode (strict/fst_lookup), mode_legacy (back-compat alias for v1.9.x consumers, removed in v1.12), hits before/after path filter, prefix-suggestion count when no exact hits, filter snapshot.", "default": false },
+                    "filter": { "type": "string", "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns)." },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
+                    "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
+                    "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
                 },
                 "required": ["symbol"]
             }
@@ -935,6 +1119,7 @@ fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
                 },
@@ -952,6 +1137,7 @@ fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
                 },
@@ -960,7 +1146,7 @@ fn tool_descriptors() -> Value {
         },
         {
             "name": "pattern",
-            "description": "Structural AST pattern matching: match code by shape, not text. Metavars: `$NAME` captures an identifier or balanced expression, `$_` is a wildcard, `$$$` is an anonymous ellipsis, `$$$NAME` / `$$NAME` is a named ellipsis that captures multi-line bodies or arg lists, repeated metavars enforce back-reference equality. Composition: space-flanked ` && ` and ` || ` join sub-patterns (AND requires both shapes in the file with shared captures agreeing; OR takes the union). Prefer over grep / ast-grep for cross-language structural queries — grep cannot match nested syntax, and ast-grep needs per-language scripts; vex pattern works on the cached tree-sitter parse with a skeleton prefilter (~10-50ms). Set `why: true` to inspect indexed vs live-scan mode.",
+            "description": "Structural AST pattern matching: match code by shape, not text. Metavars: `$NAME` captures an identifier or balanced expression, `$_` is a wildcard, `$$$` is an anonymous ellipsis, `$$$NAME` / `$$NAME` is a named ellipsis that captures multi-line bodies or arg lists, repeated metavars enforce back-reference equality. Composition: space-flanked ` && ` and ` || ` join sub-patterns (AND requires both shapes in the file with shared captures agreeing; OR takes the union). Prefer over grep / ast-grep for cross-language structural queries — grep cannot match nested syntax, and ast-grep needs per-language scripts; vex pattern works on the cached tree-sitter parse with a skeleton prefilter (~10-50ms). Set `why: true` to inspect indexed vs live-scan mode. Supports diff scoping: `since` (rev), `since_branched` (since this branch diverged from main), `changed_only` (working-tree changes) — mutually exclusive.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -970,6 +1156,9 @@ fn tool_descriptors() -> Value {
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
+                    "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
+                    "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false },
                     "why": { "type": "boolean", "description": "Surface a ScanTrace under `_meta.why` in the response: mode (indexed/live_scan), root_kind_inferred, candidate_files / total_files, fallback_reason." }
                 },
                 "required": ["pattern", "lang"]
@@ -1002,6 +1191,7 @@ fn tool_descriptors() -> Value {
                     "max_paths": { "type": "integer", "description": "Maximum paths to enumerate (caps output, aborts traversal early)", "default": 50 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist intermediate steps by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist intermediate steps by path glob; wins over include (repeatable)" }
                 },
@@ -1019,6 +1209,7 @@ fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 200 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
                 },
@@ -1034,14 +1225,15 @@ fn tool_descriptors() -> Value {
                     "symbols": { "type": "array", "items": { "type": "string" }, "description": "Exact symbol names to probe — canonical key (v1.7+)." },
                     "names": { "type": "array", "items": { "type": "string" }, "description": "DEPRECATED — use `symbols`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta." },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
-                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true }
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false }
                 },
                 "required": ["symbols"]
             }
         },
         {
             "name": "similar",
-            "description": "Nearest neighbours of an EXISTING symbol by its stored embedding (HNSW lookup, ~7-15ms). Distinct from find_similar (which embeds a free-text query). Use this when you have a function in hand and want `what else in this repo looks like it?` — useful for dedup, refactor planning, and finding parallel implementations. Requires `vex index --semantic`.",
+            "description": "Nearest neighbours of an EXISTING symbol by its stored embedding (HNSW lookup, ~7-15ms). Distinct from find_similar (which embeds a free-text query). Use this when you have a function in hand and want `what else in this repo looks like it?` — useful for dedup, refactor planning, and finding parallel implementations. Requires `vex index --semantic`. Supports diff scoping: `since` (rev), `since_branched`, `changed_only` (mutually exclusive) and `no_stale_check`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1052,8 +1244,12 @@ fn tool_descriptors() -> Value {
                     "filter": { "type": "string", "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns)." },
                     "explain": { "type": "boolean", "description": "Include reasoning per match: identifier-set Jaccard overlap + truncated unified diff between bodies", "default": false },
                     "why": { "type": "boolean", "description": "Surface a JSON trace under `_meta.why`: seed resolution, applied threshold, candidates before/after path filter, filter snapshot.", "default": false },
+                    "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD`. Mutually exclusive with `since_branched` and `changed_only`." },
+                    "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
+                    "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
                 },
@@ -1086,6 +1282,7 @@ fn tool_descriptors() -> Value {
                     "tests_max": { "type": "integer", "description": "(mode: pr-impact) Max test-classified items", "default": 20 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
                 },
@@ -1094,7 +1291,7 @@ fn tool_descriptors() -> Value {
         },
         {
             "name": "duplicates",
-            "description": "Repo-wide near-duplicate scan: pairs of symbols whose embeddings exceed `threshold`. Use for refactor planning (`where else does this logic live?`) and dedup. Prefer over manual similar-walks — duplicates evaluates all pairs once with `min_body_lines` filtering out trivial bodies. Requires `vex index --semantic`.",
+            "description": "Repo-wide near-duplicate scan: pairs of symbols whose embeddings exceed `threshold`. Use for refactor planning (`where else does this logic live?`) and dedup. Prefer over manual similar-walks — duplicates evaluates all pairs once with `min_body_lines` filtering out trivial bodies. Requires `vex index --semantic`. Supports diff scoping: `since` (rev), `since_branched`, `changed_only` (mutually exclusive) and `no_stale_check`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1104,8 +1301,12 @@ fn tool_descriptors() -> Value {
                     "filter": { "type": "string", "description": "Substring path filter — keep pairs where at least one symbol's path contains this substring." },
                     "explain": { "type": "boolean", "description": "Include reasoning per pair: identifier-set Jaccard overlap + truncated unified diff between the two bodies", "default": false },
                     "why": { "type": "boolean", "description": "Surface a JSON trace under `_meta.why`: applied threshold + min_body_lines, pairs before/after path filter, filter snapshot.", "default": false },
+                    "since": { "type": "string", "description": "Restrict pairs to files changed between `<rev>..HEAD`. Mutually exclusive with `since_branched` and `changed_only`." },
+                    "since_branched": { "type": "boolean", "description": "Restrict pairs to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
+                    "changed_only": { "type": "boolean", "description": "Restrict pairs to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist pairs by path glob — a pair is kept when at least one side matches (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist pairs by path glob — a pair is dropped when either side matches (repeatable)" }
                 }
@@ -1882,6 +2083,391 @@ mod tests {
         );
     }
 
+    // ── HIGH-tier CLI ↔ MCP parity gap closure ────────────────────────────
+
+    // search: filter / kind / context_path / no_bm25
+
+    #[test]
+    fn search_filter_arg_pushes_filter_flag() {
+        let extra = args_for("search", json!({"query": "Foo", "filter": "src/api/"}));
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--filter" && w[1] == "src/api/"),
+            "search filter must surface as --filter; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn search_kind_array_becomes_repeated_kind_flags() {
+        let extra = args_for(
+            "search",
+            json!({"query": "Foo", "kind": ["fn", "method", "struct"]}),
+        );
+        let kinds: Vec<&str> = extra
+            .windows(2)
+            .filter_map(|w| (w[0] == "--kind").then_some(w[1].as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["fn", "method", "struct"],
+            "search kind must emit one --kind pair per element; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn search_context_path_pushes_context_path_flag() {
+        let extra = args_for(
+            "search",
+            json!({"query": "Foo", "context_path": "src/main.rs"}),
+        );
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--context-path" && w[1] == "src/main.rs"),
+            "search context_path must surface as --context-path; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn search_no_bm25_true_pushes_flag() {
+        let extra = args_for("search", json!({"query": "Foo", "no_bm25": true}));
+        assert!(
+            extra.iter().any(|a| a == "--no-bm25"),
+            "search no_bm25:true must add --no-bm25; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn search_no_bm25_default_omits_flag() {
+        let extra = args_for("search", json!({"query": "Foo"}));
+        assert!(
+            !extra.iter().any(|a| a == "--no-bm25"),
+            "search without no_bm25 must not pass --no-bm25; got: {extra:?}"
+        );
+    }
+
+    // show: filter / kind / context_path / signature_only / head / no_body / collapsed
+
+    #[test]
+    fn show_filter_arg_pushes_filter_flag() {
+        let extra = args_for("show", json!({"symbols": ["Foo"], "filter": "tests/"}));
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--filter" && w[1] == "tests/"),
+            "show filter must surface as --filter; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn show_kind_array_becomes_repeated_kind_flags() {
+        let extra = args_for(
+            "show",
+            json!({"symbols": ["Foo"], "kind": ["fn", "method"]}),
+        );
+        let kinds: Vec<&str> = extra
+            .windows(2)
+            .filter_map(|w| (w[0] == "--kind").then_some(w[1].as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["fn", "method"],
+            "show kind must emit one --kind pair per element; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn show_context_path_pushes_context_path_flag() {
+        let extra = args_for(
+            "show",
+            json!({"symbols": ["Foo"], "context_path": "src/main.rs"}),
+        );
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--context-path" && w[1] == "src/main.rs"),
+            "show context_path must surface as --context-path; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn show_signature_only_pushes_flag() {
+        let extra = args_for("show", json!({"symbols": ["Foo"], "signature_only": true}));
+        assert!(
+            extra.iter().any(|a| a == "--signature-only"),
+            "show signature_only must add --signature-only; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn show_head_pushes_head_with_value() {
+        let extra = args_for("show", json!({"symbols": ["Foo"], "head": 5}));
+        assert!(
+            extra.windows(2).any(|w| w[0] == "--head" && w[1] == "5"),
+            "show head must surface as --head <N>; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn show_no_body_pushes_flag() {
+        let extra = args_for("show", json!({"symbols": ["Foo"], "no_body": true}));
+        assert!(
+            extra.iter().any(|a| a == "--no-body"),
+            "show no_body must add --no-body; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn show_collapsed_pushes_flag() {
+        let extra = args_for("show", json!({"symbols": ["Foo"], "collapsed": true}));
+        assert!(
+            extra.iter().any(|a| a == "--collapsed"),
+            "show collapsed must add --collapsed; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn show_truncation_flags_are_mutually_exclusive() {
+        let err = build_command(
+            "show",
+            &json!({"symbols": ["Foo"], "signature_only": true, "no_body": true}),
+            "/tmp/proj",
+        )
+        .expect_err("mutually exclusive show truncation flags must error");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error should call out the mutual exclusion; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn show_no_truncation_flags_yields_clean_argv() {
+        let extra = args_for("show", json!({"symbols": ["Foo"]}));
+        for flag in ["--signature-only", "--head", "--no-body", "--collapsed"] {
+            assert!(
+                !extra.iter().any(|a| a == flag),
+                "no truncation flag requested but {flag} present; got: {extra:?}"
+            );
+        }
+    }
+
+    // usages: filter
+
+    #[test]
+    fn usages_filter_arg_pushes_filter_flag() {
+        let extra = args_for("usages", json!({"symbol": "Foo", "filter": "src/"}));
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--filter" && w[1] == "src/"),
+            "usages filter must surface as --filter; got: {extra:?}"
+        );
+    }
+
+    // pattern / similar / duplicates: diff scope
+
+    #[test]
+    fn pattern_since_pushes_since_with_value() {
+        let extra = args_for(
+            "pattern",
+            json!({"pattern": "fn $N()", "lang": "rust", "since": "main"}),
+        );
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--since" && w[1] == "main"),
+            "pattern since must surface as --since <rev>; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn pattern_since_branched_pushes_flag() {
+        let extra = args_for(
+            "pattern",
+            json!({"pattern": "fn $N()", "lang": "rust", "since_branched": true}),
+        );
+        assert!(
+            extra.iter().any(|a| a == "--since-branched"),
+            "pattern since_branched must add --since-branched; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn pattern_changed_only_pushes_flag() {
+        let extra = args_for(
+            "pattern",
+            json!({"pattern": "fn $N()", "lang": "rust", "changed_only": true}),
+        );
+        assert!(
+            extra.iter().any(|a| a == "--changed-only"),
+            "pattern changed_only must add --changed-only; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn pattern_diff_scope_flags_mutually_exclusive() {
+        let err = build_command(
+            "pattern",
+            &json!({
+                "pattern": "fn $N()",
+                "lang": "rust",
+                "since": "main",
+                "since_branched": true,
+            }),
+            "/tmp/proj",
+        )
+        .expect_err("mutually exclusive diff-scope flags must error");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error should call out the mutual exclusion; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn similar_since_pushes_since_with_value() {
+        let extra = args_for("similar", json!({"symbol": "Foo", "since": "HEAD~3"}));
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--since" && w[1] == "HEAD~3"),
+            "similar since must surface as --since <rev>; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn similar_changed_only_pushes_flag() {
+        let extra = args_for("similar", json!({"symbol": "Foo", "changed_only": true}));
+        assert!(
+            extra.iter().any(|a| a == "--changed-only"),
+            "similar changed_only must add --changed-only; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn duplicates_since_branched_pushes_flag() {
+        let extra = args_for("duplicates", json!({"since_branched": true}));
+        assert!(
+            extra.iter().any(|a| a == "--since-branched"),
+            "duplicates since_branched must add --since-branched; got: {extra:?}"
+        );
+    }
+
+    // no_stale_check — applied to every tool that already accepted auto_update.
+
+    #[test]
+    fn no_stale_check_default_omits_flag_across_tools() {
+        // Default-off — no MCP client should see surprise behaviour.
+        let cases: Vec<(&str, Value)> = vec![
+            ("search", json!({"query": "Foo"})),
+            ("find_symbol", json!({"symbol": "Foo"})),
+            ("find_similar", json!({"query": "Foo"})),
+            ("show", json!({"symbols": ["Foo"]})),
+            ("usages", json!({"symbol": "Foo"})),
+            // `implementations` deliberately omitted — CLI Commands::Implementations
+            // does not declare auto_update / no_stale_check yet; see the
+            // build_command arm for the rationale.
+            ("callers", json!({"symbol": "Foo"})),
+            ("callees", json!({"symbol": "Foo"})),
+            ("paths", json!({"from": "A", "to": "B"})),
+            ("reachable", json!({"target": "Foo"})),
+            ("check", json!({"symbols": ["Foo"]})),
+            ("similar", json!({"symbol": "Foo"})),
+            ("duplicates", json!({})),
+            ("bundle", json!({"mode": "project"})),
+        ];
+        for (tool, args) in cases {
+            let extra = args_for(tool, args);
+            assert!(
+                !extra.iter().any(|a| a == "--no-stale-check"),
+                "{tool} default must not pass --no-stale-check; got: {extra:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_stale_check_true_pushes_flag_across_tools() {
+        let cases: Vec<(&str, Value)> = vec![
+            ("search", json!({"query": "Foo", "no_stale_check": true})),
+            (
+                "find_symbol",
+                json!({"symbol": "Foo", "no_stale_check": true}),
+            ),
+            (
+                "find_similar",
+                json!({"query": "Foo", "no_stale_check": true}),
+            ),
+            ("show", json!({"symbols": ["Foo"], "no_stale_check": true})),
+            ("usages", json!({"symbol": "Foo", "no_stale_check": true})),
+            // `implementations` deliberately omitted — see the matching note
+            // in `no_stale_check_default_omits_flag_across_tools`.
+            ("callers", json!({"symbol": "Foo", "no_stale_check": true})),
+            ("callees", json!({"symbol": "Foo", "no_stale_check": true})),
+            (
+                "paths",
+                json!({"from": "A", "to": "B", "no_stale_check": true}),
+            ),
+            (
+                "reachable",
+                json!({"target": "Foo", "no_stale_check": true}),
+            ),
+            ("check", json!({"symbols": ["Foo"], "no_stale_check": true})),
+            ("similar", json!({"symbol": "Foo", "no_stale_check": true})),
+            ("duplicates", json!({"no_stale_check": true})),
+            ("bundle", json!({"mode": "project", "no_stale_check": true})),
+        ];
+        for (tool, args) in cases {
+            let extra = args_for(tool, args);
+            assert!(
+                extra.iter().any(|a| a == "--no-stale-check"),
+                "{tool} no_stale_check:true must add --no-stale-check; got: {extra:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_stale_check_appears_in_every_relevant_schema() {
+        // Schema-regression guard: every tool that accepts `auto_update`
+        // must also expose `no_stale_check` so MCP clients discover the
+        // companion flag via tools/list.
+        let desc = tool_descriptors();
+        let tools = desc.as_array().expect("tool_descriptors returns array");
+        for name in [
+            "search",
+            "find_symbol",
+            "find_similar",
+            "show",
+            "usages",
+            // `implementations` deliberately omitted — CLI Commands::Implementations
+            // does not declare auto_update / no_stale_check yet.
+            "callers",
+            "callees",
+            "paths",
+            "reachable",
+            "check",
+            "similar",
+            "duplicates",
+            "bundle",
+        ] {
+            let entry = tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("missing tool {name}"));
+            let props = &entry["inputSchema"]["properties"];
+            assert!(
+                props["no_stale_check"].is_object(),
+                "{name} schema must expose no_stale_check: {props}"
+            );
+            assert_eq!(
+                props["no_stale_check"]["type"].as_str(),
+                Some("boolean"),
+                "{name} no_stale_check must be boolean"
+            );
+        }
+    }
+
     #[test]
     fn bundle_schema_uses_flat_structure_no_oneof() {
         // Locks architect-review A4 — the bundle inputSchema MUST be
@@ -1915,5 +2501,283 @@ mod tests {
             .expect("bundle.required must be present");
         assert_eq!(required.len(), 1);
         assert_eq!(required[0], "mode");
+    }
+
+    // ── HIGH-tier reviewer follow-up: absence-of-flag guards ──────────────
+    // `search_filter_arg_pushes_filter_flag` and siblings assert that the
+    // CLI flag appears when the MCP arg is set; the omitted-by-default
+    // path was untested. A future change accidentally always-pushing
+    // `--filter` (or `--kind`, `--context-path`) would slip past the
+    // present-when-set tests — these absence guards close that gap.
+
+    #[test]
+    fn search_filter_default_omits_flag() {
+        let extra = args_for("search", json!({"query": "Foo"}));
+        assert!(
+            !extra.iter().any(|a| a == "--filter"),
+            "search without filter must not pass --filter; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn search_kind_default_omits_flag() {
+        let extra = args_for("search", json!({"query": "Foo"}));
+        assert!(
+            !extra.iter().any(|a| a == "--kind"),
+            "search without kind must not pass --kind; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn search_context_path_default_omits_flag() {
+        let extra = args_for("search", json!({"query": "Foo"}));
+        assert!(
+            !extra.iter().any(|a| a == "--context-path"),
+            "search without context_path must not pass --context-path; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn show_filter_default_omits_flag() {
+        let extra = args_for("show", json!({"symbols": ["Foo"]}));
+        assert!(
+            !extra.iter().any(|a| a == "--filter"),
+            "show without filter must not pass --filter; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn show_kind_default_omits_flag() {
+        let extra = args_for("show", json!({"symbols": ["Foo"]}));
+        assert!(
+            !extra.iter().any(|a| a == "--kind"),
+            "show without kind must not pass --kind; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn show_context_path_default_omits_flag() {
+        let extra = args_for("show", json!({"symbols": ["Foo"]}));
+        assert!(
+            !extra.iter().any(|a| a == "--context-path"),
+            "show without context_path must not pass --context-path; got: {extra:?}"
+        );
+    }
+
+    // ── HIGH-tier reviewer follow-up: head input validation ───────────────
+    // `head` is a positive integer. `serde_json::Value::as_u64()` returns
+    // `None` for negatives and floats — silently dropping the bad value
+    // hides bugs. Surface them as JSON-RPC errors instead. `head: 0` is
+    // also rejected (CLI would otherwise reject it too).
+
+    #[test]
+    fn show_head_zero_returns_error() {
+        let err = build_command("show", &json!({"symbols": ["Foo"], "head": 0}), "/tmp/proj")
+            .expect_err("head: 0 must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("positive integer"),
+            "error should mention positive integer; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn show_head_negative_returns_error() {
+        let err = build_command(
+            "show",
+            &json!({"symbols": ["Foo"], "head": -1}),
+            "/tmp/proj",
+        )
+        .expect_err("head: -1 must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("positive integer"),
+            "error should mention positive integer; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn show_head_float_returns_error() {
+        let err = build_command(
+            "show",
+            &json!({"symbols": ["Foo"], "head": 5.5}),
+            "/tmp/proj",
+        )
+        .expect_err("head: 5.5 must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("positive integer"),
+            "error should mention positive integer; got: {msg}"
+        );
+    }
+
+    // ── HIGH-tier reviewer follow-up: diff-scope parity on search/usages ──
+    // The diff added diff-scope wiring to pattern/similar/duplicates but
+    // overlooked search and usages even though both already flatten
+    // `DiffFilterArgs` in `src/cli/args.rs`. Close the audit hole.
+
+    #[test]
+    fn search_since_pushes_since_flag() {
+        let extra = args_for("search", json!({"query": "Foo", "since": "main"}));
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--since" && w[1] == "main"),
+            "search since must surface as --since <rev>; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn search_since_branched_pushes_flag() {
+        let extra = args_for("search", json!({"query": "Foo", "since_branched": true}));
+        assert!(
+            extra.iter().any(|a| a == "--since-branched"),
+            "search since_branched must add --since-branched; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn search_changed_only_pushes_flag() {
+        let extra = args_for("search", json!({"query": "Foo", "changed_only": true}));
+        assert!(
+            extra.iter().any(|a| a == "--changed-only"),
+            "search changed_only must add --changed-only; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn search_diff_scope_flags_mutually_exclusive() {
+        let err = build_command(
+            "search",
+            &json!({"query": "Foo", "since": "main", "since_branched": true}),
+            "/tmp/proj",
+        )
+        .expect_err("mutually exclusive diff-scope flags must error");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error should call out the mutual exclusion; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn usages_since_pushes_since_flag() {
+        let extra = args_for("usages", json!({"symbol": "Foo", "since": "HEAD~3"}));
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--since" && w[1] == "HEAD~3"),
+            "usages since must surface as --since <rev>; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn usages_since_branched_pushes_flag() {
+        let extra = args_for("usages", json!({"symbol": "Foo", "since_branched": true}));
+        assert!(
+            extra.iter().any(|a| a == "--since-branched"),
+            "usages since_branched must add --since-branched; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn usages_changed_only_pushes_flag() {
+        let extra = args_for("usages", json!({"symbol": "Foo", "changed_only": true}));
+        assert!(
+            extra.iter().any(|a| a == "--changed-only"),
+            "usages changed_only must add --changed-only; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn usages_diff_scope_flags_mutually_exclusive() {
+        let err = build_command(
+            "usages",
+            &json!({"symbol": "Foo", "since": "main", "changed_only": true}),
+            "/tmp/proj",
+        )
+        .expect_err("mutually exclusive diff-scope flags must error");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error should call out the mutual exclusion; got: {msg}"
+        );
+    }
+
+    // ── HIGH-tier reviewer follow-up: exhaustive diff-scope pair coverage ─
+    // `pattern_diff_scope_flags_mutually_exclusive` only covered the
+    // `since + since_branched` pair. The shared `push_diff_scope` helper
+    // enforces all three pairs — round out the matrix for pattern, plus
+    // one pair per other tool (similar, duplicates) since the helper is
+    // shared.
+
+    #[test]
+    fn pattern_diff_scope_since_plus_changed_only_errors() {
+        let err = build_command(
+            "pattern",
+            &json!({
+                "pattern": "fn $N()",
+                "lang": "rust",
+                "since": "main",
+                "changed_only": true,
+            }),
+            "/tmp/proj",
+        )
+        .expect_err("since + changed_only must error");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error should call out the mutual exclusion; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn pattern_diff_scope_since_branched_plus_changed_only_errors() {
+        let err = build_command(
+            "pattern",
+            &json!({
+                "pattern": "fn $N()",
+                "lang": "rust",
+                "since_branched": true,
+                "changed_only": true,
+            }),
+            "/tmp/proj",
+        )
+        .expect_err("since_branched + changed_only must error");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error should call out the mutual exclusion; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn similar_diff_scope_flags_mutually_exclusive() {
+        let err = build_command(
+            "similar",
+            &json!({"symbol": "Foo", "since": "main", "since_branched": true}),
+            "/tmp/proj",
+        )
+        .expect_err("similar mutually exclusive diff-scope flags must error");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error should call out the mutual exclusion; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn duplicates_diff_scope_flags_mutually_exclusive() {
+        let err = build_command(
+            "duplicates",
+            &json!({"since": "main", "changed_only": true}),
+            "/tmp/proj",
+        )
+        .expect_err("duplicates mutually exclusive diff-scope flags must error");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error should call out the mutual exclusion; got: {msg}"
+        );
     }
 }

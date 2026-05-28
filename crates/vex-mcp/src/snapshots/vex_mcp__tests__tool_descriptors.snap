@@ -4,7 +4,7 @@ expression: descriptors
 ---
 [
   {
-    "description": "Hybrid structural + semantic code search across the indexed codebase. Fuses FST exact + BM25 + semantic channels in a single ranked list (~4ms FST hit, ~7-15ms with semantic). Prefer over grep for symbol or identifier lookup — grep does a full-scan (seconds on large repos) and returns line matches; this returns ranked symbol records with kind, signature, and line ranges. Use this when you need to find a definition by name, signature shape, or meaning rather than guessing a regex.",
+    "description": "Hybrid structural + semantic code search across the indexed codebase. Fuses FST exact + BM25 + semantic channels in a single ranked list (~4ms FST hit, ~7-15ms with semantic). Prefer over grep for symbol or identifier lookup — grep does a full-scan (seconds on large repos) and returns line matches; this returns ranked symbol records with kind, signature, and line ranges. Use this when you need to find a definition by name, signature shape, or meaning rather than guessing a regex. Supports `filter` (substring path filter), `kind` (kind-boost / restrict), `context_path` (proximity hint), `no_bm25` (disable BM25 channel), and `no_stale_check` (skip pre-call staleness probe).",
     "inputSchema": {
       "properties": {
         "async_only": {
@@ -17,6 +17,15 @@ expression: descriptors
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
           "type": "boolean"
         },
+        "changed_only": {
+          "default": false,
+          "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.",
+          "type": "boolean"
+        },
+        "context_path": {
+          "description": "Boost results near this file path (e.g. the agent's current editor file).",
+          "type": "string"
+        },
         "exclude": {
           "description": "Blacklist results by path glob (wins over include); repeat for multiple globs",
           "items": {
@@ -24,8 +33,19 @@ expression: descriptors
           },
           "type": "array"
         },
+        "filter": {
+          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns).",
+          "type": "string"
+        },
         "include": {
           "description": "Whitelist results by path glob, gitignore syntax (e.g. 'tests/**'); repeat for multiple globs",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "description": "Boost results matching one or more kinds (repeatable). Canonical names (function, struct, class, …) plus aliases: def, comment, test, ref.",
           "items": {
             "type": "string"
           },
@@ -39,6 +59,16 @@ expression: descriptors
         "no_async": {
           "default": false,
           "description": "Exclude async/suspend functions",
+          "type": "boolean"
+        },
+        "no_bm25": {
+          "default": false,
+          "description": "Disable the BM25 channel for this query (auto-on when the index has BM25 data otherwise).",
+          "type": "boolean"
+        },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true (which already refreshes).",
           "type": "boolean"
         },
         "project_root": {
@@ -57,6 +87,15 @@ expression: descriptors
         "semantic": {
           "default": false,
           "description": "Enable the semantic vector channel (requires `vex index --semantic`); adds ~3-10ms but lets natural-language queries hit",
+          "type": "boolean"
+        },
+        "since": {
+          "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`.",
+          "type": "string"
+        },
+        "since_branched": {
+          "default": false,
+          "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.",
           "type": "boolean"
         },
         "static_only": {
@@ -114,6 +153,11 @@ expression: descriptors
           "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
           "type": "string"
         },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
+        },
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
@@ -152,6 +196,11 @@ expression: descriptors
             "type": "string"
           },
           "type": "array"
+        },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
         },
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
@@ -249,13 +298,22 @@ expression: descriptors
     "name": "status"
   },
   {
-    "description": "Extract the full source body of one or more symbols by name (function, class, struct, etc.) using cached symbol byte-offsets (~4ms per symbol). Prefer over Read when you need a specific definition — show returns just that body, while Read pulls the entire file (often 10-100x more tokens). Accepts an array, so a single call replaces several Read calls.",
+    "description": "Extract the full source body of one or more symbols by name (function, class, struct, etc.) using cached symbol byte-offsets (~4ms per symbol). Prefer over Read when you need a specific definition — show returns just that body, while Read pulls the entire file (often 10-100x more tokens). Accepts an array, so a single call replaces several Read calls. Phase 13.3 truncation: `signature_only` (signature line only), `head` (first N body lines), `no_body` (signature + leading doc only), `collapsed` (collapse nested methods — v1.9 NO-OP). Also supports `filter` (substring path filter), `kind` (kind-restrict), `context_path` (proximity hint), and `no_stale_check`.",
     "inputSchema": {
       "properties": {
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
           "type": "boolean"
+        },
+        "collapsed": {
+          "default": false,
+          "description": "Phase 13.3: collapse nested methods inside a class/impl/module. v1.9 NO-OP (flag-shape stable; emits a stderr warning). Mutually exclusive with `signature_only`, `head`, `no_body`.",
+          "type": "boolean"
+        },
+        "context_path": {
+          "description": "Boost results near this file path (e.g. the agent's current editor file).",
+          "type": "string"
         },
         "exclude": {
           "description": "Blacklist results by path glob; wins over include (repeatable)",
@@ -264,8 +322,24 @@ expression: descriptors
           },
           "type": "array"
         },
+        "filter": {
+          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns).",
+          "type": "string"
+        },
+        "head": {
+          "description": "Phase 13.3: print only the first N body lines and append `... (M more lines)`. Mutually exclusive with `signature_only`, `no_body`, `collapsed`.",
+          "minimum": 1,
+          "type": "integer"
+        },
         "include": {
           "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "description": "Boost results matching one or more kinds (repeatable). Same vocabulary as `search.kind`.",
           "items": {
             "type": "string"
           },
@@ -276,9 +350,24 @@ expression: descriptors
           "description": "Max bodies returned per symbol name (handles overloads / duplicates)",
           "type": "integer"
         },
+        "no_body": {
+          "default": false,
+          "description": "Phase 13.3: print signature + leading docstring only; drop the body. Mutually exclusive with `signature_only`, `head`, `collapsed`.",
+          "type": "boolean"
+        },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
+        },
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
+        },
+        "signature_only": {
+          "default": false,
+          "description": "Phase 13.3: print only the signature line(s). Mutually exclusive with `head`, `no_body`, `collapsed`.",
+          "type": "boolean"
         },
         "symbol": {
           "description": "DEPRECATED — use `symbols: [name]`. Pre-v1.7 singular alias, still accepted; emits a deprecated_args notice in _meta.",
@@ -300,12 +389,17 @@ expression: descriptors
     "name": "show"
   },
   {
-    "description": "Find every reference to a symbol across the codebase. Prefer over grep for refactor-style `find all callers` queries — grep on a common identifier returns string-literal and comment noise; usages with strict=true uses the scope-binder to resolve real cross-file refs (Rust/TypeScript/Python/C#/C++). Without strict, runs the legacy refs FST (~4ms) but may include text-only matches.",
+    "description": "Find every reference to a symbol across the codebase. Prefer over grep for refactor-style `find all callers` queries — grep on a common identifier returns string-literal and comment noise; usages with strict=true uses the scope-binder to resolve real cross-file refs (Rust/TypeScript/Python/C#/C++). Without strict, runs the legacy refs FST (~4ms) but may include text-only matches. Supports `filter` (substring path filter) and `no_stale_check`.",
     "inputSchema": {
       "properties": {
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "changed_only": {
+          "default": false,
+          "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.",
           "type": "boolean"
         },
         "exclude": {
@@ -314,6 +408,10 @@ expression: descriptors
             "type": "string"
           },
           "type": "array"
+        },
+        "filter": {
+          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns).",
+          "type": "string"
         },
         "include": {
           "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
@@ -331,9 +429,23 @@ expression: descriptors
           "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
           "type": "string"
         },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
+        },
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
+        },
+        "since": {
+          "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`.",
+          "type": "string"
+        },
+        "since_branched": {
+          "default": false,
+          "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.",
+          "type": "boolean"
         },
         "strict": {
           "default": false,
@@ -475,6 +587,11 @@ expression: descriptors
           "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
           "type": "string"
         },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
+        },
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
@@ -523,6 +640,11 @@ expression: descriptors
           "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
           "type": "string"
         },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
+        },
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
@@ -540,9 +662,14 @@ expression: descriptors
     "name": "callees"
   },
   {
-    "description": "Structural AST pattern matching: match code by shape, not text. Metavars: `$NAME` captures an identifier or balanced expression, `$_` is a wildcard, `$$$` is an anonymous ellipsis, `$$$NAME` / `$$NAME` is a named ellipsis that captures multi-line bodies or arg lists, repeated metavars enforce back-reference equality. Composition: space-flanked ` && ` and ` || ` join sub-patterns (AND requires both shapes in the file with shared captures agreeing; OR takes the union). Prefer over grep / ast-grep for cross-language structural queries — grep cannot match nested syntax, and ast-grep needs per-language scripts; vex pattern works on the cached tree-sitter parse with a skeleton prefilter (~10-50ms). Set `why: true` to inspect indexed vs live-scan mode.",
+    "description": "Structural AST pattern matching: match code by shape, not text. Metavars: `$NAME` captures an identifier or balanced expression, `$_` is a wildcard, `$$$` is an anonymous ellipsis, `$$$NAME` / `$$NAME` is a named ellipsis that captures multi-line bodies or arg lists, repeated metavars enforce back-reference equality. Composition: space-flanked ` && ` and ` || ` join sub-patterns (AND requires both shapes in the file with shared captures agreeing; OR takes the union). Prefer over grep / ast-grep for cross-language structural queries — grep cannot match nested syntax, and ast-grep needs per-language scripts; vex pattern works on the cached tree-sitter parse with a skeleton prefilter (~10-50ms). Set `why: true` to inspect indexed vs live-scan mode. Supports diff scoping: `since` (rev), `since_branched` (since this branch diverged from main), `changed_only` (working-tree changes) — mutually exclusive.",
     "inputSchema": {
       "properties": {
+        "changed_only": {
+          "default": false,
+          "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.",
+          "type": "boolean"
+        },
         "exclude": {
           "description": "Blacklist results by path glob; wins over include (repeatable)",
           "items": {
@@ -573,6 +700,15 @@ expression: descriptors
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
+        },
+        "since": {
+          "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`.",
+          "type": "string"
+        },
+        "since_branched": {
+          "default": false,
+          "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.",
+          "type": "boolean"
         },
         "why": {
           "description": "Surface a ScanTrace under `_meta.why` in the response: mode (indexed/live_scan), root_kind_inferred, candidate_files / total_files, fallback_reason.",
@@ -663,6 +799,11 @@ expression: descriptors
           "description": "Maximum paths to enumerate (caps output, aborts traversal early)",
           "type": "integer"
         },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
+        },
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
@@ -713,6 +854,11 @@ expression: descriptors
           "description": "Maximum hops to walk back from target",
           "type": "integer"
         },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
+        },
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
@@ -745,6 +891,11 @@ expression: descriptors
           },
           "type": "array"
         },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
+        },
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
@@ -765,12 +916,17 @@ expression: descriptors
     "name": "check"
   },
   {
-    "description": "Nearest neighbours of an EXISTING symbol by its stored embedding (HNSW lookup, ~7-15ms). Distinct from find_similar (which embeds a free-text query). Use this when you have a function in hand and want `what else in this repo looks like it?` — useful for dedup, refactor planning, and finding parallel implementations. Requires `vex index --semantic`.",
+    "description": "Nearest neighbours of an EXISTING symbol by its stored embedding (HNSW lookup, ~7-15ms). Distinct from find_similar (which embeds a free-text query). Use this when you have a function in hand and want `what else in this repo looks like it?` — useful for dedup, refactor planning, and finding parallel implementations. Requires `vex index --semantic`. Supports diff scoping: `since` (rev), `since_branched`, `changed_only` (mutually exclusive) and `no_stale_check`.",
     "inputSchema": {
       "properties": {
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "changed_only": {
+          "default": false,
+          "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.",
           "type": "boolean"
         },
         "exclude": {
@@ -805,9 +961,23 @@ expression: descriptors
           "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
           "type": "string"
         },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
+        },
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
+        },
+        "since": {
+          "description": "Restrict results to files changed between `<rev>..HEAD`. Mutually exclusive with `since_branched` and `changed_only`.",
+          "type": "string"
+        },
+        "since_branched": {
+          "default": false,
+          "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.",
+          "type": "boolean"
         },
         "symbol": {
           "description": "Exact name of an existing indexed symbol to use as the seed — canonical key (v1.7+).",
@@ -890,6 +1060,11 @@ expression: descriptors
           ],
           "type": "string"
         },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
+        },
         "path_glob": {
           "description": "(mode: project) Single path glob filter applied to ranked symbols (e.g. `src/**`); separate from the universal `include`/`exclude` arrays",
           "type": "string"
@@ -926,12 +1101,17 @@ expression: descriptors
     "name": "bundle"
   },
   {
-    "description": "Repo-wide near-duplicate scan: pairs of symbols whose embeddings exceed `threshold`. Use for refactor planning (`where else does this logic live?`) and dedup. Prefer over manual similar-walks — duplicates evaluates all pairs once with `min_body_lines` filtering out trivial bodies. Requires `vex index --semantic`.",
+    "description": "Repo-wide near-duplicate scan: pairs of symbols whose embeddings exceed `threshold`. Use for refactor planning (`where else does this logic live?`) and dedup. Prefer over manual similar-walks — duplicates evaluates all pairs once with `min_body_lines` filtering out trivial bodies. Requires `vex index --semantic`. Supports diff scoping: `since` (rev), `since_branched`, `changed_only` (mutually exclusive) and `no_stale_check`.",
     "inputSchema": {
       "properties": {
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "changed_only": {
+          "default": false,
+          "description": "Restrict pairs to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.",
           "type": "boolean"
         },
         "exclude": {
@@ -967,9 +1147,23 @@ expression: descriptors
           "description": "Skip symbols with body shorter than this many lines (filters trivial wrappers)",
           "type": "integer"
         },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
+        },
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
+        },
+        "since": {
+          "description": "Restrict pairs to files changed between `<rev>..HEAD`. Mutually exclusive with `since_branched` and `changed_only`.",
+          "type": "string"
+        },
+        "since_branched": {
+          "default": false,
+          "description": "Restrict pairs to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.",
+          "type": "boolean"
         },
         "threshold": {
           "default": 0.9,
