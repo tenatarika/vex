@@ -81,6 +81,15 @@ If any check fails, fix the code, not the gate. Clippy / fmt drift in particular
 
 For language-specific grammar regression, the per-language `tests/<lang>_query_test.rs` files exercise each tree-sitter grammar's pinned query patterns. They catch ABI mismatches and AST node renames when a grammar crate is upgraded; never disable one to "make CI green" without rooting out the underlying ABI break.
 
+### Lockfile / MSRV policy
+
+`Cargo.lock` is checked in (since v1.10.0) so `cargo check --workspace --all-targets --locked` works on the CI runner's fresh clone. The MSRV gate is **Rust 1.80**, enforced by the `msrv` job in `.github/workflows/ci.yml`.
+
+**Avoid bare `cargo update`** in PRs unless you also re-verify the MSRV gate locally (`cargo +1.80 check --workspace --all-targets --locked`). A blanket update can pull in transitive deps that declare `edition2024` (stabilized in Rust 1.85), which breaks the MSRV check immediately. If you need a single dep bumped, prefer `cargo update --precise <version> <crate>` and run the MSRV check before committing.
+
+Specific pins to be aware of:
+- `aligned <= 0.4.2` — 0.4.3 declares `edition2024`. Path: `fastembed → image → ravif → rav1e → av-scenechange → aligned`. Bump together with the MSRV when that's the right call.
+
 ## Adding a new language
 
 Vex supports new languages with three files and a registration:
