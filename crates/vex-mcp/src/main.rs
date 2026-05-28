@@ -578,6 +578,29 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             "status".to_string(),
             vec!["--path".into(), project_root.to_string()],
         ),
+        "eval" => {
+            // FU-1: thin wrapper around `vex eval`. Index-less in the sense
+            // that it never builds — consumes whatever index already lives
+            // at --path. Lives next to `status` / `diff` because all three
+            // are indexless / read-only.
+            let mut extra = vec!["--path".into(), project_root.to_string()];
+            if let Some(bench) = args["bench"].as_str() {
+                extra.push("--bench".into());
+                extra.push(bench.to_string());
+            }
+            if let Some(min_ndcg) = args["min_ndcg"].as_f64() {
+                extra.push("--min-ndcg".into());
+                extra.push(min_ndcg.to_string());
+            }
+            // MCP defaults `json` to true (agents want structured output);
+            // the CLI defaults to text. Honor an explicit `false` to opt
+            // back into the human-readable summary.
+            let want_json = args["json"].as_bool().unwrap_or(true);
+            if want_json {
+                extra.push("--json".into());
+            }
+            ("eval".to_string(), extra)
+        }
         "show" => {
             // Canonical: `symbols: string[]`. Legacy: `symbol: string`
             // (singular, pre-1.7 shape) — still accepted, flagged as
@@ -1023,6 +1046,19 @@ fn tool_descriptors() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" }
+                }
+            }
+        },
+        {
+            "name": "eval",
+            "description": "Run the ranking-quality harness against a golden query set and return nDCG@10 / recall@10 / MRR per query and aggregated. Indexless in the sense that it never builds — consumes whatever index already lives at the project root (run `index` first if missing). Intended as a CI regression guard. MCP defaults to `json: true` so agents receive structured `EvalReport` JSON instead of the human-readable summary the CLI emits.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "bench": { "type": "string", "description": "Path to the golden-set TOML. Defaults to the bundled `benches/ranking_golden/queries.toml` on the CLI side; pass this when running against a fixture." },
+                    "min_ndcg": { "type": "number", "description": "Fail with non-zero exit if mean nDCG@10 drops below this floor. Default 0.0 (always succeed). CI pins a recorded floor.", "default": 0.0 },
+                    "json": { "type": "boolean", "description": "Emit the EvalReport as JSON to stdout. Default `true` in MCP context (agents want structured output) — note the CLI default is `false`. Set explicitly to `false` to fall back to the human-readable summary.", "default": true },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" }
                 }
             }
@@ -2778,6 +2814,118 @@ mod tests {
         assert!(
             msg.contains("mutually exclusive"),
             "error should call out the mutual exclusion; got: {msg}"
+        );
+    }
+
+    // ── FU-1: `eval` MCP wrapper ─────────────────────────────────────────
+    // Thin forwarder for `vex eval --path <ROOT> [--bench <PATH>]
+    // [--min-ndcg <F64>] [--json]`. Note: MCP defaults `json` to true
+    // (CLI default is false) so agents always get structured output.
+
+    #[test]
+    fn eval_default_args_pushes_json_flag() {
+        let extra = args_for("eval", json!({}));
+        // --path <root> always present.
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--path" && w[1] == "/tmp/proj"),
+            "eval must always forward --path; got: {extra:?}"
+        );
+        // MCP defaults to JSON.
+        assert!(
+            extra.iter().any(|a| a == "--json"),
+            "eval defaults json=true in MCP — --json must be present; got: {extra:?}"
+        );
+        // Neither optional flag should leak in when its key is omitted.
+        assert!(
+            !extra.iter().any(|a| a == "--bench"),
+            "eval without bench must not pass --bench; got: {extra:?}"
+        );
+        assert!(
+            !extra.iter().any(|a| a == "--min-ndcg"),
+            "eval without min_ndcg must not pass --min-ndcg; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn eval_bench_path_arg_pushes_bench_flag() {
+        let extra = args_for("eval", json!({"bench": "/tmp/golden.toml"}));
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--bench" && w[1] == "/tmp/golden.toml"),
+            "eval bench must surface as --bench; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn eval_min_ndcg_arg_pushes_min_ndcg_flag() {
+        let extra = args_for("eval", json!({"min_ndcg": 0.75}));
+        let value = extra
+            .windows(2)
+            .find_map(|w| (w[0] == "--min-ndcg").then(|| w[1].clone()))
+            .expect("eval min_ndcg must surface as --min-ndcg");
+        // f64::to_string can render 0.75 with platform-specific precision;
+        // assert via numeric parse to stay robust to formatting.
+        let parsed: f64 = value
+            .parse()
+            .unwrap_or_else(|_| panic!("--min-ndcg value should parse as f64; got: {value}"));
+        assert!(
+            (parsed - 0.75).abs() < 1e-9,
+            "eval --min-ndcg value mismatch: {value}"
+        );
+    }
+
+    #[test]
+    fn eval_json_false_omits_json_flag() {
+        // MCP default flip is overridable — passing json:false must opt
+        // back into the CLI's human-readable summary.
+        let extra = args_for("eval", json!({"json": false}));
+        assert!(
+            !extra.iter().any(|a| a == "--json"),
+            "eval json=false must NOT pass --json; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn eval_schema_exposes_expected_properties() {
+        // Schema regression guard: the `eval` tool must exist in
+        // tool_descriptors() and expose exactly the 4 documented
+        // properties (bench, min_ndcg, json, project_root). Catches
+        // accidental schema drift or copy-paste leakage from neighbouring
+        // tools.
+        let desc = tool_descriptors();
+        let tools = desc.as_array().expect("tool_descriptors returns array");
+        let entry = tools
+            .iter()
+            .find(|t| t["name"] == "eval")
+            .expect("eval tool descriptor missing");
+        let props = entry["inputSchema"]["properties"]
+            .as_object()
+            .expect("eval inputSchema.properties must be an object");
+        let mut keys: Vec<&str> = props.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["bench", "json", "min_ndcg", "project_root"],
+            "eval schema must expose exactly bench/min_ndcg/json/project_root"
+        );
+        // Type sanity.
+        assert_eq!(props["bench"]["type"].as_str(), Some("string"));
+        assert_eq!(props["min_ndcg"]["type"].as_str(), Some("number"));
+        assert_eq!(props["json"]["type"].as_str(), Some("boolean"));
+        assert_eq!(props["project_root"]["type"].as_str(), Some("string"));
+        // MCP default flip lives in the schema too — surface for clients.
+        assert_eq!(
+            props["json"]["default"].as_bool(),
+            Some(true),
+            "eval schema must advertise json default=true (MCP override of CLI default)"
+        );
+        // No required fields — eval should run with `{}`.
+        assert!(
+            entry["inputSchema"].get("required").is_none(),
+            "eval schema must NOT mark any field required"
         );
     }
 }

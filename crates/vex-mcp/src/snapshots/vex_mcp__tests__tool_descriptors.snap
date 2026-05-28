@@ -298,6 +298,33 @@ expression: descriptors
     "name": "status"
   },
   {
+    "description": "Run the ranking-quality harness against a golden query set and return nDCG@10 / recall@10 / MRR per query and aggregated. Indexless in the sense that it never builds — consumes whatever index already lives at the project root (run `index` first if missing). Intended as a CI regression guard. MCP defaults to `json: true` so agents receive structured `EvalReport` JSON instead of the human-readable summary the CLI emits.",
+    "inputSchema": {
+      "properties": {
+        "bench": {
+          "description": "Path to the golden-set TOML. Defaults to the bundled `benches/ranking_golden/queries.toml` on the CLI side; pass this when running against a fixture.",
+          "type": "string"
+        },
+        "json": {
+          "default": true,
+          "description": "Emit the EvalReport as JSON to stdout. Default `true` in MCP context (agents want structured output) — note the CLI default is `false`. Set explicitly to `false` to fall back to the human-readable summary.",
+          "type": "boolean"
+        },
+        "min_ndcg": {
+          "default": 0.0,
+          "description": "Fail with non-zero exit if mean nDCG@10 drops below this floor. Default 0.0 (always succeed). CI pins a recorded floor.",
+          "type": "number"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "eval"
+  },
+  {
     "description": "Extract the full source body of one or more symbols by name (function, class, struct, etc.) using cached symbol byte-offsets (~4ms per symbol). Prefer over Read when you need a specific definition — show returns just that body, while Read pulls the entire file (often 10-100x more tokens). Accepts an array, so a single call replaces several Read calls. Phase 13.3 truncation: `signature_only` (signature line only), `head` (first N body lines), `no_body` (signature + leading doc only), `collapsed` (collapse nested methods — v1.9 NO-OP). Also supports `filter` (substring path filter), `kind` (kind-restrict), `context_path` (proximity hint), and `no_stale_check`.",
     "inputSchema": {
       "properties": {
