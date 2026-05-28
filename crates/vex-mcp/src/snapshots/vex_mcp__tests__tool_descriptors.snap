@@ -540,12 +540,17 @@ expression: descriptors
     "name": "grep"
   },
   {
-    "description": "Find every concrete type that extends a base class / implements a trait / interface. Walks the indexed inheritance edges (covers generic-parameterised bases). Prefer over grep for `find all subclasses of Foo` — grep misses `: Foo<T>`, indirect inheritance, and trait impls; this resolves the real hierarchy.",
+    "description": "Find every concrete type that extends a base class / implements a trait / interface. Walks the indexed inheritance edges (covers generic-parameterised bases). Prefer over grep for `find all subclasses of Foo` — grep misses `: Foo<T>`, indirect inheritance, and trait impls; this resolves the real hierarchy. Supports diff scoping: `since` / `since_branched` / `changed_only` (mutually exclusive) to restrict to recently-touched code.",
     "inputSchema": {
       "properties": {
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "changed_only": {
+          "default": false,
+          "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.",
           "type": "boolean"
         },
         "exclude": {
@@ -579,6 +584,15 @@ expression: descriptors
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
+        },
+        "since": {
+          "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`.",
+          "type": "string"
+        },
+        "since_branched": {
+          "default": false,
+          "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.",
+          "type": "boolean"
         },
         "symbol": {
           "description": "Exact name of the base class / trait / interface — canonical key (v1.7+).",
@@ -593,12 +607,17 @@ expression: descriptors
     "name": "implementations"
   },
   {
-    "description": "Direct callers of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over grep for `who calls Foo?` — grep on the function name hits doc comments and string literals; the call-graph edges are resolved at parse time. Phase 14.2 + 14.2.2 + 14.2.1: Python/Java function/method decorators, Kotlin annotations / C# method+constructor attributes, and TypeScript method decorators / Rust outer attributes on fns/methods emit forward edges, so `callers GetMapping` lists every Spring handler, `callers get` lists every FastAPI route, `callers HttpGet` every ASP.NET action, `callers JvmStatic` every Kotlin function annotated `@JvmStatic`, `callers Get` every Nest.js `@Get(...)`, `callers test` every Rust `#[tokio::test]` (the rightmost identifier of the decorator/attribute path becomes the callee; arguments are ignored — `#[serde(rename = \"x\")]` → `serde`, not `rename`). Rust `#[derive(...)]` is filtered (compile-time codegen, not call edges). Note the rightmost-identifier convention means `callers get` mixes decorator handlers with any regular `.get()` call — narrow with `include`/`exclude` if needed. Pair with `paths` for multi-hop chains.",
+    "description": "Direct callers of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over grep for `who calls Foo?` — grep on the function name hits doc comments and string literals; the call-graph edges are resolved at parse time. Phase 14.2 + 14.2.2 + 14.2.1: Python/Java function/method decorators, Kotlin annotations / C# method+constructor attributes, and TypeScript method decorators / Rust outer attributes on fns/methods emit forward edges, so `callers GetMapping` lists every Spring handler, `callers get` lists every FastAPI route, `callers HttpGet` every ASP.NET action, `callers JvmStatic` every Kotlin function annotated `@JvmStatic`, `callers Get` every Nest.js `@Get(...)`, `callers test` every Rust `#[tokio::test]` (the rightmost identifier of the decorator/attribute path becomes the callee; arguments are ignored — `#[serde(rename = \"x\")]` → `serde`, not `rename`). Rust `#[derive(...)]` is filtered (compile-time codegen, not call edges). Note the rightmost-identifier convention means `callers get` mixes decorator handlers with any regular `.get()` call — narrow with `include`/`exclude` if needed. Pair with `paths` for multi-hop chains. Supports diff scoping: `since` / `since_branched` / `changed_only` (mutually exclusive) to restrict callers to recently-touched code.",
     "inputSchema": {
       "properties": {
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)",
+          "type": "boolean"
+        },
+        "changed_only": {
+          "default": false,
+          "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.",
           "type": "boolean"
         },
         "exclude": {
@@ -632,6 +651,15 @@ expression: descriptors
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
+        },
+        "since": {
+          "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`.",
+          "type": "string"
+        },
+        "since_branched": {
+          "default": false,
+          "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.",
+          "type": "boolean"
         },
         "symbol": {
           "description": "Exact function name — canonical key (v1.7+).",
@@ -646,12 +674,17 @@ expression: descriptors
     "name": "callers"
   },
   {
-    "description": "Direct callees of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over Read+manual scanning when you want to know what a function calls without reading the whole body — callees gives the resolved outgoing edges as records. Phase 14.2 + 14.2.2 + 14.2.1: Python/Java decorators, Kotlin annotations, C# method/constructor attributes, TypeScript method decorators, and Rust outer attributes on fns/methods are surfaced as callees of the decorated function (decorator factories like `@lru_cache(maxsize=128)`, `@Inject`, `@Get(\"/x\")`, or `#[tokio::test]` appear as the path-rightmost identifier `lru_cache` / `Inject` / `Get` / `test` alongside regular body calls). Rust `#[derive(...)]` is intentionally filtered.",
+    "description": "Direct callees of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over Read+manual scanning when you want to know what a function calls without reading the whole body — callees gives the resolved outgoing edges as records. Phase 14.2 + 14.2.2 + 14.2.1: Python/Java decorators, Kotlin annotations, C# method/constructor attributes, TypeScript method decorators, and Rust outer attributes on fns/methods are surfaced as callees of the decorated function (decorator factories like `@lru_cache(maxsize=128)`, `@Inject`, `@Get(\"/x\")`, or `#[tokio::test]` appear as the path-rightmost identifier `lru_cache` / `Inject` / `Get` / `test` alongside regular body calls). Rust `#[derive(...)]` is intentionally filtered. Supports diff scoping: `since` / `since_branched` / `changed_only` (mutually exclusive) to restrict callees to recently-touched code.",
     "inputSchema": {
       "properties": {
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)",
+          "type": "boolean"
+        },
+        "changed_only": {
+          "default": false,
+          "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.",
           "type": "boolean"
         },
         "exclude": {
@@ -685,6 +718,15 @@ expression: descriptors
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
+        },
+        "since": {
+          "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`.",
+          "type": "string"
+        },
+        "since_branched": {
+          "default": false,
+          "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.",
+          "type": "boolean"
         },
         "symbol": {
           "description": "Exact function name — canonical key (v1.7+).",

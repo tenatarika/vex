@@ -684,6 +684,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             push_auto_update(&mut extra, args);
             push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
+            push_diff_scope(&mut extra, args)?;
             ("implementations".to_string(), extra)
         }
         "callers" => {
@@ -700,6 +701,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             push_auto_update(&mut extra, args);
             push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
+            push_diff_scope(&mut extra, args)?;
             ("callers".to_string(), extra)
         }
         "callees" => {
@@ -716,6 +718,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             push_auto_update(&mut extra, args);
             push_no_stale_check(&mut extra, args);
             push_scope(&mut extra, args);
+            push_diff_scope(&mut extra, args)?;
             ("callees".to_string(), extra)
         }
         "pattern" => {
@@ -1125,7 +1128,7 @@ fn tool_descriptors() -> Value {
         },
         {
             "name": "implementations",
-            "description": "Find every concrete type that extends a base class / implements a trait / interface. Walks the indexed inheritance edges (covers generic-parameterised bases). Prefer over grep for `find all subclasses of Foo` — grep misses `: Foo<T>`, indirect inheritance, and trait impls; this resolves the real hierarchy.",
+            "description": "Find every concrete type that extends a base class / implements a trait / interface. Walks the indexed inheritance edges (covers generic-parameterised bases). Prefer over grep for `find all subclasses of Foo` — grep misses `: Foo<T>`, indirect inheritance, and trait impls; this resolves the real hierarchy. Supports diff scoping: `since` / `since_branched` / `changed_only` (mutually exclusive) to restrict to recently-touched code.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1136,14 +1139,17 @@ fn tool_descriptors() -> Value {
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
+                    "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
+                    "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
                 },
                 "required": ["symbol"]
             }
         },
         {
             "name": "callers",
-            "description": "Direct callers of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over grep for `who calls Foo?` — grep on the function name hits doc comments and string literals; the call-graph edges are resolved at parse time. Phase 14.2 + 14.2.2 + 14.2.1: Python/Java function/method decorators, Kotlin annotations / C# method+constructor attributes, and TypeScript method decorators / Rust outer attributes on fns/methods emit forward edges, so `callers GetMapping` lists every Spring handler, `callers get` lists every FastAPI route, `callers HttpGet` every ASP.NET action, `callers JvmStatic` every Kotlin function annotated `@JvmStatic`, `callers Get` every Nest.js `@Get(...)`, `callers test` every Rust `#[tokio::test]` (the rightmost identifier of the decorator/attribute path becomes the callee; arguments are ignored — `#[serde(rename = \"x\")]` → `serde`, not `rename`). Rust `#[derive(...)]` is filtered (compile-time codegen, not call edges). Note the rightmost-identifier convention means `callers get` mixes decorator handlers with any regular `.get()` call — narrow with `include`/`exclude` if needed. Pair with `paths` for multi-hop chains.",
+            "description": "Direct callers of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over grep for `who calls Foo?` — grep on the function name hits doc comments and string literals; the call-graph edges are resolved at parse time. Phase 14.2 + 14.2.2 + 14.2.1: Python/Java function/method decorators, Kotlin annotations / C# method+constructor attributes, and TypeScript method decorators / Rust outer attributes on fns/methods emit forward edges, so `callers GetMapping` lists every Spring handler, `callers get` lists every FastAPI route, `callers HttpGet` every ASP.NET action, `callers JvmStatic` every Kotlin function annotated `@JvmStatic`, `callers Get` every Nest.js `@Get(...)`, `callers test` every Rust `#[tokio::test]` (the rightmost identifier of the decorator/attribute path becomes the callee; arguments are ignored — `#[serde(rename = \"x\")]` → `serde`, not `rename`). Rust `#[derive(...)]` is filtered (compile-time codegen, not call edges). Note the rightmost-identifier convention means `callers get` mixes decorator handlers with any regular `.get()` call — narrow with `include`/`exclude` if needed. Pair with `paths` for multi-hop chains. Supports diff scoping: `since` / `since_branched` / `changed_only` (mutually exclusive) to restrict callers to recently-touched code.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1154,14 +1160,17 @@ fn tool_descriptors() -> Value {
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)", "default": true },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
+                    "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
+                    "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
                 },
                 "required": ["symbol"]
             }
         },
         {
             "name": "callees",
-            "description": "Direct callees of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over Read+manual scanning when you want to know what a function calls without reading the whole body — callees gives the resolved outgoing edges as records. Phase 14.2 + 14.2.2 + 14.2.1: Python/Java decorators, Kotlin annotations, C# method/constructor attributes, TypeScript method decorators, and Rust outer attributes on fns/methods are surfaced as callees of the decorated function (decorator factories like `@lru_cache(maxsize=128)`, `@Inject`, `@Get(\"/x\")`, or `#[tokio::test]` appear as the path-rightmost identifier `lru_cache` / `Inject` / `Get` / `test` alongside regular body calls). Rust `#[derive(...)]` is intentionally filtered.",
+            "description": "Direct callees of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over Read+manual scanning when you want to know what a function calls without reading the whole body — callees gives the resolved outgoing edges as records. Phase 14.2 + 14.2.2 + 14.2.1: Python/Java decorators, Kotlin annotations, C# method/constructor attributes, TypeScript method decorators, and Rust outer attributes on fns/methods are surfaced as callees of the decorated function (decorator factories like `@lru_cache(maxsize=128)`, `@Inject`, `@Get(\"/x\")`, or `#[tokio::test]` appear as the path-rightmost identifier `lru_cache` / `Inject` / `Get` / `test` alongside regular body calls). Rust `#[derive(...)]` is intentionally filtered. Supports diff scoping: `since` / `since_branched` / `changed_only` (mutually exclusive) to restrict callees to recently-touched code.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1172,7 +1181,10 @@ fn tool_descriptors() -> Value {
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)", "default": true },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
+                    "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
+                    "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
                 },
                 "required": ["symbol"]
             }
@@ -2811,6 +2823,116 @@ mod tests {
             msg.contains("mutually exclusive"),
             "error should call out the mutual exclusion; got: {msg}"
         );
+    }
+
+    // ── FU-2b: diff-scope on call-graph tools ────────────────────────────
+    // CLI's `Commands::Callers` / `Callees` / `Implementations` already
+    // flatten `DiffFilterArgs` (see src/cli/args.rs:556-627). MCP forwards
+    // through the shared `push_diff_scope` helper. One presence + one
+    // mutual-exclusion test per tool covers the wiring; the helper itself
+    // is exhaustively tested for pair combinations above on `pattern`.
+
+    #[test]
+    fn callers_since_pushes_since_flag() {
+        let extra = args_for("callers", json!({"symbol": "Foo", "since": "main"}));
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--since" && w[1] == "main"),
+            "callers since must surface as --since <rev>; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn callers_diff_scope_flags_mutually_exclusive() {
+        let err = build_command(
+            "callers",
+            &json!({"symbol": "Foo", "since": "main", "since_branched": true}),
+            "/tmp/proj",
+        )
+        .expect_err("callers mutually exclusive diff-scope flags must error");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error should call out the mutual exclusion; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn callees_since_pushes_since_flag() {
+        let extra = args_for("callees", json!({"symbol": "Bar", "since": "HEAD~2"}));
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--since" && w[1] == "HEAD~2"),
+            "callees since must surface as --since <rev>; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn callees_diff_scope_flags_mutually_exclusive() {
+        let err = build_command(
+            "callees",
+            &json!({"symbol": "Bar", "since_branched": true, "changed_only": true}),
+            "/tmp/proj",
+        )
+        .expect_err("callees mutually exclusive diff-scope flags must error");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error should call out the mutual exclusion; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn implementations_since_pushes_since_flag() {
+        let extra = args_for(
+            "implementations",
+            json!({"symbol": "Trait", "since": "origin/main"}),
+        );
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--since" && w[1] == "origin/main"),
+            "implementations since must surface as --since <rev>; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn implementations_diff_scope_flags_mutually_exclusive() {
+        let err = build_command(
+            "implementations",
+            &json!({"symbol": "Trait", "since": "main", "changed_only": true}),
+            "/tmp/proj",
+        )
+        .expect_err("implementations mutually exclusive diff-scope flags must error");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error should call out the mutual exclusion; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn diff_scope_flags_default_omitted_across_call_graph_tools() {
+        // Belt-and-suspenders absence guard: the empty-args case must NOT
+        // accidentally push diff-scope flags. Mirrors the existing
+        // `no_stale_check_default_omits_flag_across_tools` table test, but
+        // narrowed to the FU-2b-affected tools where diff-scope is new.
+        let cases: Vec<(&str, Value)> = vec![
+            ("callers", json!({"symbol": "Foo"})),
+            ("callees", json!({"symbol": "Foo"})),
+            ("implementations", json!({"symbol": "Foo"})),
+        ];
+        for (tool, args) in cases {
+            let extra = args_for(tool, args);
+            for flag in ["--since", "--since-branched", "--changed-only"] {
+                assert!(
+                    !extra.iter().any(|a| a == flag),
+                    "{tool} default must not pass {flag}; got: {extra:?}"
+                );
+            }
+        }
     }
 
     // ── FU-1: `eval` MCP wrapper ─────────────────────────────────────────
