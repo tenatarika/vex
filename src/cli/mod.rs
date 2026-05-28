@@ -2172,6 +2172,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             depth,
             path_glob,
             top_n,
+            directory_tree_only,
+            directory_tree_top,
             callers_max,
             callees_max,
             similar_max,
@@ -2208,6 +2210,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
                 callees_max,
                 similar_max,
                 tests_max,
+                directory_tree_only,
+                directory_tree_top,
             };
             let ctx = cmd_bundle::BundleCtx {
                 root,

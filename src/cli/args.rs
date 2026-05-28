@@ -875,6 +875,18 @@ pub enum Commands {
         #[arg(long, default_value = "30", value_name = "N")]
         top_n: usize,
 
+        /// (`project` mode) Emit only the directory-symbol-density tree
+        /// in `mode_hints.directory_tree` and an empty `items[]`.
+        /// Architecture-orientation use case — saves the indegree work
+        /// and keeps the response compact.
+        #[arg(long)]
+        directory_tree_only: bool,
+
+        /// (`project` mode) Cap on entries in `mode_hints.directory_tree`,
+        /// sorted by `recursive_symbol_count` descending.
+        #[arg(long, default_value = "30", value_name = "N")]
+        directory_tree_top: usize,
+
         /// (`symbol` mode) Max direct callers in the response.
         #[arg(long, default_value = "10", value_name = "N")]
         callers_max: usize,

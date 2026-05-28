@@ -774,6 +774,125 @@ fn bundle_project_path_glob_scopes_results() {
 }
 
 #[test]
+fn bundle_project_emits_directory_tree_in_mode_hints() {
+    // FU-6 (v1.10.1): `--mode project` ships a directory-symbol-density
+    // tree alongside the indegree-ranked items. The seed fixture lives
+    // entirely under `src/`, so `src` must show up as the top entry
+    // with `recursive_symbol_count` matching the total symbol count.
+    let tmp = TempDir::new().unwrap();
+    seed_indexed_project(tmp.path());
+    let out = run_bundle(
+        tmp.path(),
+        &["bundle", "--mode", "project", "--top-n", "10"],
+    );
+    let tree = out["results"]["mode_hints"]["directory_tree"]
+        .as_array()
+        .expect("directory_tree must be an array");
+    assert!(
+        !tree.is_empty(),
+        "non-empty index must surface at least one directory; got: {out}"
+    );
+    let mut saw_src = false;
+    let mut saw_root = false;
+    for entry in tree {
+        let p = entry["path"].as_str().expect("path str");
+        if p == "src" {
+            saw_src = true;
+            assert!(
+                entry["recursive_symbol_count"]
+                    .as_u64()
+                    .is_some_and(|n| n >= 1),
+                "src directory must report >=1 recursive symbol; got: {entry}"
+            );
+        }
+        if p == "." {
+            saw_root = true;
+            assert!(
+                entry["recursive_symbol_count"]
+                    .as_u64()
+                    .is_some_and(|n| n >= 1),
+                "root `.` must roll up >=1 symbol; got: {entry}"
+            );
+        }
+    }
+    assert!(saw_src, "directory_tree should include `src`; got: {tree:?}");
+    assert!(
+        saw_root,
+        "directory_tree should include the root `.` rollup; got: {tree:?}"
+    );
+
+    // Sort invariant: recursive_symbol_count descending.
+    let counts: Vec<u64> = tree
+        .iter()
+        .map(|e| e["recursive_symbol_count"].as_u64().unwrap_or(0))
+        .collect();
+    let mut sorted = counts.clone();
+    sorted.sort_by(|a, b| b.cmp(a));
+    assert_eq!(
+        counts, sorted,
+        "directory_tree must be sorted by recursive_symbol_count descending"
+    );
+}
+
+#[test]
+fn bundle_project_directory_tree_only_skips_indegree_items() {
+    // FU-6 (v1.10.1): `--directory-tree-only` short-circuits the
+    // indegree walk so callers that only need the directory density
+    // payload don't pay for the project's call-graph traversal.
+    // Verifies `items: []` and the tree still shows up in mode_hints.
+    let tmp = TempDir::new().unwrap();
+    seed_indexed_project(tmp.path());
+    let out = run_bundle(
+        tmp.path(),
+        &["bundle", "--mode", "project", "--directory-tree-only"],
+    );
+    assert!(
+        items(&out).is_empty(),
+        "items[] must be empty under --directory-tree-only; got: {out}"
+    );
+    let hints = &out["results"]["mode_hints"];
+    assert_eq!(
+        hints["directory_tree_only"].as_bool(),
+        Some(true),
+        "mode_hints.directory_tree_only must echo the flag; got: {hints}"
+    );
+    assert_eq!(
+        hints["scoring"].as_str(),
+        Some("directory_tree_only"),
+        "scoring label must reflect the directory-only path; got: {hints}"
+    );
+    let tree = hints["directory_tree"]
+        .as_array()
+        .expect("directory_tree must still be populated");
+    assert!(!tree.is_empty());
+}
+
+#[test]
+fn bundle_project_directory_tree_top_caps_entry_count() {
+    let tmp = TempDir::new().unwrap();
+    seed_indexed_project(tmp.path());
+    let out = run_bundle(
+        tmp.path(),
+        &[
+            "bundle",
+            "--mode",
+            "project",
+            "--directory-tree-only",
+            "--directory-tree-top",
+            "1",
+        ],
+    );
+    let tree = out["results"]["mode_hints"]["directory_tree"]
+        .as_array()
+        .expect("directory_tree array");
+    assert!(
+        tree.len() <= 1,
+        "--directory-tree-top 1 must cap entries; got {} ({tree:?})",
+        tree.len()
+    );
+}
+
+#[test]
 fn bundle_project_works_without_call_graph() {
     // Index built `--no-call-graph` → soft-degrade (NOT hard error,
     // unlike pr-impact). Empty items + empty_reason: "no_call_graph".

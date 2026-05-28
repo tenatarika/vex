@@ -213,6 +213,8 @@ fn bench_symbol_assembly(c: &mut Criterion) {
         callees_max: 10,
         similar_max: 5,
         tests_max: 20,
+        directory_tree_only: false,
+        directory_tree_top: 30,
     };
 
     c.bench_function("bundle::symbol::assemble_full_pipeline", |b| {
