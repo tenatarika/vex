@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-05-29
+
+v1.10.1 is a small patch on top of v1.10.0. It flips the CLI's default output
+format to `compact`, closes four external-review items (H3 reader v2-drop,
+H9 aggregate pr-impact cap, S8.1 `VEX_WHY:`/`VEX_DIFF:` stderr tagging), and
+ships two user-requested diagnostics: `vex status --coverage` and the
+`directory_tree` field on `vex bundle --mode project`.
+
 ### Changed
 
 - **Default output format flipped `text` → `compact`.** Vex's CLI now emits
