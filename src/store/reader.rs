@@ -47,7 +47,8 @@ impl IndexReader {
         // minors ago); anyone on a v2 index re-runs `vex index` to rebuild
         // at the current format.
         let v = header.version;
-        let supported = (super::format::MIN_SUPPORTED_VERSION..=super::format::VERSION).contains(&v);
+        let supported =
+            (super::format::MIN_SUPPORTED_VERSION..=super::format::VERSION).contains(&v);
         if !supported {
             bail!(
                 "index version mismatch at {p} (found v{}, this build supports v{}..v{}). Re-run `vex index` to rebuild.",

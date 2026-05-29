@@ -684,8 +684,7 @@ pub fn assemble_pr_impact(
             // test callers but keep processing the outer change loop so
             // every changed symbol still appears in the bundle. The
             // `budget_exceeded` flag is surfaced in `mode_hints`.
-            let total_so_far =
-                changed_count + transitive_callers.len() + test_items.len();
+            let total_so_far = changed_count + transitive_callers.len() + test_items.len();
             if total_so_far >= MAX_PR_IMPACT_NODES {
                 budget_exceeded = true;
                 break;
@@ -1057,7 +1056,9 @@ fn directory_symbol_tree(
     // `file_paths()` produces, so dir-keying matches up.
     let mut per_path_syms: HashMap<String, usize> = HashMap::new();
     for i in 0..reader.symbol_count() {
-        let Some(rec) = reader.symbol(i) else { continue };
+        let Some(rec) = reader.symbol(i) else {
+            continue;
+        };
         let path = reader.read_string(rec.file_offset);
         if path.is_empty() {
             continue;

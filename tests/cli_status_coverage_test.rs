@@ -57,7 +57,11 @@ fn coverage_surfaces_by_language_and_unindexed_buckets() {
 
     // Add a brand-new source file AFTER indexing — it should appear
     // under `not_yet_indexed`.
-    std::fs::write(tmp.path().join("src").join("fresh.rs"), "pub fn gamma() {}\n").unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("fresh.rs"),
+        "pub fn gamma() {}\n",
+    )
+    .unwrap();
 
     let out = read_status_json(tmp.path());
     let cov = &out["coverage"];

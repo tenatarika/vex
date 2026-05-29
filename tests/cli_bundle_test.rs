@@ -815,7 +815,10 @@ fn bundle_project_emits_directory_tree_in_mode_hints() {
             );
         }
     }
-    assert!(saw_src, "directory_tree should include `src`; got: {tree:?}");
+    assert!(
+        saw_src,
+        "directory_tree should include `src`; got: {tree:?}"
+    );
     assert!(
         saw_root,
         "directory_tree should include the root `.` rollup; got: {tree:?}"
