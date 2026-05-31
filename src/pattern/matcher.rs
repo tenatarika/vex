@@ -16,21 +16,32 @@
 //!   syntaxes coexist for readability — `$$$BODY` reads naturally for
 //!   block bodies, `$$ARGS` for parameter lists.
 //!
-//! ### Ellipsis capture limit — first-literal stop
+//! ### Ellipsis termination — depth-aware (H4)
 //!
-//! `$$$NAME` / `$$NAME` capture by forward-scanning for the next
-//! literal segment in the pattern. The scan is a plain substring
-//! search; it does NOT track brace/paren depth. A pattern that ends
-//! with `}` will stop at the **first** `}` in source, not the
-//! balancing one — `class $T { $$$BODY }` against a body containing
-//! `{ get; set; }` truncates `BODY` at the inner closing brace.
+//! `$$$NAME` / `$$NAME` / `$$$` capture by forward-scanning for the
+//! next literal segment in the pattern. The scan is depth-aware: it
+//! tracks `()` / `{}` / `[]` nesting and skips over double-quoted
+//! `"..."` string literals (with `\` escape). A pattern ending in `}`
+//! stops at the **balancing** closer of the outer `{`, not the first
+//! textual `}` — so `class $T { $$$BODY }` correctly spans bodies
+//! containing nested blocks like `{ get; set; }`.
 //!
-//! Workarounds: (a) restructure the pattern to use a less-ambiguous
-//! trailing literal (e.g. `;` instead of `}`), (b) pick a body shape
-//! that doesn't carry nested literal terminators, or (c) accept the
-//! prefix-only capture and post-process. Tracked as a known limit;
-//! see `tests/pattern_fixtures/csharp_class_body/` for a fixture that
-//! intentionally avoids `{ get; set; }` for this reason.
+//! Remaining limits (documented; tracked as follow-ups):
+//! - **Single-quoted strings** (`'...'`) are NOT recognised. Affects
+//!   C# / TypeScript / Python single-quote strings and Rust char
+//!   literals — a `'}'` char literal in source can still confuse the
+//!   walker. Rust lifetimes (`'a`) make a naïve single-quote pairing
+//!   unsafe without AST context, so v1 leaves this alone.
+//! - **Raw / triple-quoted strings**: Rust `r#"..."#`, C++
+//!   `R"(...)"`, Python `"""..."""` / `'''...'''` are not recognised
+//!   as string regions — their interior `}` bytes still trigger
+//!   depth tracking.
+//! - **Comments containing brackets**: the walker is byte-level and
+//!   doesn't know what's a comment. Block comments with mismatched
+//!   brackets can still throw off depth counts.
+//!
+//! Full tree-sitter AST descent inside `try_match` would close these
+//! gaps; filed as a v2 follow-up.
 //!
 //! ## Composition (Inc 7)
 //!
@@ -569,10 +580,11 @@ fn try_match(text: &str, segments: &[Segment]) -> Option<Vec<(String, String)>> 
                 pos += word.len();
             }
             Segment::Ellipsis => {
-                // $$$ — match everything until the next literal segment or end
+                // $$$ — match everything until the next literal segment or end.
+                // Uses `find_at_depth_zero` so a needle like `}` matches the
+                // *balancing* closer of an outer `{`, not the first inner `}`.
                 if let Some(next_lit) = find_next_literal(&segments[i + 1..]) {
-                    // Find where the next literal starts
-                    if let Some(idx) = text[pos..].find(next_lit.trim()) {
+                    if let Some(idx) = find_at_depth_zero(&text[pos..], next_lit.trim()) {
                         pos += idx;
                     } else {
                         return None;
@@ -589,7 +601,7 @@ fn try_match(text: &str, segments: &[Segment]) -> Option<Vec<(String, String)>> 
                 // `Capture`, just over a multi-token / multi-line span).
                 let start = pos;
                 if let Some(next_lit) = find_next_literal(&segments[i + 1..]) {
-                    if let Some(idx) = text[pos..].find(next_lit.trim()) {
+                    if let Some(idx) = find_at_depth_zero(&text[pos..], next_lit.trim()) {
                         pos += idx;
                     } else {
                         return None;
@@ -711,6 +723,85 @@ fn find_next_literal(segments: &[Segment]) -> Option<&str> {
             }
         }
     }
+    None
+}
+
+/// Locate `needle` in `haystack` at a position that is **not** inside a
+/// `"..."` string literal **and** at bracket-depth 0 relative to the
+/// haystack's starting position.
+///
+/// Used by the `$$$` / `$$$NAME` ellipsis arms to terminate at the
+/// *balancing* closer of an outer bracket rather than the first textual
+/// occurrence of the closer. Example: pattern `class $T { $$$BODY }`
+/// over `class C { void M() { x; } }` — the previous literal segment
+/// has consumed `class C { ` so the walker enters at depth 0; the
+/// inner `{...}` increments/decrements depth around `M`'s body; the
+/// final `}` is reached at depth 0 and matched as the balancer.
+///
+/// Limits intentionally unhandled in v1 (filed as follow-ups):
+/// - `'...'` char / single-quote string literals — Rust lifetimes
+///   (`'a`) and char literals (`'}'`) are ambiguous without AST
+///   context; affects C#, TypeScript, Python single-quote strings,
+///   Rust char literals.
+/// - Raw strings: Rust `r#"..."#`, C++ `R"(...)"`.
+/// - Triple-quoted strings: Python `"""..."""`, `'''...'''`.
+/// - Comments containing brackets — tree-sitter would skip them
+///   structurally; the byte walker treats them as code.
+///
+/// Within `"..."`, `\` escapes the next byte (so `\"` and `\\` are
+/// handled). Depth is clamped at zero via `saturating_sub`, so a
+/// haystack with unbalanced extra closers degrades gracefully
+/// instead of underflowing.
+fn find_at_depth_zero(haystack: &str, needle: &str) -> Option<usize> {
+    let hb = haystack.as_bytes();
+    let nb = needle.as_bytes();
+    if nb.is_empty() {
+        return Some(0);
+    }
+
+    let mut depth: u32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut i = 0;
+
+    while i < hb.len() {
+        // Match check happens BEFORE updating state for byte `i`. This
+        // is what lets a needle of `}` match the balancing closer of
+        // an outer `{` — at that byte depth is still 0 (the depth-1
+        // span is between an inner `{` and its `}`, not at the outer
+        // closer). Symmetric for `)` / `]`.
+        if !in_string && depth == 0 && hb[i..].starts_with(nb) {
+            return Some(i);
+        }
+
+        let b = hb[i];
+        if escape {
+            // Previous byte was a `\` inside a string. Consume this
+            // byte verbatim regardless of what it is — handles `\"`
+            // (escaped quote keeps us inside the string) and `\\`
+            // (the two backslashes pair off and any following `}`
+            // remains in-string but is no longer escape-protected,
+            // which is the correct semantics — it's still inside
+            // `"..."` so the depth counter is untouched).
+            escape = false;
+        } else if in_string {
+            match b {
+                b'\\' => escape = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+        } else {
+            match b {
+                b'"' => in_string = true,
+                b'(' | b'{' | b'[' => depth += 1,
+                b')' | b'}' | b']' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+
+        i += 1;
+    }
+
     None
 }
 
@@ -1187,11 +1278,12 @@ func main() {}
     }
 
     #[test]
-    fn named_ellipsis_does_not_track_brace_nesting() {
-        // Hard pin for the documented limit in the module docs: an
-        // `$$$BODY` that terminates on `}` stops at the FIRST `}`, not
-        // the balancing one. Reviewer GAP-5: this contract was only
-        // documented in a fixture comment.
+    fn named_ellipsis_tracks_brace_nesting_post_h4() {
+        // Post-H4: an `$$$BODY` that terminates on `}` matches the
+        // *balancing* closer of the outer `{`, skipping nested
+        // `{ ... }` blocks. Pre-H4 this asserted the opposite (BODY
+        // truncated at the first inner `}`); see git history for the
+        // old shape.
         let source = "class C {\n    void Run() { let inner = 1; }\n}\n";
         let pattern = parse_pattern("class $T { $$$BODY }", Language::TypeScript).unwrap();
         let matches = find_matches(source, &pattern, "test.ts");
@@ -1202,17 +1294,235 @@ func main() {}
             .find(|(k, _)| k == "BODY")
             .map(|(_, v)| v.as_str())
             .unwrap_or("");
-        // The capture truncates at the inner `}` (end of `Run`'s
-        // body), NOT at the class's balancing `}`. The trailing
-        // newline + outer `}` are excluded.
+        // The capture now spans the entire inner method including its
+        // own closing `}`; only the class's balancing `}` is excluded.
         assert!(
-            body.contains("void Run() { let inner = 1;"),
-            "BODY should at least include the start of the inner method, got: {body:?}",
+            body.contains("void Run() { let inner = 1; }"),
+            "BODY should include the nested method's closing `}}`. \
+             Got: {body:?}",
+        );
+        // Sanity: the capture must contain exactly one `}` — the
+        // inner method's closing brace. The class's balancing `}` is
+        // consumed by the trailing pattern literal and must NOT be in
+        // the capture.
+        assert_eq!(
+            body.matches('}').count(),
+            1,
+            "BODY must contain exactly one `}}` (the inner method's). \
+             Got: {body:?}",
+        );
+    }
+
+    // --- H4 (external-review v1.9.1): AST-aware ellipsis termination ---
+    //
+    // The next three tests RED on pre-H4 `main` and GREEN once
+    // `find_at_depth_zero` lands. They exercise the two failure
+    // modes called out by the reviewer:
+    //   (a) nested `{ ... }` inside `$$$BODY` truncates at the
+    //       inner `}`;
+    //   (b) a string literal containing `}` truncates at the
+    //       string-internal `}`.
+
+    #[test]
+    fn named_ellipsis_balances_nested_braces() {
+        // Pre-H4: BODY truncates at the inner `}` of `Run()`.
+        // Post-H4: BODY spans the whole class body including the
+        // nested method's braces.
+        let source = "class C {\n    void Run() { let inner = 1; }\n}\n";
+        let pattern = parse_pattern("class $T { $$$BODY }", Language::TypeScript).unwrap();
+        let matches = find_matches(source, &pattern, "test.ts");
+        assert_eq!(matches.len(), 1, "one match expected, got {matches:?}");
+        let body = matches[0]
+            .captures
+            .iter()
+            .find(|(k, _)| k == "BODY")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_else(|| panic!("BODY capture missing: {:?}", matches[0].captures));
+        // Strict: the full method (including its `}`) must be in the
+        // capture; only the class's balancing `}` is excluded.
+        assert!(
+            body.contains("void Run() { let inner = 1; }"),
+            "BODY must include the nested method's closing `}}`. Got: {body:?}",
+        );
+    }
+
+    #[test]
+    fn named_ellipsis_balances_nested_braces_with_auto_property() {
+        // The exact case spec.toml's `csharp_class_body` fixture had
+        // to dodge — `{ get; set; }` auto-properties. Post-H4 this
+        // must capture both the field and the auto-property.
+        let source = "public class UserService {\n    public int counter;\n    public string Label { get; set; }\n}\n";
+        let pattern = parse_pattern("public class $NAME { $$$BODY }", Language::CSharp).unwrap();
+        let matches = find_matches(source, &pattern, "test.cs");
+        assert_eq!(matches.len(), 1, "one match expected, got {matches:?}");
+        let body = matches[0]
+            .captures
+            .iter()
+            .find(|(k, _)| k == "BODY")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_else(|| panic!("BODY capture missing: {:?}", matches[0].captures));
+        assert!(
+            body.contains("public int counter;"),
+            "BODY must include the field. Got: {body:?}",
         );
         assert!(
-            !body.contains("\n}\n"),
-            "BODY must stop at the first `}}`; the outer closing brace \
-             must NOT appear in the capture. Got: {body:?}",
+            body.contains("public string Label { get; set; }"),
+            "BODY must include the auto-property (with its nested `{{ get; set; }}`). \
+             Got: {body:?}",
         );
+    }
+
+    #[test]
+    fn named_ellipsis_skips_brace_inside_string() {
+        // Pre-H4: the `}` inside the `"}"` string literal terminates
+        // the ellipsis early, truncating BODY at the wrong place and
+        // leaving the source's outer `}` unmatched against the
+        // pattern's trailing literal. Post-H4: the in-string `}` is
+        // ignored, BODY spans up to the real closing `}`.
+        let source = "fn parse() {\n    let close = \"}\";\n    println!(\"{}\", close);\n}\n";
+        let pattern = parse_pattern("fn $F() { $$$BODY }", Language::Rust).unwrap();
+        let matches = find_matches(source, &pattern, "test.rs");
+        assert_eq!(matches.len(), 1, "one match expected, got {matches:?}");
+        let body = matches[0]
+            .captures
+            .iter()
+            .find(|(k, _)| k == "BODY")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_else(|| panic!("BODY capture missing: {:?}", matches[0].captures));
+        assert!(
+            body.contains("let close = \"}\";"),
+            "BODY must include the string-literal-containing-brace line. Got: {body:?}",
+        );
+        assert!(
+            body.contains("println!"),
+            "BODY must reach past the string-literal line. Got: {body:?}",
+        );
+    }
+
+    #[test]
+    fn anonymous_ellipsis_balances_braces() {
+        // `$$$` (anonymous Ellipsis) shares the same forward-scan
+        // logic as `$$$NAME` and must benefit from the same fix.
+        // Pre-H4 the surrounding match fails because `$$$` truncates
+        // early and the trailing `}` of the pattern can't line up
+        // with the outer source `}`.
+        let source = "class C {\n    void Run() { let inner = 1; }\n}\n";
+        let pattern = parse_pattern("class $T { $$$ }", Language::TypeScript).unwrap();
+        let matches = find_matches(source, &pattern, "test.ts");
+        assert!(
+            !matches.is_empty(),
+            "anonymous $$$ must match the full class body — pre-H4 \
+             it truncated inside Run() and broke the trailing `}}`. \
+             Got: {matches:?}",
+        );
+    }
+
+    // --- H4 unit tests for the new depth-aware finder ---
+
+    #[test]
+    fn find_at_depth_zero_empty_needle_returns_zero() {
+        // Contract: empty needle is trivially found at offset 0.
+        assert_eq!(find_at_depth_zero("anything", ""), Some(0));
+    }
+
+    #[test]
+    fn find_at_depth_zero_no_brackets_falls_back_to_first_hit() {
+        // Without any brackets the walker should behave like `str::find`.
+        assert_eq!(find_at_depth_zero("hello world }", "}"), Some(12));
+    }
+
+    #[test]
+    fn find_at_depth_zero_simple_close_at_depth_zero() {
+        // The first `}` IS at depth 0 (nothing opened it); return its
+        // offset directly. Previous literal segment is assumed to have
+        // consumed the matching opener.
+        assert_eq!(find_at_depth_zero("}", "}"), Some(0));
+        assert_eq!(find_at_depth_zero("   }", "}"), Some(3));
+    }
+
+    #[test]
+    fn find_at_depth_zero_skips_nested_braces() {
+        // The inner `}` of `{ x; }` is at depth 1 and must NOT match;
+        // the outer `}` is at depth 0 and is the balancing closer.
+        let s = "{ x; } }";
+        assert_eq!(find_at_depth_zero(s, "}"), Some(s.len() - 1));
+    }
+
+    #[test]
+    fn find_at_depth_zero_skips_brace_inside_double_string() {
+        // The `}` inside `"}"` is in a string region and must not be
+        // counted. The trailing `}` (after the string closes) is the
+        // real depth-0 closer.
+        let s = "  \"}\"  }";
+        let idx = find_at_depth_zero(s, "}").expect("must find outer `}`");
+        assert_eq!(&s[idx..], "}");
+    }
+
+    #[test]
+    fn find_at_depth_zero_handles_escaped_quote_and_backslash() {
+        // `"\"}\\"` — escaped quote keeps us inside the string;
+        // the embedded `}` must be ignored.
+        let s = r#""\"}" }"#;
+        let idx = find_at_depth_zero(s, "}").expect("must find outer `}`");
+        assert_eq!(&s[idx..], "}");
+        // `"\\"` (two backslashes — one literal backslash) followed by
+        // a `}` outside the string: the `\\` consumes both `\`s so the
+        // closing `"` works, then we exit the string before reading the
+        // outer `}`.
+        let s2 = r#""\\" }"#;
+        let idx2 = find_at_depth_zero(s2, "}").expect("must find outer `}`");
+        assert_eq!(&s2[idx2..], "}");
+    }
+
+    #[test]
+    fn find_at_depth_zero_multi_char_needle() {
+        // Needle of more than one byte must match as a contiguous
+        // span and only at depth 0 / outside strings. The haystack
+        // `{ } } else { }` has TWO `}` bytes that could (textually)
+        // start a `} else` match:
+        //   - byte 2: check fires while depth==1 (the `{` at byte 0
+        //     bumped it; the check happens BEFORE consuming this
+        //     `}`), so the depth-0 guard rejects it.
+        //   - byte 4: check fires at depth==0, but `&s[4..]` is
+        //     `} else { }` — wait, is it `}` or ` `? Let me recount.
+        //     s = `{ } } else { }` → bytes:
+        //          0 `{`, 1 ` `, 2 `}`, 3 ` `, 4 `}`, 5 ` `, 6 `e`, …
+        //     At byte 4 depth is 0 and `&s[4..]` = `} else { }`,
+        //     which DOES start with `"} else"`. So the match fires
+        //     at byte 4.
+        let s = "{ } } else { }";
+        let idx = find_at_depth_zero(s, "} else").expect("must find `} else`");
+        assert_eq!(idx, 4, "match must land on the depth-0 `}}` at byte 4");
+        assert_eq!(&s[idx..idx + 6], "} else");
+    }
+
+    #[test]
+    fn find_at_depth_zero_returns_none_when_needle_missing() {
+        assert_eq!(find_at_depth_zero("no closer here", "}"), None);
+        // Even when the haystack has matching brackets, a missing
+        // needle still yields None.
+        assert_eq!(find_at_depth_zero("{ } { }", "X"), None);
+    }
+
+    #[test]
+    fn find_at_depth_zero_balances_parens_and_brackets() {
+        // Depth tracking covers `() {} []` together. A `}` inside
+        // a `(...)` parenthesised expression should still be ignored
+        // when the needle is `}` at top level — pathological case but
+        // pins the symmetry.
+        let s = "({ }) }";
+        let idx = find_at_depth_zero(s, "}").expect("must find outer `}`");
+        assert_eq!(&s[idx..], "}");
+    }
+
+    #[test]
+    fn find_at_depth_zero_saturates_underflow() {
+        // A haystack starting with an unbalanced closer must not
+        // underflow `depth`. The closer itself is at depth 0 and the
+        // walker must keep going past it without panicking.
+        let s = "}} X";
+        // Needle `X` lives at depth 0 after the two stray closers.
+        let idx = find_at_depth_zero(s, "X").expect("must find `X` past unbalanced closers");
+        assert_eq!(&s[idx..idx + 1], "X");
     }
 }
