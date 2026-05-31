@@ -17,11 +17,13 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::cli::args::ScopeArgs;
+use crate::cli::index_management::ensure_index_ready;
 use crate::cli::output::print_envelope;
 use crate::parse::language::Language;
 use crate::protocol::{capabilities, MetaEnvelope, Signals};
 use crate::search::SearchResult;
 use crate::store::reader::IndexReader;
+use crate::util::config;
 
 /// CLI-facing mode selector. Clap renders the variants in kebab-case:
 /// `symbol`, `pr-impact`, `project`. Keep the variant order stable —
@@ -181,6 +183,72 @@ pub fn resolve_bundle_root(path: Option<PathBuf>) -> Result<PathBuf> {
         Some(p) => Ok(p),
         None => std::env::current_dir().map_err(Into::into),
     }
+}
+
+/// Dispatch-level wrapper for `vex bundle`. Resolves the project root,
+/// opens the index, builds the `BundleArgs` + `BundleCtx`, and forwards
+/// to [`cmd_bundle`]. Extracted from `cli/mod.rs` in S1 Group E so the
+/// dispatch arm collapses to a one-liner.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bundle(
+    mode: BundleModeFlag,
+    symbol: Option<String>,
+    base: Option<String>,
+    depth: usize,
+    path_glob: Option<String>,
+    top_n: usize,
+    directory_tree_only: bool,
+    directory_tree_top: usize,
+    callers_max: usize,
+    callees_max: usize,
+    similar_max: usize,
+    tests_max: usize,
+    path: Option<PathBuf>,
+    auto_update: bool,
+    no_stale_check: bool,
+    scope: ScopeArgs,
+    local_cache_active: bool,
+    cfg: &config::VexConfig,
+    excludes: &[String],
+) -> Result<()> {
+    // Inc 2 — open the index for `--mode symbol`. We pass
+    // `needs_semantic=false` to `ensure_index_ready`: similar
+    // results are best-effort (degrade to empty when the index
+    // has no vectors), not a hard requirement. Other modes plug
+    // into the same plumbing in Inc 3 / Inc 4.
+    let root = resolve_bundle_root(path)?.canonicalize()?;
+    let index_path = ensure_index_ready(
+        &root,
+        auto_update,
+        no_stale_check,
+        /*needs_semantic=*/ false,
+        local_cache_active,
+        cfg,
+    )?;
+    let reader = IndexReader::open(&index_path).context("open index")?;
+    let hnsw_path = config::hnsw_path(&root);
+    let args = BundleArgs {
+        mode,
+        symbol: symbol.as_deref(),
+        base: base.as_deref(),
+        depth,
+        path_glob: path_glob.as_deref(),
+        top_n,
+        callers_max,
+        callees_max,
+        similar_max,
+        tests_max,
+        directory_tree_only,
+        directory_tree_top,
+    };
+    let ctx = BundleCtx {
+        root,
+        scope: &scope,
+        reader: &reader,
+        hnsw_path,
+        excludes,
+    };
+    cmd_bundle(args, ctx)
 }
 
 // ---------------------------------------------------------------------------

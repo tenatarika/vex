@@ -1,15 +1,40 @@
-//! `vex callers` and `vex callees` — direct call-graph edges.
-//! Extracted from `cli/mod.rs` in S1 Group B. The bigger neighbour
-//! commands `paths` / `reachable` remain inline in mod.rs and will move
-//! into this file in S1 Group E (per the task plan).
+//! `vex callers` / `vex callees` (direct edges) plus `vex paths` and
+//! `vex reachable` (multi-hop traversal). Extracted from `cli/mod.rs`
+//! across S1 Group B + Group E.
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 
-use super::args::{self, OutputFormat};
+use super::args::{self, OutputFormat, ScopeArgs};
 use super::common::{resolve_diff_filter, resolve_root};
-use super::index_management::{ensure_index_exists, handle_staleness};
-use super::scope;
+use super::index_management::{ensure_index_exists, ensure_index_ready, handle_staleness};
+use super::{output, scope};
+use crate::store::reader::IndexReader;
 use crate::util::config;
+
+/// Per-step caller-fetch cap. Used by `paths` and `reachable` to bound
+/// memory while traversing the call graph. Picked well above realistic
+/// fan-in so the warning below is a real saturation event, not noise.
+const CALLERS_FETCH_CAP: usize = 1024;
+
+/// Shared "fetch callers + warn on saturation" helper used by both
+/// `paths` and `reachable`. Centralised here so the duplicated closure
+/// bodies in the old `cli/mod.rs` arms (architect MUST-FIX #5) collapse
+/// to one definition. `context` is a short label embedded in the
+/// warning so the reader knows which traversal saturated.
+pub(crate) fn callers_of_warned(
+    reader: &IndexReader,
+    name: &str,
+    context: &str,
+) -> Vec<crate::callgraph::CallMatch> {
+    let callers = crate::store::call_graph::find_callers_fast(reader, name, CALLERS_FETCH_CAP);
+    if callers.len() == CALLERS_FETCH_CAP {
+        eprintln!(
+            "warning: `{name}` has at least {CALLERS_FETCH_CAP} direct callers; \
+             {context} may be incomplete past this node"
+        );
+    }
+    callers
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_callgraph(
@@ -143,5 +168,109 @@ pub(crate) fn cmd_callgraph(
             }
         }
     }
+    Ok(())
+}
+
+/// `vex paths from..to` — multi-hop caller chains. (S1 Group E.)
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paths(
+    from: String,
+    to: String,
+    max_hops: usize,
+    max_paths: usize,
+    path: Option<std::path::PathBuf>,
+    auto_update: bool,
+    no_stale_check: bool,
+    scope: ScopeArgs,
+    local_cache_active: bool,
+    cfg: &config::VexConfig,
+    format: &OutputFormat,
+) -> Result<()> {
+    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    let root = resolve_root(path)?.canonicalize()?;
+    let index_path = ensure_index_ready(
+        &root,
+        auto_update,
+        no_stale_check,
+        false,
+        local_cache_active,
+        cfg,
+    )?;
+    let reader = IndexReader::open(&index_path).context("open index")?;
+    if !reader.has_call_graph() {
+        bail!(
+            "no call graph in index — `vex paths` requires a v4 index built without \
+             `--no-call-graph`. Rebuild with `vex index` (or `vex index --auto-update`)."
+        );
+    }
+    let callers_of = |name: &str| callers_of_warned(&reader, name, "multi-hop traversal");
+    let paths = crate::callgraph::bfs::find_paths(callers_of, &from, &to, max_hops, max_paths);
+    let paths: Vec<_> = paths
+        .into_iter()
+        .filter(|p| {
+            // Apply scope filter on the *intermediate* steps — if
+            // every intermediate path is excluded, drop the chain.
+            // `from`/`to` themselves have line=0 / no resolved
+            // path, so they're exempt from the include rule.
+            p.steps
+                .iter()
+                .filter(|s| !s.path.is_empty())
+                .all(|s| path_scope.accept(&s.path))
+        })
+        .collect();
+    output::print_paths(&paths, &from, &to, format);
+    Ok(())
+}
+
+/// `vex reachable target` — every symbol that transitively calls
+/// `target`. (S1 Group E.)
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reachable(
+    target: String,
+    max_hops: usize,
+    limit: usize,
+    path: Option<std::path::PathBuf>,
+    auto_update: bool,
+    no_stale_check: bool,
+    scope: ScopeArgs,
+    local_cache_active: bool,
+    cfg: &config::VexConfig,
+    format: &OutputFormat,
+) -> Result<()> {
+    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    let root = resolve_root(path)?.canonicalize()?;
+    let index_path = ensure_index_ready(
+        &root,
+        auto_update,
+        no_stale_check,
+        false,
+        local_cache_active,
+        cfg,
+    )?;
+    let reader = IndexReader::open(&index_path).context("open index")?;
+    if !reader.has_call_graph() {
+        bail!(
+            "no call graph in index — `vex reachable` requires a v4 index built without \
+             `--no-call-graph`. Rebuild with `vex index`."
+        );
+    }
+    // When a scope filter is active a 4x over-fetch is not enough — a
+    // narrow include could legitimately reject most of the BFS frontier
+    // and leave the final list short. The traversal is already bounded
+    // by `max_hops`, so we let it run unbounded internally and apply
+    // `take(limit)` after the filter.
+    let fetch_limit = if path_scope.is_empty() {
+        limit
+    } else {
+        usize::MAX
+    };
+    let callers_of = |name: &str| callers_of_warned(&reader, name, "reachable set");
+    let matches = crate::callgraph::bfs::find_reachable(callers_of, &target, max_hops, fetch_limit);
+    let matches: Vec<_> = matches
+        .into_iter()
+        .filter(|m| path_scope.accept(&m.path))
+        .take(limit)
+        .collect();
+    output::print_reachable(&matches, &target, format);
     Ok(())
 }
