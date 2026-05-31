@@ -45,6 +45,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **H11 — staleness check verifies content hashes before flagging
+  files as changed.** Pre-H11 `check_mtime` flagged any file with
+  `mtime > indexed_at` as stale, triggering spurious auto-rebuilds on
+  every workflow that touched mtimes without changing content:
+  `touch foo.rs`, `git checkout` (mtimes are restored), `rustfmt`
+  no-op pass, `rsync --times`, `git rebase`/`cherry-pick`. The manifest
+  already records a per-file `xxh3_64` content hash for incremental
+  indexing; H11 wires the same hash into the staleness probe — when
+  mtime fires, we hash the file once and compare to the manifest. If
+  the hash matches, the touch was cosmetic and the file is `Fresh`;
+  if the hash diverges (or the path is missing from the manifest),
+  the file is `Stale`. New files and read failures are conservatively
+  treated as stale. Three regression tests pin the contract:
+  touch-without-change-is-fresh, real-edit-is-stale,
+  unknown-file-is-stale. Effect: dev workflows that rely on
+  `auto_update = true` now stop triggering redundant index rebuilds
+  on noop mtime updates — `vex search` after `git checkout` is fast.
+
 - **H4 — `vex pattern` ellipsis termination is now depth-aware.** Pre-H4
   the `$$$BODY` / `$$$NAME` / `$$$` forward-scan called `str::find`, so a
   pattern like `class $T { $$$BODY }` truncated `BODY` at the FIRST `}`
