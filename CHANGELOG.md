@@ -57,9 +57,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the hash matches, the touch was cosmetic and the file is `Fresh`;
   if the hash diverges (or the path is missing from the manifest),
   the file is `Stale`. New files and read failures are conservatively
-  treated as stale. Three regression tests pin the contract:
-  touch-without-change-is-fresh, real-edit-is-stale,
-  unknown-file-is-stale. Effect: dev workflows that rely on
+  treated as stale. The hash is streamed in 64 KiB chunks via
+  `hash_file` so a large `.md` / `.sql` migration doesn't spike RSS.
+  **Manifest format is unchanged**; existing indices benefit
+  immediately without `vex index` rebuild. Four regression tests pin
+  the contract (touch-fresh, real-edit-stale, unknown-file-stale,
+  unsupported-extension-skipped). Effect: dev workflows that rely on
   `auto_update = true` now stop triggering redundant index rebuilds
   on noop mtime updates — `vex search` after `git checkout` is fast.
 

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::hasher::content_hash;
+use super::hasher::hash_file;
 use super::manifest::Manifest;
 
 /// Result of a staleness check.
@@ -106,17 +106,29 @@ fn git_dirty_count(root: &Path) -> Option<usize> {
     Some(tracked_count + untracked_count)
 }
 
-/// mtime-based staleness check for non-git repos.
+/// mtime-based staleness check for non-git repos (or git repos whose
+/// HEAD probe came back inconclusive).
 ///
-/// H11 — when a file's `mtime > indexed_at` we verify against the
-/// manifest's recorded `content_hash` before counting it as changed.
-/// `touch foo.rs`, `git checkout`, `rustfmt` no-op passes, `rsync --times`,
-/// and `git rebase` all touch mtimes without changing content; pre-H11
-/// the mtime trigger alone produced spurious `Stale` results that
-/// triggered redundant auto-rebuilds on every `vex search`.
+/// **Call-path constraint**: `check` only reaches here when (a) the
+/// caller asked for `deep = true`, AND (b) `check_git` returned `None`
+/// (no git, or the subprocess failed). For typical git-tracked vex
+/// users a clean HEAD short-circuits this path entirely — so the
+/// extra cost below only applies to non-git projects or git projects
+/// where the working tree probe is unavailable.
 ///
-/// Falls back to the mtime signal when:
+/// **H11**: when a file's `mtime > indexed_at` we verify against the
+/// manifest's recorded `xxh3_64` content hash before counting it as
+/// changed. `touch foo.rs`, `git checkout`, `rustfmt` no-op passes,
+/// `rsync --times`, and `git rebase` all touch mtimes without changing
+/// content; pre-H11 the mtime trigger alone produced spurious `Stale`
+/// results that triggered redundant auto-rebuilds on every
+/// `vex search`. The hash is streamed in 64 KiB chunks via [`hash_file`]
+/// so a large `.md`/`.sql` file doesn't spike RSS.
+///
+/// Falls back to "stale" when:
 /// - the path has no manifest entry (genuinely new file), or
+/// - the path can't be made root-relative (e.g. canonicalize-resolved
+///   symlink lands outside the walk root), or
 /// - reading / hashing the file fails (treat as changed, conservative).
 fn check_mtime(root: &Path, indexed_at: u64, manifest: &Manifest) -> Freshness {
     let indexed_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(indexed_at);
@@ -146,12 +158,18 @@ fn check_mtime(root: &Path, indexed_at: u64, manifest: &Manifest) -> Freshness {
         if mtime <= indexed_time {
             continue;
         }
-        // H11: mtime trigger only — verify against manifest's content hash
-        // before counting. Mismatch / unknown / read-fail = stale.
+        // H11: mtime trigger only — verify against manifest's content
+        // hash before counting. Mismatch / unknown / read-fail = stale.
+        // `to_rel_posix` produces the exact same key shape that
+        // `pipeline::hash_files` uses when populating `manifest.files`,
+        // so the lookup below is structurally aligned across platforms
+        // (the manifest stores POSIX-form relative paths even on
+        // Windows — see `crate::util::paths`).
         let rel = match crate::util::paths::to_rel_posix(path, root) {
             Some(r) => r,
             None => {
-                // Symlink / non-prefix path — conservative: stale.
+                // strip_prefix failed — path doesn't sit under `root`
+                // (e.g. canonicalize-resolved symlink escapes the walk).
                 changed += 1;
                 continue;
             }
@@ -162,14 +180,12 @@ fn check_mtime(root: &Path, indexed_at: u64, manifest: &Manifest) -> Freshness {
             changed += 1;
             continue;
         };
-        match std::fs::read(path) {
-            Ok(bytes) if content_hash(&bytes) == recorded_hash => {
-                // Hash matches: file was touched but content is unchanged.
-                // Do not count as changed.
-            }
-            _ => {
-                changed += 1;
-            }
+        if hash_file(path).map(|h| h == recorded_hash).unwrap_or(false) {
+            // Hash matches: file was touched but content is unchanged.
+            // Do not count as changed.
+        } else {
+            // Hash differs OR read failed → conservatively stale.
+            changed += 1;
         }
     }
 
@@ -267,6 +283,18 @@ mod tests {
     use std::time::{Duration, SystemTime};
     use tempfile::TempDir;
 
+    /// Open the file in read+write mode so `set_modified` works on
+    /// Windows (`SetFileTime` needs `GENERIC_WRITE`); read-only
+    /// `fs::File::open` would panic on Windows CI. The read flag
+    /// keeps macOS / Linux happy as well.
+    fn open_for_mtime(path: &Path) -> fs::File {
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap()
+    }
+
     /// Build a tiny tempdir with one supported-extension file whose content
     /// hash is registered in the manifest. `mtime_offset_secs` is the delta
     /// applied to the file's mtime relative to the manifest `indexed_at`
@@ -282,13 +310,14 @@ mod tests {
             .as_secs();
 
         // Force mtime relative to `indexed_at` for the deterministic check.
-        // `set_modified` on macOS / Linux accepts arbitrary SystemTime.
         let target = if mtime_offset_secs >= 0 {
-            SystemTime::UNIX_EPOCH + Duration::from_secs(indexed_at + mtime_offset_secs as u64)
+            SystemTime::UNIX_EPOCH
+                + Duration::from_secs(indexed_at.saturating_add(mtime_offset_secs as u64))
         } else {
-            SystemTime::UNIX_EPOCH + Duration::from_secs(indexed_at - (-mtime_offset_secs) as u64)
+            SystemTime::UNIX_EPOCH
+                + Duration::from_secs(indexed_at.saturating_sub((-mtime_offset_secs) as u64))
         };
-        fs::File::open(&path).unwrap().set_modified(target).unwrap();
+        open_for_mtime(&path).set_modified(target).unwrap();
 
         let mut manifest = Manifest {
             indexed_at: Some(indexed_at),
@@ -317,21 +346,14 @@ mod tests {
 
     #[test]
     fn h11_real_content_change_is_stale() {
-        // Set up the manifest hash for the ORIGINAL content, then mutate
-        // the file. mtime is naturally newer; hash now differs → Stale.
-        let (tmp, mut manifest) = write_fixture("fn main() {}\n", 60);
-        // Overwrite manifest's recorded hash with the original-content
-        // hash explicitly so the second write actually diverges.
-        manifest
-            .files
-            .insert("foo.rs".to_string(), content_hash(b"fn main() {}\n"));
+        // `write_fixture` already inserts the hash for the ORIGINAL
+        // content. Overwrite the file with diverged content; bump
+        // mtime past indexed_at again so the mtime trigger fires.
+        let (tmp, manifest) = write_fixture("fn main() {}\n", 60);
         fs::write(tmp.path().join("foo.rs"), "fn main() { println!(); }\n").unwrap();
-        // After write the mtime is "now"; bump it past indexed_at by 60s
-        // so the mtime trigger fires for sure.
         let target =
             SystemTime::UNIX_EPOCH + Duration::from_secs(manifest.indexed_at.unwrap() + 60);
-        fs::File::open(tmp.path().join("foo.rs"))
-            .unwrap()
+        open_for_mtime(&tmp.path().join("foo.rs"))
             .set_modified(target)
             .unwrap();
 
@@ -356,7 +378,7 @@ mod tests {
             .unwrap()
             .as_secs();
         let target = SystemTime::UNIX_EPOCH + Duration::from_secs(indexed_at + 60);
-        fs::File::open(&path).unwrap().set_modified(target).unwrap();
+        open_for_mtime(&path).set_modified(target).unwrap();
         let manifest = Manifest {
             indexed_at: Some(indexed_at),
             ..Default::default()
@@ -366,6 +388,34 @@ mod tests {
         assert!(
             matches!(result, Freshness::Stale { .. }),
             "new file (not in manifest) must trigger Stale, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn h11_unsupported_extension_is_never_hashed() {
+        // .png is not in `Language::from_extension` → the walker skips
+        // it before reaching the mtime/hash branch. Pin the contract:
+        // even with a newer mtime and no manifest entry, the file must
+        // not count toward `changed` (and we must not waste a hash on
+        // an arbitrarily large binary just because its mtime moved).
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("logo.png");
+        fs::write(&path, b"\x89PNG\r\n\x1a\nstub").unwrap();
+        let indexed_at = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let target = SystemTime::UNIX_EPOCH + Duration::from_secs(indexed_at + 60);
+        open_for_mtime(&path).set_modified(target).unwrap();
+        let manifest = Manifest {
+            indexed_at: Some(indexed_at),
+            ..Default::default()
+        };
+
+        let result = check_mtime(tmp.path(), indexed_at, &manifest);
+        assert!(
+            matches!(result, Freshness::Fresh),
+            "unsupported extension must be invisible to staleness, got: {result:?}"
         );
     }
 }
