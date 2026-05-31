@@ -1,9 +1,14 @@
 pub mod args;
 pub mod cmd_bundle;
 pub(crate) mod cmd_callgraph;
+pub(crate) mod cmd_check;
+pub(crate) mod cmd_diff;
 pub(crate) mod cmd_eval;
+pub(crate) mod cmd_grep;
 pub(crate) mod cmd_outline;
 pub(crate) mod cmd_self_update;
+pub(crate) mod cmd_status;
+pub(crate) mod cmd_trivial;
 pub mod common;
 pub(crate) mod index_management;
 pub mod output;
@@ -16,7 +21,6 @@ use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use args::{Cli, Commands, OutputFormat};
-use clap::CommandFactory;
 
 use common::{
     apply_path_filters, build_metadata_filter, check_embedder_match, diff_filter_meta,
@@ -946,71 +950,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Status { path, coverage } => {
-            let root = resolve_root(path)?
-                .canonicalize()
-                .context("canonicalize root")?;
-            let index_path = config::index_path(&root);
-
-            if !index_path.exists() {
-                match &format {
-                    OutputFormat::Json => {
-                        println!("{}", serde_json::json!({"error": "no index found"}));
-                    }
-                    OutputFormat::Text | OutputFormat::Compact => {
-                        println!("No index found for {}", root.display());
-                        println!("Run `vex index` to build one.");
-                    }
-                }
-                return Ok(());
-            }
-
-            let meta = std::fs::metadata(&index_path)?;
-            let reader = IndexReader::open(&index_path)?;
-            let coverage_report = if coverage {
-                Some(status_coverage::collect(&root, &reader, excludes)?)
-            } else {
-                None
-            };
-
-            match &format {
-                OutputFormat::Json => {
-                    let mut json = serde_json::json!({
-                        "project": root.to_string_lossy(),
-                        "index": index_path.to_string_lossy(),
-                        "size_bytes": meta.len(),
-                        "symbols": reader.symbol_count(),
-                        "embeddings": reader.has_vectors(),
-                        "call_graph": reader.has_call_graph(),
-                        "bm25": reader.has_bm25(),
-                    });
-                    if let Some(c) = &coverage_report {
-                        json["coverage"] = serde_json::to_value(c)?;
-                    }
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
-                OutputFormat::Text | OutputFormat::Compact => {
-                    println!("Project:    {}", root.display());
-                    println!("Index:      {}", index_path.display());
-                    println!("Size:       {:.1} KB", meta.len() as f64 / 1024.0);
-                    println!("Symbols:    {}", reader.symbol_count());
-                    println!(
-                        "Embeddings: {}",
-                        if reader.has_vectors() { "yes" } else { "no" }
-                    );
-                    println!(
-                        "Call graph: {}",
-                        if reader.has_call_graph() { "yes" } else { "no" }
-                    );
-                    println!(
-                        "BM25:       {}",
-                        if reader.has_bm25() { "yes" } else { "no" }
-                    );
-                    if let Some(c) = &coverage_report {
-                        status_coverage::render_text(c);
-                    }
-                }
-            }
-            Ok(())
+            cmd_status::status(path, coverage, &format, excludes)
         }
         Commands::Grep {
             pattern,
@@ -1019,67 +959,16 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             path,
             scope,
             diff,
-        } => {
-            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
-            let root = resolve_root(path)?;
-            let changed_paths = resolve_diff_filter(&root, &diff)?;
-            // Over-fetch when scope filters are active so post-filter truncation
-            // does not silently drop matches the user expects to see. Same
-            // treatment for the 13.7-D3 diff filter.
-            let fetch_limit = if path_scope.is_empty() && changed_paths.is_none() {
-                limit
-            } else {
-                usize::MAX
-            };
-            let matches = crate::grep::search(
-                &root,
-                &pattern,
-                filter_path.as_deref(),
-                fetch_limit,
-                excludes,
-            )?;
-            let matches: Vec<_> = matches
-                .into_iter()
-                .filter(|m| {
-                    path_scope.accept(&m.path)
-                        && changed_paths.as_ref().is_none_or(|cp| cp.contains(&m.path))
-                })
-                .take(limit)
-                .collect();
-
-            match &format {
-                OutputFormat::Json => {
-                    let json: Vec<serde_json::Value> = matches
-                        .iter()
-                        .map(|m| {
-                            serde_json::json!({
-                                "path": m.path,
-                                "line": m.line,
-                                "text": m.text,
-                            })
-                        })
-                        .collect();
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
-                OutputFormat::Text => {
-                    if matches.is_empty() {
-                        println!("No matches for \"{pattern}\"");
-                    } else {
-                        println!("{} matches\n", matches.len());
-                        for m in &matches {
-                            println!("{}:{}", m.path, m.line);
-                            println!("  {}", m.text);
-                        }
-                    }
-                }
-                OutputFormat::Compact => {
-                    for m in &matches {
-                        println!("{}:{}  {}", m.path, m.line, m.text);
-                    }
-                }
-            }
-            Ok(())
-        }
+        } => cmd_grep::grep(
+            pattern,
+            limit,
+            filter_path,
+            path,
+            scope,
+            diff,
+            &format,
+            excludes,
+        ),
         Commands::Implementations {
             name,
             path,
@@ -1203,17 +1092,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             path,
             limit,
             scope,
-        } => {
-            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
-            let root = resolve_root(path)?.canonicalize()?;
-            let changes = crate::diff::diff_against_base(&root, &base, excludes, limit)?;
-            let changes: Vec<_> = changes
-                .into_iter()
-                .filter(|c| path_scope.accept(&c.path))
-                .collect();
-            output::print_diff(&changes, &base, &format);
-            Ok(())
-        }
+        } => cmd_diff::diff(base, path, limit, scope, &format, excludes),
         Commands::Paths {
             from,
             to,
@@ -1342,70 +1221,15 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             path,
             auto_update,
             no_stale_check,
-        } => {
-            let root = resolve_root(path)?.canonicalize()?;
-            let index_path = ensure_index_ready(
-                &root,
-                auto_update,
-                no_stale_check,
-                false,
-                local_cache_active,
-                &cfg,
-            )?;
-
-            let reader = IndexReader::open(&index_path).context("open index")?;
-
-            // Case-insensitive exact match: FST candidates filtered by actual name
-            let results: Vec<(String, bool)> = if let Some(fst) = reader.symbol_fst_reader() {
-                names
-                    .iter()
-                    .map(|n| {
-                        let lower = n.to_lowercase();
-                        let found = fst.find(n).iter().any(|&idx| {
-                            reader
-                                .symbol(idx as usize)
-                                .map(|r| reader.read_string(r.name_offset).to_lowercase() == lower)
-                                .unwrap_or(false)
-                        });
-                        (n.clone(), found)
-                    })
-                    .collect()
-            } else {
-                // Fallback: build lowercased set for consistent case-insensitive matching
-                let all_lower: std::collections::HashSet<String> = (0..reader.symbol_count())
-                    .filter_map(|i| {
-                        let rec = reader.symbol(i)?;
-                        let name = reader.read_string(rec.name_offset);
-                        if name.is_empty() {
-                            None
-                        } else {
-                            Some(name.to_lowercase())
-                        }
-                    })
-                    .collect();
-                names
-                    .iter()
-                    .map(|n| (n.clone(), all_lower.contains(&n.to_lowercase())))
-                    .collect()
-            };
-
-            match &format {
-                OutputFormat::Json => {
-                    let json: serde_json::Value = results
-                        .iter()
-                        .map(|(name, found)| serde_json::json!({ "name": name, "exists": found }))
-                        .collect();
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
-                OutputFormat::Text | OutputFormat::Compact => {
-                    for (name, found) in &results {
-                        let mark = if *found { "+" } else { "-" };
-                        println!("{mark} {name}");
-                    }
-                }
-            }
-            Ok(())
-        }
+        } => cmd_check::check(
+            names,
+            path,
+            auto_update,
+            no_stale_check,
+            local_cache_active,
+            &cfg,
+            &format,
+        ),
 
         Commands::Similar {
             name,
@@ -1685,38 +1509,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
 
-        Commands::Completions { shell } => {
-            let mut cmd = Cli::command();
-            let name = cmd.get_name().to_owned();
-            clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
-            Ok(())
-        }
-
-        Commands::Init => {
-            let path = std::env::current_dir()
-                .context("get working directory")?
-                .join(".vex.toml");
-            if path.exists() {
-                bail!(".vex.toml already exists at {}", path.display());
-            }
-            std::fs::write(&path, config::DEFAULT_CONFIG)
-                .with_context(|| format!("write {}", path.display()))?;
-            println!("Created {}", path.display());
-            Ok(())
-        }
-
-        Commands::Capabilities => {
-            // Pretty-print the v1 protocol envelope so MCP clients (and humans
-            // doing capability negotiation by hand) can read it directly. Keep
-            // the shape stable: a top-level `protocol_version` and a
-            // `capabilities` block — see `src/protocol/mod.rs`.
-            let body = serde_json::json!({
-                "protocol_version": crate::protocol::PROTOCOL_VERSION,
-                "capabilities": crate::protocol::capabilities::current(),
-            });
-            println!("{}", serde_json::to_string_pretty(&body)?);
-            Ok(())
-        }
+        Commands::Completions { shell } => cmd_trivial::completions(shell),
+        Commands::Init => cmd_trivial::init(),
+        Commands::Capabilities => cmd_trivial::capabilities(),
 
         Commands::Eval {
             bench,
