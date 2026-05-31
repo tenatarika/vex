@@ -15,13 +15,19 @@
 //! call this thing". Documented as `scoring: "reverse_indegree"` in
 //! `mode_hints` and labelled experimental in the CLI help.
 //!
-//! ## Identity caveat
+//! ## Identity caveat (H12, post-v1.10.1)
 //!
-//! Same caveat as `bfs.rs:13-23` — call edges store callee identity by
-//! *name string* (resolved via the symbol FST). Two symbols sharing a
-//! name across files collapse into one indegree count; we pick the
-//! first FST hit as the representative `sym_idx`. Worth revisiting if
-//! the eval harness shows this distorts top-N noticeably.
+//! Call edges store callee identity by *name string* (resolved via the
+//! symbol FST). Two symbols sharing a name across files (e.g. `init`,
+//! `from`, `parse`, `new`) cannot be distinguished by edge data alone
+//! without type-aware dispatch resolution. **H12 fix**: instead of
+//! emitting one row per name (picking the first FST hit as the
+//! representative), we emit one row per `(name, sym_idx)` pair — every
+//! definition that shares a name gets its own ranking slot. The
+//! caller count is the same upper-bound for each slot, because the
+//! edges don't carry enough type info to apportion callers between
+//! definitions; the trade-off is "show the same upper bound twice"
+//! over "silently hide the second definition".
 
 use std::collections::{HashMap, HashSet};
 
@@ -79,25 +85,21 @@ pub fn top_n_by_indegree(
         by_name.entry(name).or_default().insert(edge.caller_sym_idx);
     }
 
-    // Step 2 — resolve each name to a representative `sym_idx` via the
+    // Step 2 — resolve each name to ALL matching definitions via the
     // symbol FST. Names with no FST hit are dropped (the callee isn't
     // a defined symbol in this index — e.g. a stdlib function or a
     // method on a non-tracked type). FST returns lowercase keys, so we
     // lowercase before lookup.
+    //
+    // H12: emit one row per `(name, sym_idx)` pair. Pre-H12 only the
+    // first FST hit was kept, which silently hid every other definition
+    // sharing the name from the ranking (collapsing `A::init` and
+    // `B::init` into a single slot). See module-doc "Identity caveat"
+    // for the upper-bound caller-count rationale.
     let Some(fst) = reader.symbol_fst_reader() else {
         return IndegreeReport::default();
     };
-    let mut rows: Vec<IndegreeRow> = Vec::new();
-    for (name, callers) in by_name {
-        let indices = fst.find(&name.to_lowercase());
-        let Some(&sym_idx) = indices.first() else {
-            continue;
-        };
-        rows.push(IndegreeRow {
-            sym_idx,
-            indegree: callers.len() as u32,
-        });
-    }
+    let mut rows = resolve_indegree_rows(by_name, |n| fst.find(n));
 
     let total_ranked = rows.len();
 
@@ -121,6 +123,30 @@ pub fn top_n_by_indegree(
     rows.truncate(top_n);
 
     IndegreeReport { rows, total_ranked }
+}
+
+/// Pure helper extracted from [`top_n_by_indegree`] so the H12 contract
+/// (one row per `(name, sym_idx)` pair, full caller count per row) is
+/// unit-testable without spinning up a real [`IndexReader`].
+///
+/// `fst_lookup` mirrors `SymbolFstReader::find` — the caller passes a
+/// closure that resolves a lowercased name to a list of symbol indices.
+fn resolve_indegree_rows(
+    by_name: HashMap<String, HashSet<u32>>,
+    fst_lookup: impl Fn(&str) -> Vec<u32>,
+) -> Vec<IndegreeRow> {
+    let mut rows = Vec::with_capacity(by_name.len());
+    for (name, callers) in by_name {
+        let indices = fst_lookup(&name.to_lowercase());
+        if indices.is_empty() {
+            continue;
+        }
+        let indegree = callers.len() as u32;
+        for sym_idx in indices {
+            rows.push(IndegreeRow { sym_idx, indegree });
+        }
+    }
+    rows
 }
 
 #[cfg(test)]
@@ -163,5 +189,46 @@ mod tests {
         let r = IndegreeReport::default();
         assert!(r.rows.is_empty());
         assert_eq!(r.total_ranked, 0);
+    }
+
+    // ---- H12: one row per (name, sym_idx) ----
+
+    #[test]
+    fn h12_two_definitions_with_same_name_both_emit_rows() {
+        // Two callee names; "init" has two definitions (FST returns
+        // sym_idx 10 and 20), "foo" has one (sym_idx 30). Pre-H12 only
+        // sym_idx 10 would appear in rows; post-H12 both 10 and 20
+        // appear, each carrying the full caller-count upper bound.
+        let mut by_name: HashMap<String, HashSet<u32>> = HashMap::new();
+        by_name.insert("init".into(), [1u32, 2, 3].into_iter().collect());
+        by_name.insert("foo".into(), [4u32].into_iter().collect());
+
+        let rows = resolve_indegree_rows(by_name, |n| match n {
+            "init" => vec![10, 20],
+            "foo" => vec![30],
+            _ => vec![],
+        });
+
+        let mut by_idx: HashMap<u32, u32> = rows.iter().map(|r| (r.sym_idx, r.indegree)).collect();
+        assert_eq!(
+            by_idx.remove(&10),
+            Some(3),
+            "init's first definition must get the full upper-bound count"
+        );
+        assert_eq!(
+            by_idx.remove(&20),
+            Some(3),
+            "init's second definition must ALSO appear (pre-H12 was hidden)"
+        );
+        assert_eq!(by_idx.remove(&30), Some(1));
+        assert!(by_idx.is_empty(), "no extra rows: {by_idx:?}");
+    }
+
+    #[test]
+    fn h12_name_with_no_fst_hit_is_skipped() {
+        let mut by_name: HashMap<String, HashSet<u32>> = HashMap::new();
+        by_name.insert("std_unknown".into(), [1u32].into_iter().collect());
+        let rows = resolve_indegree_rows(by_name, |_| vec![]);
+        assert!(rows.is_empty(), "unresolved name must not produce a row");
     }
 }
