@@ -332,14 +332,48 @@ fn extract_body_tokens(def_node: tree_sitter::Node, content: &str) -> Option<Str
             | "field_identifier"
             | "property_identifier"
             | "attribute"
-            | "shorthand_field_identifier" => {
+            | "shorthand_field_identifier"
+            // Phase 8.4 — config-language identifier-style leaves so
+            // semantic search can match against TOML keys, HTML tags /
+            // attributes, CSS selectors / properties / keyframe names,
+            // and YAML mapping keys. Pre-8.4 these produced
+            // `body_tokens = None`, leaving the semantic channel
+            // blind to config-file content.
+            | "bare_key"
+            | "dotted_key"
+            | "quoted_key"
+            | "attribute_name"
+            | "tag_name"
+            | "property_name"
+            | "class_name"
+            | "id_name"
+            | "keyframes_name"
+            | "string_scalar"
+            | "plain_scalar" => {
                 // content is guaranteed UTF-8 by read_to_string
                 let text = node.utf8_text(content.as_bytes()).unwrap_or_default();
                 if text.len() > 1 && !is_keyword(text) && seen.insert(text.to_string()) {
                     tokens.push(text.to_string());
                 }
             }
-            "string_content" | "string_fragment" => {
+            "string_content"
+            | "string_fragment"
+            // Phase 8.4 — config-language string/value leaves. Split
+            // by whitespace + filter to alphanumeric+`_` words so
+            // free-text TOML/YAML/HTML/CSS values become searchable
+            // ("endpoint = \"https://prod.example.com\"" tokenises to
+            // `endpoint`, `https`, `prod`, `example`, `com`). `"string"`
+            // (bare) is what `tree-sitter-toml-ng` emits for string
+            // values — other languages use `string_literal` /
+            // `string_content` parent shapes so the bare leaf does not
+            // collide.
+            | "string"
+            | "attribute_value"
+            | "quoted_attribute_value"
+            | "single_quote_scalar"
+            | "double_quote_scalar"
+            | "plain_value"
+            | "string_value" => {
                 let text = node.utf8_text(content.as_bytes()).unwrap_or_default();
                 for word in text.split_whitespace() {
                     let clean: String = word
@@ -607,6 +641,40 @@ mod tests {
 
     fn symbols(src: &str, lang: Language) -> Vec<ParsedSymbol> {
         extract_symbols_and_imports(src, lang).unwrap().0
+    }
+
+    /// Phase 8.4 — assert that at least one symbol from `lang`'s parse
+    /// of `src` carries a non-empty `body_tokens`, AND that the tokens
+    /// include each of the `expected_substrings`. Pre-8.4 these were
+    /// all `None` because the extractor only matched code-language
+    /// AST leaves.
+    #[track_caller]
+    fn assert_body_tokens_contain(src: &str, lang: Language, expected: &[&str]) {
+        let syms = symbols(src, lang);
+        let with_tokens: Vec<(&str, &str)> = syms
+            .iter()
+            .filter_map(|s| s.body_tokens.as_deref().map(|t| (s.name.as_str(), t)))
+            .collect();
+        assert!(
+            !with_tokens.is_empty(),
+            "expected at least one {:?} symbol with body_tokens populated; got: {:?}",
+            lang,
+            syms.iter()
+                .map(|s| (&s.name, &s.body_tokens))
+                .collect::<Vec<_>>()
+        );
+        let joined: String = with_tokens
+            .iter()
+            .map(|(_, t)| *t)
+            .collect::<Vec<_>>()
+            .join(" ");
+        for needle in expected {
+            assert!(
+                joined.contains(needle),
+                "{:?} body_tokens must include `{needle}`; got: `{joined}`",
+                lang
+            );
+        }
     }
 
     fn import_names(src: &str, lang: Language) -> Vec<String> {
@@ -1011,5 +1079,53 @@ mod tests {
         // `result` and `items` are bare lowercase and should be skipped.
         assert!(!captured.iter().any(|n| n == "result"));
         assert!(!captured.iter().any(|n| n == "items"));
+    }
+
+    // --- Phase 8.4: body tokens for config languages ---
+
+    #[test]
+    fn phase_8_4_toml_body_tokens_include_keys_and_string_values() {
+        // `[server]` table groups two keys: `endpoint` (string URL) and
+        // `port` (number). Semantic search should be able to find this
+        // section by querying for "production endpoint" — pre-8.4 the
+        // body_tokens were None so the semantic channel was blind.
+        let src = "[server]\nendpoint = \"https://prod.example.com/api\"\nport = 8080\n";
+        assert_body_tokens_contain(
+            src,
+            Language::Toml,
+            &["endpoint", "https", "prod", "example"],
+        );
+    }
+
+    #[test]
+    fn phase_8_4_yaml_body_tokens_include_top_level_key() {
+        // YAML's SCM captures only top-level mapping keys (see
+        // `queries/yaml.scm`), and the captured node's `parent()` is
+        // `plain_scalar` — which holds only the key text, not the
+        // mapping value. So Phase 8.4's win for YAML is "the key is
+        // searchable at all" rather than "key + value." Pre-8.4 even
+        // the key was lost because `plain_scalar` produced no tokens.
+        let src = "server:\n  endpoint: https://prod.example.com/api\n  port: 8080\n";
+        assert_body_tokens_contain(src, Language::Yaml, &["server"]);
+    }
+
+    #[test]
+    fn phase_8_4_html_body_tokens_include_tag_attribute_and_value() {
+        // Custom element with an `id` attribute — both the element name
+        // and the id value should be searchable.
+        let src = "<my-component id=\"user-profile-card\"></my-component>";
+        assert_body_tokens_contain(
+            src,
+            Language::Html,
+            &["my", "component", "user", "profile", "card"],
+        );
+    }
+
+    #[test]
+    fn phase_8_4_css_body_tokens_include_class_and_property_names() {
+        // @keyframes block — both the keyframe name and the declarations
+        // inside (`property_name`, `plain_value`) should surface.
+        let src = "@keyframes slide-in {\n  from { transform: translateX(-100%); }\n  to { transform: translateX(0); }\n}\n";
+        assert_body_tokens_contain(src, Language::Css, &["slide"]);
     }
 }
