@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **H4 — `vex pattern` ellipsis termination is now depth-aware.** Pre-H4
+  the `$$$BODY` / `$$$NAME` / `$$$` forward-scan called `str::find`, so a
+  pattern like `class $T { $$$BODY }` truncated `BODY` at the FIRST `}`
+  in source — fatally for bodies containing nested blocks (`{ get; set; }`,
+  inner method bodies) or string literals with `}` (e.g. `let s = "}";`).
+  The scanner now tracks `() {} []` nesting and skips over double-quoted
+  `"..."` string regions (with `\` escape), stopping at the *balancing*
+  closer of the outer bracket. The `csharp_class_body` fixture now exercises
+  a realistic auto-property body. Remaining limits (documented in
+  `src/pattern/matcher.rs` module doc): single-quote strings (`'...'`),
+  raw strings (`r#"..."#`, `R"(...)"`), triple-quoted strings, and
+  bracket-containing comments. Full AST descent inside `try_match` is
+  filed as a v2 follow-up.
+
 ## [1.10.1] - 2026-05-29
 
 v1.10.1 is a small patch on top of v1.10.0. It flips the CLI's default output
