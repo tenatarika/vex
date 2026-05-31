@@ -10,6 +10,8 @@ use anyhow::{Context, Result};
 
 use super::args::{self, Commands, OutputFormat};
 use super::scope;
+use crate::index::manifest::Manifest;
+use crate::index::pipeline;
 use crate::util::config;
 
 pub(crate) fn resolve_root(path: Option<std::path::PathBuf>) -> Result<std::path::PathBuf> {
@@ -210,6 +212,40 @@ pub(crate) fn build_metadata_filter(
         static_required,
         sealed_required,
     })
+}
+
+/// Build a `pipeline::IndexOptions` from the three CLI no-flags + config
+/// + an optional prior manifest.
+///
+/// `manifest: None` means "this is a fresh `vex index` and there is no
+/// prior manifest to consult" — section precedence collapses to
+/// CLI flag > config > default(true).
+///
+/// Centralising this in one place keeps the Index / Update / Watch arms
+/// (S1 Group C) from duplicating the 3-line `with_call_graph: ...,
+/// with_bm25: ..., with_pattern_index: ...` construction.
+pub(crate) fn build_index_options(
+    with_semantic: bool,
+    no_call_graph: bool,
+    no_bm25: bool,
+    no_pattern_index: bool,
+    cfg: &config::VexConfig,
+    manifest: Option<&Manifest>,
+) -> pipeline::IndexOptions {
+    pipeline::IndexOptions {
+        with_embeddings: with_semantic,
+        with_call_graph: resolve_section_enabled(
+            no_call_graph,
+            cfg.call_graph,
+            manifest.and_then(|m| m.call_graph),
+        ),
+        with_bm25: resolve_section_enabled(no_bm25, cfg.bm25, manifest.and_then(|m| m.bm25)),
+        with_pattern_index: resolve_section_enabled(
+            no_pattern_index,
+            cfg.pattern_index,
+            manifest.and_then(|m| m.pattern_index),
+        ),
+    }
 }
 
 pub(crate) fn apply_path_filters(

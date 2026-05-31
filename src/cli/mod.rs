@@ -5,10 +5,13 @@ pub(crate) mod cmd_check;
 pub(crate) mod cmd_diff;
 pub(crate) mod cmd_eval;
 pub(crate) mod cmd_grep;
+pub(crate) mod cmd_index;
 pub(crate) mod cmd_outline;
 pub(crate) mod cmd_self_update;
 pub(crate) mod cmd_status;
 pub(crate) mod cmd_trivial;
+pub(crate) mod cmd_update;
+pub(crate) mod cmd_watch;
 pub mod common;
 pub(crate) mod index_management;
 pub mod output;
@@ -25,12 +28,10 @@ use args::{Cli, Commands, OutputFormat};
 use common::{
     apply_path_filters, build_metadata_filter, check_embedder_match, diff_filter_meta,
     extract_jobs_hint, extract_path_hint, fetch_symbol_body, resolve_diff_filter, resolve_embedder,
-    resolve_format, resolve_root, resolve_section_enabled, resolve_semantic,
-    EXPLAIN_MAX_DIFF_LINES,
+    resolve_format, resolve_root, resolve_semantic, EXPLAIN_MAX_DIFF_LINES,
 };
 use index_management::{ensure_index_ready, handle_staleness};
 
-use crate::index::pipeline;
 use crate::search::{fusion, semantic, structural};
 use crate::store::reader::IndexReader;
 use crate::util::config;
@@ -78,53 +79,20 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_call_graph,
             no_bm25,
             no_pattern_index,
-        } => {
-            let root = resolve_root(path)?;
-            let start = Instant::now();
-            let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
-            let embedder_id = resolve_embedder(embedder.as_deref(), &cfg);
-            let _ = jobs; // honoured via dispatch-level rayon init
-            if local_cache_active {
-                let cache_root = config::index_dir(&root);
-                std::fs::create_dir_all(&cache_root).ok();
-                config::write_local_cache_gitignore(&cache_root);
-            }
-            // Fresh `vex index` ignores any prior manifest (it's about to
-            // be overwritten). CLI flag > .vex.toml > default(true).
-            let opts = pipeline::IndexOptions {
-                with_embeddings: with_semantic,
-                with_call_graph: resolve_section_enabled(no_call_graph, cfg.call_graph, None),
-                with_bm25: resolve_section_enabled(no_bm25, cfg.bm25, None),
-                with_pattern_index: resolve_section_enabled(
-                    no_pattern_index,
-                    cfg.pattern_index,
-                    None,
-                ),
-            };
-            let count = pipeline::run(&root, opts, &embedder_id, excludes)?;
-            let elapsed = start.elapsed();
-            let index_path = config::index_path(&root.canonicalize()?);
-
-            match &format {
-                OutputFormat::Json => {
-                    let json = serde_json::json!({
-                        "symbols": count,
-                        "elapsed_ms": elapsed.as_millis(),
-                        "embeddings": with_semantic,
-                        "index": index_path.to_string_lossy(),
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
-                OutputFormat::Text | OutputFormat::Compact => {
-                    println!("Indexed {count} symbols in {elapsed:.2?}");
-                    if with_semantic {
-                        println!("Embeddings: enabled");
-                    }
-                    println!("Index: {}", index_path.display());
-                }
-            }
-            Ok(())
-        }
+        } => cmd_index::index(
+            path,
+            semantic,
+            no_semantic,
+            embedder,
+            jobs,
+            no_call_graph,
+            no_bm25,
+            no_pattern_index,
+            local_cache_active,
+            &cfg,
+            &format,
+            excludes,
+        ),
         Commands::Search {
             query,
             limit,
@@ -646,62 +614,19 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_call_graph,
             no_bm25,
             no_pattern_index,
-        } => {
-            // Canonicalize once at the top so `prior_manifest`'s lookup
-            // path matches the one `pipeline::update` uses internally —
-            // a divergent path would map to a different cache subdir and
-            // silently drop the sticky-opt-out invariant.
-            let root = resolve_root(path)?
-                .canonicalize()
-                .context("canonicalize project root")?;
-            let start = Instant::now();
-            let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
-            let embedder_id = resolve_embedder(embedder.as_deref(), &cfg);
-            let _ = jobs; // honoured via dispatch-level rayon init
-                          // `update` consults the previous manifest so an unflagged call
-                          // does not silently re-add a section the user opted out of.
-                          // Surface real load errors via `?` — `Manifest::load` already
-                          // returns `Ok(default)` for the missing-file case, so any `Err`
-                          // here is a parse or IO failure we must not swallow.
-            let prior_manifest =
-                crate::index::manifest::Manifest::load(&config::manifest_path(&root))?;
-            let opts = pipeline::IndexOptions {
-                with_embeddings: with_semantic,
-                with_call_graph: resolve_section_enabled(
-                    no_call_graph,
-                    cfg.call_graph,
-                    prior_manifest.call_graph,
-                ),
-                with_bm25: resolve_section_enabled(no_bm25, cfg.bm25, prior_manifest.bm25),
-                with_pattern_index: resolve_section_enabled(
-                    no_pattern_index,
-                    cfg.pattern_index,
-                    prior_manifest.pattern_index,
-                ),
-            };
-            let (total, changed, deleted) = pipeline::update(&root, opts, &embedder_id, excludes)?;
-            let elapsed = start.elapsed();
-
-            match &format {
-                OutputFormat::Json => {
-                    let json = serde_json::json!({
-                        "symbols": total,
-                        "changed": changed,
-                        "deleted": deleted,
-                        "elapsed_ms": elapsed.as_millis(),
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
-                OutputFormat::Text | OutputFormat::Compact => {
-                    if changed == 0 && deleted == 0 {
-                        println!("Index up to date ({total} symbols)");
-                    } else {
-                        println!("Updated in {elapsed:.2?}: {changed} changed, {deleted} deleted, {total} total symbols");
-                    }
-                }
-            }
-            Ok(())
-        }
+        } => cmd_update::update(
+            path,
+            semantic,
+            no_semantic,
+            embedder,
+            jobs,
+            no_call_graph,
+            no_bm25,
+            no_pattern_index,
+            &cfg,
+            &format,
+            excludes,
+        ),
         Commands::Outline { file, kind } => {
             cmd_outline::cmd_outline(&file, kind.as_deref(), &format)
         }
@@ -714,38 +639,18 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_call_graph,
             no_bm25,
             no_pattern_index,
-        } => {
-            // Canonicalize once (see Update arm) so the manifest lookup
-            // matches what `pipeline::run/update` will use.
-            let root = resolve_root(path)?
-                .canonicalize()
-                .context("canonicalize project root")?;
-            let with_semantic = resolve_semantic(semantic, no_semantic, &cfg);
-            let embedder_id = resolve_embedder(embedder.as_deref(), &cfg);
-            let _ = jobs; // honoured via dispatch-level rayon init
-                          // Watch builds the initial index AND subsequent incremental
-                          // updates inside one long-running process. Both should use
-                          // the same composition. Real load errors surface via `?` —
-                          // `Manifest::load` already maps "file missing" to default.
-            let prior_manifest =
-                crate::index::manifest::Manifest::load(&config::manifest_path(&root))?;
-            let opts = pipeline::IndexOptions {
-                with_embeddings: with_semantic,
-                with_call_graph: resolve_section_enabled(
-                    no_call_graph,
-                    cfg.call_graph,
-                    prior_manifest.call_graph,
-                ),
-                with_bm25: resolve_section_enabled(no_bm25, cfg.bm25, prior_manifest.bm25),
-                with_pattern_index: resolve_section_enabled(
-                    no_pattern_index,
-                    cfg.pattern_index,
-                    prior_manifest.pattern_index,
-                ),
-            };
-            crate::watch::handler::watch(&root, opts, &embedder_id, excludes)?;
-            Ok(())
-        }
+        } => cmd_watch::watch(
+            path,
+            semantic,
+            no_semantic,
+            embedder,
+            jobs,
+            no_call_graph,
+            no_bm25,
+            no_pattern_index,
+            &cfg,
+            excludes,
+        ),
         Commands::Show {
             symbols,
             limit,

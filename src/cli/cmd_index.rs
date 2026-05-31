@@ -1,0 +1,70 @@
+//! `vex index` — one-shot index build from scratch. Extracted from
+//! `cli/mod.rs` in S1 Group C.
+
+use std::time::Instant;
+
+use anyhow::Result;
+
+use super::args::OutputFormat;
+use super::common::{build_index_options, resolve_embedder, resolve_root, resolve_semantic};
+use crate::index::pipeline;
+use crate::util::config;
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn index(
+    path: Option<std::path::PathBuf>,
+    semantic: bool,
+    no_semantic: bool,
+    embedder: Option<String>,
+    _jobs: Option<usize>,
+    no_call_graph: bool,
+    no_bm25: bool,
+    no_pattern_index: bool,
+    local_cache_active: bool,
+    cfg: &config::VexConfig,
+    format: &OutputFormat,
+    excludes: &[String],
+) -> Result<()> {
+    let root = resolve_root(path)?;
+    let start = Instant::now();
+    let with_semantic = resolve_semantic(semantic, no_semantic, cfg);
+    let embedder_id = resolve_embedder(embedder.as_deref(), cfg);
+    if local_cache_active {
+        let cache_root = config::index_dir(&root);
+        std::fs::create_dir_all(&cache_root).ok();
+        config::write_local_cache_gitignore(&cache_root);
+    }
+    // Fresh `vex index` ignores any prior manifest (it's about to be
+    // overwritten). CLI flag > .vex.toml > default(true).
+    let opts = build_index_options(
+        with_semantic,
+        no_call_graph,
+        no_bm25,
+        no_pattern_index,
+        cfg,
+        None,
+    );
+    let count = pipeline::run(&root, opts, &embedder_id, excludes)?;
+    let elapsed = start.elapsed();
+    let index_path = config::index_path(&root.canonicalize()?);
+
+    match format {
+        OutputFormat::Json => {
+            let json = serde_json::json!({
+                "symbols": count,
+                "elapsed_ms": elapsed.as_millis(),
+                "embeddings": with_semantic,
+                "index": index_path.to_string_lossy(),
+            });
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        }
+        OutputFormat::Text | OutputFormat::Compact => {
+            println!("Indexed {count} symbols in {elapsed:.2?}");
+            if with_semantic {
+                println!("Embeddings: enabled");
+            }
+            println!("Index: {}", index_path.display());
+        }
+    }
+    Ok(())
+}
