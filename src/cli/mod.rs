@@ -1,5 +1,9 @@
 pub mod args;
 pub mod cmd_bundle;
+pub(crate) mod cmd_callgraph;
+pub(crate) mod cmd_eval;
+pub(crate) mod cmd_outline;
+pub(crate) mod cmd_self_update;
 pub mod common;
 pub(crate) mod index_management;
 pub mod output;
@@ -20,7 +24,7 @@ use common::{
     resolve_format, resolve_root, resolve_section_enabled, resolve_semantic,
     EXPLAIN_MAX_DIFF_LINES,
 };
-use index_management::{ensure_index_exists, ensure_index_ready, handle_staleness};
+use index_management::{ensure_index_ready, handle_staleness};
 
 use crate::index::pipeline;
 use crate::search::{fusion, semantic, structural};
@@ -694,7 +698,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Commands::Outline { file, kind } => cmd_outline(&file, kind.as_deref(), &format),
+        Commands::Outline { file, kind } => {
+            cmd_outline::cmd_outline(&file, kind.as_deref(), &format)
+        }
         Commands::Watch {
             path,
             semantic,
@@ -1152,7 +1158,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             diff,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
-            cmd_callgraph(
+            cmd_callgraph::cmd_callgraph(
                 &name,
                 path,
                 limit,
@@ -1177,7 +1183,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             diff,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
-            cmd_callgraph(
+            cmd_callgraph::cmd_callgraph(
                 &name,
                 path,
                 limit,
@@ -1717,7 +1723,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             min_ndcg,
             path,
             json,
-        } => cmd_eval(
+        } => cmd_eval::cmd_eval(
             path,
             bench,
             min_ndcg,
@@ -1788,376 +1794,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         Commands::SelfUpdate { check, yes } => {
             // Named at the call site so a future refactor cannot silently
             // swap the two boolean positional args.
-            cmd_self_update(/*check_only=*/ check, /*no_confirm=*/ yes)
-        }
-    }
-}
-
-/// Phase 13.12 — `vex eval` handler. Stays in `cli/mod.rs` instead of
-/// a dedicated `cli/eval.rs` for now: the body is ~40 LOC and depends
-/// on the same `ensure_index_ready` / config plumbing every other
-/// command uses, so co-locating saves a round of import threading.
-fn cmd_eval(
-    path: Option<std::path::PathBuf>,
-    bench: Option<std::path::PathBuf>,
-    min_ndcg: f64,
-    json: bool,
-    local_cache_active: bool,
-    cfg: &config::VexConfig,
-    format: &OutputFormat,
-) -> Result<()> {
-    let root = resolve_root(path)?.canonicalize()?;
-
-    // Resolve the golden set. Default: `<root>/benches/ranking_golden/queries.toml`
-    // when running inside the vex source tree; otherwise the caller must
-    // pass `--bench` explicitly. We don't `include_str!` the bundled set
-    // because cross-repo callers should always author their own.
-    let bench_path = match bench {
-        Some(p) => p,
-        None => root.join("benches/ranking_golden/queries.toml"),
-    };
-    if !bench_path.exists() {
-        bail!(
-            "golden set not found at {}\n\nPass `--bench <PATH>` or run from \
-             the vex source tree. See docs/RANKING-EVAL.md for the schema.",
-            bench_path.display()
-        );
-    }
-
-    let set = crate::eval::harness::GoldenSet::from_path(&bench_path)?;
-
-    // Eval consumes whatever index already exists at `root`. We use the
-    // same staleness/bootstrap helper every other read-side command
-    // uses; passing `false` for both auto-update flags keeps the
-    // command non-destructive — eval surfaces "no index" as an error
-    // instead of silently rebuilding.
-    let index_path = ensure_index_ready(
-        &root,
-        /*auto_update_flag=*/ false,
-        /*no_stale_check=*/ true,
-        /*needs_semantic=*/ false,
-        local_cache_active,
-        cfg,
-    )?;
-    let reader = IndexReader::open(&index_path).context("open index")?;
-
-    let report = crate::eval::harness::run(&reader, &set)?;
-
-    // JSON mode is opt-in via `--json` so the default --format=text
-    // experience stays human-readable. The global `--format json`
-    // also flips the switch for tooling consistency with other
-    // subcommands.
-    let emit_json = json || matches!(format, OutputFormat::Json);
-    if emit_json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        crate::eval::harness::print_text_report(&report);
-    }
-
-    if report.mean_ndcg < min_ndcg {
-        // Non-zero exit so CI / shell scripts can branch on the
-        // threshold. Use anyhow::bail so the error message surfaces
-        // via the standard CLI error formatter.
-        bail!(
-            "mean nDCG@{} {:.4} dropped below --min-ndcg threshold {:.4}",
-            report.k,
-            report.mean_ndcg,
-            min_ndcg,
-        );
-    }
-    Ok(())
-}
-
-/// ed25519 public key used to verify release archives signed in CI via
-/// `zipsign`. Anyone modifying this MUST also rotate the corresponding
-/// private key stored in the `ZIPSIGN_PRIVATE_KEY` GitHub Secret —
-/// otherwise every subsequent release will fail to verify on update.
-///
-/// Generation: `zipsign gen-key vex.priv vex.pub`. The 32 bytes below
-/// are the raw contents of `vex.pub`.
-const VEX_RELEASE_PUBKEY: &[u8] = &[
-    0x03, 0x9e, 0x75, 0x96, 0xbe, 0x60, 0xaf, 0x61, 0xdf, 0xdf, 0xb7, 0x93, 0x07, 0xc3, 0x2e, 0x95,
-    0x38, 0xc9, 0x35, 0xc0, 0xe2, 0x05, 0xcc, 0x9d, 0x0e, 0x31, 0xf9, 0x66, 0x7d, 0xa6, 0x49, 0x51,
-];
-
-// S5 — compile-time guard. ed25519 public keys are exactly 32 bytes; if
-// someone edits `VEX_RELEASE_PUBKEY` above and the byte count drifts,
-// the build fails with this message instead of panicking at runtime
-// inside `cmd_self_update`. Replaces the previous
-// `.expect("VEX_RELEASE_PUBKEY must be 32 bytes")` runtime check.
-const _: () = assert!(
-    VEX_RELEASE_PUBKEY.len() == 32,
-    "VEX_RELEASE_PUBKEY must be exactly 32 bytes (ed25519 public key)"
-);
-
-/// Update the running binary from the latest GitHub release. The
-/// self_update crate handles platform detection (target triple), archive
-/// download, ed25519 signature verification, atomic file replacement,
-/// and Windows-specific in-use-binary swap via a temp rename.
-fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> {
-    let current = env!("CARGO_PKG_VERSION");
-    // SAFETY of the `try_into` below: the byte count is asserted at
-    // compile time by the `const _: () = assert!(...)` above. The
-    // `unwrap()` here is provably unreachable — if the slice were the
-    // wrong length, the crate wouldn't compile.
-    let pubkey: [u8; 32] = VEX_RELEASE_PUBKEY
-        .try_into()
-        .expect("checked at compile time");
-    let status = self_update::backends::github::Update::configure()
-        .repo_owner("tenatarika")
-        .repo_name("vex")
-        .bin_name("vex")
-        .current_version(current)
-        .show_download_progress(true)
-        .no_confirm(no_confirm)
-        .verifying_keys([pubkey])
-        .build()
-        .context("configure self-update client")?;
-
-    if check_only {
-        let release = status
-            .get_latest_release()
-            .context("fetch latest release from GitHub (offline or rate-limited?)")?;
-        let latest = release.version.as_str();
-        if latest == current {
-            println!("vex is up to date ({current}).");
-            return Ok(());
-        }
-        // Surface a semver parse failure as an error rather than silently
-        // mis-reporting direction — a release tagged with an unexpected
-        // prefix would otherwise produce a confusing "no action needed".
-        let newer = self_update::version::bump_is_greater(current, latest)
-            .with_context(|| format!("could not compare versions {current:?} and {latest:?}"))?;
-        if newer {
-            println!(
-                "Update available: {current} → {latest} ({}).\nRun `vex self-update` (omit --check) to install.",
-                release.name
-            );
-        } else {
-            // Local build ahead of GitHub (e.g. a dev branch). Don't
-            // pretend an update is needed — just report what's out there.
-            println!("Latest release: {latest} (current: {current} — newer, no action needed).");
-        }
-        return Ok(());
-    }
-
-    let result = status.update().context("apply self-update")?;
-    match result {
-        self_update::Status::UpToDate(v) => println!("vex is already up to date ({v})."),
-        self_update::Status::Updated(v) => println!("Updated to vex {v}. Restart any open shells."),
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn cmd_callgraph(
-    name: &str,
-    path: Option<std::path::PathBuf>,
-    limit: usize,
-    is_callers: bool,
-    auto_update: bool,
-    no_stale_check: bool,
-    local_cache_active: bool,
-    cfg: &config::VexConfig,
-    format: &OutputFormat,
-    excludes: &[String],
-    path_scope: &scope::PathScope,
-    diff: &args::DiffFilterArgs,
-) -> Result<()> {
-    let root = resolve_root(path)?;
-    let changed_paths = resolve_diff_filter(&root, diff)?;
-    let label = if is_callers { "callers" } else { "callees" };
-    let start = std::time::Instant::now();
-    // Over-fetch when scope filters are active. Both the persistent FST and
-    // live-scan paths accept `limit` as a hard cap, so without the inflation
-    // a narrow `--include` would silently truncate matches. The 13.7-D3
-    // diff filter is treated the same way — a narrow change-set is just a
-    // tighter scope from the perspective of the post-filter.
-    let fetch_limit = if path_scope.is_empty() && changed_paths.is_none() {
-        limit
-    } else {
-        usize::MAX
-    };
-
-    // Fast path: if a v4 index with a call graph exists for this project,
-    // use the persistent FST (~4ms). Otherwise fall back to the live-scan
-    // implementation that walks files with tree-sitter (~seconds).
-    //
-    // Bootstrap/staleness behaviour, gated on `auto_update`:
-    //   * missing index + auto-update on → bootstrap, then read the v4 FST.
-    //   * stale index  + auto-update on → handle_staleness() refreshes it.
-    //   * missing index + auto-update off → silently use live-scan (preserves
-    //     pre-10.2 UX for projects without an index).
-    let canonical_root = root.canonicalize().ok();
-    let index_path = canonical_root.as_ref().map(|r| config::index_path(r));
-    if let (Some(croot), Some(idx)) = (canonical_root.as_ref(), index_path.as_ref()) {
-        let should_auto = auto_update || cfg.auto_update.unwrap_or(false);
-        if !idx.exists() {
-            if should_auto {
-                // Discard the IndexAvail return — we only need the side effect
-                // of bootstrap. Reader is opened below the same way as before.
-                ensure_index_exists(croot, auto_update, false, local_cache_active, cfg)?;
-                // just-bootstrapped → manifest is fresh, skip handle_staleness
-            }
-            // else: live-scan path; no warning, this command supports it natively
-        } else {
-            handle_staleness(croot, auto_update, no_stale_check, cfg)?;
-        }
-    }
-
-    let reader = match index_path.as_ref().filter(|p| p.exists()) {
-        Some(p) => match crate::store::reader::IndexReader::open(p) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                // Surface the reason for falling back so a corrupt/locked
-                // index doesn't masquerade as "no index found". Direct
-                // stderr (not tracing::warn!) because the fallback is a
-                // load-bearing UX event — without it the user sees the
-                // ~seconds live-scan latency and has no clue why.
-                // `{e:#}` includes the anyhow chain (e.g. open + path).
-                eprintln!(
-                    "Warning: index at {} exists but failed to open ({e:#}). Falling back to live callgraph scan.",
-                    p.display()
-                );
-                None
-            }
-        },
-        None => None,
-    };
-
-    let matches = match reader.as_ref() {
-        Some(r) if r.has_call_graph() => {
-            if is_callers {
-                crate::store::call_graph::find_callers_fast(r, name, fetch_limit)
-            } else {
-                crate::store::call_graph::find_callees_fast(r, name, fetch_limit)
-            }
-        }
-        _ => {
-            if is_callers {
-                crate::callgraph::find_callers(&root, name, fetch_limit, excludes)?
-            } else {
-                crate::callgraph::find_callees(&root, name, fetch_limit, excludes)?
-            }
-        }
-    };
-    let matches: Vec<_> = matches
-        .into_iter()
-        .filter(|m| {
-            path_scope.accept(&m.path)
-                && changed_paths.as_ref().is_none_or(|cp| cp.contains(&m.path))
-        })
-        .take(limit)
-        .collect();
-    let elapsed = start.elapsed();
-
-    match &format {
-        OutputFormat::Json => {
-            let json: Vec<serde_json::Value> = matches
-                .iter()
-                .map(|m| {
-                    serde_json::json!({
-                        "name": m.name,
-                        "path": m.path,
-                        "line": m.line,
-                    })
-                })
-                .collect();
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
-        OutputFormat::Text => {
-            if matches.is_empty() {
-                println!("No {label} of \"{name}\" in {elapsed:.2?}");
-            } else {
-                println!("{name}: {} {label} in {elapsed:.2?}\n", matches.len());
-                for m in &matches {
-                    println!("  {:<40} {}:{}", m.name, m.path, m.line);
-                }
-            }
-        }
-        OutputFormat::Compact => {
-            for m in &matches {
-                println!("{} {}:{}", m.name, m.path, m.line);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn cmd_outline(file: &std::path::Path, kind: Option<&str>, format: &OutputFormat) -> Result<()> {
-    use crate::index::symbols::SymbolKind;
-
-    let kind_filter = kind.map(|k| k.parse::<SymbolKind>()).transpose()?;
-
-    let content =
-        std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;
-
-    let ext = file
-        .extension()
-        .and_then(|e| e.to_str())
-        .context("file has no extension")?;
-
-    let lang = crate::parse::language::Language::from_extension(ext)
-        .with_context(|| format!("unsupported language: .{ext}"))?;
-
-    if let Err(e) = crate::parse::queries::try_get_query(lang) {
-        bail!("failed to load grammar for {} (.{ext}): {e}", lang.as_str());
-    }
-
-    let rel = file.to_string_lossy().to_string();
-    let parsed = crate::parse::parse_file(&rel, &content, lang)?;
-
-    let symbols: Vec<_> = parsed
-        .symbols
-        .iter()
-        // Phase 14.1: synthetic `<module:path>` symbols are invisible to
-        // outline regardless of `--kind` filter.
-        .filter(|s| s.kind != crate::index::symbols::SymbolKind::Module)
-        .filter(|s| kind_filter.is_none_or(|k| s.kind == k))
-        .collect();
-
-    print_outline(&symbols, file, kind_filter, format);
-    Ok(())
-}
-
-fn print_outline(
-    symbols: &[&crate::index::symbols::ParsedSymbol],
-    file: &std::path::Path,
-    kind_filter: Option<crate::index::symbols::SymbolKind>,
-    format: &OutputFormat,
-) {
-    match &format {
-        OutputFormat::Json => {
-            let json: Vec<serde_json::Value> = symbols
-                .iter()
-                .map(|s| {
-                    serde_json::json!({
-                        "name": s.name,
-                        "kind": s.kind.as_str(),
-                        "line": s.line,
-                        "signature": s.signature,
-                    })
-                })
-                .collect();
-            // unwrap: serializing simple JSON values cannot fail
-            println!("{}", serde_json::to_string_pretty(&json).unwrap());
-        }
-        OutputFormat::Text | OutputFormat::Compact => {
-            if symbols.is_empty() {
-                if let Some(k) = kind_filter {
-                    println!("No {k} symbols found in {}", file.display());
-                } else {
-                    println!("No symbols found in {}", file.display());
-                }
-            } else {
-                println!("{}", file.display());
-                for s in symbols {
-                    println!("  {:<12} {:<40} line {}", s.kind.as_str(), s.name, s.line);
-                    if let Some(sig) = &s.signature {
-                        println!("               {sig}");
-                    }
-                }
-            }
+            cmd_self_update::cmd_self_update(/*check_only=*/ check, /*no_confirm=*/ yes)
         }
     }
 }
