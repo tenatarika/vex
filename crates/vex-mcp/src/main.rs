@@ -89,6 +89,24 @@ fn opt_u64(args: &Value, field: &str, default: u64) -> Result<u64> {
         .ok_or_else(|| ParamError::wrong_type(field, "a non-negative integer", v).into())
 }
 
+/// Optional u64 that distinguishes "absent / null" from "explicit value".
+/// Returns `None` when the field is absent or null; fails on wrong type
+/// the same way [`opt_u64`] does. Used by the `bundle` arm where a `0`
+/// fallback would leak `--depth 0` (etc.) to the CLI — there the
+/// presence of the field is itself the signal to forward it.
+fn opt_u64_some(args: &Value, field: &str) -> Result<Option<u64>> {
+    let v = &args[field];
+    if v.is_null() {
+        return Ok(None);
+    }
+    Some(
+        v.as_u64()
+            .ok_or_else(|| ParamError::wrong_type(field, "a non-negative integer", v)),
+    )
+    .transpose()
+    .map_err(Into::into)
+}
+
 /// Optional f64. `None` when absent / null.
 fn opt_f64(args: &Value, field: &str) -> Result<Option<f64>> {
     let v = &args[field];
@@ -561,7 +579,10 @@ fn push_diff_scope(extra: &mut Vec<String>, args: &Value) -> Result<()> {
         .filter(|b| *b)
         .count();
     if active > 1 {
-        anyhow::bail!("`since`, `since_branched`, and `changed_only` are mutually exclusive");
+        return Err(ParamError(
+            "`since`, `since_branched`, and `changed_only` are mutually exclusive".into(),
+        )
+        .into());
     }
 
     if let Some(rev) = since {
@@ -607,9 +628,10 @@ fn push_show_truncate(extra: &mut Vec<String>, args: &Value) -> Result<()> {
         .filter(|b| *b)
         .count();
     if active > 1 {
-        anyhow::bail!(
-            "`signature_only`, `head`, `no_body`, and `collapsed` are mutually exclusive"
-        );
+        return Err(ParamError(
+            "`signature_only`, `head`, `no_body`, and `collapsed` are mutually exclusive".into(),
+        )
+        .into());
     }
 
     if signature_only {
@@ -671,7 +693,7 @@ fn push_metadata(extra: &mut Vec<String>, args: &Value) -> Result<()> {
     // intent-aware JSON-RPC error instead of clap's parser dumping
     // its `conflicts_with` template into the response body.
     if async_only && no_async {
-        anyhow::bail!("`async_only` and `no_async` are mutually exclusive");
+        return Err(ParamError("`async_only` and `no_async` are mutually exclusive".into()).into());
     }
     if let Some(vis) = opt_str(args, "visibility")? {
         extra.extend(["--visibility".into(), vis.to_string()]);
@@ -928,7 +950,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
         }
         "callers" => {
             let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)?
-                .ok_or_else(|| ParamError::missing("name"))?;
+                .ok_or_else(|| ParamError::missing("symbol"))?;
             let limit = opt_u64(args, "limit", 50)?;
             let mut extra = vec![
                 symbol.to_string(),
@@ -945,7 +967,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
         }
         "callees" => {
             let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)?
-                .ok_or_else(|| ParamError::missing("name"))?;
+                .ok_or_else(|| ParamError::missing("symbol"))?;
             let limit = opt_u64(args, "limit", 50)?;
             let mut extra = vec![
                 symbol.to_string(),
@@ -1132,16 +1154,13 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                         ParamError("`mode: symbol` requires the `symbol` field".to_string())
                     })?;
                     extra.extend(["--symbol".into(), symbol.into()]);
-                    if !args["callers_max"].is_null() {
-                        let v = opt_u64(args, "callers_max", 0)?;
+                    if let Some(v) = opt_u64_some(args, "callers_max")? {
                         extra.extend(["--callers-max".into(), v.to_string()]);
                     }
-                    if !args["callees_max"].is_null() {
-                        let v = opt_u64(args, "callees_max", 0)?;
+                    if let Some(v) = opt_u64_some(args, "callees_max")? {
                         extra.extend(["--callees-max".into(), v.to_string()]);
                     }
-                    if !args["similar_max"].is_null() {
-                        let v = opt_u64(args, "similar_max", 0)?;
+                    if let Some(v) = opt_u64_some(args, "similar_max")? {
                         extra.extend(["--similar-max".into(), v.to_string()]);
                     }
                 }
@@ -1150,12 +1169,10 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                         ParamError("`mode: pr-impact` requires the `base` field".to_string())
                     })?;
                     extra.extend(["--base".into(), base.into()]);
-                    if !args["depth"].is_null() {
-                        let d = opt_u64(args, "depth", 0)?;
+                    if let Some(d) = opt_u64_some(args, "depth")? {
                         extra.extend(["--depth".into(), d.to_string()]);
                     }
-                    if !args["tests_max"].is_null() {
-                        let m = opt_u64(args, "tests_max", 0)?;
+                    if let Some(m) = opt_u64_some(args, "tests_max")? {
                         extra.extend(["--tests-max".into(), m.to_string()]);
                     }
                 }
@@ -1163,8 +1180,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                     if let Some(g) = opt_str(args, "path_glob")? {
                         extra.extend(["--path-glob".into(), g.into()]);
                     }
-                    if !args["top_n"].is_null() {
-                        let n = opt_u64(args, "top_n", 0)?;
+                    if let Some(n) = opt_u64_some(args, "top_n")? {
                         extra.extend(["--top-n".into(), n.to_string()]);
                     }
                 }
@@ -3628,8 +3644,141 @@ INFO trailing line\n\
     }
 
     #[test]
-    fn callers_missing_name_is_invalid_params() {
-        assert_param_error("callers", json!({}), "name");
+    fn callers_missing_symbol_is_invalid_params() {
+        // Canonical field is `symbol` (legacy alias `name` falls back to
+        // it inside `read_canonical_str`). When both are absent we report
+        // the canonical name in the error so callers see the
+        // up-to-date schema vocabulary.
+        assert_param_error("callers", json!({}), "symbol");
+    }
+
+    #[test]
+    fn callees_missing_symbol_is_invalid_params() {
+        assert_param_error("callees", json!({}), "symbol");
+    }
+
+    // ---- per-tool required-field coverage (H8 review follow-up) ----
+
+    #[test]
+    fn paths_missing_from_is_invalid_params() {
+        assert_param_error("paths", json!({"to": "bar"}), "from");
+    }
+
+    #[test]
+    fn paths_missing_to_is_invalid_params() {
+        assert_param_error("paths", json!({"from": "foo"}), "to");
+    }
+
+    #[test]
+    fn reachable_missing_target_is_invalid_params() {
+        assert_param_error("reachable", json!({}), "target");
+    }
+
+    #[test]
+    fn diff_missing_base_is_invalid_params() {
+        assert_param_error("diff", json!({}), "base");
+    }
+
+    #[test]
+    fn show_missing_symbols_is_invalid_params() {
+        assert_param_error("show", json!({}), "symbols");
+    }
+
+    #[test]
+    fn check_non_string_element_is_invalid_params() {
+        assert_param_error("check", json!({"symbols": ["Foo", 42]}), "symbols[1]");
+    }
+
+    #[test]
+    fn search_kind_array_with_non_string_element_is_invalid_params() {
+        assert_param_error(
+            "search",
+            json!({"query": "foo", "kind": ["fn", 42]}),
+            "kind[1]",
+        );
+    }
+
+    #[test]
+    fn bundle_missing_mode_is_invalid_params() {
+        assert_param_error("bundle", json!({}), "mode");
+    }
+
+    #[test]
+    fn bundle_symbol_mode_missing_symbol_is_invalid_params() {
+        assert_param_error("bundle", json!({"mode": "symbol"}), "symbol");
+    }
+
+    #[test]
+    fn bundle_pr_impact_missing_base_is_invalid_params() {
+        assert_param_error("bundle", json!({"mode": "pr-impact"}), "base");
+    }
+
+    #[test]
+    fn bundle_unknown_mode_is_invalid_params() {
+        assert_param_error("bundle", json!({"mode": "nope"}), "unknown bundle mode");
+    }
+
+    /// Pin the cleanup of the bundle arm: presence of an integer field
+    /// forwards it to the CLI; absence omits the flag entirely (no
+    /// `--depth 0` leakage). Exercises `opt_u64_some`.
+    #[test]
+    fn bundle_pr_impact_omits_depth_when_absent() {
+        let built = build_command(
+            "bundle",
+            &json!({"mode": "pr-impact", "base": "main"}),
+            "/tmp/proj",
+        )
+        .expect("build_command");
+        assert!(
+            !built.extra_args.iter().any(|a| a == "--depth"),
+            "absent `depth` must NOT forward --depth: {:?}",
+            built.extra_args
+        );
+    }
+
+    #[test]
+    fn bundle_pr_impact_forwards_depth_when_present() {
+        let built = build_command(
+            "bundle",
+            &json!({"mode": "pr-impact", "base": "main", "depth": 3}),
+            "/tmp/proj",
+        )
+        .expect("build_command");
+        let depth_idx = built
+            .extra_args
+            .iter()
+            .position(|a| a == "--depth")
+            .expect("expected --depth flag");
+        assert_eq!(built.extra_args.get(depth_idx + 1), Some(&"3".to_string()));
+    }
+
+    /// Mutually-exclusive flag pairs that previously fell into `-32000`
+    /// now ride the same `-32602` channel as the other type errors.
+    #[test]
+    fn search_diff_scope_conflict_is_invalid_params() {
+        assert_param_error(
+            "search",
+            json!({"query": "x", "since": "main", "changed_only": true}),
+            "mutually exclusive",
+        );
+    }
+
+    #[test]
+    fn show_truncate_conflict_is_invalid_params() {
+        assert_param_error(
+            "show",
+            json!({"symbols": ["Foo"], "signature_only": true, "no_body": true}),
+            "mutually exclusive",
+        );
+    }
+
+    #[test]
+    fn search_async_only_no_async_conflict_is_invalid_params() {
+        assert_param_error(
+            "search",
+            json!({"query": "x", "async_only": true, "no_async": true}),
+            "mutually exclusive",
+        );
     }
 
     #[test]

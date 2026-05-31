@@ -8,20 +8,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **H8 — `vex mcp` rejects wrong-typed params with JSON-RPC `-32602`
-  Invalid params.** Pre-H8 `tools/call` silently coerced wrong-typed
-  arguments to their defaults: `limit: "20"` (string) became `limit: 20`
-  (default), `auto_update: 1` (number) became `true` (default),
-  `kind: "fn"` (string instead of array) was silently dropped. Every
-  inline `as_str()/.as_bool()/.as_u64().unwrap_or(...)` site in
-  `build_command` now routes through strict helpers (`req_str`,
+- **BREAKING (H8) — `vex mcp` rejects wrong-typed params with JSON-RPC
+  `-32602 Invalid params`.** Pre-H8 `tools/call` silently coerced
+  wrong-typed arguments to their defaults: `limit: "20"` (string)
+  became `limit: 20` (default), `auto_update: 1` (number) became `true`
+  (default), `kind: "fn"` (string instead of array) was silently
+  dropped. Every inline `as_str()/.as_bool()/.as_u64().unwrap_or(...)`
+  site in `build_command` now routes through strict helpers (`req_str`,
   `opt_bool`, `opt_u64`, `opt_str_array`, …) that emit a `ParamError`
   on type mismatch; `handle_request` downcasts that marker to JSON-RPC
   spec-compliant `-32602 Invalid params`. Missing required fields,
-  wrong-type required fields, and wrong-type optional fields all
-  surface as `-32602` with field-level error messages instead of the
-  previous generic `-32000`. Eight new contract tests pin the
-  behaviour per-tool inside `crates/vex-mcp/src/main.rs::tests`.
+  wrong-type required fields, and the previously-`-32000`
+  mutually-exclusive flag conflicts (`since`/`since_branched`/`changed_only`;
+  `signature_only`/`head`/`no_body`/`collapsed`; `async_only`/`no_async`)
+  all surface as `-32602` with field-level error messages instead of
+  the previous generic `-32000`. **Downstream agents that branched on
+  `-32000`** for these conditions must update — `-32602` is the
+  spec-correct code. 24 contract tests in `crates/vex-mcp/src/main.rs::tests`
+  pin the behaviour per-tool (search, callers, callees, paths, reachable,
+  diff, show, check, bundle, plus the three flag-conflict paths).
 
 - **BREAKING (H5-full) — every `--format json` subcommand now emits the
   Phase 13 envelope.** Pre-H5-full `search` and `bundle` returned the
