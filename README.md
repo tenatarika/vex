@@ -296,6 +296,30 @@ vex search "Foo" --format json
 
 Pin a different default in `.vex.toml` via `format = "text"` if you want the verbose multi-line view at the terminal.
 
+### JSON envelope (v1.11.0 — BREAKING for bare-array parsers)
+
+Every `--format json` subcommand wraps its payload in the Phase 13
+envelope. Single shape, easy to detect via `protocol_version`:
+
+```json
+{
+  "protocol_version": "v1",
+  "capabilities": { /* see `vex capabilities` */ },
+  "_meta": { "vex.dev/index_age_ms": 1200, "ttlMs": 30000, "cacheScope": "project" },
+  "results": [ /* the actual data, shape depends on the subcommand */ ]
+}
+```
+
+Pre-v1.11 only `search` and `bundle` returned this envelope; the other
+~14 subcommands (`show`, `usages`, `pattern`, `grep`, `implementations`,
+`callers`, `callees`, `paths`, `reachable`, `check`, `similar`,
+`duplicates`, `diff`, `outline`, `index`, `update`, `status`, `eval`)
+emitted bare arrays / objects. **Migration**: pre-1.11 `jq '.[0].name'`
+or `data[0]['name']` now needs `jq '.results[0].name'` /
+`data['results'][0]['name']`. Detect the envelope via
+`response.get('protocol_version') == 'v1'` to support both shapes
+during a rollout window.
+
 ## How Search Works
 
 ### Structural Search (default)

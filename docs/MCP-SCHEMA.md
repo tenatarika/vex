@@ -329,6 +329,42 @@ interactive use but off by default in automated pipelines.
 Lets a caller spot "the threshold ate the result set" vs "the path
 filter narrowed too aggressively" without re-running.
 
+## JSON-RPC error contract (v1.11.0)
+
+Every `tools/call` request that fails surfaces a JSON-RPC 2.0 error
+frame. vex uses two codes:
+
+| code     | meaning                                | example                                                                  |
+| -------- | -------------------------------------- | ------------------------------------------------------------------------ |
+| `-32602` | **Invalid params** (caller-side error) | `query` missing, `limit: "20"` is a string, `kind: "fn"` not array, mutually-exclusive flags both set |
+| `-32000` | Server-side failure                    | vex subprocess crashed, manifest unreadable, OS-level error              |
+
+**Pre-v1.11 behaviour**: wrong-typed arguments were silently coerced
+to their defaults (`limit: "20"` → `limit: 20`; `auto_update: 1` →
+`true`; `kind: "fn"` → silently dropped), and missing required fields
+surfaced as the generic `-32000`. v1.11 routes all of those through
+`-32602` so MCP clients can distinguish "agent passed bad params" from
+"vex crashed".
+
+**Migration**: MCP integrators that branch on `error.code` and treated
+`-32000` as a generic failure will now see `-32602` for the
+caller-side subset above. The error `message` field includes the
+field name and expected type — e.g. `"invalid params: \`limit\` must
+be a non-negative integer; got string (\"20\")"`.
+
+**What's `-32602` covers** (non-exhaustive):
+
+- missing required field (`query`, `name`, `symbol`, `mode`, `pattern`,
+  `lang`, `base`, `from`, `to`, `target`)
+- wrong-type field (number-as-string, bool-as-int, string-as-array)
+- mutually-exclusive flag conflicts:
+  - `since` / `since_branched` / `changed_only`
+  - `signature_only` / `head` / `no_body` / `collapsed`
+  - `async_only` / `no_async`
+- unknown bundle mode (`mode: "foo"` instead of `symbol` / `pr-impact` / `project`)
+- non-string element inside a string array (`kind: ["fn", 42]`,
+  `symbols: ["Foo", 42]`)
+
 ## Stability guarantees
 
 - The canonical vocabulary above is part of the v1.7 stable API and
