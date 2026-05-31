@@ -53,7 +53,8 @@ fn diff_lists_adds_removes_and_body_changes() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(&stdout).expect("diff emits JSON array");
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("diff emits envelope");
+    let json = envelope.get("results").expect("envelope has results");
     let changes = json.as_array().expect("array");
 
     let by_name: std::collections::HashMap<&str, &serde_json::Value> = changes
@@ -96,7 +97,8 @@ fn diff_with_no_changes_emits_empty_array() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let json = envelope.get("results").expect("envelope has results");
     assert_eq!(
         json.as_array().map(|a| a.len()).unwrap_or(99),
         0,
@@ -141,7 +143,8 @@ fn renamed_file_appears_as_remove_plus_add() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let json = envelope.get("results").expect("envelope has results");
     let changes = json.as_array().expect("array");
     // Each side of the rename surfaces independently — one removed
     // from old.rs and one added to new.rs.
@@ -180,7 +183,8 @@ fn binary_file_is_silently_skipped() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let json = envelope.get("results").expect("envelope has results");
     // The old side had `keep`; the new side parsed as empty, so the
     // change registers as a removal — but the command must not error
     // out on the binary content.
@@ -243,7 +247,8 @@ fn diff_respects_include_glob_scope() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let json = envelope.get("results").expect("envelope has results");
     let names: Vec<&str> = json
         .as_array()
         .unwrap()

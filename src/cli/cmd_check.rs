@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use super::args::OutputFormat;
 use super::common::{resolve_root, CmdCtx};
 use super::index_management::ensure_index_ready;
+use super::output::print_envelope;
+use crate::protocol::{capabilities, MetaEnvelope};
 use crate::store::reader::IndexReader;
 
 pub(crate) fn check(
@@ -67,7 +69,7 @@ pub(crate) fn check(
                 .iter()
                 .map(|(name, found)| serde_json::json!({ "name": name, "exists": found }))
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&json)?);
+            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
         }
         OutputFormat::Text | OutputFormat::Compact => {
             for (name, found) in &results {

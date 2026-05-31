@@ -5,7 +5,9 @@ use anyhow::Result;
 
 use super::args::{DiffFilterArgs, OutputFormat, ScopeArgs};
 use super::common::{resolve_diff_filter, resolve_root, CmdCtx};
+use super::output::print_envelope;
 use super::scope;
+use crate::protocol::{capabilities, MetaEnvelope};
 
 pub(crate) fn grep(
     ctx: &CmdCtx<'_>,
@@ -55,7 +57,7 @@ pub(crate) fn grep(
                     })
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&json)?);
+            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
         }
         OutputFormat::Text => {
             if matches.is_empty() {

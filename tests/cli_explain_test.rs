@@ -68,8 +68,12 @@ fn duplicates_explain_emits_jaccard_and_diff() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value =
-        serde_json::from_str(&stdout).expect("duplicates --explain emits JSON");
+    let envelope: serde_json::Value =
+        serde_json::from_str(&stdout).expect("duplicates --explain emits envelope");
+    let json = envelope
+        .get("results")
+        .expect("envelope has results")
+        .clone();
     let pairs = json.as_array().expect("expected array of pairs");
     assert!(!pairs.is_empty(), "expected at least one duplicate pair");
 
@@ -117,7 +121,11 @@ fn duplicates_without_explain_omits_explanation_field() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let json = envelope
+        .get("results")
+        .expect("envelope has results")
+        .clone();
     let pairs = json.as_array().unwrap();
     if let Some(first) = pairs.first() {
         assert!(

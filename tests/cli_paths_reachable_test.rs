@@ -40,7 +40,11 @@ fn paths_finds_two_hop_chain() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(&stdout).expect("paths emits JSON array");
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("paths emits envelope");
+    let json = envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
     let paths = json.as_array().expect("array");
     assert!(
         !paths.is_empty(),
@@ -77,7 +81,11 @@ fn paths_respects_max_hops() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let json = envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
     assert_eq!(
         json.as_array().map(|a| a.len()).unwrap_or(1),
         0,
@@ -95,7 +103,11 @@ fn reachable_lists_all_indirect_callers() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let json = envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
     let entries = json.as_array().expect("array");
     let names: Vec<&str> = entries
         .iter()

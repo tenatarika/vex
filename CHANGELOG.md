@@ -6,6 +6,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (H5-full) — every `--format json` subcommand now emits the
+  Phase 13 envelope.** Pre-H5-full `search` and `bundle` returned the
+  envelope (`{ protocol_version, capabilities, _meta, results }`) while
+  the other ~14 subcommands (`show`, `usages`, `pattern`, `grep`,
+  `implementations`, `callers`, `callees`, `paths`, `reachable`,
+  `check`, `similar`, `duplicates`, `diff`, `outline`, `index`,
+  `update`, `status`, `eval`) returned bare arrays/objects. They now
+  all wrap their payload in the same envelope so agent-side parsers
+  can rely on a single shape and on `protocol_version == "v1"` as a
+  forward-compat probe (Phase 13.0). Downstream consumers that parsed
+  the bare shape must read `response["results"]` instead. The
+  CHANGELOG claim from v1.9.x ("every JSON envelope carries
+  `protocol_version`") is now true. Locked by `tests/cli_envelope_contract_test.rs` —
+  14 contract assertions, one per subcommand.
+
 ### Fixed
 
 - **H4 — `vex pattern` ellipsis termination is now depth-aware.** Pre-H4

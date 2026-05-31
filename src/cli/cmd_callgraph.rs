@@ -7,7 +7,9 @@ use anyhow::{bail, Context, Result};
 use super::args::{self, OutputFormat, ScopeArgs};
 use super::common::{resolve_diff_filter, resolve_root, CmdCtx};
 use super::index_management::{ensure_index_exists, ensure_index_ready, handle_staleness};
-use super::{output, scope};
+use super::output::{self, print_envelope};
+use super::scope;
+use crate::protocol::{capabilities, MetaEnvelope};
 use crate::store::reader::IndexReader;
 use crate::util::config;
 
@@ -147,7 +149,7 @@ pub(crate) fn cmd_callgraph(
                     })
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&json)?);
+            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
         }
         OutputFormat::Text => {
             if matches.is_empty() {

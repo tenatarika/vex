@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 
 use super::args::{DiffFilterArgs, OutputFormat, ScopeArgs};
 use super::common::{diff_filter_meta, resolve_diff_filter, resolve_root, CmdCtx};
+use super::output::print_envelope;
 use super::scope;
+use crate::protocol::{capabilities, MetaEnvelope};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pattern(
@@ -104,7 +106,16 @@ pub(crate) fn pattern(
                     obj
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&json)?);
+            let meta = MetaEnvelope {
+                diff_filter: diff_filter_meta(
+                    &diff,
+                    changed_paths.as_ref(),
+                    diff_retained,
+                    diff_dropped,
+                ),
+                ..MetaEnvelope::default()
+            };
+            print_envelope(&json, capabilities::current(), meta);
         }
         OutputFormat::Text | OutputFormat::Compact => {
             if matches.is_empty() {

@@ -6,7 +6,9 @@ use anyhow::{Context, Result};
 use super::args::{MetadataArgs, OutputFormat, ScopeArgs};
 use super::common::{apply_path_filters, build_metadata_filter, resolve_root, CmdCtx};
 use super::index_management::ensure_index_ready;
+use super::output::print_envelope;
 use super::{scope, show_truncate};
+use crate::protocol::{capabilities, MetaEnvelope};
 use crate::search::structural;
 use crate::store::reader::IndexReader;
 
@@ -190,7 +192,11 @@ pub(crate) fn show(
 
     match ctx.format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&json_items)?);
+            print_envelope(
+                &json_items,
+                capabilities::current(),
+                MetaEnvelope::default(),
+            );
         }
         OutputFormat::Text | OutputFormat::Compact => {
             if printed == 0 {

@@ -93,12 +93,16 @@ fn run_pattern(dir: &Path, spec: &FixtureSpec) -> serde_json::Value {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    serde_json::from_str(&stdout).unwrap_or_else(|e| {
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
         panic!(
-            "fixture {:?}: pattern must emit valid JSON: {e}\nstdout:\n{stdout}",
+            "fixture {:?}: pattern must emit valid JSON envelope: {e}\nstdout:\n{stdout}",
             dir.file_name()
         )
-    })
+    });
+    envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!([]))
 }
 
 fn capture_value<'a>(captures_json: &'a serde_json::Value, key: &str) -> Option<&'a str> {

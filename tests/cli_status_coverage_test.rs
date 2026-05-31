@@ -29,7 +29,12 @@ fn read_status_json(dir: &Path) -> serde_json::Value {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    serde_json::from_str(stdout.trim()).expect("status --coverage --format json must be valid JSON")
+    let envelope: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("status --coverage --format json must be valid JSON envelope");
+    envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!({}))
 }
 
 #[test]
@@ -153,7 +158,11 @@ fn coverage_block_absent_without_flag() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let out: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let out = envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
     assert!(
         out.get("coverage").is_none(),
         "coverage block must NOT appear without --coverage; got: {out}"

@@ -28,8 +28,18 @@ fn vex_in(dir: &Path) -> Command {
 /// Parse a flat JSON array from `vex callers` / `vex callees`
 /// `--format json` stdout. Returns an empty array on parse error so
 /// per-test assertions surface as missing entries, not as panics here.
+///
+/// Post-H5-full every CLI JSON emission is wrapped in the Phase 13
+/// envelope (`{ protocol_version, capabilities, _meta, results }`).
+/// Unwrap the `results` array here so all downstream callers keep
+/// seeing the same shape they did pre-H5-full.
 fn parse_json_array(stdout: &[u8]) -> serde_json::Value {
-    serde_json::from_slice(stdout).unwrap_or(serde_json::json!([]))
+    let envelope: serde_json::Value =
+        serde_json::from_slice(stdout).unwrap_or(serde_json::json!({}));
+    envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!([]))
 }
 
 fn names_of(json: &serde_json::Value) -> Vec<String> {

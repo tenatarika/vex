@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 use super::args::{DiffFilterArgs, OutputFormat, ScopeArgs};
 use super::common::{diff_filter_meta, resolve_diff_filter, resolve_root, CmdCtx};
 use super::index_management::ensure_index_ready;
+use super::output::print_envelope;
 use super::scope;
+use crate::protocol::{capabilities, MetaEnvelope};
 use crate::store::reader::IndexReader;
 
 #[allow(clippy::too_many_arguments)]
@@ -133,7 +135,16 @@ pub(crate) fn usages(
                     })
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&json)?);
+            let meta = MetaEnvelope {
+                diff_filter: diff_filter_meta(
+                    &diff,
+                    changed_paths.as_ref(),
+                    diff_retained,
+                    diff_dropped,
+                ),
+                ..MetaEnvelope::default()
+            };
+            print_envelope(&json, capabilities::current(), meta);
         }
         OutputFormat::Text | OutputFormat::Compact => {
             if entries.is_empty() {

@@ -5,7 +5,9 @@ use anyhow::{Context, Result};
 
 use super::args::OutputFormat;
 use super::common::{resolve_root, CmdCtx};
+use super::output::print_envelope;
 use super::status_coverage;
+use crate::protocol::{capabilities, MetaEnvelope};
 use crate::store::reader::IndexReader;
 use crate::util::config;
 
@@ -22,7 +24,8 @@ pub(crate) fn status(
     if !index_path.exists() {
         match ctx.format {
             OutputFormat::Json => {
-                println!("{}", serde_json::json!({"error": "no index found"}));
+                let payload = serde_json::json!({"error": "no index found"});
+                print_envelope(&payload, capabilities::current(), MetaEnvelope::default());
             }
             OutputFormat::Text | OutputFormat::Compact => {
                 println!("No index found for {}", root.display());
@@ -54,7 +57,7 @@ pub(crate) fn status(
             if let Some(c) = &coverage_report {
                 json["coverage"] = serde_json::to_value(c)?;
             }
-            println!("{}", serde_json::to_string_pretty(&json)?);
+            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
         }
         OutputFormat::Text | OutputFormat::Compact => {
             println!("Project:    {}", root.display());

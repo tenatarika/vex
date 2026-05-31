@@ -6,6 +6,8 @@ use anyhow::{bail, Context, Result};
 use super::args::OutputFormat;
 use super::common::{resolve_root, CmdCtx};
 use super::index_management::ensure_index_ready;
+use super::output::print_envelope;
+use crate::protocol::{capabilities, MetaEnvelope};
 use crate::store::reader::IndexReader;
 
 pub(crate) fn cmd_eval(
@@ -58,7 +60,7 @@ pub(crate) fn cmd_eval(
     // subcommands.
     let emit_json = json || matches!(ctx.format, OutputFormat::Json);
     if emit_json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        print_envelope(&report, capabilities::current(), MetaEnvelope::default());
     } else {
         crate::eval::harness::print_text_report(&report);
     }

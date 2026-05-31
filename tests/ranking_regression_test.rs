@@ -78,8 +78,12 @@ fn mean_ndcg_stays_above_baseline() {
     // actually computed (not zeroed out by an empty golden set). This
     // catches "we shipped without bundling queries.toml" regressions.
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
-    let report: serde_json::Value =
-        serde_json::from_str(&stdout).expect("eval --json should emit valid JSON");
+    let envelope: serde_json::Value =
+        serde_json::from_str(&stdout).expect("eval --json should emit valid JSON envelope");
+    let report = envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
     let mean_ndcg = report["mean_ndcg"].as_f64().expect("mean_ndcg field");
     let total = report["total_queries"]
         .as_u64()
@@ -149,7 +153,11 @@ acceptable_paths = ["a.rs"]
         .success();
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let report = envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
     assert_eq!(report["total_queries"].as_u64().unwrap(), 1);
     assert!((report["mean_ndcg"].as_f64().unwrap() - 1.0).abs() < 1e-9);
     assert!(report["per_query"][0]["top1_hit"].as_bool().unwrap());

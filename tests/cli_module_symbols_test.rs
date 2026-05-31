@@ -18,6 +18,17 @@ use std::path::Path;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
+/// Post-H5-full every CLI JSON emission is wrapped in the Phase 13
+/// envelope (`{ protocol_version, capabilities, _meta, results }`).
+/// Unwrap to `results` so call-site assertions stay the same shape
+/// they were pre-H5.
+fn unwrap_results(envelope: serde_json::Value) -> serde_json::Value {
+    envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!({}))
+}
+
 // ---------------------------------------------------------------------------
 // Test-local helpers — copy the vex_in pattern from cli_bootstrap_test.rs.
 // Each test file is its own binary; no shared common/ mod in this project.
@@ -86,9 +97,10 @@ fn module_symbol_emitted_per_python_file() {
         .success();
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-        panic!("`vex callers --format json` stdout not valid JSON: {e}\n---\n{stdout}")
-    });
+    let json: serde_json::Value =
+        unwrap_results(serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!("`vex callers --format json` stdout not valid JSON: {e}\n---\n{stdout}")
+        }));
 
     // The result must be an array of caller objects.
     let callers = json
@@ -208,9 +220,10 @@ fn module_symbol_excluded_from_outline() {
         .success();
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-        panic!("`vex outline --format json` returned non-JSON: {e}\n---\n{stdout}")
-    });
+    let json: serde_json::Value =
+        unwrap_results(serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!("`vex outline --format json` returned non-JSON: {e}\n---\n{stdout}")
+        }));
 
     let entries = json
         .as_array()
@@ -282,9 +295,10 @@ fn module_caller_adversarial_two_definitions() {
         .success();
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-        panic!("`vex callers --format json` returned non-JSON: {e}\n---\n{stdout}")
-    });
+    let json: serde_json::Value =
+        unwrap_results(serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!("`vex callers --format json` returned non-JSON: {e}\n---\n{stdout}")
+        }));
 
     let callers = json
         .as_array()
@@ -328,7 +342,8 @@ fn usages_strict_does_not_include_module_call() {
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
 
     // If --strict produces JSON, validate the absence of Module.
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+    if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+        let json = unwrap_results(envelope);
         if let Some(arr) = json.as_array() {
             for entry in arr {
                 let name = entry["name"].as_str().unwrap_or("");
@@ -417,9 +432,10 @@ fn module_symbol_survives_vex_update() {
         .success();
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-        panic!("`vex callers --format json` after update returned non-JSON: {e}\n---\n{stdout}")
-    });
+    let json: serde_json::Value =
+        unwrap_results(serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!("`vex callers --format json` after update returned non-JSON: {e}\n---\n{stdout}")
+        }));
 
     let callers = json.as_array().unwrap_or_else(|| {
         panic!("expected JSON array from `vex callers` after update, got: {json}")
@@ -458,7 +474,7 @@ fn module_caller_disappears_when_module_call_removed() {
         .get_output()
         .stdout
         .clone();
-    let initial_json: serde_json::Value = serde_json::from_slice(&initial).unwrap();
+    let initial_json: serde_json::Value = unwrap_results(serde_json::from_slice(&initial).unwrap());
     let had_module = initial_json
         .as_array()
         .map(|a| {
@@ -485,7 +501,7 @@ fn module_caller_disappears_when_module_call_removed() {
         .stdout
         .clone();
     let after_json: serde_json::Value =
-        serde_json::from_slice(&after).unwrap_or(serde_json::json!([]));
+        unwrap_results(serde_json::from_slice(&after).unwrap_or(serde_json::json!({})));
     let still_has_module = after_json
         .as_array()
         .map(|a| {

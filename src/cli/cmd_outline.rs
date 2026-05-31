@@ -4,6 +4,8 @@
 use anyhow::{bail, Context, Result};
 
 use super::args::OutputFormat;
+use super::output::print_envelope;
+use crate::protocol::{capabilities, MetaEnvelope};
 
 pub(crate) fn cmd_outline(
     file: &std::path::Path,
@@ -64,8 +66,7 @@ fn print_outline(
                     })
                 })
                 .collect();
-            // unwrap: serializing simple JSON values cannot fail
-            println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
         }
         OutputFormat::Text | OutputFormat::Compact => {
             if symbols.is_empty() {

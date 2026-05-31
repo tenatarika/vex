@@ -40,7 +40,12 @@ fn back_reference_pattern_enforces_same_capture() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(&stdout).expect("pattern emits JSON array");
+    let envelope: serde_json::Value =
+        serde_json::from_str(&stdout).expect("pattern emits envelope");
+    let json = envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
     let matches = json.as_array().expect("array");
     // The first call `record(state, state)` matches (both $X = state);
     // the second `record(state, other)` must NOT match because the
@@ -98,7 +103,11 @@ fn scope_include_filters_pattern_results() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let json = envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
     // Normalise path separators so the substring checks work on Windows
     // where vex emits backslashes (`src\a.rs`).
     let paths: Vec<String> = json

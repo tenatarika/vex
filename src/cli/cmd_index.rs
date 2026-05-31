@@ -9,7 +9,9 @@ use super::args::OutputFormat;
 use super::common::{
     build_index_options, resolve_embedder, resolve_root, resolve_semantic, CmdCtx,
 };
+use super::output::print_envelope;
 use crate::index::pipeline;
+use crate::protocol::{capabilities, MetaEnvelope};
 use crate::util::config;
 
 #[allow(clippy::too_many_arguments)]
@@ -55,7 +57,7 @@ pub(crate) fn index(
                 "embeddings": with_semantic,
                 "index": index_path.to_string_lossy(),
             });
-            println!("{}", serde_json::to_string_pretty(&json)?);
+            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
         }
         OutputFormat::Text | OutputFormat::Compact => {
             println!("Indexed {count} symbols in {elapsed:.2?}");

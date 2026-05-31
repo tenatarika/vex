@@ -194,7 +194,11 @@ fn why_partial_section_after_update_falls_back_to_live_scan() {
     // Correctness check: matches must include `beta` (the unchanged file).
     // Without the partial-section fallback the indexed prefilter would skip b.rs.
     let stdout = String::from_utf8_lossy(&post.get_output().stdout).into_owned();
-    let matches: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let matches = envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
     let paths: Vec<&str> = matches
         .as_array()
         .unwrap()

@@ -220,8 +220,7 @@ pub fn print_similar(
                     obj
                 })
                 .collect();
-            // unwrap: serializing simple JSON values cannot fail
-            println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
         }
         super::args::OutputFormat::Text => {
             if matches.is_empty() {
@@ -294,7 +293,7 @@ pub fn print_duplicates(
                     obj
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
         }
         super::args::OutputFormat::Text => {
             if pairs.is_empty() {
@@ -367,10 +366,7 @@ fn print_explanation_text(ex: &Explanation) {
 pub fn print_diff(changes: &[SymbolChange], base: &str, format: &super::args::OutputFormat) {
     match format {
         super::args::OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(changes).unwrap_or_default()
-            );
+            print_envelope(changes, capabilities::current(), MetaEnvelope::default());
         }
         super::args::OutputFormat::Text => {
             if changes.is_empty() {
@@ -440,10 +436,7 @@ pub fn print_paths(paths: &[CallPath], from: &str, to: &str, format: &super::arg
                     serde_json::json!({ "steps": steps })
                 })
                 .collect();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json).unwrap_or_default()
-            );
+            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
         }
         super::args::OutputFormat::Text => {
             if paths.is_empty() {
@@ -501,10 +494,7 @@ pub fn print_reachable(
                     })
                 })
                 .collect();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json).unwrap_or_default()
-            );
+            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
         }
         super::args::OutputFormat::Text => {
             if matches.is_empty() {

@@ -207,11 +207,14 @@ fn show_json_truncation_metadata_present() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+    let envelope: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}\nstdout was:\n{stdout}"));
-    // `vex show --format json` emits a bare array (no envelope) —
-    // confirmed by inspection of `cli::mod.rs::Commands::Show`. The
-    // per-item shape carries the truncation block.
+    // Post-H5-full `vex show --format json` wraps results in the
+    // Phase 13 envelope; unwrap to the underlying array.
+    let parsed = envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
     let arr = parsed.as_array().expect("expected JSON array");
     assert!(!arr.is_empty(), "expected at least one result");
     let first = &arr[0];
@@ -258,7 +261,11 @@ fn show_no_truncation_flag_is_backwards_compatible() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let parsed = envelope
+        .get("results")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
     let first = &parsed.as_array().unwrap()[0];
     assert!(
         first.get("truncation").is_none(),
