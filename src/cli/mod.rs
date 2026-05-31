@@ -5,8 +5,10 @@ pub(crate) mod cmd_check;
 pub(crate) mod cmd_diff;
 pub(crate) mod cmd_eval;
 pub(crate) mod cmd_grep;
+pub(crate) mod cmd_implementations;
 pub(crate) mod cmd_index;
 pub(crate) mod cmd_outline;
+pub(crate) mod cmd_pattern;
 pub(crate) mod cmd_self_update;
 pub(crate) mod cmd_status;
 pub(crate) mod cmd_trivial;
@@ -20,8 +22,6 @@ pub mod show_truncate;
 pub(crate) mod status_coverage;
 pub mod trace;
 
-use std::time::Instant;
-
 use anyhow::{bail, Context, Result};
 use args::{Cli, Commands, OutputFormat};
 
@@ -30,7 +30,7 @@ use common::{
     extract_jobs_hint, extract_path_hint, fetch_symbol_body, resolve_diff_filter, resolve_embedder,
     resolve_format, resolve_root, resolve_semantic, EXPLAIN_MAX_DIFF_LINES,
 };
-use index_management::{ensure_index_ready, handle_staleness};
+use index_management::ensure_index_ready;
 
 use crate::search::{fusion, semantic, structural};
 use crate::store::reader::IndexReader;
@@ -485,126 +485,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             why,
             scope,
             diff,
-        } => {
-            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
-            let root = resolve_root(path)?;
-            // Resolve diff filter against the project root. Pattern uses a
-            // non-canonicalized root; that's fine for git, which accepts any
-            // dir inside the work tree.
-            let changed_paths = resolve_diff_filter(&root, &diff)?;
-            let language = crate::parse::language::Language::from_extension(&lang)
-                .or(match lang.as_str() {
-                    "rust" => Some(crate::parse::language::Language::Rust),
-                    "python" => Some(crate::parse::language::Language::Python),
-                    "go" => Some(crate::parse::language::Language::Go),
-                    "java" => Some(crate::parse::language::Language::Java),
-                    "csharp" | "cs" => Some(crate::parse::language::Language::CSharp),
-                    "ruby" | "rb" => Some(crate::parse::language::Language::Ruby),
-                    "swift" => Some(crate::parse::language::Language::Swift),
-                    "kotlin" | "kt" => Some(crate::parse::language::Language::Kotlin),
-                    "typescript" | "ts" | "tsx" => {
-                        Some(crate::parse::language::Language::TypeScript)
-                    }
-                    "sql" => Some(crate::parse::language::Language::Sql),
-                    "markdown" | "md" => Some(crate::parse::language::Language::Markdown),
-                    "cpp" | "c++" | "cxx" | "c" => Some(crate::parse::language::Language::Cpp),
-                    "php" | "phtml" => Some(crate::parse::language::Language::Php),
-                    "bash" | "sh" | "shell" => Some(crate::parse::language::Language::Bash),
-                    "lua" => Some(crate::parse::language::Language::Lua),
-                    "css" => Some(crate::parse::language::Language::Css),
-                    "html" | "htm" => Some(crate::parse::language::Language::Html),
-                    "yaml" | "yml" => Some(crate::parse::language::Language::Yaml),
-                    "toml" => Some(crate::parse::language::Language::Toml),
-                    _ => None,
-                })
-                .with_context(|| format!("unknown language: {lang}"))?;
-
-            let start = Instant::now();
-            // Over-fetch when scope filters are active so post-filter truncation
-            // does not silently drop matches the user expects to see. Diff
-            // filter is treated identically — see Search handler note.
-            let fetch_limit = if path_scope.is_empty() && changed_paths.is_none() {
-                limit
-            } else {
-                usize::MAX
-            };
-
-            let (raw_matches, trace) =
-                crate::pattern::scan_with_mode(&root, &pattern, language, fetch_limit, excludes)?;
-
-            // Apply scope first, then diff filter. Track counts for the
-            // `--why` diff_filter trace.
-            let pre_diff: Vec<_> = raw_matches
-                .into_iter()
-                .filter(|m| path_scope.accept(&m.path))
-                .collect();
-            let pre_diff_count = pre_diff.len();
-            let post_diff: Vec<_> = if let Some(ref cp) = changed_paths {
-                pre_diff
-                    .into_iter()
-                    .filter(|m| cp.contains(&m.path))
-                    .collect()
-            } else {
-                pre_diff
-            };
-            let diff_retained = post_diff.len();
-            let diff_dropped = pre_diff_count.saturating_sub(diff_retained);
-            let matches: Vec<_> = post_diff.into_iter().take(limit).collect();
-            let elapsed = start.elapsed();
-
-            match &format {
-                OutputFormat::Json => {
-                    let json: Vec<serde_json::Value> = matches
-                        .iter()
-                        .map(|m| {
-                            let mut obj = serde_json::json!({
-                                "path": m.path,
-                                "line": m.line,
-                                "text": m.matched_text.lines().next().unwrap_or(""),
-                            });
-                            if !m.captures.is_empty() {
-                                obj["captures"] = serde_json::json!(m
-                                    .captures
-                                    .iter()
-                                    .map(|(k, v)| serde_json::json!({k: v}))
-                                    .collect::<Vec<_>>());
-                            }
-                            obj
-                        })
-                        .collect();
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
-                OutputFormat::Text | OutputFormat::Compact => {
-                    if matches.is_empty() {
-                        println!("No matches for pattern in {elapsed:.2?}");
-                    } else {
-                        println!("{} matches in {elapsed:.2?}\n", matches.len());
-                        for m in &matches {
-                            let first_line = m.matched_text.lines().next().unwrap_or("");
-                            println!("{}:{}", m.path, m.line);
-                            println!("  {first_line}");
-                            for (name, value) in &m.captures {
-                                println!("  ${name} = {value}");
-                            }
-                            println!();
-                        }
-                    }
-                }
-            }
-
-            if why {
-                // stderr keeps stdout a pure result stream — mirrors
-                // `vex search --why` so `vex pattern 'pat' --why | jq` works.
-                crate::cli::trace::emit_why_trace(&trace)?;
-                if let Some(df) =
-                    diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
-                {
-                    crate::cli::trace::emit_diff_filter(&df)?;
-                }
-            }
-
-            Ok(())
-        }
+        } => cmd_pattern::pattern(
+            pattern, lang, path, limit, why, scope, diff, &format, excludes,
+        ),
         Commands::Update {
             path,
             semantic,
@@ -882,66 +765,18 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
             scope,
             diff,
-        } => {
-            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
-            let root = resolve_root(path)?;
-            handle_staleness(&root, auto_update, no_stale_check, &cfg)?;
-            let changed_paths = resolve_diff_filter(&root, &diff)?;
-            let start = Instant::now();
-            let fetch_limit = if path_scope.is_empty() && changed_paths.is_none() {
-                limit
-            } else {
-                usize::MAX
-            };
-            let matches =
-                crate::hierarchy::find_implementations(&root, &name, fetch_limit, excludes)?;
-            let matches: Vec<_> = matches
-                .into_iter()
-                .filter(|m| {
-                    path_scope.accept(&m.path)
-                        && changed_paths.as_ref().is_none_or(|cp| cp.contains(&m.path))
-                })
-                .take(limit)
-                .collect();
-            let elapsed = start.elapsed();
-
-            match &format {
-                OutputFormat::Json => {
-                    let json: Vec<serde_json::Value> = matches
-                        .iter()
-                        .map(|m| {
-                            serde_json::json!({
-                                "name": m.name,
-                                "base": m.base,
-                                "relation": m.relation,
-                                "path": m.path,
-                                "line": m.line,
-                            })
-                        })
-                        .collect();
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
-                OutputFormat::Text => {
-                    if matches.is_empty() {
-                        println!("No implementations of \"{name}\" in {elapsed:.2?}");
-                    } else {
-                        println!(
-                            "{name}: {} implementations in {elapsed:.2?}\n",
-                            matches.len()
-                        );
-                        for m in &matches {
-                            println!("  {:<40} ({})  {}:{}", m.name, m.relation, m.path, m.line);
-                        }
-                    }
-                }
-                OutputFormat::Compact => {
-                    for m in &matches {
-                        println!("{} {} {} {}:{}", m.relation, m.base, m.name, m.path, m.line);
-                    }
-                }
-            }
-            Ok(())
-        }
+        } => cmd_implementations::implementations(
+            name,
+            path,
+            limit,
+            auto_update,
+            no_stale_check,
+            scope,
+            diff,
+            &cfg,
+            &format,
+            excludes,
+        ),
         Commands::Callers {
             name,
             path,
