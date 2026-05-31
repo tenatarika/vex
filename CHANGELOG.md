@@ -6,6 +6,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-06-01
+
+v1.11.0 is a minor release that closes five external-review items
+(H4, H5, H8, H11, H12), lands a large internal refactor that drops
+`cli/mod.rs` from 2642 → 467 LOC, and ships one feature (Phase 8.4
+body tokens for config languages). **It carries two BREAKING JSON
+contract changes** (H5-full envelope and H8 `-32602`) — see migration
+notes under `### Changed` below before bumping. Pre-1.11 indices
+require **no rebuild**: the manifest format is unchanged.
+
+Release-day net: cli/mod.rs decomposition into 17 cmd_*.rs files +
+common.rs/index_management.rs (S1 Groups A–F), four review-closeout
+fixes (H4 brace-aware ellipsis, H5-full envelope contract, H8 typed
+MCP params, H11 content-hash staleness, H12 indegree per-(name,sym_idx)),
+config-language semantic search (TOML/YAML/HTML/CSS), and docs updates
+covering the JSON envelope migration + MCP `-32602` error contract.
+
 ### Changed
 
 - **BREAKING (H8) — `vex mcp` rejects wrong-typed params with JSON-RPC
@@ -79,6 +96,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   raw strings (`r#"..."#`, `R"(...)"`), triple-quoted strings, and
   bracket-containing comments. Full AST descent inside `try_match` is
   filed as a v2 follow-up.
+
+- **H12 — indegree-based ranking no longer collapses name collisions.**
+  Pre-H12 `top_n_by_indegree` (powers `vex bundle --mode project`) keyed
+  the per-callee bucket on a lowercased bare name and emitted only the
+  first FST hit as the representative, silently hiding every other
+  definition that shared the name (`init`, `from`, `parse`, `new`).
+  Post-H12 the helper emits one row per `(name, sym_idx)` pair so each
+  definition gets its own ranking slot; the caller-count is the same
+  upper bound for each because call edges lack the type info to
+  apportion callers between definitions. Two unit tests via a mocked
+  FST lookup pin the contract.
+
+### Added
+
+- **Phase 8.4 — semantic search now indexes TOML / YAML / HTML / CSS
+  values.** `extract_body_tokens` learned the config-language AST
+  leaves: `bare_key` / `dotted_key` / `quoted_key` (TOML),
+  `attribute_name` / `tag_name` / `attribute_value` /
+  `quoted_attribute_value` (HTML), `class_name` / `id_name` /
+  `property_name` / `keyframes_name` / `plain_value` / `string_value`
+  (CSS), `string_scalar` / `plain_scalar` / `single_quote_scalar` /
+  `double_quote_scalar` (YAML), and the bare `string` leaf used by
+  `tree-sitter-toml-ng`. Pre-8.4 these symbols carried
+  `body_tokens = None`, so the semantic / BM25 channels were blind to
+  config-file content; now `vex search "production endpoint"
+  --semantic` can hit a `[server]` table with `endpoint = "https://..."`.
+  YAML still only surfaces top-level mapping keys (limitation of the
+  current SCM, not the extractor) — pinned by the test.
+
+### Refactored
+
+- **S1 — `cli/mod.rs` decomposed 2642 → 467 LOC (−82%).** Eight-commit
+  refactor extracts every subcommand handler into a dedicated
+  `cli/cmd_<name>.rs` file (17 new files), splits shared helpers into
+  `cli/common.rs` (stateless: format / config / filter resolution +
+  `fetch_symbol_body` + `EXPLAIN_MAX_DIFF_LINES` + `build_index_options`)
+  and `cli/index_management.rs` (bootstrap + staleness + `ensure_index_ready`),
+  introduces a `CmdCtx<'_>` struct threaded through every handler to
+  cut argument bloat (architect MUST-FIX), and centralises the
+  `callers_of_warned` saturation helper used by `vex paths` / `vex
+  reachable`. **H5-full** is the immediate downstream beneficiary; the
+  decomposition unblocks future per-handler work without behaviour
+  change (every commit was a pure move, JSON envelopes byte-identical
+  modulo `index_age_ms` timing).
 
 ## [1.10.1] - 2026-05-29
 
