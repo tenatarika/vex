@@ -6,11 +6,12 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 
 use super::args::{DiffFilterArgs, OutputFormat, ScopeArgs};
-use super::common::{diff_filter_meta, resolve_diff_filter, resolve_root};
+use super::common::{diff_filter_meta, resolve_diff_filter, resolve_root, CmdCtx};
 use super::scope;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pattern(
+    ctx: &CmdCtx<'_>,
     pattern: String,
     lang: String,
     path: Option<std::path::PathBuf>,
@@ -18,8 +19,6 @@ pub(crate) fn pattern(
     why: bool,
     scope: ScopeArgs,
     diff: DiffFilterArgs,
-    format: &OutputFormat,
-    excludes: &[String],
 ) -> Result<()> {
     let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
     let root = resolve_root(path)?;
@@ -63,7 +62,7 @@ pub(crate) fn pattern(
     };
 
     let (raw_matches, trace) =
-        crate::pattern::scan_with_mode(&root, &pattern, language, fetch_limit, excludes)?;
+        crate::pattern::scan_with_mode(&root, &pattern, language, fetch_limit, ctx.excludes)?;
 
     // Apply scope first, then diff filter. Track counts for the
     // `--why` diff_filter trace.
@@ -85,7 +84,7 @@ pub(crate) fn pattern(
     let matches: Vec<_> = post_diff.into_iter().take(limit).collect();
     let elapsed = start.elapsed();
 
-    match format {
+    match ctx.format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = matches
                 .iter()

@@ -30,7 +30,7 @@ pub mod trace;
 use anyhow::Result;
 use args::{Cli, Commands};
 
-use common::{extract_jobs_hint, extract_path_hint, resolve_format, resolve_root};
+use common::{extract_jobs_hint, extract_path_hint, resolve_format, resolve_root, CmdCtx};
 
 use crate::util::config;
 
@@ -40,7 +40,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
     let config_root = resolve_root(root_hint)?;
     let cfg = config::load_config(&config_root)?;
     let format = resolve_format(cli.format, &cfg);
-    let excludes = &cfg.exclude;
 
     // Install the cache-root override (CLI > env > config > platform default).
     // Done once here so every config::index_path/index_dir call downstream
@@ -67,6 +66,16 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         config::init_rayon_pool(n);
     }
 
+    // Threaded into every extracted cmd_* handler so the per-arm
+    // signatures stay short and the dispatch table reads as
+    // destructure-and-delegate. Architect MUST-FIX #3 from the S1 review.
+    let ctx = CmdCtx {
+        cfg: &cfg,
+        format,
+        excludes: &cfg.exclude,
+        local_cache_active,
+    };
+
     match cli.command {
         Commands::Index {
             path,
@@ -78,6 +87,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_bm25,
             no_pattern_index,
         } => cmd_index::index(
+            &ctx,
             path,
             semantic,
             no_semantic,
@@ -86,10 +96,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_call_graph,
             no_bm25,
             no_pattern_index,
-            local_cache_active,
-            &cfg,
-            &format,
-            excludes,
         ),
         Commands::Search {
             query,
@@ -107,6 +113,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             scope,
             diff,
         } => cmd_search::search(
+            &ctx,
             query,
             limit,
             semantic,
@@ -121,9 +128,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             why,
             scope,
             diff,
-            local_cache_active,
-            &cfg,
-            &format,
         ),
         Commands::Usages {
             name,
@@ -136,6 +140,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             scope,
             diff,
         } => cmd_usages::usages(
+            &ctx,
             name,
             limit,
             filter_path,
@@ -145,9 +150,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             why,
             scope,
             diff,
-            local_cache_active,
-            &cfg,
-            &format,
         ),
         Commands::Pattern {
             pattern,
@@ -157,9 +159,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             why,
             scope,
             diff,
-        } => cmd_pattern::pattern(
-            pattern, lang, path, limit, why, scope, diff, &format, excludes,
-        ),
+        } => cmd_pattern::pattern(&ctx, pattern, lang, path, limit, why, scope, diff),
         Commands::Update {
             path,
             semantic,
@@ -170,6 +170,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_bm25,
             no_pattern_index,
         } => cmd_update::update(
+            &ctx,
             path,
             semantic,
             no_semantic,
@@ -178,12 +179,9 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_call_graph,
             no_bm25,
             no_pattern_index,
-            &cfg,
-            &format,
-            excludes,
         ),
         Commands::Outline { file, kind } => {
-            cmd_outline::cmd_outline(&file, kind.as_deref(), &format)
+            cmd_outline::cmd_outline(&file, kind.as_deref(), &ctx.format)
         }
         Commands::Watch {
             path,
@@ -195,6 +193,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_bm25,
             no_pattern_index,
         } => cmd_watch::watch(
+            &ctx,
             path,
             semantic,
             no_semantic,
@@ -203,8 +202,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_call_graph,
             no_bm25,
             no_pattern_index,
-            &cfg,
-            excludes,
         ),
         Commands::Show {
             symbols,
@@ -222,6 +219,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             meta,
             scope,
         } => cmd_show::show(
+            &ctx,
             symbols,
             limit,
             context,
@@ -236,13 +234,8 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             collapsed,
             meta,
             scope,
-            local_cache_active,
-            &cfg,
-            &format,
         ),
-        Commands::Status { path, coverage } => {
-            cmd_status::status(path, coverage, &format, excludes)
-        }
+        Commands::Status { path, coverage } => cmd_status::status(&ctx, path, coverage),
         Commands::Grep {
             pattern,
             limit,
@@ -250,16 +243,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             path,
             scope,
             diff,
-        } => cmd_grep::grep(
-            pattern,
-            limit,
-            filter_path,
-            path,
-            scope,
-            diff,
-            &format,
-            excludes,
-        ),
+        } => cmd_grep::grep(&ctx, pattern, limit, filter_path, path, scope, diff),
         Commands::Implementations {
             name,
             path,
@@ -269,6 +253,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             scope,
             diff,
         } => cmd_implementations::implementations(
+            &ctx,
             name,
             path,
             limit,
@@ -276,9 +261,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
             scope,
             diff,
-            &cfg,
-            &format,
-            excludes,
         ),
         Commands::Callers {
             name,
@@ -291,16 +273,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             cmd_callgraph::cmd_callgraph(
+                &ctx,
                 &name,
                 path,
                 limit,
                 true,
                 auto_update,
                 no_stale_check,
-                local_cache_active,
-                &cfg,
-                &format,
-                excludes,
                 &path_scope,
                 &diff,
             )
@@ -316,16 +295,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             cmd_callgraph::cmd_callgraph(
+                &ctx,
                 &name,
                 path,
                 limit,
                 false,
                 auto_update,
                 no_stale_check,
-                local_cache_active,
-                &cfg,
-                &format,
-                excludes,
                 &path_scope,
                 &diff,
             )
@@ -335,7 +311,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             path,
             limit,
             scope,
-        } => cmd_diff::diff(base, path, limit, scope, &format, excludes),
+        } => cmd_diff::diff(&ctx, base, path, limit, scope),
         Commands::Paths {
             from,
             to,
@@ -346,6 +322,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
             scope,
         } => cmd_callgraph::paths(
+            &ctx,
             from,
             to,
             max_hops,
@@ -354,9 +331,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             auto_update,
             no_stale_check,
             scope,
-            local_cache_active,
-            &cfg,
-            &format,
         ),
         Commands::Reachable {
             target,
@@ -367,6 +341,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
             scope,
         } => cmd_callgraph::reachable(
+            &ctx,
             target,
             max_hops,
             limit,
@@ -374,24 +349,13 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             auto_update,
             no_stale_check,
             scope,
-            local_cache_active,
-            &cfg,
-            &format,
         ),
         Commands::Check {
             names,
             path,
             auto_update,
             no_stale_check,
-        } => cmd_check::check(
-            names,
-            path,
-            auto_update,
-            no_stale_check,
-            local_cache_active,
-            &cfg,
-            &format,
-        ),
+        } => cmd_check::check(&ctx, names, path, auto_update, no_stale_check),
 
         Commands::Similar {
             name,
@@ -406,6 +370,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             scope,
             diff,
         } => cmd_similar::similar(
+            &ctx,
             name,
             path,
             limit,
@@ -417,9 +382,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             why,
             scope,
             diff,
-            local_cache_active,
-            &cfg,
-            &format,
         ),
         Commands::Duplicates {
             path,
@@ -434,6 +396,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             scope,
             diff,
         } => cmd_duplicates::duplicates(
+            &ctx,
             path,
             threshold,
             limit,
@@ -445,9 +408,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             why,
             scope,
             diff,
-            local_cache_active,
-            &cfg,
-            &format,
         ),
 
         Commands::Completions { shell } => cmd_trivial::completions(shell),
@@ -459,15 +419,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             min_ndcg,
             path,
             json,
-        } => cmd_eval::cmd_eval(
-            path,
-            bench,
-            min_ndcg,
-            json,
-            local_cache_active,
-            &cfg,
-            &format,
-        ),
+        } => cmd_eval::cmd_eval(&ctx, path, bench, min_ndcg, json),
 
         Commands::Bundle {
             mode,
@@ -487,6 +439,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_stale_check,
             scope,
         } => cmd_bundle::bundle(
+            &ctx,
             mode,
             symbol,
             base,
@@ -503,9 +456,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             auto_update,
             no_stale_check,
             scope,
-            local_cache_active,
-            &cfg,
-            excludes,
         ),
 
         Commands::SelfUpdate { check, yes } => {

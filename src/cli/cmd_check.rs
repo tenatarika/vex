@@ -4,20 +4,16 @@
 use anyhow::{Context, Result};
 
 use super::args::OutputFormat;
-use super::common::resolve_root;
+use super::common::{resolve_root, CmdCtx};
 use super::index_management::ensure_index_ready;
 use crate::store::reader::IndexReader;
-use crate::util::config;
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn check(
+    ctx: &CmdCtx<'_>,
     names: Vec<String>,
     path: Option<std::path::PathBuf>,
     auto_update: bool,
     no_stale_check: bool,
-    local_cache_active: bool,
-    cfg: &config::VexConfig,
-    format: &OutputFormat,
 ) -> Result<()> {
     let root = resolve_root(path)?.canonicalize()?;
     let index_path = ensure_index_ready(
@@ -25,8 +21,8 @@ pub(crate) fn check(
         auto_update,
         no_stale_check,
         false,
-        local_cache_active,
-        cfg,
+        ctx.local_cache_active,
+        ctx.cfg,
     )?;
 
     let reader = IndexReader::open(&index_path).context("open index")?;
@@ -65,7 +61,7 @@ pub(crate) fn check(
             .collect()
     };
 
-    match format {
+    match ctx.format {
         OutputFormat::Json => {
             let json: serde_json::Value = results
                 .iter()

@@ -4,19 +4,16 @@
 use anyhow::{bail, Context, Result};
 
 use super::args::OutputFormat;
-use super::common::resolve_root;
+use super::common::{resolve_root, CmdCtx};
 use super::index_management::ensure_index_ready;
 use crate::store::reader::IndexReader;
-use crate::util::config;
 
 pub(crate) fn cmd_eval(
+    ctx: &CmdCtx<'_>,
     path: Option<std::path::PathBuf>,
     bench: Option<std::path::PathBuf>,
     min_ndcg: f64,
     json: bool,
-    local_cache_active: bool,
-    cfg: &config::VexConfig,
-    format: &OutputFormat,
 ) -> Result<()> {
     let root = resolve_root(path)?.canonicalize()?;
 
@@ -48,8 +45,8 @@ pub(crate) fn cmd_eval(
         /*auto_update_flag=*/ false,
         /*no_stale_check=*/ true,
         /*needs_semantic=*/ false,
-        local_cache_active,
-        cfg,
+        ctx.local_cache_active,
+        ctx.cfg,
     )?;
     let reader = IndexReader::open(&index_path).context("open index")?;
 
@@ -59,7 +56,7 @@ pub(crate) fn cmd_eval(
     // experience stays human-readable. The global `--format json`
     // also flips the switch for tooling consistency with other
     // subcommands.
-    let emit_json = json || matches!(format, OutputFormat::Json);
+    let emit_json = json || matches!(ctx.format, OutputFormat::Json);
     if emit_json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {

@@ -5,14 +5,14 @@
 use anyhow::{Context, Result};
 
 use super::args::{DiffFilterArgs, OutputFormat, ScopeArgs};
-use super::common::{diff_filter_meta, resolve_diff_filter, resolve_root};
+use super::common::{diff_filter_meta, resolve_diff_filter, resolve_root, CmdCtx};
 use super::index_management::ensure_index_ready;
 use super::scope;
 use crate::store::reader::IndexReader;
-use crate::util::config;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn usages(
+    ctx: &CmdCtx<'_>,
     name: String,
     limit: usize,
     filter_path: Option<String>,
@@ -22,9 +22,6 @@ pub(crate) fn usages(
     why: bool,
     scope: ScopeArgs,
     diff: DiffFilterArgs,
-    local_cache_active: bool,
-    cfg: &config::VexConfig,
-    format: &OutputFormat,
 ) -> Result<()> {
     let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
     let root = resolve_root(None)?.canonicalize()?;
@@ -34,8 +31,8 @@ pub(crate) fn usages(
         auto_update,
         no_stale_check,
         false,
-        local_cache_active,
-        cfg,
+        ctx.local_cache_active,
+        ctx.cfg,
     )?;
 
     let reader = IndexReader::open(&index_path).context("open index")?;
@@ -121,7 +118,7 @@ pub(crate) fn usages(
         None
     };
 
-    match format {
+    match ctx.format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = entries
                 .iter()

@@ -122,7 +122,7 @@ pub struct Cli {
     pub cache_dir: Option<PathBuf>,
 }
 
-#[derive(Clone, clap::ValueEnum)]
+#[derive(Copy, Clone, clap::ValueEnum)]
 pub enum OutputFormat {
     Text,
     Json,

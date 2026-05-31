@@ -6,12 +6,15 @@ use std::time::Instant;
 use anyhow::Result;
 
 use super::args::OutputFormat;
-use super::common::{build_index_options, resolve_embedder, resolve_root, resolve_semantic};
+use super::common::{
+    build_index_options, resolve_embedder, resolve_root, resolve_semantic, CmdCtx,
+};
 use crate::index::pipeline;
 use crate::util::config;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn index(
+    ctx: &CmdCtx<'_>,
     path: Option<std::path::PathBuf>,
     semantic: bool,
     no_semantic: bool,
@@ -20,16 +23,12 @@ pub(crate) fn index(
     no_call_graph: bool,
     no_bm25: bool,
     no_pattern_index: bool,
-    local_cache_active: bool,
-    cfg: &config::VexConfig,
-    format: &OutputFormat,
-    excludes: &[String],
 ) -> Result<()> {
     let root = resolve_root(path)?;
     let start = Instant::now();
-    let with_semantic = resolve_semantic(semantic, no_semantic, cfg);
-    let embedder_id = resolve_embedder(embedder.as_deref(), cfg);
-    if local_cache_active {
+    let with_semantic = resolve_semantic(semantic, no_semantic, ctx.cfg);
+    let embedder_id = resolve_embedder(embedder.as_deref(), ctx.cfg);
+    if ctx.local_cache_active {
         let cache_root = config::index_dir(&root);
         std::fs::create_dir_all(&cache_root).ok();
         config::write_local_cache_gitignore(&cache_root);
@@ -41,14 +40,14 @@ pub(crate) fn index(
         no_call_graph,
         no_bm25,
         no_pattern_index,
-        cfg,
+        ctx.cfg,
         None,
     );
-    let count = pipeline::run(&root, opts, &embedder_id, excludes)?;
+    let count = pipeline::run(&root, opts, &embedder_id, ctx.excludes)?;
     let elapsed = start.elapsed();
     let index_path = config::index_path(&root.canonicalize()?);
 
-    match format {
+    match ctx.format {
         OutputFormat::Json => {
             let json = serde_json::json!({
                 "symbols": count,

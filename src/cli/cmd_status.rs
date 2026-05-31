@@ -4,16 +4,15 @@
 use anyhow::{Context, Result};
 
 use super::args::OutputFormat;
-use super::common::resolve_root;
+use super::common::{resolve_root, CmdCtx};
 use super::status_coverage;
 use crate::store::reader::IndexReader;
 use crate::util::config;
 
 pub(crate) fn status(
+    ctx: &CmdCtx<'_>,
     path: Option<std::path::PathBuf>,
     coverage: bool,
-    format: &OutputFormat,
-    excludes: &[String],
 ) -> Result<()> {
     let root = resolve_root(path)?
         .canonicalize()
@@ -21,7 +20,7 @@ pub(crate) fn status(
     let index_path = config::index_path(&root);
 
     if !index_path.exists() {
-        match format {
+        match ctx.format {
             OutputFormat::Json => {
                 println!("{}", serde_json::json!({"error": "no index found"}));
             }
@@ -36,12 +35,12 @@ pub(crate) fn status(
     let meta = std::fs::metadata(&index_path)?;
     let reader = IndexReader::open(&index_path)?;
     let coverage_report = if coverage {
-        Some(status_coverage::collect(&root, &reader, excludes)?)
+        Some(status_coverage::collect(&root, &reader, ctx.excludes)?)
     } else {
         None
     };
 
-    match format {
+    match ctx.format {
         OutputFormat::Json => {
             let mut json = serde_json::json!({
                 "project": root.to_string_lossy(),

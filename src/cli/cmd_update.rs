@@ -6,12 +6,15 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 
 use super::args::OutputFormat;
-use super::common::{build_index_options, resolve_embedder, resolve_root, resolve_semantic};
+use super::common::{
+    build_index_options, resolve_embedder, resolve_root, resolve_semantic, CmdCtx,
+};
 use crate::index::pipeline;
 use crate::util::config;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update(
+    ctx: &CmdCtx<'_>,
     path: Option<std::path::PathBuf>,
     semantic: bool,
     no_semantic: bool,
@@ -20,9 +23,6 @@ pub(crate) fn update(
     no_call_graph: bool,
     no_bm25: bool,
     no_pattern_index: bool,
-    cfg: &config::VexConfig,
-    format: &OutputFormat,
-    excludes: &[String],
 ) -> Result<()> {
     // Canonicalize once at the top so `prior_manifest`'s lookup
     // path matches the one `pipeline::update` uses internally —
@@ -32,8 +32,8 @@ pub(crate) fn update(
         .canonicalize()
         .context("canonicalize project root")?;
     let start = Instant::now();
-    let with_semantic = resolve_semantic(semantic, no_semantic, cfg);
-    let embedder_id = resolve_embedder(embedder.as_deref(), cfg);
+    let with_semantic = resolve_semantic(semantic, no_semantic, ctx.cfg);
+    let embedder_id = resolve_embedder(embedder.as_deref(), ctx.cfg);
     // `update` consults the previous manifest so an unflagged call
     // does not silently re-add a section the user opted out of.
     // Surface real load errors via `?` — `Manifest::load` already
@@ -45,13 +45,13 @@ pub(crate) fn update(
         no_call_graph,
         no_bm25,
         no_pattern_index,
-        cfg,
+        ctx.cfg,
         Some(&prior_manifest),
     );
-    let (total, changed, deleted) = pipeline::update(&root, opts, &embedder_id, excludes)?;
+    let (total, changed, deleted) = pipeline::update(&root, opts, &embedder_id, ctx.excludes)?;
     let elapsed = start.elapsed();
 
-    match format {
+    match ctx.format {
         OutputFormat::Json => {
             let json = serde_json::json!({
                 "symbols": total,

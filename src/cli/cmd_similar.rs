@@ -3,9 +3,10 @@
 
 use anyhow::{bail, Context, Result};
 
-use super::args::{DiffFilterArgs, OutputFormat, ScopeArgs};
+use super::args::{DiffFilterArgs, ScopeArgs};
 use super::common::{
-    diff_filter_meta, fetch_symbol_body, resolve_diff_filter, resolve_root, EXPLAIN_MAX_DIFF_LINES,
+    diff_filter_meta, fetch_symbol_body, resolve_diff_filter, resolve_root, CmdCtx,
+    EXPLAIN_MAX_DIFF_LINES,
 };
 use super::index_management::ensure_index_ready;
 use super::{output, scope};
@@ -14,6 +15,7 @@ use crate::util::config;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn similar(
+    ctx: &CmdCtx<'_>,
     name: String,
     path: Option<std::path::PathBuf>,
     limit: usize,
@@ -25,9 +27,6 @@ pub(crate) fn similar(
     why: bool,
     scope: ScopeArgs,
     diff: DiffFilterArgs,
-    local_cache_active: bool,
-    cfg: &config::VexConfig,
-    format: &OutputFormat,
 ) -> Result<()> {
     let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
     let root = resolve_root(path)?.canonicalize()?;
@@ -37,8 +36,8 @@ pub(crate) fn similar(
         auto_update,
         no_stale_check,
         true,
-        local_cache_active,
-        cfg,
+        ctx.local_cache_active,
+        ctx.cfg,
     )?;
 
     let reader = IndexReader::open(&index_path).context("open index")?;
@@ -123,7 +122,7 @@ pub(crate) fn similar(
         None
     };
 
-    output::print_similar(&matches, &name, explanations.as_deref(), format);
+    output::print_similar(&matches, &name, explanations.as_deref(), &ctx.format);
 
     // 11.10: structured trace on stderr for `--why`.
     // `candidates_after_filter` is the pre-`--limit` count so

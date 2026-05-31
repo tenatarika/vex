@@ -5,11 +5,14 @@
 
 use anyhow::{Context, Result};
 
-use super::common::{build_index_options, resolve_embedder, resolve_root, resolve_semantic};
+use super::common::{
+    build_index_options, resolve_embedder, resolve_root, resolve_semantic, CmdCtx,
+};
 use crate::util::config;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn watch(
+    ctx: &CmdCtx<'_>,
     path: Option<std::path::PathBuf>,
     semantic: bool,
     no_semantic: bool,
@@ -18,16 +21,14 @@ pub(crate) fn watch(
     no_call_graph: bool,
     no_bm25: bool,
     no_pattern_index: bool,
-    cfg: &config::VexConfig,
-    excludes: &[String],
 ) -> Result<()> {
     // Canonicalize once (see Update arm) so the manifest lookup
     // matches what `pipeline::run/update` will use.
     let root = resolve_root(path)?
         .canonicalize()
         .context("canonicalize project root")?;
-    let with_semantic = resolve_semantic(semantic, no_semantic, cfg);
-    let embedder_id = resolve_embedder(embedder.as_deref(), cfg);
+    let with_semantic = resolve_semantic(semantic, no_semantic, ctx.cfg);
+    let embedder_id = resolve_embedder(embedder.as_deref(), ctx.cfg);
     // Watch builds the initial index AND subsequent incremental
     // updates inside one long-running process. Both should use the
     // same composition. Real load errors surface via `?` —
@@ -38,9 +39,9 @@ pub(crate) fn watch(
         no_call_graph,
         no_bm25,
         no_pattern_index,
-        cfg,
+        ctx.cfg,
         Some(&prior_manifest),
     );
-    crate::watch::handler::watch(&root, opts, &embedder_id, excludes)?;
+    crate::watch::handler::watch(&root, opts, &embedder_id, ctx.excludes)?;
     Ok(())
 }

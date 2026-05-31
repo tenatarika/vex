@@ -4,19 +4,17 @@
 use anyhow::Result;
 
 use super::args::{DiffFilterArgs, OutputFormat, ScopeArgs};
-use super::common::{resolve_diff_filter, resolve_root};
+use super::common::{resolve_diff_filter, resolve_root, CmdCtx};
 use super::scope;
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn grep(
+    ctx: &CmdCtx<'_>,
     pattern: String,
     limit: usize,
     filter_path: Option<String>,
     path: Option<std::path::PathBuf>,
     scope: ScopeArgs,
     diff: DiffFilterArgs,
-    format: &OutputFormat,
-    excludes: &[String],
 ) -> Result<()> {
     let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
     let root = resolve_root(path)?;
@@ -34,7 +32,7 @@ pub(crate) fn grep(
         &pattern,
         filter_path.as_deref(),
         fetch_limit,
-        excludes,
+        ctx.excludes,
     )?;
     let matches: Vec<_> = matches
         .into_iter()
@@ -45,7 +43,7 @@ pub(crate) fn grep(
         .take(limit)
         .collect();
 
-    match format {
+    match ctx.format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = matches
                 .iter()

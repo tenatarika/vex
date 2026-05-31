@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use super::args::{DiffFilterArgs, MetadataArgs, OutputFormat, ScopeArgs};
 use super::common::{
     apply_path_filters, build_metadata_filter, check_embedder_match, diff_filter_meta,
-    resolve_diff_filter, resolve_embedder, resolve_root, resolve_semantic,
+    resolve_diff_filter, resolve_embedder, resolve_root, resolve_semantic, CmdCtx,
 };
 use super::index_management::ensure_index_ready;
 use super::{output, scope};
@@ -16,6 +16,7 @@ use crate::util::config;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn search(
+    ctx: &CmdCtx<'_>,
     query: String,
     limit: usize,
     semantic: bool,
@@ -30,11 +31,8 @@ pub(crate) fn search(
     why: bool,
     scope: ScopeArgs,
     diff: DiffFilterArgs,
-    local_cache_active: bool,
-    cfg: &config::VexConfig,
-    format: &OutputFormat,
 ) -> Result<()> {
-    let semantic = resolve_semantic(semantic, no_semantic, cfg);
+    let semantic = resolve_semantic(semantic, no_semantic, ctx.cfg);
     let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
     let metadata_filter = build_metadata_filter(&meta)?;
     let root = resolve_root(None)?.canonicalize()?;
@@ -46,8 +44,8 @@ pub(crate) fn search(
         auto_update,
         no_stale_check,
         semantic,
-        local_cache_active,
-        cfg,
+        ctx.local_cache_active,
+        ctx.cfg,
     )?;
 
     let reader = IndexReader::open(&index_path).context("open index")?;
@@ -83,7 +81,7 @@ pub(crate) fn search(
     // `signals` block in the response envelope (Phase 13.11). Clone
     // only when at least one consumer is active so the text/compact
     // fast path stays allocation-free.
-    let want_prefusion = why || matches!(format, OutputFormat::Json);
+    let want_prefusion = why || matches!(ctx.format, OutputFormat::Json);
     let trace_structural = if want_prefusion {
         structural_results.clone()
     } else {
@@ -97,7 +95,7 @@ pub(crate) fn search(
     let mut trace_semantic: Vec<crate::search::SearchResult> = Vec::new();
 
     let results = if semantic && reader.has_vectors() {
-        let embedder_id = resolve_embedder(None, cfg);
+        let embedder_id = resolve_embedder(None, ctx.cfg);
         // Warn (but don't fail) when the manifest doesn't record an
         // embedder — typically a pre-9.1 index or a deleted manifest.
         // We fall back to assuming DEFAULT_EMBEDDER; if the user
@@ -192,7 +190,7 @@ pub(crate) fn search(
         }
     }
 
-    match format {
+    match ctx.format {
         OutputFormat::Json => {
             // Build per-result signals via the same (path, name, line)
             // keying fusion uses, then wrap in the Phase 13 envelope.
@@ -218,7 +216,7 @@ pub(crate) fn search(
                 if is_fuzzy {
                     eprintln!("(fuzzy match — no exact results for \"{query}\")\n");
                 }
-                output::print_results(&results, format);
+                output::print_results(&results, &ctx.format);
             }
         }
     }

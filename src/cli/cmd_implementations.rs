@@ -6,13 +6,13 @@ use std::time::Instant;
 use anyhow::Result;
 
 use super::args::{DiffFilterArgs, OutputFormat, ScopeArgs};
-use super::common::{resolve_diff_filter, resolve_root};
+use super::common::{resolve_diff_filter, resolve_root, CmdCtx};
 use super::index_management::handle_staleness;
 use super::scope;
-use crate::util::config;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn implementations(
+    ctx: &CmdCtx<'_>,
     name: String,
     path: Option<std::path::PathBuf>,
     limit: usize,
@@ -20,13 +20,10 @@ pub(crate) fn implementations(
     no_stale_check: bool,
     scope: ScopeArgs,
     diff: DiffFilterArgs,
-    cfg: &config::VexConfig,
-    format: &OutputFormat,
-    excludes: &[String],
 ) -> Result<()> {
     let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
     let root = resolve_root(path)?;
-    handle_staleness(&root, auto_update, no_stale_check, cfg)?;
+    handle_staleness(&root, auto_update, no_stale_check, ctx.cfg)?;
     let changed_paths = resolve_diff_filter(&root, &diff)?;
     let start = Instant::now();
     let fetch_limit = if path_scope.is_empty() && changed_paths.is_none() {
@@ -34,7 +31,7 @@ pub(crate) fn implementations(
     } else {
         usize::MAX
     };
-    let matches = crate::hierarchy::find_implementations(&root, &name, fetch_limit, excludes)?;
+    let matches = crate::hierarchy::find_implementations(&root, &name, fetch_limit, ctx.excludes)?;
     let matches: Vec<_> = matches
         .into_iter()
         .filter(|m| {
@@ -45,7 +42,7 @@ pub(crate) fn implementations(
         .collect();
     let elapsed = start.elapsed();
 
-    match format {
+    match ctx.format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = matches
                 .iter()

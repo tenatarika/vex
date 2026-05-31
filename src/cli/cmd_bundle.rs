@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::cli::args::ScopeArgs;
+use crate::cli::common::CmdCtx;
 use crate::cli::index_management::ensure_index_ready;
 use crate::cli::output::print_envelope;
 use crate::parse::language::Language;
@@ -191,6 +192,7 @@ pub fn resolve_bundle_root(path: Option<PathBuf>) -> Result<PathBuf> {
 /// dispatch arm collapses to a one-liner.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bundle(
+    ctx: &CmdCtx<'_>,
     mode: BundleModeFlag,
     symbol: Option<String>,
     base: Option<String>,
@@ -207,9 +209,6 @@ pub(crate) fn bundle(
     auto_update: bool,
     no_stale_check: bool,
     scope: ScopeArgs,
-    local_cache_active: bool,
-    cfg: &config::VexConfig,
-    excludes: &[String],
 ) -> Result<()> {
     // Inc 2 — open the index for `--mode symbol`. We pass
     // `needs_semantic=false` to `ensure_index_ready`: similar
@@ -222,8 +221,8 @@ pub(crate) fn bundle(
         auto_update,
         no_stale_check,
         /*needs_semantic=*/ false,
-        local_cache_active,
-        cfg,
+        ctx.local_cache_active,
+        ctx.cfg,
     )?;
     let reader = IndexReader::open(&index_path).context("open index")?;
     let hnsw_path = config::hnsw_path(&root);
@@ -241,14 +240,14 @@ pub(crate) fn bundle(
         directory_tree_only,
         directory_tree_top,
     };
-    let ctx = BundleCtx {
+    let bctx = BundleCtx {
         root,
         scope: &scope,
         reader: &reader,
         hnsw_path,
-        excludes,
+        excludes: ctx.excludes,
     };
-    cmd_bundle(args, ctx)
+    cmd_bundle(args, bctx)
 }
 
 // ---------------------------------------------------------------------------

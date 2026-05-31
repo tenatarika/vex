@@ -5,7 +5,7 @@
 use anyhow::{bail, Context, Result};
 
 use super::args::{self, OutputFormat, ScopeArgs};
-use super::common::{resolve_diff_filter, resolve_root};
+use super::common::{resolve_diff_filter, resolve_root, CmdCtx};
 use super::index_management::{ensure_index_exists, ensure_index_ready, handle_staleness};
 use super::{output, scope};
 use crate::store::reader::IndexReader;
@@ -38,16 +38,13 @@ pub(crate) fn callers_of_warned(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_callgraph(
+    ctx: &CmdCtx<'_>,
     name: &str,
     path: Option<std::path::PathBuf>,
     limit: usize,
     is_callers: bool,
     auto_update: bool,
     no_stale_check: bool,
-    local_cache_active: bool,
-    cfg: &config::VexConfig,
-    format: &OutputFormat,
-    excludes: &[String],
     path_scope: &scope::PathScope,
     diff: &args::DiffFilterArgs,
 ) -> Result<()> {
@@ -78,17 +75,17 @@ pub(crate) fn cmd_callgraph(
     let canonical_root = root.canonicalize().ok();
     let index_path = canonical_root.as_ref().map(|r| config::index_path(r));
     if let (Some(croot), Some(idx)) = (canonical_root.as_ref(), index_path.as_ref()) {
-        let should_auto = auto_update || cfg.auto_update.unwrap_or(false);
+        let should_auto = auto_update || ctx.cfg.auto_update.unwrap_or(false);
         if !idx.exists() {
             if should_auto {
                 // Discard the IndexAvail return — we only need the side effect
                 // of bootstrap. Reader is opened below the same way as before.
-                ensure_index_exists(croot, auto_update, false, local_cache_active, cfg)?;
+                ensure_index_exists(croot, auto_update, false, ctx.local_cache_active, ctx.cfg)?;
                 // just-bootstrapped → manifest is fresh, skip handle_staleness
             }
             // else: live-scan path; no warning, this command supports it natively
         } else {
-            handle_staleness(croot, auto_update, no_stale_check, cfg)?;
+            handle_staleness(croot, auto_update, no_stale_check, ctx.cfg)?;
         }
     }
 
@@ -122,9 +119,9 @@ pub(crate) fn cmd_callgraph(
         }
         _ => {
             if is_callers {
-                crate::callgraph::find_callers(&root, name, fetch_limit, excludes)?
+                crate::callgraph::find_callers(&root, name, fetch_limit, ctx.excludes)?
             } else {
-                crate::callgraph::find_callees(&root, name, fetch_limit, excludes)?
+                crate::callgraph::find_callees(&root, name, fetch_limit, ctx.excludes)?
             }
         }
     };
@@ -138,7 +135,7 @@ pub(crate) fn cmd_callgraph(
         .collect();
     let elapsed = start.elapsed();
 
-    match &format {
+    match ctx.format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = matches
                 .iter()
@@ -174,6 +171,7 @@ pub(crate) fn cmd_callgraph(
 /// `vex paths from..to` — multi-hop caller chains. (S1 Group E.)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paths(
+    ctx: &CmdCtx<'_>,
     from: String,
     to: String,
     max_hops: usize,
@@ -182,9 +180,6 @@ pub(crate) fn paths(
     auto_update: bool,
     no_stale_check: bool,
     scope: ScopeArgs,
-    local_cache_active: bool,
-    cfg: &config::VexConfig,
-    format: &OutputFormat,
 ) -> Result<()> {
     let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
     let root = resolve_root(path)?.canonicalize()?;
@@ -193,8 +188,8 @@ pub(crate) fn paths(
         auto_update,
         no_stale_check,
         false,
-        local_cache_active,
-        cfg,
+        ctx.local_cache_active,
+        ctx.cfg,
     )?;
     let reader = IndexReader::open(&index_path).context("open index")?;
     if !reader.has_call_graph() {
@@ -218,7 +213,7 @@ pub(crate) fn paths(
                 .all(|s| path_scope.accept(&s.path))
         })
         .collect();
-    output::print_paths(&paths, &from, &to, format);
+    output::print_paths(&paths, &from, &to, &ctx.format);
     Ok(())
 }
 
@@ -226,6 +221,7 @@ pub(crate) fn paths(
 /// `target`. (S1 Group E.)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reachable(
+    ctx: &CmdCtx<'_>,
     target: String,
     max_hops: usize,
     limit: usize,
@@ -233,9 +229,6 @@ pub(crate) fn reachable(
     auto_update: bool,
     no_stale_check: bool,
     scope: ScopeArgs,
-    local_cache_active: bool,
-    cfg: &config::VexConfig,
-    format: &OutputFormat,
 ) -> Result<()> {
     let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
     let root = resolve_root(path)?.canonicalize()?;
@@ -244,8 +237,8 @@ pub(crate) fn reachable(
         auto_update,
         no_stale_check,
         false,
-        local_cache_active,
-        cfg,
+        ctx.local_cache_active,
+        ctx.cfg,
     )?;
     let reader = IndexReader::open(&index_path).context("open index")?;
     if !reader.has_call_graph() {
@@ -271,6 +264,6 @@ pub(crate) fn reachable(
         .filter(|m| path_scope.accept(&m.path))
         .take(limit)
         .collect();
-    output::print_reachable(&matches, &target, format);
+    output::print_reachable(&matches, &target, &ctx.format);
     Ok(())
 }

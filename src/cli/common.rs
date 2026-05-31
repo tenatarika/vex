@@ -14,6 +14,18 @@ use crate::index::manifest::Manifest;
 use crate::index::pipeline;
 use crate::util::config;
 
+/// Shared dispatch-level state. Built once in `dispatch()` from the
+/// loaded `.vex.toml`, the resolved CLI flags, and the cache-override
+/// outcome, then threaded into every extracted `cmd_*` handler. Cuts
+/// 3–4 args off each handler signature and matches the architect's
+/// MUST-FIX-#3 recommendation from the S1 plan review.
+pub(crate) struct CmdCtx<'a> {
+    pub cfg: &'a config::VexConfig,
+    pub format: OutputFormat,
+    pub excludes: &'a [String],
+    pub local_cache_active: bool,
+}
+
 pub(crate) fn resolve_root(path: Option<std::path::PathBuf>) -> Result<std::path::PathBuf> {
     match path {
         Some(p) => Ok(p),
