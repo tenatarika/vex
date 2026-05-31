@@ -9,10 +9,13 @@ pub(crate) mod cmd_implementations;
 pub(crate) mod cmd_index;
 pub(crate) mod cmd_outline;
 pub(crate) mod cmd_pattern;
+pub(crate) mod cmd_search;
 pub(crate) mod cmd_self_update;
+pub(crate) mod cmd_show;
 pub(crate) mod cmd_status;
 pub(crate) mod cmd_trivial;
 pub(crate) mod cmd_update;
+pub(crate) mod cmd_usages;
 pub(crate) mod cmd_watch;
 pub mod common;
 pub(crate) mod index_management;
@@ -23,16 +26,14 @@ pub(crate) mod status_coverage;
 pub mod trace;
 
 use anyhow::{bail, Context, Result};
-use args::{Cli, Commands, OutputFormat};
+use args::{Cli, Commands};
 
 use common::{
-    apply_path_filters, build_metadata_filter, check_embedder_match, diff_filter_meta,
-    extract_jobs_hint, extract_path_hint, fetch_symbol_body, resolve_diff_filter, resolve_embedder,
-    resolve_format, resolve_root, resolve_semantic, EXPLAIN_MAX_DIFF_LINES,
+    diff_filter_meta, extract_jobs_hint, extract_path_hint, fetch_symbol_body, resolve_diff_filter,
+    resolve_format, resolve_root, EXPLAIN_MAX_DIFF_LINES,
 };
 use index_management::ensure_index_ready;
 
-use crate::search::{fusion, semantic, structural};
 use crate::store::reader::IndexReader;
 use crate::util::config;
 
@@ -108,202 +109,25 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             why,
             scope,
             diff,
-        } => {
-            let semantic = resolve_semantic(semantic, no_semantic, &cfg);
-            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
-            let metadata_filter = build_metadata_filter(&meta)?;
-            let root = resolve_root(None)?.canonicalize()?;
-            // Resolve the diff scope once per invocation. None when no
-            // `--since*` / `--changed-only` flag was set.
-            let changed_paths = resolve_diff_filter(&root, &diff)?;
-            let index_path = ensure_index_ready(
-                &root,
-                auto_update,
-                no_stale_check,
-                semantic,
-                local_cache_active,
-                &cfg,
-            )?;
-
-            let reader = IndexReader::open(&index_path).context("open index")?;
-
-            // Over-fetch when a path filter is active — the post-filter
-            // `take(limit)` runs AFTER the results are produced, so a narrow
-            // include/exclude or substring would silently truncate matches.
-            // Bound by `symbol_count()`, not `usize::MAX`, because index-backed
-            // results cannot exceed the symbol table. The 13.7-D3 diff filter
-            // is treated identically — a `--since` window can be much narrower
-            // than the include/exclude globs, so the same `symbol_count()`
-            // ceiling applies.
-            let fetch_limit =
-                if filter_path.is_some() || !path_scope.is_empty() || changed_paths.is_some() {
-                    reader.symbol_count()
-                } else {
-                    limit
-                };
-
-            let structural_results = structural::search_with_fuzzy(&reader, &query, fetch_limit);
-
-            // BM25 channel: auto-on when the index has BM25 data, opt-out
-            // with `--no-bm25`. Returns empty for short queries or when no
-            // term hits — safe to always run.
-            let bm25_results = if !no_bm25 && reader.has_bm25() {
-                crate::search::bm25::search(&reader, &query, fetch_limit)
-            } else {
-                Vec::new()
-            };
-
-            // Capture pre-fusion channel snapshots. `--why` needs them for
-            // the trace; `--format json` needs them for the per-result
-            // `signals` block in the response envelope (Phase 13.11). Clone
-            // only when at least one consumer is active so the text/compact
-            // fast path stays allocation-free.
-            let want_prefusion = why || matches!(format, OutputFormat::Json);
-            let trace_structural = if want_prefusion {
-                structural_results.clone()
-            } else {
-                Vec::new()
-            };
-            let trace_bm25 = if want_prefusion {
-                bm25_results.clone()
-            } else {
-                Vec::new()
-            };
-            let mut trace_semantic: Vec<crate::search::SearchResult> = Vec::new();
-
-            let results = if semantic && reader.has_vectors() {
-                let embedder_id = resolve_embedder(None, &cfg);
-                // Warn (but don't fail) when the manifest doesn't record an
-                // embedder — typically a pre-9.1 index or a deleted manifest.
-                // We fall back to assuming DEFAULT_EMBEDDER; if the user
-                // configured something else they'll see the warning and can
-                // rebuild explicitly.
-                let manifest =
-                    crate::index::manifest::Manifest::load(&config::manifest_path(&root))?;
-                if manifest.embedder_id.is_none() && embedder_id != crate::embed::DEFAULT_EMBEDDER {
-                    eprintln!(
-                        "Warning: index manifest has no recorded embedder; assuming \
-                         `{}`. If the index was built with `{embedder_id}` the results \
-                         may be off — rebuild with `vex index --semantic --embedder {embedder_id}` \
-                         to make it explicit.",
-                        crate::embed::DEFAULT_EMBEDDER
-                    );
-                }
-                check_embedder_match(&root, &embedder_id)?;
-                let mut embedder =
-                    crate::embed::make_embedder(&embedder_id).context("load embedding model")?;
-                let hnsw_path = config::hnsw_path(&root);
-                let semantic_results = semantic::search_with_embedder(
-                    &reader,
-                    embedder.as_mut(),
-                    &query,
-                    fetch_limit,
-                    &hnsw_path,
-                )?;
-                if want_prefusion {
-                    trace_semantic = semantic_results.clone();
-                }
-                fusion::fuse3(structural_results, bm25_results, semantic_results, limit)
-            } else {
-                if semantic && !reader.has_vectors() {
-                    eprintln!("Warning: no embeddings in index. Run `vex index --semantic` first.");
-                }
-                if bm25_results.is_empty() {
-                    structural_results
-                } else {
-                    // 2-channel fusion when semantic is off but BM25 is available.
-                    fusion::fuse_many(vec![structural_results, bm25_results], limit)
-                }
-            };
-
-            let rerank_ctx = crate::search::rerank::RerankContext {
-                kind_hints: crate::search::rerank::KindSelector::parse_many(&kind)?,
-                context_path: context_path.as_deref(),
-            };
-            let results = crate::search::rerank::rerank(&query, &rerank_ctx, results);
-            // Phase 13.7-D3: apply the diff filter BEFORE `take(limit)` so a
-            // narrow change-set doesn't first get truncated by `--limit` and
-            // then look smaller than it should.
-            let pre_diff_results = apply_path_filters(results, filter_path.as_deref(), &path_scope);
-            let pre_diff_count = pre_diff_results.len();
-            let post_diff_results: Vec<_> = if let Some(ref cp) = changed_paths {
-                pre_diff_results
-                    .into_iter()
-                    .filter(|r| cp.contains(&r.path))
-                    .collect()
-            } else {
-                pre_diff_results
-            };
-            let post_diff_count = post_diff_results.len();
-            let diff_retained = post_diff_count;
-            let diff_dropped = pre_diff_count.saturating_sub(post_diff_count);
-            let results: Vec<_> = post_diff_results
-                .into_iter()
-                .filter(|r| metadata_filter.matches(r.signature.as_deref()))
-                .take(limit)
-                .collect();
-
-            if why {
-                let filter = crate::search::trace::FilterSnapshot {
-                    filter: filter_path.clone(),
-                    include: scope.include.clone(),
-                    exclude: scope.exclude.clone(),
-                    kind: kind.clone(),
-                };
-                let trace = crate::search::trace::SearchTrace::from_channels(
-                    &query,
-                    &trace_structural,
-                    &trace_bm25,
-                    &trace_semantic,
-                    &results,
-                    filter,
-                );
-                // stderr so `vex search Foo --why | jq` keeps working —
-                // stdout stays a pure result list.
-                crate::cli::trace::emit_why_trace(&trace)?;
-                if let Some(df) =
-                    diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
-                {
-                    crate::cli::trace::emit_diff_filter(&df)?;
-                }
-            }
-
-            match &format {
-                OutputFormat::Json => {
-                    // Build per-result signals via the same (path, name, line)
-                    // keying fusion uses, then wrap in the Phase 13 envelope.
-                    let signals = crate::protocol::signals::build_signals(
-                        &trace_structural,
-                        &trace_bm25,
-                        &trace_semantic,
-                        &results,
-                    );
-                    let manifest_path = config::manifest_path(&root);
-                    let mut meta = output::build_search_meta(&manifest_path);
-                    meta.diff_filter = diff_filter_meta(
-                        &diff,
-                        changed_paths.as_ref(),
-                        diff_retained,
-                        diff_dropped,
-                    );
-                    output::print_search_envelope(&results, &signals, meta);
-                }
-                OutputFormat::Text | OutputFormat::Compact => {
-                    if results.is_empty() {
-                        println!("No results for \"{query}\"");
-                    } else {
-                        let is_fuzzy = results
-                            .iter()
-                            .any(|r| matches!(r.match_type, crate::search::MatchType::Fuzzy));
-                        if is_fuzzy {
-                            eprintln!("(fuzzy match — no exact results for \"{query}\")\n");
-                        }
-                        output::print_results(&results, &format);
-                    }
-                }
-            }
-            Ok(())
-        }
+        } => cmd_search::search(
+            query,
+            limit,
+            semantic,
+            no_semantic,
+            filter_path,
+            kind,
+            context_path,
+            auto_update,
+            no_stale_check,
+            no_bm25,
+            meta,
+            why,
+            scope,
+            diff,
+            local_cache_active,
+            &cfg,
+            &format,
+        ),
         Commands::Usages {
             name,
             limit,
@@ -314,169 +138,20 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             why,
             scope,
             diff,
-        } => {
-            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
-            let root = resolve_root(None)?.canonicalize()?;
-            let changed_paths = resolve_diff_filter(&root, &diff)?;
-            let index_path = ensure_index_ready(
-                &root,
-                auto_update,
-                no_stale_check,
-                false,
-                local_cache_active,
-                &cfg,
-            )?;
-
-            let reader = IndexReader::open(&index_path).context("open index")?;
-            let ref_reader = reader
-                .ref_reader()
-                .context("no refs in index — re-run `vex index` to rebuild")?;
-            let file_paths = reader.file_paths();
-            // Mode label is fixed up front so `--why` can record which
-            // path the lookup took even when the post-filter list is
-            // empty.
-            // Phase 14.4: `mode` carries the new label; `mode_legacy` keeps
-            // the v1.8.x value (`text_scan`) for back-compat with consumers
-            // that learned the contract before the rename. Both collapse to
-            // `"strict"` on the strict path. `mode_legacy` slated for removal
-            // in v1.12.
-            let trace_mode: &'static str = if strict { "strict" } else { "fst_lookup" };
-            let trace_mode_legacy: &'static str = if strict { "strict" } else { "text_scan" };
-
-            // `--strict` reads from the v5 reference_edges section
-            // (binder-resolved refs only). The legacy FST still backs
-            // the non-strict path because it captures identifiers in
-            // every supported language, including the 16 without a
-            // scope binder yet.
-            let entries: Vec<crate::store::refs_fst::RefEntry> = if strict {
-                if !reader.has_ref_edges() {
-                    anyhow::bail!(
-                        "--strict needs a v5 index with reference_edges (this index is v{} or has no resolved refs). Re-run `vex index` to rebuild.",
-                        reader.header().version
-                    );
-                }
-                let sym_fst = reader
-                    .symbol_fst_reader()
-                    .context("symbol FST missing — re-run `vex index` to rebuild for --strict")?;
-                let sym_indices = sym_fst.find(&name);
-                let mut out = Vec::new();
-                for sym_idx in sym_indices {
-                    for edge in reader.find_ref_edges_by_symbol(sym_idx) {
-                        out.push(crate::store::refs_fst::RefEntry {
-                            file_id: edge.from_file_id,
-                            line: edge.line,
-                        });
-                    }
-                }
-                out
-            } else {
-                ref_reader.find(&name)
-            };
-            // Capture the un-filtered hit count up front for `--why`.
-            // Doing it here (rather than after the chain) keeps the
-            // filter-loss visible in the trace even when `total` ends
-            // at zero — the user can tell "no refs at all" from "refs
-            // dropped by the filter".
-            let hits_before_filter = entries.len();
-            let entries: Vec<_> = entries
-                .into_iter()
-                .filter(|e| {
-                    let path = match file_paths.get(e.file_id as usize) {
-                        Some(p) => p.as_str(),
-                        None => return false,
-                    };
-                    let filter_ok = filter_path.as_deref().is_none_or(|fp| path.contains(fp));
-                    let scope_ok = path_scope.accept(path);
-                    // Phase 13.7-D3: apply diff filter alongside path filters
-                    // so the trace's `total` reflects the post-diff count
-                    // exactly like it already reflects the post-scope count.
-                    let diff_ok = changed_paths.as_ref().is_none_or(|cp| cp.contains(path));
-                    filter_ok && scope_ok && diff_ok
-                })
-                .collect();
-            let total = entries.len();
-            let diff_retained = total;
-            let diff_dropped = hits_before_filter.saturating_sub(total);
-            let entries: Vec<_> = entries.into_iter().take(limit).collect();
-
-            // Prefix-suggestion fallback runs ONLY when no exact hits
-            // and only against the FST-lookup path (strict-mode doesn't
-            // have a prefix counterpart today). We resolve it once
-            // here so both the Text print and the `--why` trace use
-            // the same vector — without double-querying the FST.
-            let prefix_suggestions = if entries.is_empty() && !strict {
-                Some(ref_reader.find_by_prefix(&name))
-            } else {
-                None
-            };
-
-            match &format {
-                OutputFormat::Json => {
-                    let json: Vec<serde_json::Value> = entries
-                        .iter()
-                        .map(|e| {
-                            let path = file_paths
-                                .get(e.file_id as usize)
-                                .map(|s| s.as_str())
-                                .unwrap_or("?");
-                            serde_json::json!({
-                                "path": path,
-                                "line": e.line,
-                            })
-                        })
-                        .collect();
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
-                OutputFormat::Text | OutputFormat::Compact => {
-                    if entries.is_empty() {
-                        println!("No usages found for \"{name}\"");
-
-                        if let Some(prefix_results) = prefix_suggestions.as_deref() {
-                            if !prefix_results.is_empty() {
-                                println!("\nDid you mean:");
-                                for (n, refs) in prefix_results.iter().take(5) {
-                                    println!("  {n} ({} usages)", refs.len());
-                                }
-                            }
-                        }
-                    } else {
-                        println!("{name}: {total} usages (showing {})", entries.len());
-                        for e in &entries {
-                            let path = file_paths
-                                .get(e.file_id as usize)
-                                .map(|s| s.as_str())
-                                .unwrap_or("?");
-                            println!("  {path}:{}", e.line);
-                        }
-                    }
-                }
-            }
-
-            // 11.10: structured trace on stderr for `--why`. Captured
-            // post-print so stdout stays a pure result list.
-            if why {
-                let trace = crate::cli::trace::UsagesTrace {
-                    mode: trace_mode,
-                    mode_legacy: trace_mode_legacy,
-                    hits_before_filter,
-                    hits_after_filter: total,
-                    prefix_suggestions: prefix_suggestions.as_ref().map(|v| v.len()),
-                    filter_applied: crate::cli::trace::FilterSnapshot {
-                        filter: filter_path.clone(),
-                        include: scope.include.clone(),
-                        exclude: scope.exclude.clone(),
-                    },
-                };
-                crate::cli::trace::emit_why_trace(&trace)?;
-                if let Some(df) =
-                    diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
-                {
-                    crate::cli::trace::emit_diff_filter(&df)?;
-                }
-            }
-
-            Ok(())
-        }
+        } => cmd_usages::usages(
+            name,
+            limit,
+            filter_path,
+            auto_update,
+            no_stale_check,
+            strict,
+            why,
+            scope,
+            diff,
+            local_cache_active,
+            &cfg,
+            &format,
+        ),
         Commands::Pattern {
             pattern,
             lang,
@@ -549,194 +224,25 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             collapsed,
             meta,
             scope,
-        } => {
-            // Phase 13.3 — resolve the truncation mode once. Clap's
-            // `conflicts_with_all` already guarantees at most one flag
-            // is set; this just maps the booleans into an `Option`.
-            let truncation_mode: Option<show_truncate::TruncationMode> = if signature_only {
-                Some(show_truncate::TruncationMode::SignatureOnly)
-            } else if head.is_some() {
-                Some(show_truncate::TruncationMode::Head)
-            } else if no_body {
-                Some(show_truncate::TruncationMode::NoBody)
-            } else if collapsed {
-                Some(show_truncate::TruncationMode::Collapsed)
-            } else {
-                None
-            };
-            if collapsed {
-                // Single emission via stderr — tracing isn't always
-                // initialized (e.g. under the CLI integration tests),
-                // and emitting twice would risk drift if a test asserts
-                // on exact-string output. The integration test pins the
-                // `pending` substring on stderr, so this stays
-                // observable for both human and automated callers.
-                eprintln!(
-                    "warning: --collapsed pending language-aware implementation; emitting full body"
-                );
-            }
-            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
-            let metadata_filter = build_metadata_filter(&meta)?;
-            let root = resolve_root(None)?.canonicalize()?;
-            let index_path = ensure_index_ready(
-                &root,
-                auto_update,
-                no_stale_check,
-                false,
-                local_cache_active,
-                &cfg,
-            )?;
-
-            let reader = IndexReader::open(&index_path).context("open index")?;
-            let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() {
-                reader.symbol_count()
-            } else {
-                limit
-            };
-            let mut json_items: Vec<serde_json::Value> = Vec::new();
-            let mut printed = 0usize;
-
-            let rerank_ctx = crate::search::rerank::RerankContext {
-                kind_hints: crate::search::rerank::KindSelector::parse_many(&kind)?,
-                context_path: context_path.as_deref(),
-            };
-
-            for symbol in &symbols {
-                let results = structural::search_with_fuzzy(&reader, symbol, fetch_limit);
-                let results = crate::search::rerank::rerank(symbol, &rerank_ctx, results);
-                let results: Vec<_> =
-                    apply_path_filters(results, filter_path.as_deref(), &path_scope)
-                        .into_iter()
-                        .filter(|r| metadata_filter.matches(r.signature.as_deref()))
-                        .take(limit)
-                        .collect();
-
-                if results.is_empty() {
-                    match &format {
-                        OutputFormat::Json => {}
-                        OutputFormat::Text | OutputFormat::Compact => {
-                            if printed > 0 {
-                                println!();
-                            }
-                            println!("No symbol found: \"{symbol}\"");
-                            printed += 1;
-                        }
-                    }
-                    continue;
-                }
-
-                for result in &results {
-                    let content = std::fs::read_to_string(&result.path)
-                        .with_context(|| format!("read {}", result.path))?;
-
-                    let ext = std::path::Path::new(&result.path)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("");
-
-                    let body = if result.kind == "heading" {
-                        crate::parse::body::extract_heading_body(&content, result.line, context)?
-                    } else if let Some(lang) = crate::parse::language::Language::from_extension(ext)
-                    {
-                        crate::parse::body::extract_symbol_body_ts(
-                            &content,
-                            result.line,
-                            lang,
-                            context,
-                        )?
-                    } else {
-                        crate::parse::body::extract_symbol_body(&content, result.line, context)?
-                    };
-
-                    // Phase 13.3 — apply optional truncation to the
-                    // extracted body. The struct returned by the
-                    // helpers carries metadata that we surface in the
-                    // JSON envelope per result; text/compact output
-                    // stays clean (just the truncated body).
-                    let truncation = truncation_mode.map(|mode| match mode {
-                        show_truncate::TruncationMode::SignatureOnly => {
-                            show_truncate::signature_only(&body.body)
-                        }
-                        show_truncate::TruncationMode::Head => {
-                            // `head` Option already validated as Some
-                            // when mode is Head.
-                            let n = head.unwrap_or(usize::MAX);
-                            show_truncate::head_n(&body.body, n)
-                        }
-                        show_truncate::TruncationMode::NoBody => show_truncate::no_body(&body.body),
-                        show_truncate::TruncationMode::Collapsed => {
-                            show_truncate::collapsed(&body.body)
-                        }
-                    });
-                    let display_body: &str = truncation
-                        .as_ref()
-                        .map(|t| t.body.as_str())
-                        .unwrap_or(body.body.as_str());
-
-                    match &format {
-                        OutputFormat::Json => {
-                            let mut item = serde_json::json!({
-                                "name": result.name,
-                                "kind": result.kind,
-                                "path": result.path,
-                                "start_line": body.start_line,
-                                "end_line": body.end_line,
-                                "lines": body.lines,
-                                "body": display_body,
-                            });
-                            if let Some(t) = &truncation {
-                                item["truncation"] = serde_json::json!({
-                                    "mode": t.mode.as_str(),
-                                    "original_lines": t.original_lines,
-                                    "kept_lines": t.kept_lines,
-                                });
-                            }
-                            json_items.push(item);
-                        }
-                        OutputFormat::Text => {
-                            if printed > 0 {
-                                println!();
-                            }
-                            println!(
-                                "── {} ({}) {}:{}-{}",
-                                result.name,
-                                result.kind,
-                                result.path,
-                                body.start_line,
-                                body.end_line
-                            );
-                            for (n, line) in display_body.lines().enumerate() {
-                                println!("{:>4} | {}", body.start_line + n, line);
-                            }
-                            printed += 1;
-                        }
-                        OutputFormat::Compact => {
-                            if printed > 0 {
-                                println!();
-                            }
-                            println!(
-                                "# {}:{}-{} ({})",
-                                result.path, body.start_line, body.end_line, result.kind
-                            );
-                            println!("{}", display_body);
-                            printed += 1;
-                        }
-                    }
-                }
-            }
-
-            match &format {
-                OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&json_items)?);
-                }
-                OutputFormat::Text | OutputFormat::Compact => {
-                    if printed == 0 {
-                        println!("No symbols found");
-                    }
-                }
-            }
-            Ok(())
-        }
+        } => cmd_show::show(
+            symbols,
+            limit,
+            context,
+            filter_path,
+            kind,
+            context_path,
+            auto_update,
+            no_stale_check,
+            signature_only,
+            head,
+            no_body,
+            collapsed,
+            meta,
+            scope,
+            local_cache_active,
+            &cfg,
+            &format,
+        ),
         Commands::Status { path, coverage } => {
             cmd_status::status(path, coverage, &format, excludes)
         }
