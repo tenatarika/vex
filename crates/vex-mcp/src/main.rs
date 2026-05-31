@@ -10,6 +10,119 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Marker error returned by the typed-param helpers (H8). When
+/// `handle_request` downcasts to this type it emits a JSON-RPC 2.0
+/// `-32602 Invalid params` response instead of the generic `-32000`
+/// server error. Pre-H8 the MCP server silently coerced wrong-typed
+/// fields to their defaults (`as_bool().unwrap_or(false)` etc.), which
+/// hid integration bugs in downstream agents.
+#[derive(Debug, thiserror::Error)]
+#[error("invalid params: {0}")]
+struct ParamError(String);
+
+impl ParamError {
+    fn wrong_type(field: &str, expected: &str, actual: &Value) -> Self {
+        let kind = match actual {
+            Value::Null => "null",
+            Value::Bool(_) => "bool",
+            Value::Number(_) => "number",
+            Value::String(_) => "string",
+            Value::Array(_) => "array",
+            Value::Object(_) => "object",
+        };
+        Self(format!(
+            "`{field}` must be {expected}; got {kind} ({actual})"
+        ))
+    }
+
+    fn missing(field: &str) -> Self {
+        Self(format!("missing required field `{field}`"))
+    }
+}
+
+/// Required string field. Fails with `-32602` if missing or wrong type.
+fn req_str<'a>(args: &'a Value, field: &str) -> Result<&'a str> {
+    let v = &args[field];
+    if v.is_null() {
+        return Err(ParamError::missing(field).into());
+    }
+    v.as_str()
+        .ok_or_else(|| ParamError::wrong_type(field, "a string", v).into())
+}
+
+/// Optional string field. `None` when absent / null; fails with `-32602`
+/// when present but not a string.
+fn opt_str<'a>(args: &'a Value, field: &str) -> Result<Option<&'a str>> {
+    let v = &args[field];
+    if v.is_null() {
+        return Ok(None);
+    }
+    Some(
+        v.as_str()
+            .ok_or_else(|| ParamError::wrong_type(field, "a string", v)),
+    )
+    .transpose()
+    .map_err(Into::into)
+}
+
+/// Optional bool with default. Fails when present-but-not-bool — silent
+/// coerce (`as_bool().unwrap_or(default)` on `"true"`-string) silently
+/// dropped the value, which hid downstream type bugs.
+fn opt_bool(args: &Value, field: &str, default: bool) -> Result<bool> {
+    let v = &args[field];
+    if v.is_null() {
+        return Ok(default);
+    }
+    v.as_bool()
+        .ok_or_else(|| ParamError::wrong_type(field, "a boolean", v).into())
+}
+
+/// Optional u64 with default. Fails on negative / float / string input —
+/// `serde_json::Value::as_u64()` returns `None` for all three, which the
+/// old `unwrap_or(default)` silently masked.
+fn opt_u64(args: &Value, field: &str, default: u64) -> Result<u64> {
+    let v = &args[field];
+    if v.is_null() {
+        return Ok(default);
+    }
+    v.as_u64()
+        .ok_or_else(|| ParamError::wrong_type(field, "a non-negative integer", v).into())
+}
+
+/// Optional f64. `None` when absent / null.
+fn opt_f64(args: &Value, field: &str) -> Result<Option<f64>> {
+    let v = &args[field];
+    if v.is_null() {
+        return Ok(None);
+    }
+    Some(
+        v.as_f64()
+            .ok_or_else(|| ParamError::wrong_type(field, "a number", v)),
+    )
+    .transpose()
+    .map_err(Into::into)
+}
+
+/// Optional string-array. `None` when absent / null; fails when present
+/// but not an array or when an element is not a string.
+fn opt_str_array<'a>(args: &'a Value, field: &str) -> Result<Option<Vec<&'a str>>> {
+    let v = &args[field];
+    if v.is_null() {
+        return Ok(None);
+    }
+    let arr = v
+        .as_array()
+        .ok_or_else(|| ParamError::wrong_type(field, "a string array", v))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, elem) in arr.iter().enumerate() {
+        let s = elem
+            .as_str()
+            .ok_or_else(|| ParamError::wrong_type(&format!("{field}[{i}]"), "a string", elem))?;
+        out.push(s);
+    }
+    Ok(Some(out))
+}
+
 /// Hard cap on the raw input fragment we echo back in a `-32700` parse
 /// error response. Keeps a megabyte of garbage from being copied verbatim
 /// into the error frame, which would just exhaust the client's buffer.
@@ -163,16 +276,27 @@ fn handle_request(req: &JsonRpcRequest) -> JsonRpcResponse {
             result: Some(value),
             error: None,
         },
-        Err(e) => JsonRpcResponse {
-            jsonrpc: "2.0".into(),
-            id: req.id.clone(),
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32000,
-                message: format!("{e:#}"),
-                data: None,
-            }),
-        },
+        Err(e) => {
+            // H8: ParamError is the marker our typed-param helpers
+            // emit. Map it to the JSON-RPC spec's `-32602 Invalid
+            // params` so MCP clients can distinguish caller-side
+            // type bugs from server-side failures (the generic
+            // `-32000` bucket below).
+            let (code, message) = match e.downcast_ref::<ParamError>() {
+                Some(pe) => (-32602, pe.0.clone()),
+                None => (-32000, format!("{e:#}")),
+            };
+            JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: req.id.clone(),
+                result: None,
+                error: Some(JsonRpcError {
+                    code,
+                    message,
+                    data: None,
+                }),
+            }
+        }
     }
 }
 
@@ -200,12 +324,13 @@ fn handle_tools_list() -> Result<Value> {
 // `mcp_envelope_lifting_logic_mirrors_handle_tool_call` test can exercise the
 // real code path instead of mirroring it.
 fn handle_tool_call(params: &Option<Value>) -> Result<Value> {
-    let params = params.as_ref().context("missing params")?;
-    let tool_name = params["name"].as_str().context("missing tool name")?;
+    let params = params
+        .as_ref()
+        .ok_or_else(|| ParamError::missing("params"))?;
+    let tool_name = req_str(params, "name")?;
     let args = &params["arguments"];
 
-    let project_root = args["project_root"]
-        .as_str()
+    let project_root = opt_str(args, "project_root")?
         .map(String::from)
         .or_else(|| std::env::var("VEX_ROOT").ok())
         .unwrap_or_else(|| ".".into());
@@ -395,14 +520,15 @@ struct BuiltCommand {
 /// Defaults to `true` because the bare CLI does the same thing for the
 /// commands that accept the flag, and MCP clients are otherwise unable
 /// to react to staleness errors mid-conversation.
-fn auto_update(args: &Value) -> bool {
-    args["auto_update"].as_bool().unwrap_or(true)
+fn auto_update(args: &Value) -> Result<bool> {
+    opt_bool(args, "auto_update", true)
 }
 
-fn push_auto_update(extra: &mut Vec<String>, args: &Value) {
-    if auto_update(args) {
+fn push_auto_update(extra: &mut Vec<String>, args: &Value) -> Result<()> {
+    if auto_update(args)? {
         extra.push("--auto-update".into());
     }
+    Ok(())
 }
 
 /// Translate the optional `no_stale_check: bool` MCP arg into the CLI
@@ -411,10 +537,11 @@ fn push_auto_update(extra: &mut Vec<String>, args: &Value) {
 /// is also true the CLI already refreshes the index, making this flag
 /// redundant; we still forward it because the CLI accepts the
 /// combination and the precedence is the CLI's call to make.
-fn push_no_stale_check(extra: &mut Vec<String>, args: &Value) {
-    if args["no_stale_check"].as_bool().unwrap_or(false) {
+fn push_no_stale_check(extra: &mut Vec<String>, args: &Value) -> Result<()> {
+    if opt_bool(args, "no_stale_check", false)? {
         extra.push("--no-stale-check".into());
     }
+    Ok(())
 }
 
 /// Translate the diff-scope MCP args (`since` / `since_branched` /
@@ -425,9 +552,9 @@ fn push_no_stale_check(extra: &mut Vec<String>, args: &Value) {
 /// "diff-scoped query" pattern that rtk-ai reports cuts PR-review token
 /// spend by ~75%.
 fn push_diff_scope(extra: &mut Vec<String>, args: &Value) -> Result<()> {
-    let since = args["since"].as_str();
-    let since_branched = args["since_branched"].as_bool().unwrap_or(false);
-    let changed_only = args["changed_only"].as_bool().unwrap_or(false);
+    let since = opt_str(args, "since")?;
+    let since_branched = opt_bool(args, "since_branched", false)?;
+    let changed_only = opt_bool(args, "changed_only", false)?;
 
     let active = [since.is_some(), since_branched, changed_only]
         .into_iter()
@@ -454,26 +581,26 @@ fn push_diff_scope(extra: &mut Vec<String>, args: &Value) -> Result<()> {
 /// MCP-layer error so the agent sees a clear message rather than
 /// clap's templated output.
 fn push_show_truncate(extra: &mut Vec<String>, args: &Value) -> Result<()> {
-    let signature_only = args["signature_only"].as_bool().unwrap_or(false);
+    let signature_only = opt_bool(args, "signature_only", false)?;
     // Parse `head` strictly: silently accepting `head: 0`, `head: -1`, or
-    // `head: 5.5` would let invalid input through (the CLI rejects 0 and
-    // clap rejects negatives/floats — but `serde_json::Value::as_u64()`
-    // returns `None` on the negative/float case, which would *drop* the
-    // value rather than surface the misuse). Fail loudly instead.
+    // `head: 5.5` would let invalid input through. Pre-H8 we already
+    // failed loudly on wrong type; post-H8 wrong type comes from the
+    // shared `opt_u64` helper (which emits a ParamError → -32602), and
+    // `head: 0` is still rejected here as a value-domain check.
     let head_raw = &args["head"];
     let head: Option<u64> = if head_raw.is_null() {
         None
     } else {
-        let n = head_raw.as_u64().ok_or_else(|| {
-            anyhow::anyhow!("`head` must be a positive integer (got: {head_raw})")
-        })?;
+        let n = opt_u64(args, "head", 0)?;
         if n == 0 {
-            anyhow::bail!("`head` must be a positive integer (got: 0)");
+            return Err(
+                ParamError("`head` must be a positive integer (got: 0)".to_string()).into(),
+            );
         }
         Some(n)
     };
-    let no_body = args["no_body"].as_bool().unwrap_or(false);
-    let collapsed = args["collapsed"].as_bool().unwrap_or(false);
+    let no_body = opt_bool(args, "no_body", false)?;
+    let collapsed = opt_bool(args, "collapsed", false)?;
 
     let active = [signature_only, head.is_some(), no_body, collapsed]
         .into_iter()
@@ -500,19 +627,14 @@ fn push_show_truncate(extra: &mut Vec<String>, args: &Value) -> Result<()> {
 /// Push the `kind: string[]` MCP arg as one `--kind <value>` pair per
 /// element. Mirrors `push_scope_field`. Mirrors clap's repeatable
 /// `Vec<String>` accumulator on the CLI side.
-fn push_kind(extra: &mut Vec<String>, args: &Value) {
-    let Some(arr) = args["kind"].as_array() else {
-        return;
+fn push_kind(extra: &mut Vec<String>, args: &Value) -> Result<()> {
+    let Some(items) = opt_str_array(args, "kind")? else {
+        return Ok(());
     };
-    for v in arr {
-        match v.as_str() {
-            Some(s) => extra.extend(["--kind".into(), s.to_string()]),
-            None => tracing::warn!(
-                value = ?v,
-                "ignoring non-string element in MCP kind array"
-            ),
-        }
+    for s in items {
+        extra.extend(["--kind".into(), s.to_string()]);
     }
+    Ok(())
 }
 
 /// Pull `include: string[]` and `exclude: string[]` off the JSON-RPC args
@@ -522,49 +644,48 @@ fn push_kind(extra: &mut Vec<String>, args: &Value) {
 /// the field as `null`/`""` don't fail; non-string elements inside an
 /// otherwise valid array are logged at warn — silently dropping them was
 /// hiding the fact that a filter never engaged.
-fn push_scope(extra: &mut Vec<String>, args: &Value) {
-    push_scope_field(extra, args, "include", "--include");
-    push_scope_field(extra, args, "exclude", "--exclude");
+fn push_scope(extra: &mut Vec<String>, args: &Value) -> Result<()> {
+    push_scope_field(extra, args, "include", "--include")?;
+    push_scope_field(extra, args, "exclude", "--exclude")?;
+    Ok(())
 }
 
-fn push_scope_field(extra: &mut Vec<String>, args: &Value, key: &str, flag: &str) {
-    let Some(arr) = args[key].as_array() else {
-        return;
+fn push_scope_field(extra: &mut Vec<String>, args: &Value, key: &str, flag: &str) -> Result<()> {
+    let Some(items) = opt_str_array(args, key)? else {
+        return Ok(());
     };
-    for v in arr {
-        match v.as_str() {
-            Some(s) => extra.extend([flag.into(), s.to_string()]),
-            None => tracing::warn!(
-                key, value = ?v,
-                "ignoring non-string element in MCP scope array"
-            ),
-        }
+    for s in items {
+        extra.extend([flag.into(), s.to_string()]);
     }
+    Ok(())
 }
 
 /// Translate MCP metadata fields (visibility / async / static /
 /// sealed) into the matching CLI flags. 11.6.
 fn push_metadata(extra: &mut Vec<String>, args: &Value) -> Result<()> {
+    let async_only = opt_bool(args, "async_only", false)?;
+    let no_async = opt_bool(args, "no_async", false)?;
+    let static_only = opt_bool(args, "static_only", false)?;
+    let sealed_only = opt_bool(args, "sealed_only", false)?;
     // Early-bail on the mutually-exclusive pair so the caller sees an
     // intent-aware JSON-RPC error instead of clap's parser dumping
     // its `conflicts_with` template into the response body.
-    if args["async_only"].as_bool().unwrap_or(false) && args["no_async"].as_bool().unwrap_or(false)
-    {
+    if async_only && no_async {
         anyhow::bail!("`async_only` and `no_async` are mutually exclusive");
     }
-    if let Some(vis) = args["visibility"].as_str() {
+    if let Some(vis) = opt_str(args, "visibility")? {
         extra.extend(["--visibility".into(), vis.to_string()]);
     }
-    if args["async_only"].as_bool().unwrap_or(false) {
+    if async_only {
         extra.push("--async-only".into());
     }
-    if args["no_async"].as_bool().unwrap_or(false) {
+    if no_async {
         extra.push("--no-async".into());
     }
-    if args["static_only"].as_bool().unwrap_or(false) {
+    if static_only {
         extra.push("--static-only".into());
     }
-    if args["sealed_only"].as_bool().unwrap_or(false) {
+    if sealed_only {
         extra.push("--sealed-only".into());
     }
     Ok(())
@@ -581,15 +702,15 @@ fn read_canonical_str<'a>(
     canonical: &str,
     legacy: &str,
     deprecated: &mut Vec<String>,
-) -> Option<&'a str> {
-    if let Some(s) = args[canonical].as_str() {
-        return Some(s);
+) -> Result<Option<&'a str>> {
+    if let Some(s) = opt_str(args, canonical)? {
+        return Ok(Some(s));
     }
-    if let Some(s) = args[legacy].as_str() {
+    if let Some(s) = opt_str(args, legacy)? {
         deprecated.push(legacy.to_string());
-        return Some(s);
+        return Ok(Some(s));
     }
-    None
+    Ok(None)
 }
 
 /// Array variant of `read_canonical_str` — used by tools whose primary
@@ -599,79 +720,87 @@ fn read_canonical_array<'a>(
     canonical: &str,
     legacy: &str,
     deprecated: &mut Vec<String>,
-) -> Option<&'a Vec<Value>> {
-    if let Some(arr) = args[canonical].as_array() {
-        return Some(arr);
+) -> Result<Option<&'a Vec<Value>>> {
+    let cv = &args[canonical];
+    if !cv.is_null() {
+        let arr = cv
+            .as_array()
+            .ok_or_else(|| ParamError::wrong_type(canonical, "an array", cv))?;
+        return Ok(Some(arr));
     }
-    if let Some(arr) = args[legacy].as_array() {
+    let lv = &args[legacy];
+    if !lv.is_null() {
+        let arr = lv
+            .as_array()
+            .ok_or_else(|| ParamError::wrong_type(legacy, "an array", lv))?;
         deprecated.push(legacy.to_string());
-        return Some(arr);
+        return Ok(Some(arr));
     }
-    None
+    Ok(None)
 }
 
 fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCommand> {
     let mut deprecated: Vec<String> = Vec::new();
     let (subcommand, extra_args) = match tool {
         "search" => {
-            let query = args["query"].as_str().context("missing query")?;
-            let limit = args["limit"].as_u64().unwrap_or(20);
-            let semantic = args["semantic"].as_bool().unwrap_or(false);
+            let query = req_str(args, "query")?;
+            let limit = opt_u64(args, "limit", 20)?;
+            let semantic = opt_bool(args, "semantic", false)?;
             let mut extra = vec![query.to_string(), "--limit".into(), limit.to_string()];
             if semantic {
                 extra.push("--semantic".into());
             }
-            if args["why"].as_bool().unwrap_or(false) {
+            if opt_bool(args, "why", false)? {
                 extra.push("--why".into());
             }
-            if let Some(filter) = args["filter"].as_str() {
+            if let Some(filter) = opt_str(args, "filter")? {
                 extra.extend(["--filter".into(), filter.to_string()]);
             }
-            push_kind(&mut extra, args);
-            if let Some(cp) = args["context_path"].as_str() {
+            push_kind(&mut extra, args)?;
+            if let Some(cp) = opt_str(args, "context_path")? {
                 extra.extend(["--context-path".into(), cp.to_string()]);
             }
-            if args["no_bm25"].as_bool().unwrap_or(false) {
+            if opt_bool(args, "no_bm25", false)? {
                 extra.push("--no-bm25".into());
             }
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
-            push_scope(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
             push_metadata(&mut extra, args)?;
             push_diff_scope(&mut extra, args)?;
             ("search".to_string(), extra)
         }
         "find_symbol" => {
-            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)
-                .context("missing symbol")?;
+            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)?
+                .ok_or_else(|| ParamError::missing("symbol"))?;
             let mut extra = vec![symbol.to_string(), "--limit".into(), "10".into()];
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
-            push_scope(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
             push_metadata(&mut extra, args)?;
             ("search".to_string(), extra)
         }
         "find_similar" => {
-            let query = args["query"].as_str().context("missing query")?;
+            let query = req_str(args, "query")?;
             let mut extra = vec![
                 query.to_string(),
                 "--semantic".into(),
                 "--limit".into(),
                 "10".into(),
             ];
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
-            push_scope(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
             push_metadata(&mut extra, args)?;
             ("search".to_string(), extra)
         }
         "outline" => {
-            let path = read_canonical_str(args, "path", "file", &mut deprecated)
-                .context("missing path")?;
+            let path = read_canonical_str(args, "path", "file", &mut deprecated)?
+                .ok_or_else(|| ParamError::missing("path"))?;
             ("outline".to_string(), vec![path.to_string()])
         }
         "index" => {
-            let semantic = args["semantic"].as_bool().unwrap_or(false);
+            let semantic = opt_bool(args, "semantic", false)?;
             let mut extra = vec!["--path".into(), project_root.to_string()];
             if semantic {
                 extra.push("--semantic".into());
@@ -679,7 +808,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             ("index".to_string(), extra)
         }
         "update" => {
-            let semantic = args["semantic"].as_bool().unwrap_or(false);
+            let semantic = opt_bool(args, "semantic", false)?;
             let mut extra = vec!["--path".into(), project_root.to_string()];
             if semantic {
                 extra.push("--semantic".into());
@@ -696,18 +825,18 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             // at --path. Lives next to `status` / `diff` because all three
             // are indexless / read-only.
             let mut extra = vec!["--path".into(), project_root.to_string()];
-            if let Some(bench) = args["bench"].as_str() {
+            if let Some(bench) = opt_str(args, "bench")? {
                 extra.push("--bench".into());
                 extra.push(bench.to_string());
             }
-            if let Some(min_ndcg) = args["min_ndcg"].as_f64() {
+            if let Some(min_ndcg) = opt_f64(args, "min_ndcg")? {
                 extra.push("--min-ndcg".into());
                 extra.push(min_ndcg.to_string());
             }
             // MCP defaults `json` to true (agents want structured output);
             // the CLI defaults to text. Honor an explicit `false` to opt
             // back into the human-readable summary.
-            let want_json = args["json"].as_bool().unwrap_or(true);
+            let want_json = opt_bool(args, "json", true)?;
             if want_json {
                 extra.push("--json".into());
             }
@@ -717,58 +846,56 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             // Canonical: `symbols: string[]`. Legacy: `symbol: string`
             // (singular, pre-1.7 shape) — still accepted, flagged as
             // deprecated.
-            let symbols: Vec<String> = if let Some(arr) = args["symbols"].as_array() {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            } else if let Some(s) = args["symbol"].as_str() {
+            let symbols: Vec<String> = if let Some(items) = opt_str_array(args, "symbols")? {
+                items.into_iter().map(String::from).collect()
+            } else if let Some(s) = opt_str(args, "symbol")? {
                 deprecated.push("symbol".into());
                 vec![s.to_string()]
             } else {
-                anyhow::bail!("missing symbols")
+                return Err(ParamError::missing("symbols").into());
             };
-            let limit = args["limit"].as_u64().unwrap_or(1);
+            let limit = opt_u64(args, "limit", 1)?;
             let mut extra = symbols;
             extra.extend(["--limit".into(), limit.to_string()]);
-            if let Some(filter) = args["filter"].as_str() {
+            if let Some(filter) = opt_str(args, "filter")? {
                 extra.extend(["--filter".into(), filter.to_string()]);
             }
-            push_kind(&mut extra, args);
-            if let Some(cp) = args["context_path"].as_str() {
+            push_kind(&mut extra, args)?;
+            if let Some(cp) = opt_str(args, "context_path")? {
                 extra.extend(["--context-path".into(), cp.to_string()]);
             }
             push_show_truncate(&mut extra, args)?;
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
-            push_scope(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
             push_metadata(&mut extra, args)?;
             ("show".to_string(), extra)
         }
         "usages" => {
-            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)
-                .context("missing symbol")?;
-            let limit = args["limit"].as_u64().unwrap_or(50);
+            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)?
+                .ok_or_else(|| ParamError::missing("symbol"))?;
+            let limit = opt_u64(args, "limit", 50)?;
             let mut extra = vec![symbol.to_string(), "--limit".into(), limit.to_string()];
-            if args["strict"].as_bool() == Some(true) {
+            if opt_bool(args, "strict", false)? {
                 extra.push("--strict".into());
             }
             // 11.10: structured trace via stderr — picked up by
             // `extract_why_trace` and surfaced under `_meta.why`.
-            if args["why"].as_bool().unwrap_or(false) {
+            if opt_bool(args, "why", false)? {
                 extra.push("--why".into());
             }
-            if let Some(filter) = args["filter"].as_str() {
+            if let Some(filter) = opt_str(args, "filter")? {
                 extra.extend(["--filter".into(), filter.to_string()]);
             }
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
-            push_scope(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
             push_diff_scope(&mut extra, args)?;
             ("usages".to_string(), extra)
         }
         "grep" => {
-            let pattern = args["pattern"].as_str().context("missing pattern")?;
-            let limit = args["limit"].as_u64().unwrap_or(50);
+            let pattern = req_str(args, "pattern")?;
+            let limit = opt_u64(args, "limit", 50)?;
             let mut extra = vec![
                 pattern.to_string(),
                 "--limit".into(),
@@ -776,16 +903,16 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 "--path".into(),
                 project_root.to_string(),
             ];
-            if let Some(filter) = args["filter"].as_str() {
+            if let Some(filter) = opt_str(args, "filter")? {
                 extra.extend(["--filter".into(), filter.to_string()]);
             }
-            push_scope(&mut extra, args);
+            push_scope(&mut extra, args)?;
             ("grep".to_string(), extra)
         }
         "implementations" => {
-            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)
-                .context("missing symbol")?;
-            let limit = args["limit"].as_u64().unwrap_or(50);
+            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)?
+                .ok_or_else(|| ParamError::missing("symbol"))?;
+            let limit = opt_u64(args, "limit", 50)?;
             let mut extra = vec![
                 symbol.to_string(),
                 "--path".into(),
@@ -793,16 +920,16 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 "--limit".into(),
                 limit.to_string(),
             ];
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
-            push_scope(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
             push_diff_scope(&mut extra, args)?;
             ("implementations".to_string(), extra)
         }
         "callers" => {
-            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)
-                .context("missing symbol")?;
-            let limit = args["limit"].as_u64().unwrap_or(50);
+            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)?
+                .ok_or_else(|| ParamError::missing("name"))?;
+            let limit = opt_u64(args, "limit", 50)?;
             let mut extra = vec![
                 symbol.to_string(),
                 "--path".into(),
@@ -810,16 +937,16 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 "--limit".into(),
                 limit.to_string(),
             ];
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
-            push_scope(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
             push_diff_scope(&mut extra, args)?;
             ("callers".to_string(), extra)
         }
         "callees" => {
-            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)
-                .context("missing symbol")?;
-            let limit = args["limit"].as_u64().unwrap_or(50);
+            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)?
+                .ok_or_else(|| ParamError::missing("name"))?;
+            let limit = opt_u64(args, "limit", 50)?;
             let mut extra = vec![
                 symbol.to_string(),
                 "--path".into(),
@@ -827,16 +954,16 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 "--limit".into(),
                 limit.to_string(),
             ];
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
-            push_scope(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
             push_diff_scope(&mut extra, args)?;
             ("callees".to_string(), extra)
         }
         "pattern" => {
-            let pattern = args["pattern"].as_str().context("missing pattern")?;
-            let lang = args["lang"].as_str().context("missing lang")?;
-            let limit = args["limit"].as_u64().unwrap_or(50);
+            let pattern = req_str(args, "pattern")?;
+            let lang = req_str(args, "lang")?;
+            let limit = opt_u64(args, "limit", 50)?;
             let mut extra = vec![
                 pattern.to_string(),
                 "--lang".into(),
@@ -848,16 +975,16 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             ];
             // 11.4 Inc 8: surface the ScanTrace via --why so MCP agents
             // can observe which mode the prefilter selected and why.
-            if args["why"].as_bool().unwrap_or(false) {
+            if opt_bool(args, "why", false)? {
                 extra.push("--why".into());
             }
-            push_scope(&mut extra, args);
+            push_scope(&mut extra, args)?;
             push_diff_scope(&mut extra, args)?;
             ("pattern".to_string(), extra)
         }
         "diff" => {
-            let base = args["base"].as_str().context("missing base")?;
-            let limit = args["limit"].as_u64().unwrap_or(500);
+            let base = req_str(args, "base")?;
+            let limit = opt_u64(args, "limit", 500)?;
             let mut extra = vec![
                 "--base".into(),
                 base.to_string(),
@@ -866,14 +993,14 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 "--limit".into(),
                 limit.to_string(),
             ];
-            push_scope(&mut extra, args);
+            push_scope(&mut extra, args)?;
             ("diff".to_string(), extra)
         }
         "paths" => {
-            let from = args["from"].as_str().context("missing from")?;
-            let to = args["to"].as_str().context("missing to")?;
-            let max_hops = args["max_hops"].as_u64().unwrap_or(6);
-            let max_paths = args["max_paths"].as_u64().unwrap_or(50);
+            let from = req_str(args, "from")?;
+            let to = req_str(args, "to")?;
+            let max_hops = opt_u64(args, "max_hops", 6)?;
+            let max_paths = opt_u64(args, "max_paths", 50)?;
             let mut extra = vec![
                 from.to_string(),
                 to.to_string(),
@@ -884,15 +1011,15 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 "--max-paths".into(),
                 max_paths.to_string(),
             ];
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
-            push_scope(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
             ("paths".to_string(), extra)
         }
         "reachable" => {
-            let target = args["target"].as_str().context("missing target")?;
-            let max_hops = args["max_hops"].as_u64().unwrap_or(6);
-            let limit = args["limit"].as_u64().unwrap_or(200);
+            let target = req_str(args, "target")?;
+            let max_hops = opt_u64(args, "max_hops", 6)?;
+            let limit = opt_u64(args, "limit", 200)?;
             let mut extra = vec![
                 target.to_string(),
                 "--path".into(),
@@ -902,31 +1029,37 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 "--limit".into(),
                 limit.to_string(),
             ];
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
-            push_scope(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
             ("reachable".to_string(), extra)
         }
         "check" => {
-            let arr = read_canonical_array(args, "symbols", "names", &mut deprecated)
-                .context("missing symbols array")?;
-            let symbols: Vec<String> = arr
+            let arr = read_canonical_array(args, "symbols", "names", &mut deprecated)?
+                .ok_or_else(|| ParamError::missing("symbols"))?;
+            let symbols: Result<Vec<String>> = arr
                 .iter()
-                .filter_map(|v| v.as_str().map(String::from))
+                .enumerate()
+                .map(|(i, v)| {
+                    v.as_str().map(String::from).ok_or_else(|| {
+                        ParamError::wrong_type(&format!("symbols[{i}]"), "a string", v).into()
+                    })
+                })
                 .collect();
+            let symbols = symbols?;
             if symbols.is_empty() {
-                anyhow::bail!("symbols array is empty");
+                return Err(ParamError("`symbols` array is empty".to_string()).into());
             }
             let mut extra = symbols;
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
             ("check".to_string(), extra)
         }
         "similar" => {
-            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)
-                .context("missing symbol")?;
-            let limit = args["limit"].as_u64().unwrap_or(10);
-            let threshold = args["threshold"].as_f64().unwrap_or(0.5);
+            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)?
+                .ok_or_else(|| ParamError::missing("symbol"))?;
+            let limit = opt_u64(args, "limit", 10)?;
+            let threshold = opt_f64(args, "threshold")?.unwrap_or(0.5);
             let mut extra = vec![
                 symbol.to_string(),
                 "--path".into(),
@@ -936,25 +1069,25 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 "--threshold".into(),
                 threshold.to_string(),
             ];
-            if let Some(filter) = args["filter"].as_str() {
+            if let Some(filter) = opt_str(args, "filter")? {
                 extra.extend(["--filter".into(), filter.to_string()]);
             }
-            if args["explain"].as_bool().unwrap_or(false) {
+            if opt_bool(args, "explain", false)? {
                 extra.push("--explain".into());
             }
-            if args["why"].as_bool().unwrap_or(false) {
+            if opt_bool(args, "why", false)? {
                 extra.push("--why".into());
             }
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
-            push_scope(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
             push_diff_scope(&mut extra, args)?;
             ("similar".to_string(), extra)
         }
         "duplicates" => {
-            let threshold = args["threshold"].as_f64().unwrap_or(0.9);
-            let limit = args["limit"].as_u64().unwrap_or(50);
-            let min_body_lines = args["min_body_lines"].as_u64().unwrap_or(5);
+            let threshold = opt_f64(args, "threshold")?.unwrap_or(0.9);
+            let limit = opt_u64(args, "limit", 50)?;
+            let min_body_lines = opt_u64(args, "min_body_lines", 5)?;
             let mut extra = vec![
                 "--path".into(),
                 project_root.to_string(),
@@ -965,18 +1098,18 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 "--min-body-lines".into(),
                 min_body_lines.to_string(),
             ];
-            if let Some(filter) = args["filter"].as_str() {
+            if let Some(filter) = opt_str(args, "filter")? {
                 extra.extend(["--filter".into(), filter.to_string()]);
             }
-            if args["explain"].as_bool().unwrap_or(false) {
+            if opt_bool(args, "explain", false)? {
                 extra.push("--explain".into());
             }
-            if args["why"].as_bool().unwrap_or(false) {
+            if opt_bool(args, "why", false)? {
                 extra.push("--why".into());
             }
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
-            push_scope(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
             push_diff_scope(&mut extra, args)?;
             ("duplicates".to_string(), extra)
         }
@@ -991,51 +1124,60 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             // support for discriminated unions). The MCP layer validates
             // required-field-per-mode here so the agent sees a clear
             // error before the CLI subprocess is spawned.
-            let mode = args["mode"].as_str().context("missing `mode`")?;
+            let mode = req_str(args, "mode")?;
             let mut extra: Vec<String> = vec!["--mode".into(), mode.into()];
             match mode {
                 "symbol" => {
-                    let symbol = args["symbol"]
-                        .as_str()
-                        .context("`mode: symbol` requires the `symbol` field")?;
+                    let symbol = opt_str(args, "symbol")?.ok_or_else(|| {
+                        ParamError("`mode: symbol` requires the `symbol` field".to_string())
+                    })?;
                     extra.extend(["--symbol".into(), symbol.into()]);
-                    if let Some(v) = args["callers_max"].as_u64() {
+                    if !args["callers_max"].is_null() {
+                        let v = opt_u64(args, "callers_max", 0)?;
                         extra.extend(["--callers-max".into(), v.to_string()]);
                     }
-                    if let Some(v) = args["callees_max"].as_u64() {
+                    if !args["callees_max"].is_null() {
+                        let v = opt_u64(args, "callees_max", 0)?;
                         extra.extend(["--callees-max".into(), v.to_string()]);
                     }
-                    if let Some(v) = args["similar_max"].as_u64() {
+                    if !args["similar_max"].is_null() {
+                        let v = opt_u64(args, "similar_max", 0)?;
                         extra.extend(["--similar-max".into(), v.to_string()]);
                     }
                 }
                 "pr-impact" => {
-                    let base = args["base"]
-                        .as_str()
-                        .context("`mode: pr-impact` requires the `base` field")?;
+                    let base = opt_str(args, "base")?.ok_or_else(|| {
+                        ParamError("`mode: pr-impact` requires the `base` field".to_string())
+                    })?;
                     extra.extend(["--base".into(), base.into()]);
-                    if let Some(d) = args["depth"].as_u64() {
+                    if !args["depth"].is_null() {
+                        let d = opt_u64(args, "depth", 0)?;
                         extra.extend(["--depth".into(), d.to_string()]);
                     }
-                    if let Some(m) = args["tests_max"].as_u64() {
+                    if !args["tests_max"].is_null() {
+                        let m = opt_u64(args, "tests_max", 0)?;
                         extra.extend(["--tests-max".into(), m.to_string()]);
                     }
                 }
                 "project" => {
-                    if let Some(g) = args["path_glob"].as_str() {
+                    if let Some(g) = opt_str(args, "path_glob")? {
                         extra.extend(["--path-glob".into(), g.into()]);
                     }
-                    if let Some(n) = args["top_n"].as_u64() {
+                    if !args["top_n"].is_null() {
+                        let n = opt_u64(args, "top_n", 0)?;
                         extra.extend(["--top-n".into(), n.to_string()]);
                     }
                 }
-                other => anyhow::bail!(
-                    "unknown bundle mode `{other}` — expected one of `symbol`, `pr-impact`, `project`"
-                ),
+                other => {
+                    return Err(ParamError(format!(
+                        "unknown bundle mode `{other}` — expected one of `symbol`, `pr-impact`, `project`"
+                    ))
+                    .into());
+                }
             }
-            push_auto_update(&mut extra, args);
-            push_no_stale_check(&mut extra, args);
-            push_scope(&mut extra, args);
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
             ("bundle".to_string(), extra)
         }
         _ => anyhow::bail!("unknown tool: {tool}"),
@@ -2788,8 +2930,8 @@ INFO trailing line\n\
             .expect_err("head: 0 must error");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("positive integer"),
-            "error should mention positive integer; got: {msg}"
+            msg.contains("integer") && msg.contains("head"),
+            "error should mention `head` and integer-typed expectation; got: {msg}"
         );
     }
 
@@ -2803,8 +2945,8 @@ INFO trailing line\n\
         .expect_err("head: -1 must error");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("positive integer"),
-            "error should mention positive integer; got: {msg}"
+            msg.contains("integer") && msg.contains("head"),
+            "error should mention `head` and integer-typed expectation; got: {msg}"
         );
     }
 
@@ -2818,8 +2960,8 @@ INFO trailing line\n\
         .expect_err("head: 5.5 must error");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("positive integer"),
-            "error should mention positive integer; got: {msg}"
+            msg.contains("integer") && msg.contains("head"),
+            "error should mention `head` and integer-typed expectation; got: {msg}"
         );
     }
 
@@ -3435,5 +3577,99 @@ INFO trailing line\n\
         // keep serving past them.
         let other = io::Error::other("transient");
         assert!(!is_clean_shutdown(&other));
+    }
+
+    // ---- H8: typed-params contract ----
+    //
+    // Every `build_command` path that consumes a typed argument must
+    // emit a `ParamError` when the JSON value carries the wrong type.
+    // `handle_request` downcasts to `ParamError` and maps it to the
+    // JSON-RPC spec's `-32602 Invalid params`.
+
+    /// Convenience: run `build_command` and require that the error
+    /// downcasts to `ParamError` containing `needle` in its message.
+    #[track_caller]
+    fn assert_param_error(tool: &str, args: Value, needle: &str) {
+        let err = build_command(tool, &args, "/tmp/proj")
+            .err()
+            .unwrap_or_else(|| panic!("expected ParamError for `{tool}` with args {args}"));
+        let pe = err.downcast_ref::<ParamError>().unwrap_or_else(|| {
+            panic!("expected ParamError for `{tool}`; got non-param error: {err:#}")
+        });
+        assert!(
+            pe.0.contains(needle),
+            "ParamError for `{tool}` must mention `{needle}`; got: {msg}",
+            msg = pe.0
+        );
+    }
+
+    #[test]
+    fn search_missing_query_is_invalid_params() {
+        assert_param_error("search", json!({}), "query");
+    }
+
+    #[test]
+    fn search_string_limit_is_invalid_params() {
+        assert_param_error("search", json!({"query": "foo", "limit": "20"}), "limit");
+    }
+
+    #[test]
+    fn search_string_auto_update_is_invalid_params() {
+        assert_param_error(
+            "search",
+            json!({"query": "foo", "auto_update": "true"}),
+            "auto_update",
+        );
+    }
+
+    #[test]
+    fn search_kind_string_instead_of_array_is_invalid_params() {
+        assert_param_error("search", json!({"query": "foo", "kind": "fn"}), "kind");
+    }
+
+    #[test]
+    fn callers_missing_name_is_invalid_params() {
+        assert_param_error("callers", json!({}), "name");
+    }
+
+    #[test]
+    fn search_float_limit_is_invalid_params() {
+        assert_param_error("search", json!({"query": "foo", "limit": 5.5}), "limit");
+    }
+
+    #[test]
+    fn search_negative_limit_is_invalid_params() {
+        assert_param_error("search", json!({"query": "foo", "limit": -3}), "limit");
+    }
+
+    /// Sanity: a correctly-typed call still builds.
+    #[test]
+    fn search_correctly_typed_args_succeed() {
+        let built = build_command(
+            "search",
+            &json!({"query": "foo", "limit": 5, "auto_update": false}),
+            "/tmp/proj",
+        )
+        .expect("typed-correct search must build");
+        assert_eq!(built.subcommand, "search");
+        assert!(built.extra_args.iter().any(|a| a == "foo"));
+    }
+
+    /// handle_request must surface ParamError as JSON-RPC `-32602`.
+    #[test]
+    fn handle_request_maps_param_error_to_minus_32602() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(7)),
+            method: "tools/call".into(),
+            params: Some(json!({
+                "name": "search",
+                "arguments": { "query": "foo", "limit": "twenty" }
+            })),
+        };
+        let resp = handle_request(&req);
+        let err = resp.error.expect("expected error response");
+        assert_eq!(err.code, -32602, "expected -32602 Invalid params");
+        assert!(err.message.contains("limit"));
     }
 }
