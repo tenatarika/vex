@@ -271,3 +271,75 @@ fn many_concurrent_readers() {
         "all concurrent readers should see the same symbol count"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 6. Concurrent update: the herd rebuilds the index ONCE, not once-per-thread.
+//    Test #4 only checks that parallel updates don't corrupt the index. This
+//    guards the stronger property the build lock now provides: the lock is held
+//    across parse + embed (not just the final write) with a double-checked
+//    staleness re-read, so the first updater does the work and the rest observe
+//    the now-fresh index and skip. Without that, every concurrent `vex update`
+//    on the same stale index re-parses and re-embeds independently — the
+//    thundering herd that pegs CPU and RAM under multi-agent fan-out.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn concurrent_update_rebuilds_once_not_per_thread() {
+    const THREADS: usize = 4;
+
+    let dir = tempdir().unwrap();
+    write_src(dir.path(), "a.rs", "pub fn base() {}\n");
+    run_index(dir.path());
+
+    // One change → every updater observes exactly one stale file.
+    fs::write(
+        dir.path().join("src/a.rs"),
+        "pub fn base() {}\npub fn added() {}\n",
+    )
+    .unwrap();
+
+    let root = dir.path().to_path_buf();
+    let barrier = Arc::new(Barrier::new(THREADS));
+
+    let handles: Vec<_> = (0..THREADS)
+        .map(|_| {
+            let r = root.clone();
+            let b = Arc::clone(&barrier);
+            thread::spawn(move || {
+                b.wait();
+                let r = r.canonicalize().unwrap();
+                pipeline::update(
+                    &r,
+                    vex::index::pipeline::IndexOptions::default(),
+                    "minilm-l6-v2",
+                    &[],
+                )
+                .expect("update")
+            })
+        })
+        .collect();
+
+    // Each result is (total_symbols, changed, deleted).
+    let results: Vec<(usize, usize, usize)> =
+        handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+    // Exactly one thread should have rebuilt (changed > 0); every other thread
+    // must have found the index already fresh and skipped (changed == 0).
+    // Without the lock-around-parse+embed and the double-checked re-read, all
+    // THREADS report changed > 0 — the herd this test exists to prevent.
+    let rebuilt = results
+        .iter()
+        .filter(|(_, changed, _)| *changed > 0)
+        .count();
+    assert_eq!(
+        rebuilt, 1,
+        "expected exactly one updater to rebuild and the rest to skip; got {results:?}"
+    );
+
+    // The change must actually be present in the final index.
+    let reader = open_reader(dir.path());
+    assert!(
+        !structural::search_with_fuzzy(&reader, "added", 10).is_empty(),
+        "added symbol should be findable after concurrent update"
+    );
+}

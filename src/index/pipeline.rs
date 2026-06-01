@@ -81,7 +81,13 @@ pub fn run(
         None
     };
     let vector_dim = vector_dim_for(embedder_id, &vectors);
-    write_output(
+    // Hold the build lock across BOTH the index write and the HNSW build so the
+    // .vex / .hnsw pair is published atomically under one critical section
+    // (matching update()). Otherwise a concurrent writer could replace index.vex
+    // between the write and the HNSW build — desyncing the pair — or two writers
+    // could clobber index.hnsw at once.
+    let _lock = IndexLock::acquire(&root)?;
+    write_output_locked(
         &root,
         &all_parsed,
         &vectors,
@@ -110,6 +116,19 @@ pub fn run(
     Ok(symbol_count)
 }
 
+/// Symbol count of the existing on-disk index, or 0 if there is none. Shared by
+/// `update`'s early-return paths that skip a rebuild.
+fn existing_symbol_count(root: &Path) -> Result<usize> {
+    let index_path = config::index_path(root);
+    if index_path.exists() {
+        Ok(crate::store::reader::IndexReader::open(&index_path)
+            .context("open existing index for symbol count")?
+            .symbol_count())
+    } else {
+        Ok(0)
+    }
+}
+
 /// Incremental update: detect changed files, re-parse only those, merge with unchanged
 /// symbols from the existing index. Returns (total_symbols, changed_count, deleted_count).
 pub fn update(
@@ -135,15 +154,28 @@ pub fn update(
 
     if diff.changed.is_empty() && diff.deleted.is_empty() {
         tracing::info!(unchanged = diff.unchanged, "nothing to update");
-        let index_path = config::index_path(&root);
-        let symbol_count = if index_path.exists() {
-            let reader = crate::store::reader::IndexReader::open(&index_path)
-                .context("open existing index for symbol count")?;
-            reader.symbol_count()
-        } else {
-            0
-        };
-        return Ok((symbol_count, 0, 0));
+        return Ok((existing_symbol_count(&root)?, 0, 0));
+    }
+
+    // Serialize concurrent rebuilds: take the build lock BEFORE the expensive
+    // parse + embed below. Until this guard existed the lock only wrapped the
+    // final write, so N vex instances auto-updating the
+    // same stale index each loaded the embedding model and re-embedded in
+    // parallel — a thundering-herd rebuild that pegs CPU and RAM under
+    // multi-agent fan-out. Holding the lock here means exactly one instance
+    // does the work; the rest wait and then skip via the re-check below.
+    let _lock = IndexLock::acquire(&root)?;
+
+    // Double-check under the lock: another instance may have refreshed the
+    // index while we waited. Re-diff against the now-current manifest; if it
+    // already matches the working tree, that peer did our work — skip.
+    let diff = {
+        let current_manifest = Manifest::load(&manifest_path)?;
+        manifest::diff_files(&file_hashes, &current_manifest)
+    };
+    if diff.changed.is_empty() && diff.deleted.is_empty() {
+        tracing::info!("index refreshed by a concurrent vex instance; skipping rebuild");
+        return Ok((existing_symbol_count(&root)?, 0, 0));
     }
 
     tracing::info!(
@@ -211,7 +243,7 @@ pub fn update(
         None
     };
     let vector_dim = vector_dim_for(embedder_id, &all_vectors);
-    write_output(
+    write_output_locked(
         &root,
         &all_parsed,
         &all_vectors,
@@ -826,8 +858,59 @@ fn collect_pattern_skeletons(parsed: &[ParsedFile]) -> SkeletonsForWriter {
     (skeletons, fingerprints)
 }
 
+/// RAII guard over the per-index build lock (`<index>.lock`). Acquiring it
+/// blocks until no other vex instance is building the same index, so only one
+/// process runs the expensive parse + embed + write at a time. The lock is
+/// released on drop (including on early return).
+///
+/// The lock file is created once and never deleted. Deleting it on release is
+/// the classic `flock` + unlink race: a queued waiter keeps its handle on the
+/// now-unlinked inode while a new instance creates a *fresh* inode under the
+/// same name and locks it immediately — so both run concurrently. A stable,
+/// never-deleted sentinel keeps every instance contending on one lock object.
+struct IndexLock {
+    file: std::fs::File,
+}
+
+impl IndexLock {
+    fn acquire(root: &Path) -> Result<Self> {
+        let index_path = config::index_path(root);
+        let cache_dir = index_path.parent().context("index path has no parent")?;
+        std::fs::create_dir_all(cache_dir).context("create cache directory")?;
+        let path = index_path.with_extension("lock");
+        // Open-or-create the persistent sentinel; never truncated, never removed.
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .context("open index lock file")?;
+        // Blocks until acquired (advisory `flock` on POSIX, `LockFileEx` on
+        // Windows). Held across the caller's whole build so concurrent
+        // instances serialize rather than all rebuilding at once.
+        fs2::FileExt::lock_exclusive(&file)
+            .context("acquire index lock (another vex instance may be indexing)")?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for IndexLock {
+    fn drop(&mut self) {
+        // Release the advisory lock; intentionally leave the lock file in place
+        // (see the struct doc — unlinking it would break mutual exclusion under
+        // contention).
+        if let Err(e) = fs2::FileExt::unlock(&self.file) {
+            tracing::warn!(error = %e, "failed to unlock index lock");
+        }
+    }
+}
+
+/// Build the index sections and write them out. The caller MUST already hold
+/// the [`IndexLock`]; both `run` and `update` acquire it before the expensive
+/// parse + embed so concurrent instances serialize and skip redundant rebuilds
+/// instead of all embedding in parallel.
 #[allow(clippy::too_many_arguments)] // mirrors the writer entry shape
-fn write_output(
+fn write_output_locked(
     root: &Path,
     parsed: &[ParsedFile],
     vectors: &[Vec<f32>],
@@ -841,94 +924,75 @@ fn write_output(
     let cache_dir = index_path.parent().context("index path has no parent")?;
     std::fs::create_dir_all(cache_dir).context("create cache directory")?;
 
-    // Capture git HEAD before acquiring lock to minimize lock hold time
     let git_head = super::staleness::read_git_head(root);
     let indexed_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    // Advisory lock to prevent concurrent index writes
-    let lock_path = index_path.with_extension("lock");
-    let lock_file = std::fs::File::create(&lock_path).context("create lock file")?;
-    fs2::FileExt::lock_exclusive(&lock_file)
-        .context("acquire index lock (another vex instance may be indexing)")?;
+    // Skip the corresponding build work entirely when the section is
+    // opted out — the reader gates these via `*_len == 0`, so passing
+    // empty slices / `None` is a valid disabled state in the format.
+    let call_edges = if opts.with_call_graph {
+        resolve_call_edges(parsed)
+    } else {
+        Vec::new()
+    };
 
-    let result = (|| -> Result<()> {
-        // Skip the corresponding build work entirely when the section is
-        // opted out — the reader gates these via `*_len == 0`, so passing
-        // empty slices / `None` is a valid disabled state in the format.
-        let call_edges = if opts.with_call_graph {
-            resolve_call_edges(parsed)
-        } else {
-            Vec::new()
-        };
-
-        let bm25_built = if opts.with_bm25 {
-            Some(build_bm25_index(parsed)?)
-        } else {
+    let bm25_built = if opts.with_bm25 {
+        Some(build_bm25_index(parsed)?)
+    } else {
+        None
+    };
+    let bm25 = bm25_built.as_ref().and_then(|(fst, posts, stats)| {
+        if fst.is_empty() {
             None
-        };
-        let bm25 = bm25_built.as_ref().and_then(|(fst, posts, stats)| {
-            if fst.is_empty() {
-                None
-            } else {
-                Some((fst.as_slice(), posts.as_slice(), stats.as_slice()))
-            }
-        });
-        // 11.4 Inc 4 — collect (file_id, Skeleton) tuples and compute
-        // per-language grammar fingerprints. The empty-opt-out path
-        // still produces a v6 index, just with all-zero header fields.
-        let (pattern_skeletons, lang_fingerprints) = if opts.with_pattern_index {
-            collect_pattern_skeletons(parsed)
         } else {
-            (Vec::new(), Vec::new())
-        };
-        store::writer::write_index_with_call_graph_and_skeletons_and_fingerprints(
-            parsed,
-            vectors,
-            vector_dim,
-            &call_edges,
-            bm25,
-            &pattern_skeletons,
-            &lang_fingerprints,
-            &index_path,
-        )
-        .context("write index")?;
+            Some((fst.as_slice(), posts.as_slice(), stats.as_slice()))
+        }
+    });
+    // 11.4 Inc 4 — collect (file_id, Skeleton) tuples and compute
+    // per-language grammar fingerprints. The empty-opt-out path
+    // still produces a v6 index, just with all-zero header fields.
+    let (pattern_skeletons, lang_fingerprints) = if opts.with_pattern_index {
+        collect_pattern_skeletons(parsed)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    store::writer::write_index_with_call_graph_and_skeletons_and_fingerprints(
+        parsed,
+        vectors,
+        vector_dim,
+        &call_edges,
+        bm25,
+        &pattern_skeletons,
+        &lang_fingerprints,
+        &index_path,
+    )
+    .context("write index")?;
 
-        let manifest_path = config::manifest_path(root);
-        let manifest = Manifest {
-            files: file_hashes.iter().cloned().collect::<HashMap<_, _>>(),
-            git_head,
-            indexed_at: Some(indexed_at),
-            embedder_id,
-            // Persist explicit `Some(false)` for opt-outs so `vex update`
-            // can detect them. `Some(true)` rather than `None` for the
-            // default case so post-10.3 manifests are unambiguous.
-            call_graph: Some(opts.with_call_graph),
-            bm25: Some(opts.with_bm25),
-            pattern_index: Some(opts.with_pattern_index),
-            // 11.4 Inc 5: `pattern_index_full` distinguishes a full
-            // `vex index` from a `vex update`. The reader checks this
-            // before using the indexed prefilter — incremental builds
-            // produce a partial section (only re-parsed files have
-            // skeletons) and would silently drop matches in unchanged
-            // files. `is_update` is plumbed by the writer wrapper.
-            pattern_index_full: Some(is_full_rebuild),
-        };
-        manifest.save(&manifest_path)?;
-        Ok(())
-    })();
-
-    // Unlock (also happens on drop, but be explicit)
-    if let Err(e) = fs2::FileExt::unlock(&lock_file) {
-        tracing::warn!(error = %e, "failed to explicitly unlock index lock");
-    }
-    if let Err(e) = std::fs::remove_file(&lock_path) {
-        tracing::warn!(error = %e, "failed to remove lock file");
-    }
-
-    result
+    let manifest_path = config::manifest_path(root);
+    let manifest = Manifest {
+        files: file_hashes.iter().cloned().collect::<HashMap<_, _>>(),
+        git_head,
+        indexed_at: Some(indexed_at),
+        embedder_id,
+        // Persist explicit `Some(false)` for opt-outs so `vex update`
+        // can detect them. `Some(true)` rather than `None` for the
+        // default case so post-10.3 manifests are unambiguous.
+        call_graph: Some(opts.with_call_graph),
+        bm25: Some(opts.with_bm25),
+        pattern_index: Some(opts.with_pattern_index),
+        // 11.4 Inc 5: `pattern_index_full` distinguishes a full
+        // `vex index` from a `vex update`. The reader checks this
+        // before using the indexed prefilter — incremental builds
+        // produce a partial section (only re-parsed files have
+        // skeletons) and would silently drop matches in unchanged
+        // files. `is_update` is plumbed by the writer wrapper.
+        pattern_index_full: Some(is_full_rebuild),
+    };
+    manifest.save(&manifest_path)?;
+    Ok(())
 }
 
 fn generate_embeddings(parsed: &[ParsedFile], embedder_id: &str) -> Result<Vec<Vec<f32>>> {
