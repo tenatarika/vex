@@ -185,12 +185,18 @@ pub fn parse_pattern(pattern: &str, lang: Language) -> Result<PatternTree> {
             // Check for $_ or $NAME
             if chars.peek() == Some(&'_') {
                 chars.next();
-                // Ensure it's $_ not $_foo
+                // Ensure it's $_ not $_foo. v1.11 hotfix: preserve the
+                // `$` so a typo like `$_Bar` (expecting a named capture)
+                // doesn't silently degrade to matching the literal text
+                // `_Bar` with the `$` swallowed. Pre-fix, the `$` was
+                // already consumed at line 157 and only `_` was pushed
+                // into `literal`, so an invalid metavar form was
+                // indistinguishable from intentional literal text.
                 if !chars.peek().is_some_and(|c| c.is_alphanumeric()) {
                     segments.push(Segment::Wildcard);
                     continue;
                 }
-                literal.push('_');
+                literal.push_str("$_");
                 continue;
             }
 
@@ -817,6 +823,34 @@ fn safe_node_text<'a>(node: Node, source: &'a str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v1.11 hotfix — `$_NAME` (invalid metavar — `$_` must stand alone)
+    /// must be parsed as a literal `$_NAME` so the typo doesn't silently
+    /// degrade to matching `_NAME` with the `$` swallowed. The wildcard
+    /// `$_` alone (no trailing alphanumeric) continues to parse to
+    /// `Segment::Wildcard`.
+    #[test]
+    fn v1_11_hotfix_invalid_underscore_metavar_preserves_dollar() {
+        // Invalid form `$_Bar` — must NOT match the literal `_Bar`,
+        // because the source `_Bar` is not what the user wrote.
+        let source = "let _Bar = 1;\n";
+        let pattern = parse_pattern("$_Bar = 1", Language::Rust).unwrap();
+        let matches = find_matches(source, &pattern, "test.rs");
+        assert!(
+            matches.is_empty(),
+            "`$_Bar` must be a literal `$_Bar` (no `$` in source ⇒ no match); got {} matches",
+            matches.len()
+        );
+
+        // Valid `$_` (anonymous wildcard) still works.
+        let source = "let x = 1;\n";
+        let pattern = parse_pattern("let $_ = 1", Language::Rust).unwrap();
+        let matches = find_matches(source, &pattern, "test.rs");
+        assert!(
+            !matches.is_empty(),
+            "`$_` standalone must remain a working wildcard"
+        );
+    }
 
     #[test]
     fn match_rust_function_signature() {
