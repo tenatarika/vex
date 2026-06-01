@@ -1,0 +1,142 @@
+name: Bug report
+description: Something in vex behaves incorrectly or crashes
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. The fields below
+        usually decide whether we can reproduce in 5 minutes or in 50.
+
+        **Before filing**: run `vex self-update` and confirm the bug
+        still reproduces on the latest release. Older versions don't
+        receive backports.
+
+  - type: input
+    id: version
+    attributes:
+      label: vex version
+      description: Output of `vex --version`
+      placeholder: "vex 1.11.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - Homebrew (tenatarika/tap)
+        - Pre-built archive from GitHub Releases
+        - cargo install / cargo build --release from source
+        - Other (please describe in additional context)
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS + arch
+      placeholder: "macOS 15.3 (arm64) / Ubuntu 24.04 (x86_64) / Windows 11 (x86_64)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: command
+    attributes:
+      label: Which command misbehaves
+      multiple: true
+      options:
+        - vex index / vex update / vex watch
+        - vex search
+        - vex show
+        - vex usages (with or without --strict)
+        - vex pattern
+        - vex callers / callees / paths / reachable
+        - vex implementations
+        - vex similar / duplicates
+        - vex diff
+        - vex bundle
+        - vex check / vex grep / vex outline / vex status
+        - vex eval / vex capabilities
+        - vex-mcp (MCP server)
+        - vex self-update
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: languages
+    attributes:
+      label: Affected language(s)
+      multiple: true
+      description: Which source languages does the bug touch?
+      options:
+        - Rust
+        - TypeScript / JavaScript
+        - Python
+        - C#
+        - C / C++
+        - Go
+        - Java
+        - Kotlin
+        - Ruby
+        - Swift
+        - PHP
+        - SQL
+        - Bash / Lua / Markdown / HTML / CSS / TOML / YAML
+        - Language-independent (CLI / format / MCP / build)
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Minimal commands we can paste verbatim. Include the index step
+        if the bug depends on indexed state. A public repo or a tiny
+        synthetic snippet beats a screenshot every time.
+      placeholder: |
+        1. cd into <repo or snippet>
+        2. vex index
+        3. vex search "Foo"
+        4. ...
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: "vex search should return the PaymentService class defined in src/payment.rs"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: |
+        Paste the actual output. For wrong-result bugs, the `--why`
+        trace is gold (`vex search Foo --why 2>trace.json` then attach
+        `trace.json`).
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: status
+    attributes:
+      label: vex status output (optional)
+      description: Run `vex status` in the affected project and paste here.
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: |
+        Logs (`RUST_LOG=vex=warn vex ...`), MCP JSON-RPC payloads,
+        screenshots, related issues, anything else.

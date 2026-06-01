@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/tenatarika/vex/security/advisories/new
+    about: Report security issues privately — do not open a public issue. See SECURITY.md.
+  - name: Question or discussion
+    url: https://github.com/tenatarika/vex/discussions
+    about: Usage questions, integration help, design discussions — not bugs.

@@ -1,0 +1,71 @@
+name: Feature request
+description: Suggest a new command, flag, language, or capability
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Vex is opinionated about staying a
+        fast static-analysis tool — features that need an LSP, a daemon,
+        or a runtime are out of scope (see [`docs/LIMITATIONS.md`](../../docs/LIMITATIONS.md)).
+        Within that envelope we're happy to grow.
+
+        Before filing, please check:
+        - [`docs/LIMITATIONS.md`](../../docs/LIMITATIONS.md) — known gaps with workarounds
+        - existing issues — your idea may already be in flight under a phase number
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: |
+        Concrete scenario beats abstract capability. "When refactoring
+        FastAPI handlers, `vex callers` misses the `@router.get(...)`
+        decorator binding" is more actionable than "improve decorator
+        support".
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        What should vex do differently? CLI shape, flag name, output
+        format — sketch as much as you've thought through. It's fine to
+        leave implementation details open.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: |
+        Did you try `vex grep`, `vex pattern`, another tool? What was
+        missing? Helps us decide whether this is a real gap or a UX
+        discovery problem.
+
+  - type: dropdown
+    id: usage
+    attributes:
+      label: Primary usage context
+      multiple: true
+      options:
+        - AI agent / LLM workflow (Claude Code, MCP, etc.)
+        - Interactive terminal use
+        - CI / pre-commit / automation
+        - IDE integration
+        - Refactoring tooling
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope notes (optional)
+      description: |
+        Is this a breaking change to the JSON envelope or MCP schema?
+        Does it require a new index section / format bump? Any
+        compatibility considerations you've already thought about.
