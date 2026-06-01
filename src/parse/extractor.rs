@@ -105,7 +105,7 @@ pub fn extract_symbols_and_imports(
             } else {
                 extract_doc_above(content, line)
             };
-            let body_tokens = parent.and_then(|def| extract_body_tokens(def, content));
+            let body_tokens = parent.and_then(|def| extract_body_tokens(def, content, lang));
 
             symbols.push(ParsedSymbol {
                 name: name.to_string(),
@@ -313,12 +313,24 @@ fn is_keyword(s: &str) -> bool {
 /// Extract meaningful identifiers from a symbol's AST definition node.
 /// Walks the subtree, collects identifier and string literal text,
 /// filters keywords and short names. Returns space-separated tokens.
-fn extract_body_tokens(def_node: tree_sitter::Node, content: &str) -> Option<String> {
+fn extract_body_tokens(
+    def_node: tree_sitter::Node,
+    content: &str,
+    lang: Language,
+) -> Option<String> {
     let mut seen = HashSet::new();
     let mut tokens = Vec::new(); // preserves first-occurrence order
     let mut stack = vec![def_node];
     let mut nodes_visited = 0usize;
     const MAX_NODES: usize = 2000;
+    // Phase 8.4 + v1.11 hotfix: `tree-sitter-toml-ng` emits a bare
+    // `"string"` leaf for string values. Other languages also use
+    // `"string"` as a node kind (Rust string literals, Python strings
+    // via the `string` parent rule, …) but those contain
+    // `string_content` / `string_fragment` children that already route
+    // through the string-tokenising arm below. Hoisted out of the loop
+    // because `lang` is constant for the whole call.
+    let is_toml = matches!(lang, Language::Toml);
 
     while let Some(node) = stack.pop() {
         nodes_visited += 1;
@@ -326,7 +338,10 @@ fn extract_body_tokens(def_node: tree_sitter::Node, content: &str) -> Option<Str
             break;
         }
 
-        match node.kind() {
+        let kind = node.kind();
+        let is_toml_string = is_toml && kind == "string";
+
+        match kind {
             "identifier"
             | "type_identifier"
             | "field_identifier"
@@ -356,34 +371,23 @@ fn extract_body_tokens(def_node: tree_sitter::Node, content: &str) -> Option<Str
                     tokens.push(text.to_string());
                 }
             }
-            "string_content"
-            | "string_fragment"
             // Phase 8.4 — config-language string/value leaves. Split
             // by whitespace + filter to alphanumeric+`_` words so
             // free-text TOML/YAML/HTML/CSS values become searchable
             // ("endpoint = \"https://prod.example.com\"" tokenises to
-            // `endpoint`, `https`, `prod`, `example`, `com`). `"string"`
-            // (bare) is what `tree-sitter-toml-ng` emits for string
-            // values — other languages use `string_literal` /
-            // `string_content` parent shapes so the bare leaf does not
-            // collide.
-            | "string"
+            // `endpoint`, `https`, `prod`, `example`, `com`).
+            "string_content"
+            | "string_fragment"
             | "attribute_value"
             | "quoted_attribute_value"
             | "single_quote_scalar"
             | "double_quote_scalar"
             | "plain_value"
             | "string_value" => {
-                let text = node.utf8_text(content.as_bytes()).unwrap_or_default();
-                for word in text.split_whitespace() {
-                    let clean: String = word
-                        .chars()
-                        .filter(|c| c.is_alphanumeric() || *c == '_')
-                        .collect();
-                    if clean.len() > 2 && seen.insert(clean.to_lowercase()) {
-                        tokens.push(clean.to_lowercase());
-                    }
-                }
+                tokenise_string_value(node, content, &mut seen, &mut tokens);
+            }
+            _ if is_toml_string => {
+                tokenise_string_value(node, content, &mut seen, &mut tokens);
             }
             _ => {}
         }
@@ -412,6 +416,28 @@ fn extract_body_tokens(def_node: tree_sitter::Node, content: &str) -> Option<Str
         }
     }
     Some(joined)
+}
+
+/// Split a string-value node into lower-cased alphanumeric+`_` words,
+/// deduped via `seen`. Shared between the generic string-value match
+/// arm and the TOML-only `"string"` fallthrough so the two paths emit
+/// identical tokens.
+fn tokenise_string_value(
+    node: tree_sitter::Node,
+    content: &str,
+    seen: &mut HashSet<String>,
+    tokens: &mut Vec<String>,
+) {
+    let text = node.utf8_text(content.as_bytes()).unwrap_or_default();
+    for word in text.split_whitespace() {
+        let clean: String = word
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if clean.len() > 2 && seen.insert(clean.to_lowercase()) {
+            tokens.push(clean.to_lowercase());
+        }
+    }
 }
 
 /// Extract references (symbol usages) via simple identifier scanning.
@@ -1127,5 +1153,23 @@ mod tests {
         // inside (`property_name`, `plain_value`) should surface.
         let src = "@keyframes slide-in {\n  from { transform: translateX(-100%); }\n  to { transform: translateX(0); }\n}\n";
         assert_body_tokens_contain(src, Language::Css, &["slide"]);
+    }
+
+    /// v1.11 hotfix — the bare `"string"` node-kind arm must only fire
+    /// for TOML. Pre-fix, every grammar that exposes a `"string"` parent
+    /// node (Rust, Python, TypeScript, …) re-tokenised the entire raw
+    /// string region — quotes included, escapes unprocessed — alongside
+    /// the language-correct `string_content` / `string_fragment` walk.
+    /// Dedup masked the bug today, but it's a footgun for any future
+    /// non-config language that doesn't emit a `string_content` child.
+    /// This test proves a Python docstring is tokenised exclusively via
+    /// `string_content` (the proper leaf), so removing the bare arm for
+    /// non-TOML languages doesn't lose tokens.
+    #[test]
+    fn v1_11_hotfix_python_string_tokens_come_from_string_content_not_bare_string() {
+        let src = "def greet():\n    \"\"\"hello searchable world\"\"\"\n    return 1\n";
+        // Tokens are still emitted (via `string_content`), so `greet`'s
+        // body_tokens MUST contain the docstring words.
+        assert_body_tokens_contain(src, Language::Python, &["hello", "searchable", "world"]);
     }
 }
