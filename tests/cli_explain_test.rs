@@ -170,5 +170,20 @@ fn min_score_alias_matches_threshold_behavior() {
 
     let a = String::from_utf8_lossy(&with_threshold.get_output().stdout).into_owned();
     let b = String::from_utf8_lossy(&with_alias.get_output().stdout).into_owned();
-    assert_eq!(a, b, "--min-score should behave identically to --threshold");
+    let mut va: serde_json::Value = serde_json::from_str(&a).expect("threshold stdout JSON");
+    let mut vb: serde_json::Value = serde_json::from_str(&b).expect("min-score stdout JSON");
+    // `_meta.vex.dev/index_age_ms` is wall-clock-dependent (rounded to
+    // seconds), so two sequential calls flake at second boundaries.
+    // The aliases are about ranking equivalence; strip the timing
+    // metadata before comparing.
+    if let Some(meta) = va.get_mut("_meta").and_then(|m| m.as_object_mut()) {
+        meta.remove("vex.dev/index_age_ms");
+    }
+    if let Some(meta) = vb.get_mut("_meta").and_then(|m| m.as_object_mut()) {
+        meta.remove("vex.dev/index_age_ms");
+    }
+    assert_eq!(
+        va, vb,
+        "--min-score should behave identically to --threshold"
+    );
 }
