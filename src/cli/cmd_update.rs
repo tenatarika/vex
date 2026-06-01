@@ -11,7 +11,7 @@ use super::common::{
 };
 use super::output::print_envelope;
 use crate::index::pipeline;
-use crate::protocol::{capabilities, MetaEnvelope};
+use crate::protocol::capabilities;
 use crate::util::config;
 
 #[allow(clippy::too_many_arguments)]
@@ -61,7 +61,11 @@ pub(crate) fn update(
                 "deleted": deleted,
                 "elapsed_ms": elapsed.as_millis(),
             });
-            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
+            print_envelope(
+                &json,
+                capabilities::current(),
+                super::output::default_meta_for(&root),
+            );
         }
         OutputFormat::Text | OutputFormat::Compact => {
             if changed == 0 && deleted == 0 {

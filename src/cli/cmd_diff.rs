@@ -23,6 +23,6 @@ pub(crate) fn diff(
         .into_iter()
         .filter(|c| path_scope.accept(&c.path))
         .collect();
-    output::print_diff(&changes, &base, &ctx.format);
+    output::print_diff(&changes, &base, &ctx.format, &root);
     Ok(())
 }

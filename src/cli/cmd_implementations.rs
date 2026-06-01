@@ -10,7 +10,7 @@ use super::common::{resolve_diff_filter, resolve_root, CmdCtx};
 use super::index_management::handle_staleness;
 use super::output::print_envelope;
 use super::scope;
-use crate::protocol::{capabilities, MetaEnvelope};
+use crate::protocol::capabilities;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn implementations(
@@ -58,7 +58,11 @@ pub(crate) fn implementations(
                     })
                 })
                 .collect();
-            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
+            print_envelope(
+                &json,
+                capabilities::current(),
+                super::output::default_meta_for(&root),
+            );
         }
         OutputFormat::Text => {
             if matches.is_empty() {

@@ -26,6 +26,7 @@ pub(crate) fn status(
             OutputFormat::Json => {
                 let payload = serde_json::json!({"error": "no index found"});
                 print_envelope(&payload, capabilities::current(), MetaEnvelope::default());
+                // ^ no index → no manifest → no index_age; default meta is correct.
             }
             OutputFormat::Text | OutputFormat::Compact => {
                 println!("No index found for {}", root.display());
@@ -57,7 +58,11 @@ pub(crate) fn status(
             if let Some(c) = &coverage_report {
                 json["coverage"] = serde_json::to_value(c)?;
             }
-            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
+            print_envelope(
+                &json,
+                capabilities::current(),
+                super::output::default_meta_for(&root),
+            );
         }
         OutputFormat::Text | OutputFormat::Compact => {
             println!("Project:    {}", root.display());

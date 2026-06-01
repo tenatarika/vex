@@ -107,7 +107,7 @@ pub(crate) fn duplicates(
         None
     };
 
-    output::print_duplicates(&pairs, explanations.as_deref(), &ctx.format);
+    output::print_duplicates(&pairs, explanations.as_deref(), &ctx.format, &root);
 
     // 11.10: structured trace on stderr for `--why`.
     // `pairs_after_filter` is the pre-`--limit` count for

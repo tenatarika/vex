@@ -8,7 +8,7 @@ use super::common::{apply_path_filters, build_metadata_filter, resolve_root, Cmd
 use super::index_management::ensure_index_ready;
 use super::output::print_envelope;
 use super::{scope, show_truncate};
-use crate::protocol::{capabilities, MetaEnvelope};
+use crate::protocol::capabilities;
 use crate::search::structural;
 use crate::store::reader::IndexReader;
 
@@ -195,7 +195,7 @@ pub(crate) fn show(
             print_envelope(
                 &json_items,
                 capabilities::current(),
-                MetaEnvelope::default(),
+                super::output::default_meta_for(&root),
             );
         }
         OutputFormat::Text | OutputFormat::Compact => {

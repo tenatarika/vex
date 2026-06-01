@@ -122,7 +122,7 @@ pub(crate) fn similar(
         None
     };
 
-    output::print_similar(&matches, &name, explanations.as_deref(), &ctx.format);
+    output::print_similar(&matches, &name, explanations.as_deref(), &ctx.format, &root);
 
     // 11.10: structured trace on stderr for `--why`.
     // `candidates_after_filter` is the pre-`--limit` count so

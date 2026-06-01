@@ -11,17 +11,11 @@ use crate::search::SearchResult;
 
 /// Generic Phase 13 envelope printer.
 ///
-/// **Current scope (v1.9.2)**: used by `search` (via [`print_search_envelope`])
-/// and `bundle`. Every other JSON-emitting subcommand (`show`, `usages`,
-/// `pattern`, `grep`, `implementations`, `callers`, `callees`, `paths`,
-/// `reachable`, `check`, `similar`, `duplicates`, `diff`, `outline`) still
-/// emits bare arrays via `serde_json::to_string_pretty` — the Phase 13
-/// envelope contract is not yet uniform across the CLI surface. Migration
-/// of the remaining arms is blocked behind S1 (`cli/mod.rs` decomposition);
-/// see `.claude/Task/REVIEW-v1.9.1-external-feedback.md` H5 (full).
-///
-/// `search` has its own envelope path because it injects per-result
-/// `signals` + `rank_percentile` — see [`print_search_envelope`].
+/// Used by every `--format json` subcommand except `search`, which has its
+/// own path because it injects per-result `signals` + `rank_percentile` —
+/// see [`print_search_envelope`]. Honors the `VEX_JSON_ENVELOPE=0` opt-out
+/// for parity with `print_search_envelope`: when set, falls back to a bare
+/// serialized `results` payload so pre-1.9 pipelines keep working.
 ///
 /// Failures in `serde_json::to_string_pretty` collapse to an empty object;
 /// the only way this fires is if a nested `Serialize` impl panics, which
@@ -31,6 +25,11 @@ pub(crate) fn print_envelope<T: Serialize>(
     capabilities: crate::protocol::Capabilities,
     meta: MetaEnvelope,
 ) {
+    if envelope_disabled_via_env() {
+        let json = serde_json::to_string_pretty(&results).unwrap_or_else(|_| "{}".to_string());
+        println!("{json}");
+        return;
+    }
     let envelope = ResponseEnvelope {
         protocol_version: PROTOCOL_VERSION,
         capabilities,
@@ -89,6 +88,28 @@ fn compute_index_age_ms(manifest_path: &Path) -> Option<u64> {
         .as_secs();
     let age_s = now_s.saturating_sub(indexed_at_s);
     Some(age_s.saturating_mul(1_000))
+}
+
+/// `_meta` block for non-search subcommands.
+///
+/// Mirrors `build_search_meta` minus the per-result `signals`/diff-filter
+/// observability (those are search-only). Resolves the manifest from the
+/// project root the same way the search path does, so `index_age_ms`,
+/// `ttl_ms`, and `cache_scope` are populated for every JSON envelope —
+/// not just `search` and `bundle`. `compute_index_age_ms` already returns
+/// `None` on any failure (missing file, corrupt manifest, no `indexed_at`),
+/// so a missing index naturally produces `index_age_ms: None` without an
+/// extra `exists()` probe — which would also race a concurrent
+/// `vex index` writing the manifest.
+pub(crate) fn default_meta_for(root: &Path) -> MetaEnvelope {
+    let manifest_path = crate::util::config::manifest_path(root);
+    MetaEnvelope {
+        index_age_ms: compute_index_age_ms(&manifest_path),
+        traceparent: None,
+        ttl_ms: Some(30_000),
+        cache_scope: Some("project".into()),
+        diff_filter: None,
+    }
 }
 
 /// Returns true when `VEX_JSON_ENVELOPE` is set to a disable value
@@ -199,6 +220,7 @@ pub fn print_similar(
     target: &str,
     explanations: Option<&[Explanation]>,
     format: &super::args::OutputFormat,
+    root: &Path,
 ) {
     match format {
         super::args::OutputFormat::Json => {
@@ -220,7 +242,7 @@ pub fn print_similar(
                     obj
                 })
                 .collect();
-            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
+            print_envelope(&json, capabilities::current(), default_meta_for(root));
         }
         super::args::OutputFormat::Text => {
             if matches.is_empty() {
@@ -265,6 +287,7 @@ pub fn print_duplicates(
     pairs: &[(SimilarMatch, SimilarMatch)],
     explanations: Option<&[Explanation]>,
     format: &super::args::OutputFormat,
+    root: &Path,
 ) {
     match format {
         super::args::OutputFormat::Json => {
@@ -293,7 +316,7 @@ pub fn print_duplicates(
                     obj
                 })
                 .collect();
-            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
+            print_envelope(&json, capabilities::current(), default_meta_for(root));
         }
         super::args::OutputFormat::Text => {
             if pairs.is_empty() {
@@ -363,10 +386,15 @@ fn print_explanation_text(ex: &Explanation) {
     }
 }
 
-pub fn print_diff(changes: &[SymbolChange], base: &str, format: &super::args::OutputFormat) {
+pub fn print_diff(
+    changes: &[SymbolChange],
+    base: &str,
+    format: &super::args::OutputFormat,
+    root: &Path,
+) {
     match format {
         super::args::OutputFormat::Json => {
-            print_envelope(changes, capabilities::current(), MetaEnvelope::default());
+            print_envelope(changes, capabilities::current(), default_meta_for(root));
         }
         super::args::OutputFormat::Text => {
             if changes.is_empty() {
@@ -416,7 +444,13 @@ pub fn print_diff(changes: &[SymbolChange], base: &str, format: &super::args::Ou
     }
 }
 
-pub fn print_paths(paths: &[CallPath], from: &str, to: &str, format: &super::args::OutputFormat) {
+pub fn print_paths(
+    paths: &[CallPath],
+    from: &str,
+    to: &str,
+    format: &super::args::OutputFormat,
+    root: &Path,
+) {
     match format {
         super::args::OutputFormat::Json => {
             let json: Vec<serde_json::Value> = paths
@@ -436,7 +470,7 @@ pub fn print_paths(paths: &[CallPath], from: &str, to: &str, format: &super::arg
                     serde_json::json!({ "steps": steps })
                 })
                 .collect();
-            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
+            print_envelope(&json, capabilities::current(), default_meta_for(root));
         }
         super::args::OutputFormat::Text => {
             if paths.is_empty() {
@@ -480,6 +514,7 @@ pub fn print_reachable(
     matches: &[ReachableMatch],
     target: &str,
     format: &super::args::OutputFormat,
+    root: &Path,
 ) {
     match format {
         super::args::OutputFormat::Json => {
@@ -494,7 +529,7 @@ pub fn print_reachable(
                     })
                 })
                 .collect();
-            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
+            print_envelope(&json, capabilities::current(), default_meta_for(root));
         }
         super::args::OutputFormat::Text => {
             if matches.is_empty() {

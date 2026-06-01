@@ -11,7 +11,7 @@ use super::common::{
 };
 use super::output::print_envelope;
 use crate::index::pipeline;
-use crate::protocol::{capabilities, MetaEnvelope};
+use crate::protocol::capabilities;
 use crate::util::config;
 
 #[allow(clippy::too_many_arguments)]
@@ -57,7 +57,11 @@ pub(crate) fn index(
                 "embeddings": with_semantic,
                 "index": index_path.to_string_lossy(),
             });
-            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
+            print_envelope(
+                &json,
+                capabilities::current(),
+                super::output::default_meta_for(&root),
+            );
         }
         OutputFormat::Text | OutputFormat::Compact => {
             println!("Indexed {count} symbols in {elapsed:.2?}");

@@ -7,7 +7,7 @@ use super::args::{DiffFilterArgs, OutputFormat, ScopeArgs};
 use super::common::{resolve_diff_filter, resolve_root, CmdCtx};
 use super::output::print_envelope;
 use super::scope;
-use crate::protocol::{capabilities, MetaEnvelope};
+use crate::protocol::capabilities;
 
 pub(crate) fn grep(
     ctx: &CmdCtx<'_>,
@@ -57,7 +57,11 @@ pub(crate) fn grep(
                     })
                 })
                 .collect();
-            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
+            print_envelope(
+                &json,
+                capabilities::current(),
+                super::output::default_meta_for(&root),
+            );
         }
         OutputFormat::Text => {
             if matches.is_empty() {

@@ -9,7 +9,7 @@ use super::common::{resolve_diff_filter, resolve_root, CmdCtx};
 use super::index_management::{ensure_index_exists, ensure_index_ready, handle_staleness};
 use super::output::{self, print_envelope};
 use super::scope;
-use crate::protocol::{capabilities, MetaEnvelope};
+use crate::protocol::capabilities;
 use crate::store::reader::IndexReader;
 use crate::util::config;
 
@@ -149,7 +149,11 @@ pub(crate) fn cmd_callgraph(
                     })
                 })
                 .collect();
-            print_envelope(&json, capabilities::current(), MetaEnvelope::default());
+            print_envelope(
+                &json,
+                capabilities::current(),
+                super::output::default_meta_for(&root),
+            );
         }
         OutputFormat::Text => {
             if matches.is_empty() {
@@ -215,7 +219,7 @@ pub(crate) fn paths(
                 .all(|s| path_scope.accept(&s.path))
         })
         .collect();
-    output::print_paths(&paths, &from, &to, &ctx.format);
+    output::print_paths(&paths, &from, &to, &ctx.format, &root);
     Ok(())
 }
 
@@ -266,6 +270,6 @@ pub(crate) fn reachable(
         .filter(|m| path_scope.accept(&m.path))
         .take(limit)
         .collect();
-    output::print_reachable(&matches, &target, &ctx.format);
+    output::print_reachable(&matches, &target, &ctx.format, &root);
     Ok(())
 }

@@ -66,6 +66,9 @@ fn print_outline(
                     })
                 })
                 .collect();
+            // outline parses a single file directly without consulting the
+            // index, so there's no project root and no manifest to derive
+            // index_age from — default meta is the honest answer.
             print_envelope(&json, capabilities::current(), MetaEnvelope::default());
         }
         OutputFormat::Text | OutputFormat::Compact => {
