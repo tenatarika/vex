@@ -365,6 +365,38 @@ be a non-negative integer; got string (\"20\")"`.
 - non-string element inside a string array (`kind: ["fn", 42]`,
   `symbols: ["Foo", 42]`)
 
+## CLI JSON envelope (v1.11.1+)
+
+Every `vex <subcommand> --format json` invocation wraps its payload
+in the same v1 envelope used by `tools/call` responses. (Pre-1.11
+only `search` and `bundle` emitted this envelope; v1.11.0 broadened
+the contract to every subcommand; v1.11.1 made the
+`VEX_JSON_ENVELOPE=0` escape-hatch honour that coverage uniformly —
+pre-fix only `search` checked it.)
+
+```json
+{
+  "protocol_version": "v1",
+  "capabilities": { /* see `vex capabilities` */ },
+  "_meta": {
+    "vex.dev/index_age_ms": 1200,
+    "ttlMs": 30000,
+    "cacheScope": "project"
+  },
+  "results": [ /* shape depends on the subcommand */ ]
+}
+```
+
+Pre-1.11 only `search` and `bundle` emitted this envelope; the other
+~14 CLI subcommands returned bare arrays / objects. Agents that
+ingest CLI stdout should detect the envelope via
+`response.get("protocol_version") == "v1"` and read `response["results"]`.
+
+**Escape hatch**: `VEX_JSON_ENVELOPE=0` (also `false` / `off`,
+case-insensitive) falls back to the pre-1.9 bare-array shape on every
+`--format json` subcommand. Intended for pipelines that haven't
+migrated yet; slated for removal in v2.0.
+
 ## Stability guarantees
 
 - The canonical vocabulary above is part of the v1.7 stable API and
@@ -373,3 +405,11 @@ be a non-negative integer; got string (\"20\")"`.
   series, and we will not remove them in a patch release.
 - New optional fields may be added at any minor release. New required
   fields are a major-version change.
+- **Error `code` values are stable; error `message` text is not.**
+  Agents that branch on `error.code` (e.g. `-32602` for caller-side
+  failures) are insulated from prose churn. Treat the `message` field
+  as informational — its wording, field-name highlighting, and
+  example-value formatting may change between minor releases as we
+  refine diagnostics. Use `error.code` for routing and `error.data`
+  (when present) for structured detail; reserve `error.message` for
+  display.

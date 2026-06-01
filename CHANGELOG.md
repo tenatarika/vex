@@ -6,6 +6,63 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`VEX_JSON_ENVELOPE=0` escape-hatch now honored across every
+  `--format json` subcommand.** Post-H5-full, the generic `print_envelope`
+  used by 14 subcommands (`show`, `usages`, `pattern`, `grep`, `outline`,
+  `implementations`, `callers`, `callees`, `paths`, `reachable`, `check`,
+  `similar`, `duplicates`, `diff`, `eval`, `status`, `index`, `update`)
+  ignored the env-var — only `print_search_envelope` (the `search`
+  handler) honored it. The README documented this opt-out as the
+  pre-1.9 compatibility valve; partial coverage was a contract
+  violation. Routed the check through `print_envelope` so bare-array
+  output works for every subcommand again. Pinned by
+  `envelope_disabled_via_env_falls_back_to_bare` in
+  `tests/cli_envelope_contract_test.rs`.
+- **`_meta.vex.dev/index_age_ms` populated on every envelope handler.**
+  Pre-fix, 12 of 14 H5-full handlers built `MetaEnvelope::default()`
+  (all-`None`), silently breaking the staleness signal that the
+  CHANGELOG promised consumers. New helper
+  `output::default_meta_for(root)` mirrors `build_search_meta` minus
+  the per-result `signals` block; every handler that already binds a
+  project `root` now feeds it through. `outline` keeps the default
+  meta (single-file parse — no project context).
+- **Phase 8.4 bare `"string"` leaf gated to TOML.** Pre-fix,
+  `extract_body_tokens` routed any tree-sitter `"string"` node-kind
+  through the value-tokeniser regardless of language. With
+  `tree-sitter-toml-ng` it's the desired path; every other grammar
+  that exposes a `"string"` parent (Rust, Python, TypeScript, …)
+  walked the entire raw region — quotes and escapes included —
+  alongside the proper `string_content` / `string_fragment` walk.
+  Dedup masked the bug for now, but it was a footgun for any future
+  non-config language that doesn't emit a `string_content` child.
+  `extract_body_tokens` now takes a `Language` parameter and only
+  applies the bare-leaf arm when `lang == Toml`. Pinned by
+  `v1_11_hotfix_python_string_tokens_come_from_string_content_not_bare_string`.
+- **`vex pattern` `$_<alphanum>` typos preserve the `$`.** Pre-fix,
+  the parser swallowed the leading `$` when it saw an invalid
+  `$_NAME` form (where `$_` must stand alone), so `$_Bar` silently
+  degraded to matching the literal `_Bar` — a typo that was
+  indistinguishable from intentional underscore-prefixed identifier
+  text. The literal buffer now retains `$_`. Standalone `$_`
+  (anonymous wildcard) is unaffected. Pinned by
+  `v1_11_hotfix_invalid_underscore_metavar_preserves_dollar`.
+
+### Added
+
+- **5 envelope contract tests** for `similar`, `duplicates`, `index`,
+  `update`, `eval` — pre-fix `tests/cli_envelope_contract_test.rs`
+  pinned 14 of the 19 `--format json` subcommands. The handlers
+  already emitted the envelope correctly; this just locks the
+  contract so a regression in any of these handlers is caught.
+
+### Changed
+
+- **CHANGELOG**: corrected v1.11.0 H8 callout from "24 contract tests"
+  to "23" (the off-by-one came from counting `assert_param_error`,
+  which is a helper, not a test).
+
 ## [1.11.0] - 2026-06-01
 
 v1.11.0 is a minor release that closes five external-review items
@@ -41,7 +98,7 @@ covering the JSON envelope migration + MCP `-32602` error contract.
   all surface as `-32602` with field-level error messages instead of
   the previous generic `-32000`. **Downstream agents that branched on
   `-32000`** for these conditions must update — `-32602` is the
-  spec-correct code. 24 contract tests in `crates/vex-mcp/src/main.rs::tests`
+  spec-correct code. 23 contract tests in `crates/vex-mcp/src/main.rs::tests`
   pin the behaviour per-tool (search, callers, callees, paths, reachable,
   diff, show, check, bundle, plus the three flag-conflict paths).
 

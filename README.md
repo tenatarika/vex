@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 [![Commands](https://img.shields.io/badge/commands-25-blue.svg)]()
 [![Languages](https://img.shields.io/badge/languages-19-blueviolet.svg)]()
-[![Tests](https://img.shields.io/badge/tests-1727-green.svg)]()
+[![Tests](https://img.shields.io/badge/tests-1973-green.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
@@ -266,7 +266,7 @@ $ vex search "Config"
 Warning: index may be stale (HEAD changed). Run `vex update`.
 ```
 
-**How it works**: on every search, vex compares the git HEAD stored at index time with the current HEAD (~0.1ms, single `git rev-parse`). If HEAD changed → stale. For non-git repos, falls back to mtime comparison.
+**How it works**: on every search, vex compares the git HEAD stored at index time with the current HEAD (~0.1ms, single `git rev-parse`). If HEAD changed → stale. For non-git repos, falls back to mtime comparison — and since v1.11 (H11), when mtime fires, vex streams a `xxh3_64` content hash of the file and compares it to the manifest. If the hash matches, the touch was cosmetic (`git checkout`, `rustfmt` no-op, `rsync --times`) and the file stays `Fresh`; only a real content change re-triggers indexing.
 
 **Auto-update**: skip the warning and update inline:
 
@@ -335,7 +335,7 @@ Embeds your query with MiniLM-L6-v2 (384-dim vectors) and finds symbols with sim
 - `"find implementations of an interface"` finds `find_implementations`, `test_interface_extends`
 
 ### BM25 Channel (auto-on when index has BM25 data)
-A classic Okapi BM25 (`K1=1.2`, `B=0.75`) over symbol body tokens — identifiers, signatures, docstrings. Closes the gap between "exact name" (structural) and "general meaning" (semantic): finds **rare body terms** like `timeout`, `retry`, `singlestore`, `idempotency_key` that aren't part of any symbol name. Pass `--no-bm25` to disable per-call.
+A classic Okapi BM25 (`K1=1.2`, `B=0.75`) over symbol body tokens — identifiers, signatures, docstrings. Closes the gap between "exact name" (structural) and "general meaning" (semantic): finds **rare body terms** like `timeout`, `retry`, `singlestore`, `idempotency_key` that aren't part of any symbol name. Since v1.11 (Phase 8.4) body tokens are also extracted from TOML / YAML / HTML / CSS values, so `vex search "production endpoint" --semantic` can hit a `[server]` table with `endpoint = "https://..."`. Pass `--no-bm25` to disable per-call.
 
 ### Hybrid Search (3-way RRF)
 When the index has all three channels (built with `--semantic`), `vex search` fuses structural + BM25 + semantic using **Reciprocal Rank Fusion**. Symbols hit by ≥2 channels rank as `Hybrid`; symbols unique to one keep their original match type. Cuts both structural-noise and semantic-blur in the same query.
@@ -793,7 +793,7 @@ All commands support `--filter "path/"` to narrow results to a directory. Most s
 ### Unit & Integration Tests
 
 ```bash
-cargo test                    # 1172 tests — unit, integration, property-based, adversarial
+cargo test                    # 1973 tests — unit, integration, property-based, adversarial
 cargo clippy -- -D warnings   # zero warnings policy
 ```
 
