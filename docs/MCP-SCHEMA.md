@@ -365,14 +365,13 @@ be a non-negative integer; got string (\"20\")"`.
 - non-string element inside a string array (`kind: ["fn", 42]`,
   `symbols: ["Foo", 42]`)
 
-## CLI JSON envelope (v1.11.1+)
+## CLI JSON envelope (v1.11.0)
 
 Every `vex <subcommand> --format json` invocation wraps its payload
-in the same v1 envelope used by `tools/call` responses. (Pre-1.11
-only `search` and `bundle` emitted this envelope; v1.11.0 broadened
-the contract to every subcommand; v1.11.1 made the
-`VEX_JSON_ENVELOPE=0` escape-hatch honour that coverage uniformly —
-pre-fix only `search` checked it.)
+in the same v1 envelope used by `tools/call` responses. Pre-1.11
+only `search` and `bundle` emitted this envelope; v1.11 broadened
+coverage to every subcommand AND made the `VEX_JSON_ENVELOPE=0`
+escape-hatch honour that coverage uniformly.
 
 ```json
 {
