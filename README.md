@@ -669,7 +669,7 @@ auto_update = true
 
 ### Claude Code (MCP Server)
 
-Alternatively, vex includes an MCP server (`vex-mcp`) that exposes all commands as MCP tools. Since **v1.11.2** a prebuilt `vex-mcp` binary ships in every release alongside `vex` (macOS arm64, macOS x86_64, Linux x86_64, Windows x86_64) — no Rust toolchain required.
+Alternatively, vex includes an MCP server (`vex-mcp`) that exposes all commands as MCP tools. Since **v1.11.2** a prebuilt `vex-mcp` binary ships in every release alongside `vex` for the three triples the build matrix covers: `aarch64-apple-darwin` (macOS Apple Silicon), `x86_64-unknown-linux-gnu` (Linux), and `x86_64-pc-windows-msvc` (Windows). Intel-Mac and other triples still require the source build below.
 
 ```bash
 # 1. Download the prebuilt for your platform from

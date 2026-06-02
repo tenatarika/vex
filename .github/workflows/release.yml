@@ -66,6 +66,26 @@ jobs:
           tar czf ../../../vex-mcp-${{ matrix.target }}.tar.gz vex-mcp
           cd ../../..
 
+      # Symmetric to the Windows smoke test below. A unix packaging
+      # regression (wrong cd, wrong binary name, missing chmod) would
+      # otherwise slip through to release-day and only surface when a
+      # user's `tar -xzf` finds nothing executable.
+      - name: Verify unix tarballs are extractable
+        if: matrix.os != 'windows-latest'
+        run: |
+          set -euo pipefail
+          for name in vex vex-mcp; do
+            archive="${name}-${{ matrix.target }}.tar.gz"
+            dir="smoke-${name}"
+            mkdir -p "${dir}"
+            tar -xzf "${archive}" -C "${dir}"
+            if [ ! -x "${dir}/${name}" ]; then
+              echo "FAIL: ${dir}/${name} missing or not executable after tar extract" >&2
+              exit 1
+            fi
+            echo "OK: ${archive} extracts cleanly"
+          done
+
       - name: Package (windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
