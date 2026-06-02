@@ -33,6 +33,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **H10 — `vex watch` UX hardening.** Three behaviours the original
+  implementation got wrong are pinned here:
+  1. *Batch coalescing.* notify-debouncer-full collapses rapid edits
+     within its debounce window, but the mpsc channel queued
+     deliveries while a long re-index was in flight — every queued
+     batch triggered another `pipeline::update`. After `rx.recv()` the
+     handler now drains every pending batch via `try_recv` and merges
+     them. N debouncer deliveries → one update.
+  2. *`.gitignore` re-eval.* The relevance filter previously only
+     accepted source-file extensions. Editing `.gitignore` to
+     un-ignore a file had no effect until an unrelated source change
+     incidentally nudged the watcher into running `update`.
+     `.gitignore` (and nested `.gitignore`s) are now treated as
+     relevant events; `pipeline::update`'s `discover_files` re-walks
+     with the freshly-edited rules.
+  3. *New-dir re-arm.* `RecursiveMode::Recursive` on the inotify
+     backend (Linux) only recurses at watch-install time — sub-
+     directories created during the watch session were invisible.
+     `Create(Folder)` events now call back into the debouncer's
+     inner watcher to arm the new path. macOS FSEvents and Windows
+     ReadDirectoryChangesW both auto-recurse, so the re-arm is a
+     no-op there but harmless to call.
+
+  6 unit tests in `src/watch/handler.rs::tests` cover the
+  source-path / `.gitignore` / non-source relevance branches plus
+  the `extract_new_directories` filtering, deduping, and
+  missing-path handling. The event loop itself is left as
+  end-to-end-tested via local manual runs because the OS-level
+  notify wiring is hostile to deterministic integration tests.
+
 - **S8.2 — explicit exit-code contract (0 / 1 / 2).** Pre-v1.12.0 `vex`
   effectively always exited 0 — even when a search returned zero
   results, even on bad regex syntax that propagated up as anyhow
