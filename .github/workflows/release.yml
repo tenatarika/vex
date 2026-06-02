@@ -51,7 +51,13 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        # --workspace required: the root Cargo.toml is a hybrid workspace
+        # (has both `[package]` for `vex` AND `[workspace.members]` listing
+        # `crates/vex-mcp`). Without --workspace, cargo only builds the
+        # root crate and `target/<triple>/release/vex-mcp` never exists —
+        # which is exactly what the v1.11.2 release pipeline tripped on
+        # when it tried to tar a non-existent vex-mcp binary.
+        run: cargo build --release --workspace --target ${{ matrix.target }}
 
       - name: Package (unix)
         if: matrix.os != 'windows-latest'
