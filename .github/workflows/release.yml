@@ -55,9 +55,15 @@ jobs:
 
       - name: Package (unix)
         if: matrix.os != 'windows-latest'
+        # Each binary ships as a separate tarball. `vex self-update` only
+        # extracts the named `vex` binary from `vex-<target>.tar.gz`, so
+        # `vex-mcp` cannot live alongside it — the second binary would be
+        # silently ignored on self-update. The separate `vex-mcp-<target>`
+        # archive keeps both installable from the GitHub release page.
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../vex-${{ matrix.target }}.tar.gz vex
+          tar czf ../../../vex-mcp-${{ matrix.target }}.tar.gz vex-mcp
           cd ../../..
 
       - name: Package (windows)
@@ -72,34 +78,50 @@ jobs:
         # handle tar.gz correctly), so we unify on it. `tar` is
         # preinstalled on windows-latest runners (bsdtar). Push-Location
         # keeps the archive entry as bare `vex.exe`, not
-        # `target/.../release/vex.exe`.
+        # `target/.../release/vex.exe`. v1.11.2 added the parallel
+        # `vex-mcp-…tar.gz` to fix the Windows MCP install gap: before
+        # this, every Windows user wanting the MCP server had to install
+        # rustup and `cargo build --release -p vex-mcp` themselves.
         run: |
           Push-Location target/${{ matrix.target }}/release
           tar -czf "../../../vex-${{ matrix.target }}.tar.gz" vex.exe
+          tar -czf "../../../vex-mcp-${{ matrix.target }}.tar.gz" vex-mcp.exe
           Pop-Location
 
-      # Post-pack smoke test: extract the freshly packed tarball into a
-      # scratch dir and assert `vex.exe` is present. Catches the class
-      # of bug Section 7 documented — a packaging step that "succeeds"
-      # but emits an archive `self_update` can't reopen. Sign-time
-      # verification happens later in the `release` job; this guard
-      # runs before upload-artifact so a bad pack fails the matrix leg.
-      - name: Verify Windows tarball is extractable
+      # Post-pack smoke test: extract each freshly packed tarball into a
+      # scratch dir and assert the expected binary is present. Catches
+      # the class of bug Section 7 documented — a packaging step that
+      # "succeeds" but emits an archive `self_update` can't reopen.
+      # Sign-time verification happens later in the `release` job; this
+      # guard runs before upload-artifact so a bad pack fails the
+      # matrix leg.
+      - name: Verify Windows tarballs are extractable
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path smoke-extract | Out-Null
-          tar -xzf "vex-${{ matrix.target }}.tar.gz" -C smoke-extract
-          if (-not (Test-Path "smoke-extract/vex.exe")) {
-            Write-Error "FAIL: smoke-extract/vex.exe missing after tar extract"
-            exit 1
+          foreach ($name in @("vex", "vex-mcp")) {
+            $exe = "$name.exe"
+            $tar = "$name-${{ matrix.target }}.tar.gz"
+            $dir = "smoke-$name"
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            tar -xzf $tar -C $dir
+            if (-not (Test-Path "$dir/$exe")) {
+              Write-Error "FAIL: $dir/$exe missing after tar extract"
+              exit 1
+            }
+            Write-Host "OK: $tar extracts cleanly"
           }
-          Write-Host "OK: vex-${{ matrix.target }}.tar.gz extracts cleanly"
 
       - uses: actions/upload-artifact@v4
         with:
           name: vex-${{ matrix.target }}
           path: vex-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vex-mcp-${{ matrix.target }}
+          path: vex-mcp-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
   release:

@@ -669,10 +669,15 @@ auto_update = true
 
 ### Claude Code (MCP Server)
 
-Alternatively, vex includes an MCP server (`vex-mcp`) that exposes all commands as MCP tools:
+Alternatively, vex includes an MCP server (`vex-mcp`) that exposes all commands as MCP tools. Since **v1.11.2** a prebuilt `vex-mcp` binary ships in every release alongside `vex` (macOS arm64, macOS x86_64, Linux x86_64, Windows x86_64) — no Rust toolchain required.
 
 ```bash
-# Build MCP server
+# 1. Download the prebuilt for your platform from
+#    https://github.com/tenatarika/vex/releases/latest
+#    e.g. vex-mcp-aarch64-apple-darwin.tar.gz / vex-mcp-x86_64-pc-windows-msvc.tar.gz
+# 2. Extract and put the binary on PATH (or remember the full path).
+
+# Source build (if you prefer or are on an unsupported triple)
 cargo build --release -p vex-mcp
 
 # Add to Claude Code MCP config (~/.claude/claude_desktop_config.json)

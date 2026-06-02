@@ -60,6 +60,19 @@ and tidies up the OSS surface (LICENSE, CODE_OF_CONDUCT, Cargo metadata).
   binaries and is typically 2-5× faster than `cargo test` on this
   workspace; CI continues to use `cargo test` to avoid an extra tool
   install per runner.
+- **Prebuilt `vex-mcp` in every release.** Before v1.11.2 the release
+  pipeline only packaged the `vex` CLI; users who wanted the MCP
+  server (`vex-mcp`) had to install Rust and `cargo build --release -p
+  vex-mcp` themselves — a real onboarding tax on Windows where rustup
+  is not usually preinstalled. The release matrix now emits a parallel
+  `vex-mcp-<target>.tar.gz` artifact for every supported triple
+  (macOS arm64, macOS x86_64, Linux x86_64, Windows x86_64), signed
+  the same way as `vex-<target>.tar.gz` and attached to the GitHub
+  release. Kept as a separate archive (not bundled with `vex`)
+  because `vex self-update` extracts a single named binary from its
+  tarball and would silently ignore a second one. README's MCP
+  section now points at the prebuilt and treats `cargo build` as the
+  fallback.
 - **`LICENSE` (MIT) at the repo root.** The license type was already
   declared in `Cargo.toml` but the conventional plain-text file was
   missing — GitHub and crates.io expect both.
