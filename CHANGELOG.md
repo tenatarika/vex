@@ -29,24 +29,70 @@ and tidies up the OSS surface (LICENSE, CODE_OF_CONDUCT, Cargo metadata).
   `vex index` twice back-to-back on an unchanged tree will see the
   second invocation skip — matching the behaviour `vex update` already
   had for the same input.
-
-### Changed
-
-- **Cargo package metadata aligned with the v1.11.1 tag and OSS surface.**
-  `version` bumped from `1.11.0` to `1.11.1` (since `Cargo.toml` was not
-  updated in the v1.11.1 release), and `authors`, `repository`,
-  `homepage`, and `readme` fields added so crates.io listings and IDE
-  manifests render the project correctly. Then `1.11.2` for this
-  release.
+- **Windows lock-contention detection.** The new try-then-block
+  diagnostic path in `IndexLock::acquire` matched only
+  `ErrorKind::WouldBlock`, which is what POSIX `flock` returns under
+  contention but not what Windows `LockFileEx` returns —
+  `ERROR_LOCK_VIOLATION` (raw OS code 33) typically maps to
+  `ErrorKind::Other`. Without the raw-code fallback, every concurrent
+  `vex index`/`update` on Windows would have bypassed the "waiting for
+  index lock" log and surfaced as an outright error instead of a
+  serialized wait. The `is_lock_contended` helper now matches both.
 
 ### Added
 
+- **Tracing event on lock contention.** `IndexLock::acquire` now tries
+  the lock non-blocking first and emits a single `info`-level
+  `tracing::info!` event ("waiting for index lock (another vex instance
+  is indexing)") before falling into the blocking wait. Users and agent
+  harnesses watching for output see why a `vex index`/`update` appears
+  stuck instead of staring at a frozen terminal for the duration of the
+  peer's parse + embed + write.
+- **`docs/CONCURRENCY.md`** — describes the per-project advisory-lock
+  contract used by `pipeline::run`/`pipeline::update`, the never-unlinked
+  sentinel rationale, lock-holding windows, filesystem caveats, the
+  tests that pin each property, and the known fingerprint-only skip-path
+  limitation. Reference doc for anyone extending or debugging the
+  index-build paths.
+- **`.config/nextest.toml`** with a `default` and `ci` profile (retries
+  + slow-test guard), plus a `CONTRIBUTING.md` section explaining how
+  to opt in. `cargo nextest run` parallelises across integration-test
+  binaries and is typically 2-5× faster than `cargo test` on this
+  workspace; CI continues to use `cargo test` to avoid an extra tool
+  install per runner.
 - **`LICENSE` (MIT) at the repo root.** The license type was already
   declared in `Cargo.toml` but the conventional plain-text file was
   missing — GitHub and crates.io expect both.
 - **`CODE_OF_CONDUCT.md` (Contributor Covenant 2.1).** Reports route
   through GitHub Issues (or GitHub DM to the maintainer for confidential
   matters).
+
+### Changed
+
+- **Cargo package metadata aligned with the v1.11.1 tag and OSS surface.**
+  `version` bumped from `1.11.0` to `1.11.2` (since `Cargo.toml` was not
+  updated in the v1.11.1 release), and `authors`, `repository`,
+  `homepage`, and `readme` fields added so crates.io listings and IDE
+  manifests render the project correctly.
+
+### Known limitations
+
+- **Skip path is fingerprint-only.** Both `pipeline::run` and
+  `pipeline::update` decide whether to skip a concurrent peer's
+  finished rebuild purely from the file-hash diff — they do not compare
+  `IndexOptions` (e.g., `--semantic`) against what the peer recorded in
+  the manifest. A waiter that asked for embeddings can be served a
+  structural-only index from the skip path without an error. The
+  workaround is to delete the cache directory and rebuild manually.
+  This is pre-existing in `update` since v1.11.1 and now applies
+  symmetrically to `run`; tracked as a v1.12.0 follow-up.
+- **No symmetric "exactly one rebuilds" test for `run` on a stale
+  index.** `pipeline::run` returns only a symbol count, so the
+  rebuilt-vs-skipped distinction is not observable from outside the
+  function the way it is for `update`'s `(total, changed, deleted)`
+  return. The fresh-index property is pinned by
+  `concurrent_run_skips_when_index_already_fresh`; the stale-index
+  herd-elimination is not yet pinned by a test. Tracked as v1.12.0.
 
 ## [1.11.1] - 2026-06-02
 
