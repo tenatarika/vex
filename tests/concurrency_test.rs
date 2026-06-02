@@ -343,3 +343,74 @@ fn concurrent_update_rebuilds_once_not_per_thread() {
         "added symbol should be findable after concurrent update"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 7. Concurrent run on an already-fresh index: every thread observes the
+//    identical fingerprint under the lock and skips. Mirrors test #6 for
+//    `vex index` (full rebuild). Without the lock-around-parse+embed plus the
+//    manifest double-check in `run`, every concurrent `vex index` re-parses
+//    and re-embeds independently — the same thundering herd that test #6
+//    proves `update` avoids.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn concurrent_run_skips_when_index_already_fresh() {
+    const THREADS: usize = 4;
+
+    let dir = tempdir().unwrap();
+    write_src(dir.path(), "a.rs", "pub fn alpha() {}\npub fn beta() {}\n");
+    run_index(dir.path());
+
+    // Capture the manifest's mtime — if no thread rewrites the index, this
+    // value survives the concurrent run unchanged.
+    let root_canon = dir.path().canonicalize().unwrap();
+    let manifest_path = config::manifest_path(&root_canon);
+    let mtime_before = fs::metadata(&manifest_path).unwrap().modified().unwrap();
+
+    // Ensure any subsequent manifest write would have a measurably newer
+    // mtime than the initial build (50ms is well above filesystem mtime
+    // resolution on every modern FS).
+    thread::sleep(std::time::Duration::from_millis(50));
+
+    let root = dir.path().to_path_buf();
+    let barrier = Arc::new(Barrier::new(THREADS));
+
+    let handles: Vec<_> = (0..THREADS)
+        .map(|_| {
+            let r = root.clone();
+            let b = Arc::clone(&barrier);
+            thread::spawn(move || {
+                b.wait();
+                let r = r.canonicalize().unwrap();
+                pipeline::run(
+                    &r,
+                    vex::index::pipeline::IndexOptions::default(),
+                    "minilm-l6-v2",
+                    &[],
+                )
+            })
+        })
+        .collect();
+
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    assert!(
+        results.iter().all(|r| r.is_ok()),
+        "every concurrent run must succeed (skipping or building); got {results:?}"
+    );
+
+    // Mtime survives → nobody rewrote the manifest → herd eliminated. Without
+    // the fix in `run()` (lock around parse+embed + manifest double-check),
+    // every thread rewrites the manifest and this assertion fails.
+    let mtime_after = fs::metadata(&manifest_path).unwrap().modified().unwrap();
+    assert_eq!(
+        mtime_before, mtime_after,
+        "no thread should have rewritten the manifest when the file fingerprint is identical — concurrent `vex index` herd not eliminated"
+    );
+
+    // Sanity: the index still works.
+    let reader = open_reader(dir.path());
+    assert!(
+        !structural::search_with_fuzzy(&reader, "alpha", 10).is_empty(),
+        "alpha should still be findable"
+    );
+}

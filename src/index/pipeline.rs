@@ -58,14 +58,46 @@ pub fn run(
     let files = discover_files(&root, excludes)?;
     tracing::info!(count = files.len(), "discovered files");
 
+    let file_hashes = hash_files(&root, &files);
+
+    // Serialize concurrent rebuilds: take the build lock BEFORE the expensive
+    // parse + embed below. Without this, N concurrent `vex index` invocations
+    // (CI matrix, agent fan-out) each load the embedding model and re-parse
+    // every file in parallel — the same thundering herd `update` already
+    // guards against. Holding the lock here means exactly one instance does
+    // the work; the rest wait and then observe the fresh manifest via the
+    // double-check below.
+    let _lock = IndexLock::acquire(&root)?;
+
+    // Double-check under the lock: if a peer just completed a rebuild with an
+    // identical file fingerprint AND the index file is actually on disk, skip
+    // the redundant work. `vex index` is deterministic from its inputs (same
+    // files + same options → same output), so a matching manifest means the
+    // on-disk index is already what we'd produce. The `index_path.exists()`
+    // gate matters for the cold-start case (empty directory or first-ever
+    // index): a missing manifest loads as `Manifest::default()` with an empty
+    // file map, which would otherwise diff equal to an empty file list and
+    // skip the initial write.
+    let manifest_path = config::manifest_path(&root);
+    let index_path = config::index_path(&root);
+    if index_path.exists() {
+        if let Ok(current_manifest) = Manifest::load(&manifest_path) {
+            let diff = manifest::diff_files(&file_hashes, &current_manifest);
+            if diff.changed.is_empty() && diff.deleted.is_empty() {
+                tracing::info!(
+                    "index already built by a concurrent vex instance; skipping rebuild"
+                );
+                return existing_symbol_count(&root);
+            }
+        }
+    }
+
     // Phase 14.7 — blob-SHA parse cache. Construct once per index run and
     // share across the parse loop. The cache is best-effort; failures only
     // cost a re-parse, never correctness.
     let cache = build_blob_cache();
     let blob_map = crate::index::parse_cache::git_blobs::discover_tracked_blobs(&root);
 
-    // Hash and parse in one pass to avoid reading files twice
-    let file_hashes = hash_files(&root, &files);
     let all_parsed = parse_files(&root, &files, &blob_map, &cache)?;
     let symbol_count: usize = all_parsed.iter().map(|f| f.symbols.len()).sum();
 
@@ -81,12 +113,6 @@ pub fn run(
         None
     };
     let vector_dim = vector_dim_for(embedder_id, &vectors);
-    // Hold the build lock across BOTH the index write and the HNSW build so the
-    // .vex / .hnsw pair is published atomically under one critical section
-    // (matching update()). Otherwise a concurrent writer could replace index.vex
-    // between the write and the HNSW build — desyncing the pair — or two writers
-    // could clobber index.hnsw at once.
-    let _lock = IndexLock::acquire(&root)?;
     write_output_locked(
         &root,
         &all_parsed,
