@@ -291,6 +291,15 @@ fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<C
     // query — `None` cleanly disables the sibling-pair branch.
     let sibling_target_idx = query.capture_index_for_name("sibling.target");
     let sibling_host_idx = query.capture_index_for_name("sibling.host");
+    // Phase 14.6 — class-level decorator / annotation targets that should
+    // attribute to module scope (no enclosing FnDef → Phase 14.1 sentinel
+    // rewrites to `<module:path>`). Distinct capture name so the
+    // TypeScript `call_capture_inside_sibling_host` filter does NOT
+    // suppress them — that filter was written to dedupe generic
+    // `call_expression` captures that fire inside decorator arguments,
+    // but Phase 14.6 deliberately captures the decorator's *direct*
+    // target identifier.
+    let module_call_name_idx = query.capture_index_for_name("module_call.name");
 
     // Phase 14.2.1 perf gate. The per-`@call.name` ancestor walk inside
     // `call_capture_inside_sibling_host` only does work when this file
@@ -364,6 +373,16 @@ fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<C
                 sibling_target = Some(text);
             } else if Some(capture.index) == sibling_host_idx {
                 sibling_host_node = Some(capture.node);
+            } else if Some(capture.index) == module_call_name_idx {
+                // Phase 14.6 — class-level decorator target. Records
+                // a call at the capture's byte position with no enclosing
+                // FnDef; `extract_call_edges` falls to the Phase 14.1
+                // sentinel (`<module:path>` caller). Bypasses the
+                // sibling-host filter intentionally — see capture's
+                // declaration above.
+                call_name = Some(text);
+                call_line = capture.node.start_position().row + 1;
+                call_offset = capture.node.start_byte();
             }
         }
 
@@ -610,6 +629,29 @@ fn callgraph_query(lang: Language) -> Option<&'static str> {
                 (attribute attribute: (identifier) @call.name))
               definition: (function_definition
                 name: (identifier) @fn.name)) @fn.decl
+
+            ; Phase 14.6 — class-level decorator edges. Classes are not
+            ; FnDef symbols today, so we deliberately do NOT capture
+            ; `@fn.name` / `@fn.decl` here; the decorator's call site
+            ; lies outside every fn's byte range and falls to Phase 14.1's
+            ; synthetic `<module:path>` caller via `caller_fn_name=""` +
+            ; `caller_fn_line=0`. Call-shape decorators (`@app.get("/x")
+            ; class Foo:`, `@Component() class Foo:`) are already caught by
+            ; the generic `(call function: ...)` patterns above; the only
+            ; bare cases this section handles are bare-identifier and
+            ; bare-attribute decorators (`@dataclass class Foo:`,
+            ; `@routes.cbv class Foo:`).
+
+            ; @dataclass class Foo: — bare identifier on a class
+            (decorated_definition
+              (decorator (identifier) @module_call.name)
+              definition: (class_definition))
+
+            ; @app.router class Foo: — bare attribute on a class
+            (decorated_definition
+              (decorator
+                (attribute attribute: (identifier) @module_call.name))
+              definition: (class_definition))
             "#,
         ),
         Language::Java => Some(
@@ -648,6 +690,29 @@ fn callgraph_query(lang: Language) -> Option<&'static str> {
               (modifiers (annotation name: (scoped_identifier
                 name: (identifier) @call.name)))
               name: (identifier) @fn.name) @fn.decl
+
+            ; Phase 14.6 — class-level annotation edges. Same module-scope
+            ; attribution convention as Python (Phase 14.6): no `@fn.name`
+            ; / `@fn.decl` capture → no enclosing FnDef → Phase 14.1
+            ; sentinel rewrites to `<module:path>`.
+
+            ; @Component class Foo {} — bare marker_annotation
+            (class_declaration
+              (modifiers (marker_annotation name: (identifier) @module_call.name)))
+
+            ; @org.springframework.Component class Foo {} — scoped marker
+            (class_declaration
+              (modifiers (marker_annotation name: (scoped_identifier
+                name: (identifier) @module_call.name))))
+
+            ; @Component("x") class Foo {} — bare annotation with args
+            (class_declaration
+              (modifiers (annotation name: (identifier) @module_call.name)))
+
+            ; @org.springframework.Component("x") class Foo {} — scoped
+            (class_declaration
+              (modifiers (annotation name: (scoped_identifier
+                name: (identifier) @module_call.name))))
             "#,
         ),
         Language::TypeScript => Some(
@@ -689,6 +754,29 @@ fn callgraph_query(lang: Language) -> Option<&'static str> {
                 (call_expression
                   function: (member_expression
                     property: (property_identifier) @sibling.target))) @sibling.host)
+
+            ; Phase 14.6 — class-level decorator edges. Decorators that
+            ; sit on the class itself (outside `class_body`) live as
+            ; direct children of `class_declaration` in tree-sitter-
+            ; typescript. No `@fn.name` / `@fn.decl` capture →
+            ; attribution falls to the module-scope sentinel.
+
+            ; @Component class Foo {} — bare identifier
+            (class_declaration
+              (decorator (identifier) @module_call.name))
+
+            ; @inject() class Foo {} — call with bare identifier
+            (class_declaration
+              (decorator
+                (call_expression
+                  function: (identifier) @module_call.name)))
+
+            ; @nest.Module() class Foo {} — call with member_expression
+            (class_declaration
+              (decorator
+                (call_expression
+                  function: (member_expression
+                    property: (property_identifier) @module_call.name))))
             "#,
         ),
         Language::Go => Some(
@@ -767,6 +855,22 @@ fn callgraph_query(lang: Language) -> Option<&'static str> {
                 (constructor_invocation
                   (user_type (identifier) @call.name .))))
               name: (identifier) @fn.name) @fn.decl
+
+            ; Phase 14.6 — class-level annotation edges. Kotlin's
+            ; `class_declaration` carries `modifiers` like
+            ; `function_declaration`. No `@fn.name` / `@fn.decl` capture
+            ; → attribution falls to the module-scope sentinel.
+
+            ; @JvmStatic class Foo — bare marker (rightmost-wins)
+            (class_declaration
+              (modifiers (annotation
+                (user_type (identifier) @module_call.name .))))
+
+            ; @Named("svc") class Foo — constructor_invocation form
+            (class_declaration
+              (modifiers (annotation
+                (constructor_invocation
+                  (user_type (identifier) @module_call.name .)))))
             "#,
         ),
         Language::CSharp => Some(
@@ -813,6 +917,20 @@ fn callgraph_query(lang: Language) -> Option<&'static str> {
               (attribute_list (attribute name: (qualified_name
                 name: (identifier) @call.name)))
               name: (identifier) @fn.name) @fn.decl
+
+            ; Phase 14.6 — class-level attribute edges. C# `class_declaration`
+            ; takes `attribute_list` siblings to the keyword the same way
+            ; method_declaration does. No `@fn.name` / `@fn.decl` capture
+            ; → attribution falls to the module-scope sentinel.
+
+            ; [ApiController] class Foo {} — bare attribute
+            (class_declaration
+              (attribute_list (attribute name: (identifier) @module_call.name)))
+
+            ; [System.Web.Mvc.ApiController] class Foo {} — qualified
+            (class_declaration
+              (attribute_list (attribute name: (qualified_name
+                name: (identifier) @module_call.name))))
             "#,
         ),
         _ => None,
@@ -1366,6 +1484,283 @@ def handler():
         );
     }
 
+    // ---- Phase 14.6 — class-level decorator / annotation edges -----------
+
+    /// `@dataclass class Foo:` — bare-identifier class decorator. The
+    /// callee `dataclass` must be captured and attributed to the
+    /// module-scope sentinel (caller_fn_name="", caller_fn_line=0)
+    /// because no FnDef encloses the decorator. The pipeline rewrites
+    /// the sentinel to the synthetic `<module:path>` symbol via
+    /// `parse_file`.
+    #[test]
+    fn python_class_decorator_bare_identifier_emits_module_scope_edge() {
+        let src = r#"
+@dataclass
+class Foo:
+    pass
+"#;
+        let edges = extract_call_edges(src, Language::Python);
+        assert!(
+            edges.iter().any(|(caller, line, callee, _)| {
+                caller.is_empty() && *line == 0 && callee == "dataclass"
+            }),
+            "expected sentinel edge for `dataclass` (caller=\"\", line=0); got: {edges:?}"
+        );
+    }
+
+    /// `@routes.cbv class Foo:` — bare-attribute class decorator.
+    /// Rightmost identifier wins, attributed to module scope.
+    #[test]
+    fn python_class_decorator_bare_attribute_emits_module_scope_edge() {
+        let src = r#"
+@routes.cbv
+class Foo:
+    pass
+"#;
+        let edges = extract_call_edges(src, Language::Python);
+        assert!(
+            edges.iter().any(|(caller, line, callee, _)| {
+                caller.is_empty() && *line == 0 && callee == "cbv"
+            }),
+            "expected sentinel edge for `cbv` (caller=\"\", line=0); got: {edges:?}"
+        );
+    }
+
+    /// `@app.route("/x") class Bar:` — call-shape class decorator was
+    /// ALREADY caught by the generic `(call function: ...)` patterns
+    /// before Phase 14.6. This test pins that the existing behaviour
+    /// survives the 14.6 patterns being added: the rightmost identifier
+    /// `route` must still emit a sentinel edge.
+    #[test]
+    fn python_class_decorator_call_shape_still_attributes_to_module_scope() {
+        let src = r#"
+@app.route("/x")
+class Bar:
+    pass
+"#;
+        let edges = extract_call_edges(src, Language::Python);
+        assert!(
+            edges.iter().any(|(caller, line, callee, _)| {
+                caller.is_empty() && *line == 0 && callee == "route"
+            }),
+            "expected sentinel edge for `route` (caller=\"\", line=0); got: {edges:?}"
+        );
+    }
+
+    /// Class-level decorators must NOT spuriously emit a `<module:path>`
+    /// edge for the function-decorator case — that scenario already has
+    /// a proper FnDef anchor via Phase 14.2's `@fn.decl`. Locks the
+    /// invariant that function-decorator and class-decorator patterns
+    /// stay disjoint after the 14.6 additions.
+    #[test]
+    fn python_function_decorator_still_attributes_to_function_not_module() {
+        let src = r#"
+@login_required
+def view():
+    pass
+"#;
+        let edges = extract_call_edges(src, Language::Python);
+        let view_edges: Vec<_> = edges
+            .iter()
+            .filter(|(_, _, callee, _)| callee == "login_required")
+            .collect();
+        assert!(
+            !view_edges.is_empty(),
+            "function decorator edge must still fire: {edges:?}"
+        );
+        assert!(
+            view_edges.iter().all(|(caller, _, _, _)| caller == "view"),
+            "function decorator must attribute to `view`, not module scope: {view_edges:?}"
+        );
+    }
+
+    /// Java `@Component class Foo {}` — bare marker_annotation on class
+    /// emits a module-scope sentinel edge for `Component`.
+    #[test]
+    fn java_class_annotation_bare_marker_emits_module_scope_edge() {
+        let src = r#"
+@Component
+class Foo {}
+"#;
+        let edges = extract_call_edges(src, Language::Java);
+        assert!(
+            edges.iter().any(|(caller, line, callee, _)| {
+                caller.is_empty() && *line == 0 && callee == "Component"
+            }),
+            "expected sentinel edge for `Component`; got: {edges:?}"
+        );
+    }
+
+    /// Java `@org.springframework.RestController class Foo {}` — scoped
+    /// marker_annotation, rightmost identifier wins.
+    #[test]
+    fn java_class_annotation_scoped_marker_emits_module_scope_edge() {
+        let src = r#"
+@org.springframework.RestController
+class Foo {}
+"#;
+        let edges = extract_call_edges(src, Language::Java);
+        assert!(
+            edges.iter().any(|(caller, line, callee, _)| {
+                caller.is_empty() && *line == 0 && callee == "RestController"
+            }),
+            "expected sentinel edge for `RestController` (rightmost); got: {edges:?}"
+        );
+    }
+
+    /// Java `@Service("x") class Foo {}` — annotation-with-args on class.
+    #[test]
+    fn java_class_annotation_with_args_emits_module_scope_edge() {
+        let src = r#"
+@Service("x")
+class Foo {}
+"#;
+        let edges = extract_call_edges(src, Language::Java);
+        assert!(
+            edges.iter().any(|(caller, line, callee, _)| {
+                caller.is_empty() && *line == 0 && callee == "Service"
+            }),
+            "expected sentinel edge for `Service`; got: {edges:?}"
+        );
+    }
+
+    /// Java mixing class- and method-level annotations: the method-level
+    /// `@Override` must still attribute to the method (Phase 14.2), while
+    /// the class-level `@Component` falls to module scope (Phase 14.6).
+    /// Locks the disjointness of the two patterns.
+    #[test]
+    fn java_class_and_method_annotations_have_disjoint_attribution() {
+        let src = r#"
+@Component
+class Foo {
+    @Override
+    public String toString() { return ""; }
+}
+"#;
+        let edges = extract_call_edges(src, Language::Java);
+
+        let component_edges: Vec<_> = edges
+            .iter()
+            .filter(|(_, _, callee, _)| callee == "Component")
+            .collect();
+        assert!(
+            component_edges
+                .iter()
+                .all(|(caller, _, _, _)| caller.is_empty()),
+            "class-level @Component must attribute to module scope; got: {component_edges:?}"
+        );
+
+        let override_edges: Vec<_> = edges
+            .iter()
+            .filter(|(_, _, callee, _)| callee == "Override")
+            .collect();
+        assert!(
+            override_edges
+                .iter()
+                .all(|(caller, _, _, _)| caller == "toString"),
+            "method-level @Override must attribute to `toString`; got: {override_edges:?}"
+        );
+    }
+
+    /// C# `[ApiController] class Foo {}` — bare attribute on class.
+    #[test]
+    fn csharp_class_attribute_bare_emits_module_scope_edge() {
+        let src = r#"
+[ApiController]
+class Foo {}
+"#;
+        let edges = extract_call_edges(src, Language::CSharp);
+        assert!(
+            edges.iter().any(|(caller, line, callee, _)| {
+                caller.is_empty() && *line == 0 && callee == "ApiController"
+            }),
+            "expected sentinel edge for `ApiController`; got: {edges:?}"
+        );
+    }
+
+    /// C# `[System.Web.Mvc.Authorize] class Foo {}` — qualified attribute,
+    /// rightmost identifier wins.
+    #[test]
+    fn csharp_class_attribute_qualified_emits_module_scope_edge() {
+        let src = r#"
+[System.Web.Mvc.Authorize]
+class Foo {}
+"#;
+        let edges = extract_call_edges(src, Language::CSharp);
+        assert!(
+            edges.iter().any(|(caller, line, callee, _)| {
+                caller.is_empty() && *line == 0 && callee == "Authorize"
+            }),
+            "expected sentinel edge for `Authorize` (rightmost); got: {edges:?}"
+        );
+    }
+
+    /// Kotlin `@JvmStatic class Foo` — bare annotation on class.
+    #[test]
+    fn kotlin_class_annotation_bare_emits_module_scope_edge() {
+        let src = r#"
+@JvmStatic
+class Foo
+"#;
+        let edges = extract_call_edges(src, Language::Kotlin);
+        assert!(
+            edges.iter().any(|(caller, line, callee, _)| {
+                caller.is_empty() && *line == 0 && callee == "JvmStatic"
+            }),
+            "expected sentinel edge for `JvmStatic`; got: {edges:?}"
+        );
+    }
+
+    /// Kotlin `@Component("x") class Foo` — constructor_invocation form.
+    #[test]
+    fn kotlin_class_annotation_with_args_emits_module_scope_edge() {
+        let src = r#"
+@Component("x")
+class Foo
+"#;
+        let edges = extract_call_edges(src, Language::Kotlin);
+        assert!(
+            edges.iter().any(|(caller, line, callee, _)| {
+                caller.is_empty() && *line == 0 && callee == "Component"
+            }),
+            "expected sentinel edge for `Component`; got: {edges:?}"
+        );
+    }
+
+    /// TypeScript `@Component class Foo {}` — bare identifier class
+    /// decorator emits module-scope sentinel.
+    #[test]
+    fn typescript_class_decorator_bare_emits_module_scope_edge() {
+        let src = r#"
+@Component
+class Foo {}
+"#;
+        let edges = extract_call_edges(src, Language::TypeScript);
+        assert!(
+            edges.iter().any(|(caller, line, callee, _)| {
+                caller.is_empty() && *line == 0 && callee == "Component"
+            }),
+            "expected sentinel edge for `Component`; got: {edges:?}"
+        );
+    }
+
+    /// TypeScript `@Module({...}) class Foo {}` — call-shape with
+    /// identifier function.
+    #[test]
+    fn typescript_class_decorator_call_shape_emits_module_scope_edge() {
+        let src = r#"
+@Module({})
+class Foo {}
+"#;
+        let edges = extract_call_edges(src, Language::TypeScript);
+        assert!(
+            edges.iter().any(|(caller, line, callee, _)| {
+                caller.is_empty() && *line == 0 && callee == "Module"
+            }),
+            "expected sentinel edge for `Module`; got: {edges:?}"
+        );
+    }
+
     // ---- Phase 14.2.2 — Kotlin base callgraph + annotations (RED) ---------
 
     /// Basic Kotlin call: `fun foo() { bar() }` — caller is `foo`,
@@ -1752,24 +2147,27 @@ class C {
         );
     }
 
-    /// Class-level decorator `@Controller() class Foo {}` — OUT OF SCOPE
-    /// for the callgraph (class is not a FnDef). The class-level
-    /// decorator must NOT leak edges to the class body's methods AND
-    /// must NOT produce any caller for `Controller` itself. Reviewer
-    /// noted the prior single-assertion form was vacuously true (even
-    /// if the SCM had matched, `next_function_sibling` walking under
-    /// `class_declaration` would skip over the `class_body` and find
-    /// nothing); the explicit `callers("Controller")` empty assertion
-    /// catches grammar-shape regressions directly via `extract_call_edges`.
+    /// Class-level decorator `@Controller() class Foo {}` — Phase 14.6
+    /// (v1.12.0) now emits a module-scope sentinel edge for the
+    /// decorator's target (`Controller` here). The class itself is still
+    /// NOT a FnDef, so the decorator must NOT leak into the method's
+    /// callees (`handler` does not call `Controller`), and the edge that
+    /// DOES exist for `Controller` must have an empty `caller`
+    /// (Phase 14.1 sentinel → `<module:path>` at resolve time), not the
+    /// inner method. Pre-14.6 this test asserted "zero edges"; the
+    /// updated contract is "exactly one edge, and it attributes to
+    /// module scope".
     #[test]
-    fn typescript_class_level_decorator_not_indexed() {
+    fn typescript_class_level_decorator_attributes_to_module_scope() {
         let src = r#"
 @Controller()
 class Foo {
     handler() {}
 }
 "#;
-        // Negative #1: `handler` callees must not include `Controller`.
+        // Invariant #1: `handler` callees must not include `Controller` —
+        // method-level callees must stay disjoint from class-level
+        // decorators.
         let matches = callees(src, Language::TypeScript, "handler");
         let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
         assert!(
@@ -1777,14 +2175,24 @@ class Foo {
             "class-level `Controller` must not leak to method `handler`: {names:?}"
         );
 
-        // Negative #2: NO edge in the entire file may have `Controller`
-        // as callee. Stronger than #1: catches a hypothetical regression
-        // where the SCM matched class-level decorators and emitted an
-        // edge under some OTHER caller (or even the module sentinel).
+        // Invariant #2: the edge for `Controller` is attributed to module
+        // scope (caller="") via the Phase 14.1 sentinel. Pinning the
+        // exact shape catches a regression that would attribute to any
+        // method or fall to a different fallback.
         let edges = extract_call_edges(src, Language::TypeScript);
+        let controller_edges: Vec<_> = edges
+            .iter()
+            .filter(|(_, _, callee, _)| callee == "Controller")
+            .collect();
         assert!(
-            !edges.iter().any(|(_, _, callee, _)| callee == "Controller"),
-            "class-level `Controller` must produce zero callgraph edges: {edges:?}"
+            !controller_edges.is_empty(),
+            "Phase 14.6 should emit at least one `Controller` edge: {edges:?}"
+        );
+        assert!(
+            controller_edges
+                .iter()
+                .all(|(caller, line, _, _)| caller.is_empty() && *line == 0),
+            "every `Controller` edge must attribute to module scope (caller=\"\", line=0): {controller_edges:?}"
         );
     }
 

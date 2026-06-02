@@ -29,14 +29,10 @@ action; `vex callers JvmStatic` lists every Kotlin function annotated
 
 **What is still invisible:**
 
-- **Class-level decorators / annotations** (`@dataclass class Foo:`,
-  `@RestController class C {}`, `@Controller() class Foo {}`) — the
-  callgraph model only indexes function / method / constructor
-  symbols today. **Phase 14.6 if real users ask.**
 - **TypeScript property / parameter decorators** (`@inject() svc: Svc;`,
   `constructor(@inject() svc: Svc)`) — common in Nest.js DI but
   properties / parameters are not FnDef symbols, so the decorator
-  has no anchor. **Phase 14.6 territory.**
+  has no anchor. Future phase if real users ask.
 - **Rust `#[derive(...)]` macros** — intentionally filtered out by
   attribute path-head name. Compile-time codegen, not runtime call
   edges. Other Rust attributes (`#[tokio::test]`, `#[serde(...)]`,
@@ -230,7 +226,7 @@ parse. The following patterns produce no edges in any of `usages` /
 | Pattern | Example | vex visibility |
 | --- | --- | --- |
 | Decorator dispatch (Python, Java, Kotlin, C#, TS, Rust) | `@app.get("/")`, `@GetMapping("/x")`, `@JvmStatic`, `[HttpGet("/x")]`, `@Get("/x")`, `#[tokio::test]` | Phase 14.2 (Python+Java) + Phase 14.2.2 (Kotlin+C#) + Phase 14.2.1 (TS+Rust sibling-adjacency): edge `decorated_fn → decorator_target` (rightmost identifier of path wins; args ignored). |
-| Class-level decorator | `@dataclass class Foo:` | Phase 14.6 — callgraph indexes only functions/methods today. |
+| Class-level decorator | `@dataclass class Foo:`, `@Component class Bar`, `[ApiController] class Baz` | Phase 14.6 (v1.12.0): edge attributed to module scope (synthetic `<module:path>` caller via Phase 14.1 sentinel). Covers Python, Java, TypeScript, Kotlin, C#. Rust `#[derive(...)]` intentionally excluded. |
 | String-resolved factory | `uvicorn.run("main:app")` | Literal string only; no edge from `uvicorn.run` to `main.app`. |
 | Task queues | `celery_task.delay()` | The `.delay()` call site is captured, but the bound task body is not linked. |
 | `getattr` / reflection | `getattr(obj, name)()` | The bound target depends on a runtime value. |
@@ -288,9 +284,10 @@ guidance for agents:
 > concluding the symbol is unused. Module-level call sites are reported
 > via synthetic `<module:path>` callers (Phase 14.1). Python, Java,
 > Kotlin, C#, TypeScript, and Rust function/method decorators emit
-> forward edges (Phase 14.2 + 14.2.2 + 14.2.1). Class-level decorators
-> in any language and Rust `#[derive(...)]` macros remain invisible —
-> `vex grep` is the workaround there.
+> forward edges (Phase 14.2 + 14.2.2 + 14.2.1); class-level decorators
+> emit module-scope edges (Phase 14.6, v1.12.0). Rust `#[derive(...)]`
+> macros and TypeScript property / parameter decorators remain
+> invisible — `vex grep` is the workaround there.
 
 ---
 

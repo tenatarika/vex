@@ -33,6 +33,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Phase 14.6 — class-level decorator / annotation edges in the
+  callgraph.** Bare class-level decorators (`@dataclass class Foo:`,
+  `@Component class Bar`, `[ApiController] class Baz {}`, `@JvmStatic
+  class Qux`, `@RestController class Quux {}`) and the call-shape
+  forms (`@Module({}) class …`) now emit edges in the persistent
+  callgraph. Classes are still not FnDef symbols, so the decorator's
+  callee is attributed to module scope via Phase 14.1's synthetic
+  `<module:path>` caller (caller_fn_name="", caller_fn_line=0). This
+  closes the largest remaining callgraph gap documented in
+  `docs/LIMITATIONS.md`. A new `@module_call.name` capture name was
+  introduced for these patterns so the TypeScript
+  `call_capture_inside_sibling_host` filter (designed to dedupe
+  decorator-argument calls) does not suppress them — the filter still
+  operates on the generic `@call.name` captures untouched. Languages
+  covered: Python, Java, TypeScript, Kotlin, C# (Rust `#[derive(...)]`
+  remains intentionally filtered as a compile-time codegen marker).
+  14 new tests in `src/callgraph/mod.rs::tests` cover the bare
+  identifier, scoped, marker, and annotation-with-args variants per
+  language, plus a disjointness pin (`java_class_and_method_annotations_have_disjoint_attribution`)
+  that locks "class-level decorators attribute to module, method-level
+  decorators attribute to their method".
 - **`vex index --no-wait` / `vex update --no-wait`.** New CLI flag for
   callers that would rather no-op than wait on a peer's build lock.
   When set, the underlying `pipeline::run_or_busy` / `pipeline::update_or_busy`
