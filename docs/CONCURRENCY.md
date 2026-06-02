@@ -51,6 +51,22 @@ The build lock lives next to the index file:
   changes" case never blocks waiting peers), then held across the
   re-checked diff + parse + embed + write + HNSW build.
 
+### `--no-wait` (v1.12.0)
+
+Both `vex index` and `vex update` accept `--no-wait`. The corresponding
+library entry points are `pipeline::run_or_busy` and
+`pipeline::update_or_busy`. They use `IndexLock::try_acquire` (non-blocking
+`flock` / `LockFileEx`) and return `Ok(None)` when a peer is currently
+holding the lock; the CLI surfaces this as a `Skipped: another vex
+instance is indexing` message and exit code 0, matching `git pull`'s
+"Already up to date." UX. Without the flag, the blocking lock path is
+unchanged.
+
+The `update_or_busy` no-change fast path (working tree already matches
+the manifest) does *not* go through `try_acquire`: if there is nothing
+to do, there is no point deduping against a peer. Only the
+parse + embed + write section is gated.
+
 In both paths the lock-holding window is the entire expensive section.
 For a small project this is sub-second; for a large index built with
 `--semantic`, the HNSW build alone can take a minute or two on millions

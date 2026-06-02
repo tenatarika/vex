@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`vex index --no-wait` / `vex update --no-wait`.** New CLI flag for
+  callers that would rather no-op than wait on a peer's build lock.
+  When set, the underlying `pipeline::run_or_busy` / `pipeline::update_or_busy`
+  variants use a non-blocking `IndexLock::try_acquire`; if the lock is
+  held they emit a `Skipped: another vex instance is indexing` text
+  message (or `{"status":"busy","reason":...}` in JSON mode) and exit
+  with code 0 — `git pull`-style "Already up to date." semantics. Useful
+  for editor integrations / CI cron jobs that don't want to wedge for
+  a peer's parse + embed. Without the flag, behaviour is unchanged
+  (blocking lock acquire). Pinned by two unit tests covering
+  `IndexLock::try_acquire`'s free and contended paths.
+
 ### Changed
 
 - **BREAKING (lib API) — `pipeline::run` now returns `Result<(usize,

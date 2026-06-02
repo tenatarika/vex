@@ -86,6 +86,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_call_graph,
             no_bm25,
             no_pattern_index,
+            no_wait,
         } => cmd_index::index(
             &ctx,
             path,
@@ -96,6 +97,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_call_graph,
             no_bm25,
             no_pattern_index,
+            no_wait,
         ),
         Commands::Search {
             query,
@@ -169,6 +171,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_call_graph,
             no_bm25,
             no_pattern_index,
+            no_wait,
         } => cmd_update::update(
             &ctx,
             path,
@@ -179,6 +182,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             no_call_graph,
             no_bm25,
             no_pattern_index,
+            no_wait,
         ),
         Commands::Outline { file, kind } => {
             cmd_outline::cmd_outline(&file, kind.as_deref(), &ctx.format)

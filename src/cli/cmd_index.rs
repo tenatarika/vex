@@ -25,6 +25,7 @@ pub(crate) fn index(
     no_call_graph: bool,
     no_bm25: bool,
     no_pattern_index: bool,
+    no_wait: bool,
 ) -> Result<()> {
     let root = resolve_root(path)?;
     let start = Instant::now();
@@ -45,7 +46,33 @@ pub(crate) fn index(
         ctx.cfg,
         None,
     );
-    let (count, _rebuilt) = pipeline::run(&root, opts, &embedder_id, ctx.excludes)?;
+    let outcome = if no_wait {
+        pipeline::run_or_busy(&root, opts, &embedder_id, ctx.excludes)?
+    } else {
+        Some(pipeline::run(&root, opts, &embedder_id, ctx.excludes)?)
+    };
+
+    let Some((count, _rebuilt)) = outcome else {
+        // --no-wait + lock held: emit a structured "busy" outcome and exit
+        // 0 (matches `git pull`'s "Already up to date." UX — the user
+        // explicitly opted into no-op-when-busy semantics, so this is not
+        // a failure).
+        match ctx.format {
+            OutputFormat::Json => print_envelope(
+                serde_json::json!({
+                    "status": "busy",
+                    "reason": "another vex instance holds the build lock",
+                }),
+                capabilities::current(),
+                super::output::default_meta_for(&root),
+            ),
+            OutputFormat::Text | OutputFormat::Compact => {
+                println!("Skipped: another vex instance is indexing (--no-wait).");
+            }
+        }
+        return Ok(());
+    };
+
     let elapsed = start.elapsed();
     let index_path = config::index_path(&root.canonicalize()?);
 

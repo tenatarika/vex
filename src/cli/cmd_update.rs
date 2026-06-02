@@ -25,6 +25,7 @@ pub(crate) fn update(
     no_call_graph: bool,
     no_bm25: bool,
     no_pattern_index: bool,
+    no_wait: bool,
 ) -> Result<()> {
     // Canonicalize once at the top so `prior_manifest`'s lookup
     // path matches the one `pipeline::update` uses internally —
@@ -50,7 +51,30 @@ pub(crate) fn update(
         ctx.cfg,
         Some(&prior_manifest),
     );
-    let (total, changed, deleted) = pipeline::update(&root, opts, &embedder_id, ctx.excludes)?;
+    let outcome = if no_wait {
+        pipeline::update_or_busy(&root, opts, &embedder_id, ctx.excludes)?
+    } else {
+        Some(pipeline::update(&root, opts, &embedder_id, ctx.excludes)?)
+    };
+
+    let Some((total, changed, deleted)) = outcome else {
+        // --no-wait + lock held: structured "busy" outcome, exit 0.
+        match ctx.format {
+            OutputFormat::Json => print_envelope(
+                serde_json::json!({
+                    "status": "busy",
+                    "reason": "another vex instance holds the build lock",
+                }),
+                capabilities::current(),
+                super::output::default_meta_for(&root),
+            ),
+            OutputFormat::Text | OutputFormat::Compact => {
+                println!("Skipped: another vex instance is updating (--no-wait).");
+            }
+        }
+        return Ok(());
+    };
+
     let elapsed = start.elapsed();
 
     match ctx.format {

@@ -172,6 +172,13 @@ pub enum Commands {
         /// sticky-opt-out semantics as `--no-call-graph` / `--no-bm25`.
         #[arg(long)]
         no_pattern_index: bool,
+
+        /// v1.12.0 — exit immediately with a "busy" status if another vex
+        /// instance is currently building the same index, instead of waiting
+        /// for it to finish. Useful for editor integrations and CI cron jobs
+        /// that would rather no-op than wedge for a peer's parse + embed.
+        #[arg(long)]
+        no_wait: bool,
     },
 
     /// Search symbols by name or semantics
@@ -367,6 +374,12 @@ pub enum Commands {
         /// honours what the manifest recorded.
         #[arg(long)]
         no_pattern_index: bool,
+
+        /// v1.12.0 — exit immediately with a "busy" status if another vex
+        /// instance is currently building the same index, instead of waiting
+        /// for it to finish.
+        #[arg(long)]
+        no_wait: bool,
     },
 
     /// Show structure of a file (symbols, kinds, lines)

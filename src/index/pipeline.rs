@@ -60,21 +60,67 @@ pub fn run(
     embedder_id: &str,
     excludes: &[String],
 ) -> Result<(usize, bool)> {
+    let (root, files, file_hashes) = run_setup(root, excludes)?;
+    // Blocking acquire — original behaviour. Concurrent vex index calls
+    // serialize here; the manifest re-check inside `run_with_lock` lets
+    // peers that observe an equivalent build skip the redundant rebuild.
+    let lock = IndexLock::acquire(&root)?;
+    run_with_lock(&root, opts, embedder_id, files, file_hashes, lock)
+}
+
+/// v1.12.0 — non-blocking sibling of [`run`]. Returns `Ok(None)` when another
+/// vex instance is currently holding the build lock, leaving the caller free
+/// to no-op (CI cron jobs, editor integrations that don't want to wedge for
+/// a peer's parse + embed). Otherwise returns `Ok(Some(_))` with the same
+/// shape as [`run`].
+pub fn run_or_busy(
+    root: &Path,
+    opts: IndexOptions,
+    embedder_id: &str,
+    excludes: &[String],
+) -> Result<Option<(usize, bool)>> {
+    let (root, files, file_hashes) = run_setup(root, excludes)?;
+    let Some(lock) = IndexLock::try_acquire(&root)? else {
+        tracing::info!("index lock held by another vex instance; --no-wait skipping rebuild");
+        return Ok(None);
+    };
+    run_with_lock(&root, opts, embedder_id, files, file_hashes, lock).map(Some)
+}
+
+/// Pre-lock fixture: the canonical root, the discovered file set, and the
+/// (rel-path, content-hash) tuples computed during the walk. Returned by
+/// [`run_setup`] and consumed by the lock-acquiring entry points so both
+/// the blocking and `--no-wait` variants do the same cheap pre-flight.
+type RunSetup = (
+    std::path::PathBuf,
+    Vec<std::path::PathBuf>,
+    Vec<(String, u64)>,
+);
+
+/// Pre-lock work shared by [`run`] and [`run_or_busy`]: canonicalize the
+/// root, walk the file tree honoring excludes, and hash every file. Cheap
+/// enough to be re-done by the `--no-wait` caller without violating its
+/// "don't wait on a peer" contract.
+fn run_setup(root: &Path, excludes: &[String]) -> Result<RunSetup> {
     let root = root.canonicalize().context("canonicalize root")?;
     let files = discover_files(&root, excludes)?;
     tracing::info!(count = files.len(), "discovered files");
-
     let file_hashes = hash_files(&root, &files);
+    Ok((root, files, file_hashes))
+}
 
-    // Serialize concurrent rebuilds: take the build lock BEFORE the expensive
-    // parse + embed below. Without this, N concurrent `vex index` invocations
-    // (CI matrix, agent fan-out) each load the embedding model and re-parse
-    // every file in parallel — the same thundering herd `update` already
-    // guards against. Holding the lock here means exactly one instance does
-    // the work; the rest wait and then observe the fresh manifest via the
-    // double-check below.
-    let _lock = IndexLock::acquire(&root)?;
-
+/// Heavy section of `vex index`: manifest re-check skip path, then parse +
+/// embed + write + HNSW build. The lock is taken as an owned guard so it
+/// stays held for the duration of every code path (including the early
+/// skip return); only when the function returns is the build lock released.
+fn run_with_lock(
+    root: &Path,
+    opts: IndexOptions,
+    embedder_id: &str,
+    files: Vec<std::path::PathBuf>,
+    file_hashes: Vec<(String, u64)>,
+    _lock: IndexLock,
+) -> Result<(usize, bool)> {
     // Double-check under the lock: if a peer just completed a rebuild with an
     // identical file fingerprint AND the index file is actually on disk, skip
     // the redundant work. `vex index` is deterministic from its inputs (same
@@ -84,18 +130,11 @@ pub fn run(
     // index): a missing manifest loads as `Manifest::default()` with an empty
     // file map, which would otherwise diff equal to an empty file list and
     // skip the initial write.
-    let manifest_path = config::manifest_path(&root);
-    let index_path = config::index_path(&root);
+    let manifest_path = config::manifest_path(root);
+    let index_path = config::index_path(root);
     if index_path.exists() {
         if let Ok(current_manifest) = Manifest::load(&manifest_path) {
             let diff = manifest::diff_files(&file_hashes, &current_manifest);
-            // v1.12.0: skip only if the on-disk index satisfies every option
-            // we were asked for. File-hash equality alone is not enough — a
-            // peer that built without `--semantic` would otherwise serve us
-            // an embedding-less manifest and silently downgrade our request.
-            // `run_can_skip` also rejects manifests written by `vex update`
-            // (pattern_index_full=Some(false)) when the user asked for the
-            // full pattern index by explicitly running `vex index`.
             if diff.changed.is_empty()
                 && diff.deleted.is_empty()
                 && run_can_skip(&current_manifest, opts, embedder_id)
@@ -103,7 +142,7 @@ pub fn run(
                 tracing::info!(
                     "index already built by a concurrent vex instance; skipping rebuild"
                 );
-                return Ok((existing_symbol_count(&root)?, false));
+                return Ok((existing_symbol_count(root)?, false));
             }
         }
     }
@@ -112,9 +151,9 @@ pub fn run(
     // share across the parse loop. The cache is best-effort; failures only
     // cost a re-parse, never correctness.
     let cache = build_blob_cache();
-    let blob_map = crate::index::parse_cache::git_blobs::discover_tracked_blobs(&root);
+    let blob_map = crate::index::parse_cache::git_blobs::discover_tracked_blobs(root);
 
-    let all_parsed = parse_files(&root, &files, &blob_map, &cache)?;
+    let all_parsed = parse_files(root, &files, &blob_map, &cache)?;
     let symbol_count: usize = all_parsed.iter().map(|f| f.symbols.len()).sum();
 
     let vectors = if opts.with_embeddings && symbol_count > 0 {
@@ -130,7 +169,7 @@ pub fn run(
     };
     let vector_dim = vector_dim_for(embedder_id, &vectors);
     write_output_locked(
-        &root,
+        root,
         &all_parsed,
         &vectors,
         vector_dim,
@@ -141,10 +180,10 @@ pub fn run(
     )?;
 
     if !vectors.is_empty() {
-        build_hnsw(&root, &vectors)?;
+        build_hnsw(root, &vectors)?;
     } else {
         // Remove stale HNSW from a previous --semantic run to prevent wrong results
-        let hnsw_path = config::hnsw_path(&root);
+        let hnsw_path = config::hnsw_path(root);
         if hnsw_path.exists() {
             std::fs::remove_file(&hnsw_path).context("remove stale HNSW index")?;
         }
@@ -179,6 +218,39 @@ pub fn update(
     embedder_id: &str,
     excludes: &[String],
 ) -> Result<(usize, usize, usize)> {
+    update_inner(
+        root,
+        opts,
+        embedder_id,
+        excludes,
+        /* no_wait = */ false,
+    )
+    .map(|opt| opt.expect("blocking update never returns Busy"))
+}
+
+/// v1.12.0 — non-blocking sibling of [`update`]. Returns `Ok(None)` when
+/// another vex instance is currently holding the build lock and the diff is
+/// non-empty, so a `--no-wait` caller can no-op instead of wedging on a
+/// peer's parse + embed cycle. The cheap "nothing to update" case is *not*
+/// gated by the lock — if the working tree's hashes already match the
+/// manifest there is no work to dedupe, so we return the `(count, 0, 0)`
+/// outcome immediately like the blocking variant.
+pub fn update_or_busy(
+    root: &Path,
+    opts: IndexOptions,
+    embedder_id: &str,
+    excludes: &[String],
+) -> Result<Option<(usize, usize, usize)>> {
+    update_inner(root, opts, embedder_id, excludes, /* no_wait = */ true)
+}
+
+fn update_inner(
+    root: &Path,
+    opts: IndexOptions,
+    embedder_id: &str,
+    excludes: &[String],
+    no_wait: bool,
+) -> Result<Option<(usize, usize, usize)>> {
     let root = root.canonicalize().context("canonicalize root")?;
     let manifest_path = config::manifest_path(&root);
     let old_manifest = Manifest::load(&manifest_path)?;
@@ -203,7 +275,7 @@ pub fn update(
         && update_can_skip(&old_manifest, opts, embedder_id)
     {
         tracing::info!(unchanged = diff.unchanged, "nothing to update");
-        return Ok((existing_symbol_count(&root)?, 0, 0));
+        return Ok(Some((existing_symbol_count(&root)?, 0, 0)));
     }
 
     // Serialize concurrent rebuilds: take the build lock BEFORE the expensive
@@ -213,7 +285,17 @@ pub fn update(
     // parallel — a thundering-herd rebuild that pegs CPU and RAM under
     // multi-agent fan-out. Holding the lock here means exactly one instance
     // does the work; the rest wait and then skip via the re-check below.
-    let _lock = IndexLock::acquire(&root)?;
+    // v1.12.0 --no-wait: when the caller cannot block, bail out as `None`
+    // here instead of queueing on the lock.
+    let _lock = if no_wait {
+        let Some(l) = IndexLock::try_acquire(&root)? else {
+            tracing::info!("index lock held by another vex instance; --no-wait skipping update");
+            return Ok(None);
+        };
+        l
+    } else {
+        IndexLock::acquire(&root)?
+    };
 
     // Double-check under the lock: another instance may have refreshed the
     // index while we waited. Re-diff against the now-current manifest AND
@@ -229,7 +311,7 @@ pub fn update(
         && update_can_skip(&current_manifest, opts, embedder_id)
     {
         tracing::info!("index refreshed by a concurrent vex instance; skipping rebuild");
-        return Ok((existing_symbol_count(&root)?, 0, 0));
+        return Ok(Some((existing_symbol_count(&root)?, 0, 0)));
     }
 
     tracing::info!(
@@ -324,7 +406,7 @@ pub fn update(
         "incremental update complete"
     );
 
-    Ok((symbol_count, diff.changed.len(), diff.deleted.len()))
+    Ok(Some((symbol_count, diff.changed.len(), diff.deleted.len())))
 }
 
 /// Reconstruct ParsedFile + vectors for unchanged files from the existing index.
@@ -968,7 +1050,10 @@ struct IndexLock {
 }
 
 impl IndexLock {
-    fn acquire(root: &Path) -> Result<Self> {
+    /// Opens (or creates) the persistent lock sentinel for the index at
+    /// `root`. Returned alongside the underlying [`File`] so the caller can
+    /// decide whether to block or to bail out under contention.
+    fn open(root: &Path) -> Result<(std::path::PathBuf, std::fs::File)> {
         let index_path = config::index_path(root);
         let cache_dir = index_path.parent().context("index path has no parent")?;
         std::fs::create_dir_all(cache_dir).context("create cache directory")?;
@@ -980,12 +1065,16 @@ impl IndexLock {
             .write(true)
             .open(&path)
             .context("open index lock file")?;
-        // Fast path: try without blocking. If a peer is already indexing,
-        // emit a single tracing event so users staring at a "stuck" CLI
-        // (or an agent harness watching for output) see why it's stuck
-        // before we settle into the blocking wait. Without this the CLI
-        // would just freeze silently for the duration of the peer's
-        // parse + embed + write.
+        Ok((path, file))
+    }
+
+    /// Blocking variant. Tries without waiting first so a contention event
+    /// can be logged at `info` level before settling into the blocking wait
+    /// — otherwise users staring at a "stuck" CLI (or an agent harness
+    /// watching for output) get no signal for the duration of the peer's
+    /// parse + embed + write.
+    fn acquire(root: &Path) -> Result<Self> {
+        let (path, file) = Self::open(root)?;
         match fs2::FileExt::try_lock_exclusive(&file) {
             Ok(()) => {}
             Err(e) if is_lock_contended(&e) => {
@@ -1001,6 +1090,19 @@ impl IndexLock {
             }
         }
         Ok(Self { file })
+    }
+
+    /// v1.12.0 — non-blocking variant for `opts.no_wait`. Returns
+    /// `Ok(None)` when a peer is currently holding the lock; the caller is
+    /// expected to bail out with a "busy" outcome. Real I/O errors still
+    /// propagate as `Err`.
+    fn try_acquire(root: &Path) -> Result<Option<Self>> {
+        let (_path, file) = Self::open(root)?;
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => Ok(Some(Self { file })),
+            Err(e) if is_lock_contended(&e) => Ok(None),
+            Err(e) => Err(anyhow::Error::from(e).context("try-lock index lock")),
+        }
     }
 }
 
@@ -1405,6 +1507,45 @@ mod tests {
             ..Manifest::default()
         };
         assert!(run_can_skip(&m, opts, "minilm-l6-v2"));
+    }
+
+    // --- A3 (v1.12.0): non-blocking IndexLock::try_acquire -----------------
+
+    #[test]
+    fn try_acquire_returns_some_when_lock_is_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let guard =
+            IndexLock::try_acquire(&root).expect("try_acquire should not error on a free lock");
+        assert!(guard.is_some(), "expected Some on uncontended lock");
+    }
+
+    #[test]
+    fn try_acquire_returns_none_when_peer_holds_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        // Mirror IndexLock::open's path derivation so we contend on the
+        // exact same sentinel file the production code uses.
+        let index_path = config::index_path(&root);
+        std::fs::create_dir_all(index_path.parent().unwrap()).unwrap();
+        let lock_path = index_path.with_extension("lock");
+        let peer = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        fs2::FileExt::lock_exclusive(&peer).unwrap();
+
+        let outcome = IndexLock::try_acquire(&root)
+            .expect("try_acquire should not error on a contended lock — it returns Ok(None)");
+        assert!(
+            outcome.is_none(),
+            "expected None when a peer already holds the lock"
+        );
+
+        // Release for hygiene; the tempdir will be removed anyway.
+        fs2::FileExt::unlock(&peer).unwrap();
     }
 
     #[test]
