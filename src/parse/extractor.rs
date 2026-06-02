@@ -2,9 +2,10 @@ use std::collections::HashSet;
 
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Parser, QueryCursor};
+use tree_sitter::QueryCursor;
 
 use super::language::Language;
+use super::parser_pool::with_parser;
 use super::queries;
 use crate::index::symbols::{ParsedRef, ParsedSymbol, SymbolKind};
 
@@ -38,13 +39,14 @@ pub fn extract_symbols_and_imports(
         }
     };
 
-    let mut parser = Parser::new();
-    let ts_lang = lang.ts_language();
-    parser.set_language(&ts_lang).context("set language")?;
-
-    let tree = parser
-        .parse(content, None)
-        .context("tree-sitter parse failed")?;
+    // v1.12.0 P3 — borrow a pooled per-thread parser instead of constructing
+    // one per file. The Tree owns its data after parse(), so we can drop the
+    // parser borrow before iterating with QueryCursor.
+    let tree = with_parser(lang, |parser| {
+        parser
+            .parse(content, None)
+            .context("tree-sitter parse failed")
+    })?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), content.as_bytes());
@@ -470,13 +472,13 @@ pub fn extract_references_ast(content: &str, lang: Language) -> Result<Vec<Parse
         return Ok(extract_references(content));
     }
 
-    let mut parser = Parser::new();
-    let ts_lang = lang.ts_language();
-    parser.set_language(&ts_lang).context("set language")?;
-
-    let tree = parser
-        .parse(content, None)
-        .context("tree-sitter parse failed")?;
+    // v1.12.0 P3 — pooled per-thread parser; see `with_parser` in
+    // `super::parser_pool`.
+    let tree = with_parser(lang, |parser| {
+        parser
+            .parse(content, None)
+            .context("tree-sitter parse failed")
+    })?;
 
     let mut refs = Vec::new();
     walk_for_refs(tree.root_node(), content, lang, &mut refs);

@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+
+- **Per-thread `tree_sitter::Parser` pool (P3).** Every hot parse site
+  (`extractor::extract_symbols_and_imports`,
+  `extractor::extract_references_ast`, `body::extract_symbol_body_ts`,
+  `scope::walker::parse_with`, `callgraph::extract_callgraph`,
+  `pattern::skeleton::extract_skeletons`) previously paid the cost of
+  `Parser::new()` + `set_language()` per file. They now borrow a
+  per-thread, per-language `Parser` from a new
+  `crate::parse::parser_pool::with_parser` thread-local pool — first
+  use per (thread, language) initialises lazily; subsequent calls
+  re-use the existing parser. After Phase 14.7 cut cold-start parse
+  time with the blob cache, this per-file overhead was the dominant
+  remaining cost for projects with several thousand files. Pinned by
+  three new unit tests in `src/parse/parser_pool.rs::tests`.
+
 ### Added
 
 - **`vex index --no-wait` / `vex update --no-wait`.** New CLI flag for

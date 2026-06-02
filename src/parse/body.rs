@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
-use tree_sitter::Parser;
 
 use super::language::Language;
+use super::parser_pool::with_parser;
 
 /// Extract the body of a symbol definition using indentation heuristic.
 /// Fallback for languages without tree-sitter support.
@@ -49,13 +49,11 @@ pub fn extract_symbol_body_ts(
         anyhow::bail!("symbol_line must be >= 1");
     }
 
-    let mut parser = Parser::new();
-    let ts_lang = lang.ts_language();
-    parser.set_language(&ts_lang).context("set language")?;
-
-    let tree = parser
-        .parse(content, None)
-        .context("tree-sitter parse failed")?;
+    let tree = with_parser(lang, |parser| {
+        parser
+            .parse(content, None)
+            .context("tree-sitter parse failed")
+    })?;
 
     let target_row = symbol_line - 1;
     let root = tree.root_node();

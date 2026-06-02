@@ -37,7 +37,7 @@
 //! `$$$BODY` on Go struct/interface declarations therefore fall back
 //! to live-scan — correctness preserved, perf-only impact.
 
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use crate::parse::language::Language;
 
@@ -238,12 +238,15 @@ pub fn extract_skeletons(source: &str, lang: Language) -> Vec<Skeleton> {
     if allowlist.is_empty() {
         return Vec::new();
     }
-    let mut parser = Parser::new();
-    let ts_lang = lang.ts_language();
-    if parser.set_language(&ts_lang).is_err() {
-        return Vec::new();
-    }
-    let Some(tree) = parser.parse(source, None) else {
+    // v1.12.0 P3 — pooled per-thread parser. with_parser may return Err
+    // on grammar-set-language failure for an unsupported language, but the
+    // allowlist short-circuit above already filters those; collapse any
+    // residual error path to an empty result (callers tolerate empty).
+    let Ok(tree) = crate::parse::parser_pool::with_parser(lang, |parser| {
+        parser
+            .parse(source, None)
+            .ok_or_else(|| anyhow::anyhow!("tree-sitter parse failed in skeleton extractor"))
+    }) else {
         return Vec::new();
     };
     let mut skeletons = Vec::new();

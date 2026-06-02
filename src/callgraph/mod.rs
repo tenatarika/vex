@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::{Query, QueryCursor};
 
 use crate::parse::language::Language;
 
@@ -274,11 +274,14 @@ static COMPILED_QUERIES: LazyLock<HashMap<Language, Query>> = LazyLock::new(|| {
 /// Extract function definitions and call expressions from source.
 fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<Call>)> {
     let query = COMPILED_QUERIES.get(&lang)?;
-    let ts_lang = lang.ts_language();
 
-    let mut parser = Parser::new();
-    parser.set_language(&ts_lang).ok()?;
-    let tree = parser.parse(content, None)?;
+    // v1.12.0 P3 — pooled per-thread parser.
+    let tree = crate::parse::parser_pool::with_parser(lang, |parser| {
+        parser
+            .parse(content, None)
+            .ok_or_else(|| anyhow::anyhow!("tree-sitter parse failed in callgraph extractor"))
+    })
+    .ok()?;
 
     let fn_name_idx = query.capture_index_for_name("fn.name")?;
     let fn_body_idx = query.capture_index_for_name("fn.decl")?;

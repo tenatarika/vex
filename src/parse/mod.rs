@@ -1,6 +1,7 @@
 pub mod body;
 pub mod extractor;
 pub mod language;
+pub mod parser_pool;
 pub mod queries;
 pub mod scope;
 

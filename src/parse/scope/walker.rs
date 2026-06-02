@@ -180,13 +180,12 @@ impl<'a> Walker<'a> {
 
 /// Parse `content` with the given language's tree-sitter grammar.
 /// Each binder used to inline this; collected here so language files
-/// don't repeat the boilerplate.
+/// don't repeat the boilerplate. v1.12.0 P3 — borrows a pooled per-thread
+/// parser instead of constructing one per call.
 pub(super) fn parse_with(lang: Language, content: &str) -> Result<Tree> {
-    let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&lang.ts_language())
-        .context("set language for scope binder")?;
-    parser
-        .parse(content, None)
-        .context("tree-sitter parse failed in scope binder")
+    crate::parse::parser_pool::with_parser(lang, |parser| {
+        parser
+            .parse(content, None)
+            .context("tree-sitter parse failed in scope binder")
+    })
 }
