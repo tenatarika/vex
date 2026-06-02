@@ -7,6 +7,9 @@ use std::path::Path;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
+mod common;
+use common::assert_ran;
+
 fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(dir);
@@ -28,17 +31,14 @@ fn back_reference_pattern_enforces_same_capture() {
     let tmp = TempDir::new().unwrap();
     write_back_ref_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args([
-            "pattern",
-            "record($X, $X)",
-            "--lang",
-            "rust",
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args([
+        "pattern",
+        "record($X, $X)",
+        "--lang",
+        "rust",
+        "--format",
+        "json",
+    ]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let envelope: serde_json::Value =
         serde_json::from_str(&stdout).expect("pattern emits envelope");
@@ -89,19 +89,16 @@ fn scope_include_filters_pattern_results() {
     std::fs::write(tmp.path().join("src").join("a.rs"), "fn src_fn() {}\n").unwrap();
     std::fs::write(tmp.path().join("tests").join("t.rs"), "fn test_fn() {}\n").unwrap();
 
-    let assert = vex_in(tmp.path())
-        .args([
-            "pattern",
-            "fn $NAME()",
-            "--lang",
-            "rust",
-            "--include",
-            "src/**",
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args([
+        "pattern",
+        "fn $NAME()",
+        "--lang",
+        "rust",
+        "--include",
+        "src/**",
+        "--format",
+        "json",
+    ]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let json = envelope

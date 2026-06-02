@@ -122,6 +122,13 @@ pub(crate) fn similar(
         None
     };
 
+    // v1.12.0 S8.2 — extends exit-code contract to `vex similar`. Empty
+    // post-filter result set → exit 1. The trace path below still runs
+    // (the signal is independent of `--why`).
+    if matches.is_empty() {
+        crate::cli::exit_code::signal_no_results();
+    }
+
     output::print_similar(&matches, &name, explanations.as_deref(), &ctx.format, &root);
 
     // 11.10: structured trace on stderr for `--why`.

@@ -31,21 +31,12 @@ fn unwrap_results(envelope: serde_json::Value) -> serde_json::Value {
 
 // ---------------------------------------------------------------------------
 // Test-local helpers — copy the vex_in pattern from cli_bootstrap_test.rs.
-// Each test file is its own binary; no shared common/ mod in this project.
+// Each test file is its own binary, but `tests/common/mod.rs` (loaded via
+// `mod common`) provides genuinely cross-cutting helpers like `assert_ran`.
 // ---------------------------------------------------------------------------
 
-/// v1.12.0 S8.2 — `vex search` (and other query commands) now exits 1
-/// when results are empty. This helper accepts exit 0 or 1 so tests
-/// that probe negative-result invariants don't break.
-fn assert_ran(cmd: &mut Command) -> assert_cmd::assert::Assert {
-    let assert = cmd.assert();
-    let code = assert.get_output().status.code();
-    assert!(
-        matches!(code, Some(0) | Some(1)),
-        "expected exit 0 or 1, got: {code:?}"
-    );
-    assert
-}
+mod common;
+use common::assert_ran;
 
 fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();

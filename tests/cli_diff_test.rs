@@ -9,6 +9,9 @@ use std::process::Command as StdCommand;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
+mod common;
+use common::assert_ran;
+
 fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(dir);
@@ -48,10 +51,8 @@ fn diff_lists_adds_removes_and_body_changes() {
     let tmp = TempDir::new().unwrap();
     set_up_repo(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args(["diff", "--base", "main", "--format", "json"])
-        .assert()
-        .success();
+    let assert =
+        assert_ran(vex_in(tmp.path()).args(["diff", "--base", "main", "--format", "json"]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("diff emits envelope");
     let json = envelope.get("results").expect("envelope has results");
@@ -92,10 +93,8 @@ fn diff_with_no_changes_emits_empty_array() {
     git(tmp.path(), &["add", "lib.rs"]);
     git(tmp.path(), &["commit", "-q", "-m", "single"]);
 
-    let assert = vex_in(tmp.path())
-        .args(["diff", "--base", "main", "--format", "json"])
-        .assert()
-        .success();
+    let assert =
+        assert_ran(vex_in(tmp.path()).args(["diff", "--base", "main", "--format", "json"]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let json = envelope.get("results").expect("envelope has results");

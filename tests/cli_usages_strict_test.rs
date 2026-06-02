@@ -11,6 +11,9 @@ use std::path::Path;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
+mod common;
+use common::assert_ran;
+
 fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(dir);
@@ -36,10 +39,7 @@ fn strict_returns_binder_resolved_call_site() {
     let tmp = TempDir::new().unwrap();
     write_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args(["usages", "payment_processor", "--strict"])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "payment_processor", "--strict"]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     assert!(
         stdout.contains("src/lib.rs:4") || stdout.contains("src\\lib.rs:4"),
@@ -52,10 +52,7 @@ fn strict_does_not_emit_deferral_warning_anymore() {
     let tmp = TempDir::new().unwrap();
     write_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args(["usages", "payment_processor", "--strict"])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "payment_processor", "--strict"]));
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     assert!(
         !stderr.contains("type-aware refs not yet built"),
@@ -68,10 +65,7 @@ fn no_strict_does_not_print_warning() {
     let tmp = TempDir::new().unwrap();
     write_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args(["usages", "payment_processor"])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "payment_processor"]));
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     assert!(
         !stderr.contains("type-aware refs not yet built"),
@@ -128,14 +122,7 @@ fn strict_prints_no_usages_when_symbol_has_zero_refs() {
     // alpha_fn has one ref (from caller_fn); beta_fn has zero.
     // v1.12.0 S8.2: `vex usages` exits 1 when no refs match — the test
     // is for the "no usages" message on stdout, not the exit code.
-    let assert = vex_in(tmp.path())
-        .args(["usages", "beta_fn", "--strict"])
-        .assert();
-    let code = assert.get_output().status.code();
-    assert!(
-        matches!(code, Some(0) | Some(1)),
-        "expected exit 0 or 1, got: {code:?}"
-    );
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "beta_fn", "--strict"]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     assert!(
         stdout.contains("No usages found"),
@@ -164,10 +151,7 @@ fn strict_resolves_csharp_using_directive_cross_file() {
     .unwrap();
     vex_in(tmp.path()).args(["index"]).assert().success();
 
-    let assert = vex_in(tmp.path())
-        .args(["usages", "PaymentGateway", "--strict"])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "PaymentGateway", "--strict"]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     // line 4 of caller.cs: `        var gw = new PaymentGateway();`
     assert!(
@@ -204,10 +188,7 @@ fn strict_resolves_cpp_using_declaration_cross_file() {
     .unwrap();
     vex_in(tmp.path()).args(["index"]).assert().success();
 
-    let assert = vex_in(tmp.path())
-        .args(["usages", "PaymentGateway", "--strict"])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "PaymentGateway", "--strict"]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     // line 3 of caller.cpp: `    PaymentGateway gw;`
     assert!(
@@ -243,10 +224,7 @@ fn strict_filters_out_string_literal_noise_that_legacy_fst_keeps() {
     .unwrap();
     vex_in(tmp.path()).args(["index"]).assert().success();
 
-    let assert = vex_in(tmp.path())
-        .args(["usages", "payment_processor", "--strict"])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "payment_processor", "--strict"]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let line5 = stdout.lines().any(|l| l.contains(":5"));
     assert!(

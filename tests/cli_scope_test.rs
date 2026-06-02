@@ -10,6 +10,9 @@ use std::path::Path;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
+mod common;
+use common::assert_ran;
+
 fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(dir);
@@ -47,10 +50,12 @@ fn include_glob_restricts_search_results() {
     let tmp = TempDir::new().unwrap();
     write_two_dir_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args(["search", "payment_processor", "--include", "tests/**"])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args([
+        "search",
+        "payment_processor",
+        "--include",
+        "tests/**",
+    ]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).replace('\\', "/"); // Normalise Windows path separators for substring checks.
 
     assert!(
@@ -72,17 +77,14 @@ fn exclude_glob_drops_results_even_when_included() {
     let tmp = TempDir::new().unwrap();
     write_two_dir_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args([
-            "search",
-            "payment_processor",
-            "--include",
-            "src/**",
-            "--exclude",
-            "**/generated/**",
-        ])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args([
+        "search",
+        "payment_processor",
+        "--include",
+        "src/**",
+        "--exclude",
+        "**/generated/**",
+    ]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).replace('\\', "/"); // Normalise Windows path separators for substring checks.
 
     assert!(
@@ -104,17 +106,14 @@ fn multiple_include_globs_union() {
     let tmp = TempDir::new().unwrap();
     write_two_dir_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args([
-            "search",
-            "payment_processor",
-            "--include",
-            "src/api.rs",
-            "--include",
-            "tests/**",
-        ])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args([
+        "search",
+        "payment_processor",
+        "--include",
+        "src/api.rs",
+        "--include",
+        "tests/**",
+    ]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).replace('\\', "/"); // Normalise Windows path separators for substring checks.
 
     assert!(
@@ -152,17 +151,14 @@ fn scope_applies_to_grep() {
     let tmp = TempDir::new().unwrap();
     write_two_dir_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args([
-            "grep",
-            "payment_processor",
-            "--exclude",
-            "**/generated/**",
-            "--exclude",
-            "tests/**",
-        ])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args([
+        "grep",
+        "payment_processor",
+        "--exclude",
+        "**/generated/**",
+        "--exclude",
+        "tests/**",
+    ]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).replace('\\', "/"); // Normalise Windows path separators for substring checks.
 
     assert!(
@@ -198,10 +194,12 @@ fn scope_applies_to_usages() {
     .unwrap();
     vex_in(tmp.path()).args(["index"]).assert().success();
 
-    let assert = vex_in(tmp.path())
-        .args(["usages", "payment_processor", "--exclude", "tests/**"])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args([
+        "usages",
+        "payment_processor",
+        "--exclude",
+        "tests/**",
+    ]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).replace('\\', "/"); // Normalise Windows path separators for substring checks.
     assert!(
         stdout.contains("src/lib.rs"),

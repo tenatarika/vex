@@ -9,6 +9,9 @@ use std::path::Path;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
+mod common;
+use common::assert_ran;
+
 fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(dir);
@@ -35,10 +38,7 @@ fn paths_finds_two_hop_chain() {
     let tmp = TempDir::new().unwrap();
     write_chain_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args(["paths", "a", "target", "--format", "json"])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args(["paths", "a", "target", "--format", "json"]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("paths emits envelope");
     let json = envelope
@@ -68,18 +68,15 @@ fn paths_respects_max_hops() {
     write_chain_project(tmp.path());
 
     // 2-hop chain `a → mid → target`. max-hops=1 should miss it.
-    let assert = vex_in(tmp.path())
-        .args([
-            "paths",
-            "a",
-            "target",
-            "--max-hops",
-            "1",
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args([
+        "paths",
+        "a",
+        "target",
+        "--max-hops",
+        "1",
+        "--format",
+        "json",
+    ]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let json = envelope
@@ -98,10 +95,7 @@ fn reachable_lists_all_indirect_callers() {
     let tmp = TempDir::new().unwrap();
     write_chain_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args(["reachable", "target", "--format", "json"])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args(["reachable", "target", "--format", "json"]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let json = envelope

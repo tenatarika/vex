@@ -226,6 +226,11 @@ pub(crate) fn paths(
                 .all(|s| path_scope.accept(&s.path))
         })
         .collect();
+    // v1.12.0 S8.2 — extends exit-code contract to `vex paths`.
+    if paths.is_empty() {
+        crate::cli::exit_code::signal_no_results();
+    }
+
     output::print_paths(&paths, &from, &to, &ctx.format, &root);
     Ok(())
 }
@@ -277,6 +282,11 @@ pub(crate) fn reachable(
         .filter(|m| path_scope.accept(&m.path))
         .take(limit)
         .collect();
+    // v1.12.0 S8.2 — extends exit-code contract to `vex reachable`.
+    if matches.is_empty() {
+        crate::cli::exit_code::signal_no_results();
+    }
+
     output::print_reachable(&matches, &target, &ctx.format, &root);
     Ok(())
 }

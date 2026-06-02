@@ -23,6 +23,14 @@ pub(crate) fn diff(
         .into_iter()
         .filter(|c| path_scope.accept(&c.path))
         .collect();
+
+    // v1.12.0 S8.2 — extends exit-code contract to `vex diff`. An empty
+    // diff (no symbol-level changes across the base ref) maps to exit 1
+    // so scripts can short-circuit follow-up work without re-running git.
+    if changes.is_empty() {
+        crate::cli::exit_code::signal_no_results();
+    }
+
     output::print_diff(&changes, &base, &ctx.format, &root);
     Ok(())
 }

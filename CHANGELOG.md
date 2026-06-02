@@ -78,9 +78,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/cli/exit_code.rs` (process-global `AtomicBool`); `main` maps
   through `std::process::ExitCode`. Handlers that always succeed
   (`vex index`, `vex update`, `vex outline`, `vex status`, …) stay at
-  `0`. Remaining query subcommands (`similar`, `duplicates`,
-  `implementations`, `paths`, `reachable`, `diff`, `bundle`) will be
-  wired in subsequent patches — they currently default to `0`.
+  `0`. The seven remaining query subcommands (`similar`, `duplicates`,
+  `implementations`, `paths`, `reachable`, `diff`, `bundle`) are now
+  wired in this same release — all fourteen query commands honour the
+  contract. `vex bundle` gates on the `items` array being empty;
+  `mode_hints.empty_reason` already explained the *why*, the exit code
+  now lets scripts skip a `jq` call. New `docs/EXIT-CODES.md` is the
+  authoritative reference for script authors.
 - **S8.3 — `VEX_BIN` and `project_root` validation in `vex-mcp`.**
   Previously a typo'd `VEX_BIN=/wrong/path` surfaced as an opaque
   OS-level "No such file or directory" inside the MCP tool-call
@@ -158,6 +162,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a peer's parse + embed. Without the flag, behaviour is unchanged
   (blocking lock acquire). Pinned by two unit tests covering
   `IndexLock::try_acquire`'s free and contended paths.
+- **`docs/EXIT-CODES.md`.** Author-facing reference for the S8.2
+  contract (0 / 1 / 2). Lists which subcommands distinguish 0 vs 1
+  and which always exit 0, explains the side-channel design choice,
+  and ships two shell examples so script authors don't have to read
+  `src/cli/exit_code.rs`.
+- **`tests/common/mod.rs::assert_ran` shared helper.** Three
+  integration tests previously hand-rolled the same "accept exit code
+  0 or 1" assertion (`cli_pattern_why_test`,
+  `cli_callgraph_decorators_test`, `cli_module_symbols_test`); seven
+  more (`cli_bundle_test`, `cli_diff_test`, `cli_explain_test`,
+  `cli_paths_reachable_test`, `cli_pattern_test`, `cli_scope_test`,
+  `cli_usages_strict_test`) had `.success()` query-command assertions
+  that started failing once the new `signal_no_results` wiring made
+  empty results exit `1`. All ten now share the helper via Cargo's
+  `tests/common/mod.rs` convention (the `mod.rs` form, so it isn't
+  compiled as its own test binary).
 
 ### Changed
 

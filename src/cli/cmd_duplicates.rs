@@ -107,6 +107,11 @@ pub(crate) fn duplicates(
         None
     };
 
+    // v1.12.0 S8.2 — extends exit-code contract to `vex duplicates`.
+    if pairs.is_empty() {
+        crate::cli::exit_code::signal_no_results();
+    }
+
     output::print_duplicates(&pairs, explanations.as_deref(), &ctx.format, &root);
 
     // 11.10: structured trace on stderr for `--why`.

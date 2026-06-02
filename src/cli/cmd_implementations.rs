@@ -44,6 +44,11 @@ pub(crate) fn implementations(
         .collect();
     let elapsed = start.elapsed();
 
+    // v1.12.0 S8.2 — extends exit-code contract to `vex implementations`.
+    if matches.is_empty() {
+        crate::cli::exit_code::signal_no_results();
+    }
+
     match ctx.format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = matches

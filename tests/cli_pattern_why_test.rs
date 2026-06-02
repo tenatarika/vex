@@ -10,18 +10,8 @@ use std::path::Path;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
-/// v1.12.0 S8.2 — `vex pattern` exits 1 when no matches. These tests
-/// probe the `--why` trace on stderr regardless of result count, so
-/// accept exit 0 or 1.
-fn assert_ran(cmd: &mut Command) -> assert_cmd::assert::Assert {
-    let assert = cmd.assert();
-    let code = assert.get_output().status.code();
-    assert!(
-        matches!(code, Some(0) | Some(1)),
-        "expected exit 0 or 1, got: {code:?}"
-    );
-    assert
-}
+mod common;
+use common::assert_ran;
 
 fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();

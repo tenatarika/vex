@@ -10,6 +10,9 @@ use std::path::Path;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
+mod common;
+use common::assert_ran;
+
 fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(dir);
@@ -54,19 +57,16 @@ fn duplicates_explain_emits_jaccard_and_diff() {
     let tmp = TempDir::new().unwrap();
     write_duplicate_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args([
-            "duplicates",
-            "--threshold",
-            "0.5",
-            "--min-body-lines",
-            "1",
-            "--explain",
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args([
+        "duplicates",
+        "--threshold",
+        "0.5",
+        "--min-body-lines",
+        "1",
+        "--explain",
+        "--format",
+        "json",
+    ]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let envelope: serde_json::Value =
         serde_json::from_str(&stdout).expect("duplicates --explain emits envelope");
@@ -108,18 +108,15 @@ fn duplicates_without_explain_omits_explanation_field() {
     let tmp = TempDir::new().unwrap();
     write_duplicate_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args([
-            "duplicates",
-            "--threshold",
-            "0.5",
-            "--min-body-lines",
-            "1",
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success();
+    let assert = assert_ran(vex_in(tmp.path()).args([
+        "duplicates",
+        "--threshold",
+        "0.5",
+        "--min-body-lines",
+        "1",
+        "--format",
+        "json",
+    ]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let json = envelope
@@ -143,30 +140,24 @@ fn min_score_alias_matches_threshold_behavior() {
     // `--threshold 0.99` should match `--min-score 0.99`: both produce
     // the same JSON because they are clap aliases. Diff in either
     // direction would indicate the alias isn't wired.
-    let with_threshold = vex_in(tmp.path())
-        .args([
-            "duplicates",
-            "--threshold",
-            "0.99",
-            "--min-body-lines",
-            "1",
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success();
-    let with_alias = vex_in(tmp.path())
-        .args([
-            "duplicates",
-            "--min-score",
-            "0.99",
-            "--min-body-lines",
-            "1",
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success();
+    let with_threshold = assert_ran(vex_in(tmp.path()).args([
+        "duplicates",
+        "--threshold",
+        "0.99",
+        "--min-body-lines",
+        "1",
+        "--format",
+        "json",
+    ]));
+    let with_alias = assert_ran(vex_in(tmp.path()).args([
+        "duplicates",
+        "--min-score",
+        "0.99",
+        "--min-body-lines",
+        "1",
+        "--format",
+        "json",
+    ]));
 
     let a = String::from_utf8_lossy(&with_threshold.get_output().stdout).into_owned();
     let b = String::from_utf8_lossy(&with_alias.get_output().stdout).into_owned();

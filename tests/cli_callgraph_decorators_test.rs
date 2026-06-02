@@ -18,27 +18,14 @@ use std::path::Path;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
+mod common;
+use common::assert_ran;
+
 fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(dir);
     cmd.env("VEX_CACHE_DIR", dir.join(".vex-test-cache"));
     cmd
-}
-
-/// v1.12.0 S8.2 — `vex callers Foo` now returns exit code 1 when no
-/// edges match (`0` is reserved for "found results"; `2` is reserved for
-/// actual errors). These tests query for both populated and intentionally-
-/// empty results, so the universal "command did not error" check has to
-/// accept 0 OR 1. Use this helper instead of `.assert().success()` on
-/// query commands.
-fn assert_ran(cmd: &mut Command) -> assert_cmd::assert::Assert {
-    let assert = cmd.assert();
-    let code = assert.get_output().status.code();
-    assert!(
-        matches!(code, Some(0) | Some(1)),
-        "expected exit code 0 (found) or 1 (no results), got: {code:?}"
-    );
-    assert
 }
 
 /// Parse a flat JSON array from `vex callers` / `vex callees`

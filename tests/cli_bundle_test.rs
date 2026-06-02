@@ -10,6 +10,9 @@ use std::process::Command as StdCommand;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
+mod common;
+use common::assert_ran;
+
 fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(dir);
@@ -70,11 +73,16 @@ fn seed_indexed_project(dir: &Path) {
     vex_in(dir).args(["index"]).assert().success();
 }
 
-/// Run `vex bundle …` and parse stdout as JSON, panicking on non-zero
-/// exit or unparseable output. Captures stderr so test logs show
+/// Run `vex bundle …` and parse stdout as JSON, panicking on a real
+/// error or unparseable output. Captures stderr so test logs show
 /// indexing diagnostics when this fails.
+///
+/// v1.12.0 S8.2 — `vex bundle` returns exit code 1 when the bundle
+/// `items` array is empty (e.g. the `bundle_*_empty_*` tests below
+/// intentionally probe degraded shapes). Accept exit 0 or 1 via
+/// `assert_ran` so those tests still validate the JSON envelope.
 fn run_bundle(dir: &Path, args: &[&str]) -> serde_json::Value {
-    let assert = vex_in(dir).args(args).assert().success();
+    let assert = assert_ran(vex_in(dir).args(args));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
         panic!("`vex bundle {args:?}` stdout is not valid JSON: {e}\n---\n{stdout}")

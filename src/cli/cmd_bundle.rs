@@ -166,6 +166,15 @@ pub fn cmd_bundle(args: BundleArgs<'_>, ctx: BundleCtx<'_>) -> Result<()> {
         ..MetaEnvelope::default()
     };
 
+    // v1.12.0 S8.2 — extends exit-code contract to `vex bundle`. The
+    // envelope always carries `mode_hints` (even on empty), so we gate
+    // strictly on `items` — that's the bit a caller treats as the
+    // payload. `mode_hints.empty_reason` already explains *why*; the
+    // exit code just lets scripts skip a `jq` call.
+    if response.items.is_empty() {
+        crate::cli::exit_code::signal_no_results();
+    }
+
     // Phase 13 envelope contract: every bundle mode (symbol / pr-impact /
     // project) emits through the shared `print_envelope` helper so the
     // wire shape stays aligned with the rest of the CLI surface. The
