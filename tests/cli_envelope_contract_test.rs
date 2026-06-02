@@ -47,15 +47,18 @@ fn write_min_project(root: &Path) {
 
 /// Run `vex <args>` with `--format json` and assert the envelope
 /// contract: stdout parses as JSON; the root object has
-/// `protocol_version == "v1"`.
+/// `protocol_version == "v1"`. Exit code 0 (results found) and 1
+/// (no results — v1.12.0 S8.2 contract) are both treated as
+/// "command ran without error". Only code 2+ would fail here.
 #[track_caller]
 fn assert_envelope(root: &Path, args: &[&str]) {
-    let out = vex_in(root)
-        .args(args)
-        .assert()
-        .success()
-        .get_output()
-        .clone();
+    let assert = vex_in(root).args(args).assert();
+    let code = assert.get_output().status.code();
+    assert!(
+        matches!(code, Some(0) | Some(1)),
+        "`vex {args:?}` must exit 0 (results) or 1 (no results); got: {code:?}"
+    );
+    let out = assert.get_output().clone();
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let env: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("`vex {args:?}` stdout was not valid JSON: {e}\n---\n{stdout}"));
@@ -175,13 +178,19 @@ fn envelope_disabled_via_env_falls_back_to_bare() {
         &["search", "bar", "--format", "json"][..],
         &["show", "bar", "--format", "json"][..],
     ] {
-        let out = vex_in(tmp.path())
+        // Accept exit 0 (results found) and 1 (no results, v1.12.0 S8.2).
+        // The escape-hatch test cares about the bare-shape stdout, not
+        // the exit code.
+        let assert = vex_in(tmp.path())
             .env("VEX_JSON_ENVELOPE", "0")
             .args(args)
-            .assert()
-            .success()
-            .get_output()
-            .clone();
+            .assert();
+        let code = assert.get_output().status.code();
+        assert!(
+            matches!(code, Some(0) | Some(1)),
+            "`vex {args:?}` must exit 0 or 1; got: {code:?}"
+        );
+        let out = assert.get_output().clone();
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         let val: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
             panic!("`vex {args:?}` stdout was not valid JSON: {e}\n---\n{stdout}")

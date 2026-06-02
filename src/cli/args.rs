@@ -102,10 +102,23 @@ pub struct MetadataArgs {
     pub sealed_only: bool,
 }
 
+/// v1.12.0 S8.4 — `env!("VEX_VERSION")` would refuse to compile when the
+/// build.rs that defines the var hasn't run (vex consumed as a git
+/// dependency from a stripped workspace, IDE rust-analyzer in some
+/// configurations, doc-tests from another crate). `option_env!` makes
+/// the var optional and falls back to Cargo's always-defined
+/// `CARGO_PKG_VERSION`. Production builds keep printing the git-describe
+/// string set by `build.rs`; the fallback only fires in degraded build
+/// environments where `--version` formerly broke the whole binary.
+const VEX_VERSION: &str = match option_env!("VEX_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Parser)]
 #[command(
     name = "vex",
-    version = env!("VEX_VERSION"),
+    version = VEX_VERSION,
     about = "Fast hybrid structural + semantic code search"
 )]
 pub struct Cli {

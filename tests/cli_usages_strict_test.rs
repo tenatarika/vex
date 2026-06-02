@@ -126,10 +126,16 @@ fn strict_prints_no_usages_when_symbol_has_zero_refs() {
     vex_in(tmp.path()).args(["index"]).assert().success();
 
     // alpha_fn has one ref (from caller_fn); beta_fn has zero.
+    // v1.12.0 S8.2: `vex usages` exits 1 when no refs match — the test
+    // is for the "no usages" message on stdout, not the exit code.
     let assert = vex_in(tmp.path())
         .args(["usages", "beta_fn", "--strict"])
-        .assert()
-        .success();
+        .assert();
+    let code = assert.get_output().status.code();
+    assert!(
+        matches!(code, Some(0) | Some(1)),
+        "expected exit 0 or 1, got: {code:?}"
+    );
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     assert!(
         stdout.contains("No usages found"),

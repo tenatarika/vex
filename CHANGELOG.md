@@ -31,6 +31,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   which is the natural shape given line numbers are already known. Small
   per-file save; visible at workspace-scale.
 
+### Fixed
+
+- **S8.2 — explicit exit-code contract (0 / 1 / 2).** Pre-v1.12.0 `vex`
+  effectively always exited 0 — even when a search returned zero
+  results, even on bad regex syntax that propagated up as anyhow
+  errors. The contract documented in earlier CHANGELOGs ("0 = success,
+  1 = no results, 2 = error") was aspirational, not implemented. CI /
+  scripts could not gate `vex search Foo` on whether anything was
+  found. Now: `0` on success-with-results (or successful action),
+  `1` when a query handler signalled empty via the new
+  `cli::exit_code::signal_no_results()` side channel (`search`,
+  `usages`, `callers`, `callees`, `pattern`, `grep`, `show` all wired),
+  `2` when `dispatch` returns `Err` — anyhow's auto-formatted message
+  goes to stderr. The exit-code wiring lives in
+  `src/cli/exit_code.rs` (process-global `AtomicBool`); `main` maps
+  through `std::process::ExitCode`. Handlers that always succeed
+  (`vex index`, `vex update`, `vex outline`, `vex status`, …) stay at
+  `0`. Remaining query subcommands (`similar`, `duplicates`,
+  `implementations`, `paths`, `reachable`, `diff`, `bundle`) will be
+  wired in subsequent patches — they currently default to `0`.
+- **S8.3 — `VEX_BIN` and `project_root` validation in `vex-mcp`.**
+  Previously a typo'd `VEX_BIN=/wrong/path` surfaced as an opaque
+  OS-level "No such file or directory" inside the MCP tool-call
+  response, with no hint of which env var or path was at fault. New
+  helpers `resolve_vex_bin()` and `validate_project_root()` in
+  `crates/vex-mcp/src/main.rs` check existence, file-vs-directory
+  shape, and Unix executable-bit (on Windows the file-existence check
+  is sufficient since `.exe` extension associates executability)
+  before `Command::spawn`, emitting messages like
+  `VEX_BIN points to /opt/foo/vex but no such file exists; unset
+  VEX_BIN to fall back to PATH lookup of \`vex\``. Pinned by 5 unit
+  tests covering free / nonexistent / directory / file-as-dir /
+  missing-dir cases.
+- **S8.4 — `env!("VEX_VERSION")` survives degraded build
+  environments.** Pre-fix, consuming `vex` as a git dependency from a
+  partial workspace (or under some rust-analyzer configurations)
+  could refuse to compile because `build.rs` had not run to define
+  `VEX_VERSION`. The `Cli` derive now resolves the value through a
+  new `const VEX_VERSION: &str` that uses `option_env!` with a
+  fallback to `CARGO_PKG_VERSION`; production builds keep printing
+  the git-describe string set by `build.rs` (`v1.11.2-NN-gSHA`),
+  while degraded environments at least produce the crate's
+  `Cargo.toml` version instead of failing the whole compile.
+
 ### Added
 
 - **Phase 14.6 — class-level decorator / annotation edges in the

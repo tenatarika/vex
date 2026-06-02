@@ -137,6 +137,13 @@ pub(crate) fn cmd_callgraph(
         .collect();
     let elapsed = start.elapsed();
 
+    // v1.12.0 S8.2 — signal "no callers/callees" for the exit-code
+    // contract. Applies to both `vex callers` and `vex callees` since
+    // they share this code path.
+    if matches.is_empty() {
+        crate::cli::exit_code::signal_no_results();
+    }
+
     match ctx.format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = matches

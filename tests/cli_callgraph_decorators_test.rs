@@ -25,6 +25,22 @@ fn vex_in(dir: &Path) -> Command {
     cmd
 }
 
+/// v1.12.0 S8.2 — `vex callers Foo` now returns exit code 1 when no
+/// edges match (`0` is reserved for "found results"; `2` is reserved for
+/// actual errors). These tests query for both populated and intentionally-
+/// empty results, so the universal "command did not error" check has to
+/// accept 0 OR 1. Use this helper instead of `.assert().success()` on
+/// query commands.
+fn assert_ran(cmd: &mut Command) -> assert_cmd::assert::Assert {
+    let assert = cmd.assert();
+    let code = assert.get_output().status.code();
+    assert!(
+        matches!(code, Some(0) | Some(1)),
+        "expected exit code 0 (found) or 1 (no results), got: {code:?}"
+    );
+    assert
+}
+
 /// Parse a flat JSON array from `vex callers` / `vex callees`
 /// `--format json` stdout. Returns an empty array on parse error so
 /// per-test assertions surface as missing entries, not as panics here.
@@ -365,10 +381,10 @@ fn kotlin_qualified_annotation_uses_rightmost_identifier() {
     // Intermediate segments `kotlin` / `jvm` must NOT have `foo` as caller —
     // pins the trailing `.` anchor on `(user_type (identifier) @x .)`.
     for intermediate in ["kotlin", "jvm"] {
-        let out = vex_in(tmp.path())
-            .args(["callers", intermediate, "--format", "json"])
-            .assert()
-            .success()
+        let mut cmd = vex_in(tmp.path());
+        // Accept exit 1: under v1.12.0 S8.2, an intentionally-empty
+        // callers result returns 1 instead of 0.
+        let out = assert_ran(cmd.args(["callers", intermediate, "--format", "json"]))
             .get_output()
             .stdout
             .clone();
@@ -483,10 +499,8 @@ fn csharp_qualified_attribute_uses_rightmost_identifier() {
     // Intermediate segments must NOT have `Get` as caller — pins the
     // `qualified_name name: (identifier)` rightmost-wins walk.
     for intermediate in ["System", "Web", "Mvc"] {
-        let out = vex_in(tmp.path())
-            .args(["callers", intermediate, "--format", "json"])
-            .assert()
-            .success()
+        let mut cmd = vex_in(tmp.path());
+        let out = assert_ran(cmd.args(["callers", intermediate, "--format", "json"]))
             .get_output()
             .stdout
             .clone();
@@ -592,10 +606,8 @@ fn typescript_qualified_decorator_uses_rightmost_identifier() {
     );
 
     // Intermediate `nest` must NOT list `handler` as caller.
-    let out_nest = vex_in(tmp.path())
-        .args(["callers", "nest", "--format", "json"])
-        .assert()
-        .success()
+    let mut cmd_nest = vex_in(tmp.path());
+    let out_nest = assert_ran(cmd_nest.args(["callers", "nest", "--format", "json"]))
         .get_output()
         .stdout
         .clone();
@@ -728,10 +740,8 @@ fn rust_derive_attribute_is_filtered_at_cli_layer() {
     vex_in(tmp.path()).args(["index"]).assert().success();
 
     for callee in ["derive", "Debug", "Clone"] {
-        let out = vex_in(tmp.path())
-            .args(["callers", callee, "--format", "json"])
-            .assert()
-            .success()
+        let mut cmd = vex_in(tmp.path());
+        let out = assert_ran(cmd.args(["callers", callee, "--format", "json"]))
             .get_output()
             .stdout
             .clone();
@@ -776,10 +786,8 @@ fn rust_attribute_args_not_captured_at_cli_layer() {
     );
 
     // `rename` (arg identifier) must NOT have `bar` as caller.
-    let out_arg = vex_in(tmp.path())
-        .args(["callers", "rename", "--format", "json"])
-        .assert()
-        .success()
+    let mut cmd_arg = vex_in(tmp.path());
+    let out_arg = assert_ran(cmd_arg.args(["callers", "rename", "--format", "json"]))
         .get_output()
         .stdout
         .clone();

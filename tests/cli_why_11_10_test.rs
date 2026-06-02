@@ -131,10 +131,16 @@ fn usages_why_emits_prefix_suggestions_when_no_exact_hit() {
     let tmp = TempDir::new().unwrap();
     write_and_index_rust_project(tmp.path());
 
+    // v1.12.0 S8.2 — zero-hit usages now exits 1; the test cares about
+    // the `--why` trace on stderr, not the exit code.
     let assert = vex_in(tmp.path())
         .args(["usages", "payment", "--why"])
-        .assert()
-        .success();
+        .assert();
+    let code = assert.get_output().status.code();
+    assert!(
+        matches!(code, Some(0) | Some(1)),
+        "expected exit 0 or 1, got: {code:?}"
+    );
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     let trace = parse_trace(&stderr);
     assert_eq!(trace["hits_after_filter"].as_u64(), Some(0));

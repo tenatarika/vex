@@ -45,6 +45,11 @@ pub(crate) fn grep(
         .take(limit)
         .collect();
 
+    // v1.12.0 S8.2 — signal "no matches" for the exit-code contract.
+    if matches.is_empty() {
+        crate::cli::exit_code::signal_no_results();
+    }
+
     match ctx.format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = matches

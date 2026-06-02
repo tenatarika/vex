@@ -10,6 +10,19 @@ use std::path::Path;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
+/// v1.12.0 S8.2 — `vex pattern` exits 1 when no matches. These tests
+/// probe the `--why` trace on stderr regardless of result count, so
+/// accept exit 0 or 1.
+fn assert_ran(cmd: &mut Command) -> assert_cmd::assert::Assert {
+    let assert = cmd.assert();
+    let code = assert.get_output().status.code();
+    assert!(
+        matches!(code, Some(0) | Some(1)),
+        "expected exit 0 or 1, got: {code:?}"
+    );
+    assert
+}
+
 fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(dir);
@@ -56,18 +69,16 @@ fn why_indexed_mode_with_fn_keyword() {
     let tmp = TempDir::new().unwrap();
     write_and_index_rust_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args([
-            "pattern",
-            "fn $NAME()",
-            "--lang",
-            "rust",
-            "--why",
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success();
+    let mut cmd = vex_in(tmp.path());
+    let assert = assert_ran(cmd.args([
+        "pattern",
+        "fn $NAME()",
+        "--lang",
+        "rust",
+        "--why",
+        "--format",
+        "json",
+    ]));
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     let trace = parse_trace(&stderr);
@@ -257,18 +268,16 @@ fn why_indexed_mode_no_keyword_pattern() {
     let tmp = TempDir::new().unwrap();
     write_and_index_rust_project(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args([
-            "pattern",
-            "$X.then($Y)",
-            "--lang",
-            "rust",
-            "--why",
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success();
+    let mut cmd = vex_in(tmp.path());
+    let assert = assert_ran(cmd.args([
+        "pattern",
+        "$X.then($Y)",
+        "--lang",
+        "rust",
+        "--why",
+        "--format",
+        "json",
+    ]));
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     let trace = parse_trace(&stderr);

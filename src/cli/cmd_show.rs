@@ -204,5 +204,13 @@ pub(crate) fn show(
             }
         }
     }
+    // v1.12.0 S8.2 — signal "no symbols found" for exit-code contract.
+    // `printed` tracks text/compact-format rows; the JSON path emits into
+    // `json_items` instead, so we have to check both — otherwise a JSON
+    // call that successfully resolves symbols would still exit 1 because
+    // `printed` was never incremented in the JSON arm.
+    if printed == 0 && json_items.is_empty() {
+        crate::cli::exit_code::signal_no_results();
+    }
     Ok(())
 }

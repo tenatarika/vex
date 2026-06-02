@@ -20,6 +20,7 @@ pub(crate) mod cmd_update;
 pub(crate) mod cmd_usages;
 pub(crate) mod cmd_watch;
 pub mod common;
+pub(crate) mod exit_code;
 pub(crate) mod index_management;
 pub mod output;
 pub mod scope;
@@ -34,7 +35,11 @@ use common::{extract_jobs_hint, extract_path_hint, resolve_format, resolve_root,
 
 use crate::util::config;
 
-pub fn dispatch(cli: Cli) -> Result<()> {
+pub fn dispatch(cli: Cli) -> Result<std::process::ExitCode> {
+    exit_code::finish(dispatch_inner(cli))
+}
+
+fn dispatch_inner(cli: Cli) -> Result<()> {
     // Load project config from .vex.toml — anchored to project root, not cwd
     let root_hint = extract_path_hint(&cli.command);
     let config_root = resolve_root(root_hint)?;

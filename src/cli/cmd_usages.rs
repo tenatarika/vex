@@ -120,6 +120,12 @@ pub(crate) fn usages(
         None
     };
 
+    // v1.12.0 S8.2 — signal "no usages found" once for the exit-code
+    // contract. Applies in both JSON and text formats.
+    if entries.is_empty() {
+        crate::cli::exit_code::signal_no_results();
+    }
+
     match ctx.format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = entries

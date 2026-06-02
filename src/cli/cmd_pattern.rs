@@ -86,6 +86,11 @@ pub(crate) fn pattern(
     let matches: Vec<_> = post_diff.into_iter().take(limit).collect();
     let elapsed = start.elapsed();
 
+    // v1.12.0 S8.2 — signal "no matches" for the exit-code contract.
+    if matches.is_empty() {
+        crate::cli::exit_code::signal_no_results();
+    }
+
     match ctx.format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = matches

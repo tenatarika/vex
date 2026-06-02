@@ -190,6 +190,14 @@ pub(crate) fn search(
         }
     }
 
+    // v1.12.0 S8.2 — signal "no results" once, regardless of format. The
+    // JSON path emits an empty results array (caller-friendly); the text
+    // path prints `No results for "..."`. Both produce exit code 1 via
+    // `cli::exit_code::finish`.
+    if results.is_empty() {
+        crate::cli::exit_code::signal_no_results();
+    }
+
     match ctx.format {
         OutputFormat::Json => {
             // Build per-result signals via the same (path, name, line)

@@ -34,6 +34,19 @@ fn unwrap_results(envelope: serde_json::Value) -> serde_json::Value {
 // Each test file is its own binary; no shared common/ mod in this project.
 // ---------------------------------------------------------------------------
 
+/// v1.12.0 S8.2 — `vex search` (and other query commands) now exits 1
+/// when results are empty. This helper accepts exit 0 or 1 so tests
+/// that probe negative-result invariants don't break.
+fn assert_ran(cmd: &mut Command) -> assert_cmd::assert::Assert {
+    let assert = cmd.assert();
+    let code = assert.get_output().status.code();
+    assert!(
+        matches!(code, Some(0) | Some(1)),
+        "expected exit 0 or 1, got: {code:?}"
+    );
+    assert
+}
+
 fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(dir);
@@ -150,10 +163,8 @@ fn module_symbol_excluded_from_search() {
     write_app_fixture(tmp.path());
 
     // Searching for literal "module" must produce no `<module:` hit.
-    let out_module = vex_in(tmp.path())
-        .args(["search", "module", "--format", "json"])
-        .assert()
-        .success()
+    let mut cmd_m = vex_in(tmp.path());
+    let out_module = assert_ran(cmd_m.args(["search", "module", "--format", "json"]))
         .get_output()
         .stdout
         .clone();
@@ -168,10 +179,8 @@ fn module_symbol_excluded_from_search() {
     }
 
     // Searching for the path fragment must also not return Module.
-    let out_path = vex_in(tmp.path())
-        .args(["search", "src/app", "--format", "json"])
-        .assert()
-        .success()
+    let mut cmd_p = vex_in(tmp.path());
+    let out_path = assert_ran(cmd_p.args(["search", "src/app", "--format", "json"]))
         .get_output()
         .stdout
         .clone();
@@ -333,12 +342,12 @@ fn usages_strict_does_not_include_module_call() {
     let tmp = TempDir::new().unwrap();
     write_app_fixture(tmp.path());
 
-    let assert = vex_in(tmp.path())
-        .args(["usages", "create_app", "--strict", "--format", "json"])
-        .assert()
-        .success(); // Python binder is wired in v1.8.x; the command must
-                    // exit 0 so an empty stdout means "no strict refs" and
-                    // not "command died before producing output".
+    let mut cmd = vex_in(tmp.path());
+    // v1.12.0 S8.2 — strict usages on a sentinel-only callee may return
+    // an empty result set (exit 1) rather than the populated path (exit
+    // 0). `assert_ran` accepts either; the test asserts the absence of
+    // `<module:` from whatever stdout was produced.
+    let assert = assert_ran(cmd.args(["usages", "create_app", "--strict", "--format", "json"]));
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
 
     // If --strict produces JSON, validate the absence of Module.
@@ -426,10 +435,8 @@ fn module_symbol_survives_vex_update() {
     vex_in(tmp.path()).args(["update"]).assert().success();
 
     // Module caller for `create_app` in `src/app.py` must still be present.
-    let assert = vex_in(tmp.path())
-        .args(["callers", "create_app", "--format", "json"])
-        .assert()
-        .success();
+    let mut cmd = vex_in(tmp.path());
+    let assert = assert_ran(cmd.args(["callers", "create_app", "--format", "json"]));
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let json: serde_json::Value =
@@ -492,11 +499,10 @@ fn module_caller_disappears_when_module_call_removed() {
     .unwrap();
     vex_in(tmp.path()).args(["update"]).assert().success();
 
-    // Module caller must be gone.
-    let after = vex_in(tmp.path())
-        .args(["callers", "create_app", "--format", "json"])
-        .assert()
-        .success()
+    // Module caller must be gone. v1.12.0 S8.2 — after the edit the
+    // callers list may be empty, which now exits 1 instead of 0.
+    let mut cmd_after = vex_in(tmp.path());
+    let after = assert_ran(cmd_after.args(["callers", "create_app", "--format", "json"]))
         .get_output()
         .stdout
         .clone();
