@@ -473,5 +473,8 @@ fn concurrent_run_rebuilds_once_not_per_thread() {
         counts.iter().all(|c| *c == counts[0]),
         "all threads should observe the same symbol count; got {counts:?}"
     );
-    assert!(counts[0] >= 2, "expected at least 2 symbols, got {counts:?}");
+    assert!(
+        counts[0] >= 2,
+        "expected at least 2 symbols, got {counts:?}"
+    );
 }

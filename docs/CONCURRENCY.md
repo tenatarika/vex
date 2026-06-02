@@ -91,7 +91,7 @@ When the peer finishes, the waiter takes the lock, runs its
 
 ## Tests
 
-The contract is pinned in `tests/concurrency_test.rs` (7 tests):
+The contract is pinned in `tests/concurrency_test.rs` (8 tests):
 
 - `parallel_index_serialized_by_lock` — N concurrent `vex index` calls
   do not corrupt the index.
@@ -99,6 +99,8 @@ The contract is pinned in `tests/concurrency_test.rs` (7 tests):
   calls do not corrupt the index.
 - `read_during_reindex_no_crash` — a reader thread sees a consistent
   snapshot while a writer rebuilds.
+- `file_deleted_during_indexing_no_panic` — pipeline does not panic
+  when a discovered file disappears before parse.
 - `concurrent_update_rebuilds_once_not_per_thread` — of N concurrent
   `vex update` calls on a stale index, **exactly one** rebuilds.
 - `concurrent_run_skips_when_index_already_fresh` — of N concurrent

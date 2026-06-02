@@ -128,6 +128,9 @@ and tidies up the OSS surface (LICENSE, CODE_OF_CONDUCT, Cargo metadata).
 
 ### Known limitations
 
+Both items below were resolved in the v1.12.0 development cycle — see
+the `[Unreleased]` section above for the closing entries.
+
 - **Skip path is fingerprint-only.** Both `pipeline::run` and
   `pipeline::update` decide whether to skip a concurrent peer's
   finished rebuild purely from the file-hash diff — they do not compare
@@ -136,14 +139,17 @@ and tidies up the OSS surface (LICENSE, CODE_OF_CONDUCT, Cargo metadata).
   structural-only index from the skip path without an error. The
   workaround is to delete the cache directory and rebuild manually.
   This is pre-existing in `update` since v1.11.1 and now applies
-  symmetrically to `run`; tracked as a v1.12.0 follow-up.
+  symmetrically to `run`. **Resolved in v1.12.0** via
+  `manifest_options_cover` / `run_can_skip` / `update_can_skip`.
 - **No symmetric "exactly one rebuilds" test for `run` on a stale
   index.** `pipeline::run` returns only a symbol count, so the
   rebuilt-vs-skipped distinction is not observable from outside the
   function the way it is for `update`'s `(total, changed, deleted)`
   return. The fresh-index property is pinned by
   `concurrent_run_skips_when_index_already_fresh`; the stale-index
-  herd-elimination is not yet pinned by a test. Tracked as v1.12.0.
+  herd-elimination is not yet pinned by a test. **Resolved in v1.12.0**
+  by changing `pipeline::run` to return `(usize, bool)` and adding
+  `concurrent_run_rebuilds_once_not_per_thread`.
 
 ## [1.11.1] - 2026-06-02
 

@@ -1384,7 +1384,11 @@ mod tests {
         };
         assert!(run_can_skip(&full, opts, "minilm-l6-v2"));
 
-        // None on pre-11.4 manifests is treated as full per the Manifest doc.
+        // `None` is not `Some(false)`, so the guard at the top of
+        // `run_can_skip` does not fire — pre-11.4 manifests slip through.
+        // The Manifest doc treats `None` as conservative (i.e. *not* full),
+        // but the skip gate only blocks on an explicit `Some(false)` written
+        // by `vex update`; that is the precise scenario the gate exists for.
         let pre_flag = Manifest::default();
         assert!(run_can_skip(&pre_flag, opts, "minilm-l6-v2"));
     }
