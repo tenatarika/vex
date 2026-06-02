@@ -3,10 +3,14 @@ members = [".", "crates/vex-mcp"]
 
 [package]
 name = "vex"
-version = "1.11.0"
+version = "1.11.1"
 edition = "2021"
 description = "Fast hybrid structural + semantic code search (vector + index)"
 license = "MIT"
+authors = ["Furcas <tenatarika@gmail.com>"]
+repository = "https://github.com/tenatarika/vex"
+homepage = "https://github.com/tenatarika/vex"
+readme = "README.md"
 rust-version = "1.88"
 
 [[bin]]
