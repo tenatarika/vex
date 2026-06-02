@@ -271,6 +271,15 @@ static COMPILED_QUERIES: LazyLock<HashMap<Language, Query>> = LazyLock::new(|| {
     m
 });
 
+/// Phase 14.6 capture name for class-level decorator / annotation
+/// targets that should attribute to module scope. Bypasses the
+/// `call_capture_inside_sibling_host` dedup filter — see the comment at
+/// the use-site in [`extract_callgraph`]. A future contributor adding
+/// or renaming this string must update BOTH the SCM patterns in
+/// [`callgraph_query`] AND the dispatch arm; the const is the single
+/// source of truth.
+const MODULE_CALL_CAPTURE: &str = "module_call.name";
+
 /// Extract function definitions and call expressions from source.
 fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<Call>)> {
     let query = COMPILED_QUERIES.get(&lang)?;
@@ -298,8 +307,10 @@ fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<C
     // suppress them — that filter was written to dedupe generic
     // `call_expression` captures that fire inside decorator arguments,
     // but Phase 14.6 deliberately captures the decorator's *direct*
-    // target identifier.
-    let module_call_name_idx = query.capture_index_for_name("module_call.name");
+    // target identifier. The capture string is centralised in the
+    // [`MODULE_CALL_CAPTURE`] const so a `grep` finds both the SCM
+    // patterns and the dispatch arm in one shot.
+    let module_call_name_idx = query.capture_index_for_name(MODULE_CALL_CAPTURE);
 
     // Phase 14.2.1 perf gate. The per-`@call.name` ancestor walk inside
     // `call_capture_inside_sibling_host` only does work when this file

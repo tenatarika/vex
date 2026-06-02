@@ -105,6 +105,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   while degraded environments at least produce the crate's
   `Cargo.toml` version instead of failing the whole compile.
 
+- **Options-aware skip-path in `pipeline::run` and `pipeline::update`.**
+  Closes the [1.11.2] known limitation — both skip-paths previously
+  decided whether to reuse a peer's just-finished rebuild from file
+  hashes alone, so a waiter that asked for `--semantic` would silently
+  be served an embedding-less manifest from a peer that built without
+  embeddings. `manifest_options_cover` now also requires the manifest's
+  `embedder_id` to match the caller's requested embedder before
+  skipping. The `run` variant (`run_can_skip`) additionally refuses to
+  skip a partial pattern index (`pattern_index_full == Some(false)`,
+  i.e. a manifest written by `vex update`) when the user explicitly ran
+  `vex index` and opted into the pattern section — the partial section
+  is harmless for queries (live-scan falls back), but the explicit
+  full-rebuild ask is owed. Sticky boolean opt-outs (`call_graph`,
+  `bm25`, `pattern_index`) are intentionally left out of the gate: a
+  rebuild would preserve the existing value per the Manifest doc
+  comments, so blocking the skip for them would produce the same
+  on-disk result. 8 helper unit tests in `src/index/pipeline.rs::tests`
+  pin every coverage case.
+
 ### Added
 
 - **Phase 14.6 — class-level decorator / annotation edges in the
@@ -155,27 +174,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to take `.0` explicitly. CLI behaviour and JSON output for
   `vex index` are unchanged; only library consumers see the new
   shape.
-
-### Fixed
-
-- **Options-aware skip-path in `pipeline::run` and `pipeline::update`.**
-  Closes the [1.11.2] known limitation — both skip-paths previously
-  decided whether to reuse a peer's just-finished rebuild from file
-  hashes alone, so a waiter that asked for `--semantic` would silently
-  be served an embedding-less manifest from a peer that built without
-  embeddings. `manifest_options_cover` now also requires the manifest's
-  `embedder_id` to match the caller's requested embedder before
-  skipping. The `run` variant (`run_can_skip`) additionally refuses to
-  skip a partial pattern index (`pattern_index_full == Some(false)`,
-  i.e. a manifest written by `vex update`) when the user explicitly ran
-  `vex index` and opted into the pattern section — the partial section
-  is harmless for queries (live-scan falls back), but the explicit
-  full-rebuild ask is owed. Sticky boolean opt-outs (`call_graph`,
-  `bm25`, `pattern_index`) are intentionally left out of the gate: a
-  rebuild would preserve the existing value per the Manifest doc
-  comments, so blocking the skip for them would produce the same
-  on-disk result. 8 helper unit tests in `src/index/pipeline.rs::tests`
-  pin every coverage case.
 
 ## [1.11.2] - 2026-06-02
 

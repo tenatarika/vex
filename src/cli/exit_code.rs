@@ -72,27 +72,42 @@ pub fn reset_for_tests() {
 mod tests {
     use super::*;
 
+    /// All three scenarios in one test body because the `NO_RESULTS`
+    /// atomic is process-global. `cargo test` runs unit tests in
+    /// parallel within the same binary; if these were split across
+    /// `#[test]` functions, the `signal_no_results()` from one test
+    /// would race against `reset_for_tests()` in another and the
+    /// "returns success when no signal" scenario would intermittently
+    /// observe `true` and fail. The scenarios are independent enough
+    /// to assert sequentially in one body — same approach as the
+    /// VEX_BIN tests in `crates/vex-mcp/src/main.rs`.
     #[test]
-    fn finish_returns_success_when_no_signal() {
+    fn finish_maps_signal_and_error_to_correct_exit_codes() {
+        // Scenario 1: no `signal_no_results()` → ExitCode::SUCCESS.
         reset_for_tests();
-        let code = finish(Ok(())).expect("finish");
-        assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::SUCCESS));
-    }
+        let code = finish(Ok(())).expect("scenario 1 must succeed");
+        assert_eq!(
+            format!("{code:?}"),
+            format!("{:?}", ExitCode::SUCCESS),
+            "no signal → SUCCESS"
+        );
 
-    #[test]
-    fn finish_returns_no_results_after_signal() {
+        // Scenario 2: after `signal_no_results()` → ExitCode::from(1).
         reset_for_tests();
         signal_no_results();
-        let code = finish(Ok(())).expect("finish");
-        assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::from(1)));
-        reset_for_tests();
-    }
+        let code = finish(Ok(())).expect("scenario 2 must succeed");
+        assert_eq!(
+            format!("{code:?}"),
+            format!("{:?}", ExitCode::from(1)),
+            "signal → ExitCode(1)"
+        );
 
-    #[test]
-    fn finish_propagates_error_unchanged() {
+        // Scenario 3: Err propagates unchanged regardless of signal state.
         reset_for_tests();
         let err: anyhow::Result<()> = Err(anyhow::anyhow!("oops"));
         let result = finish(err);
-        assert!(result.is_err(), "Err must propagate");
+        assert!(result.is_err(), "scenario 3: Err must propagate");
+
+        reset_for_tests();
     }
 }
