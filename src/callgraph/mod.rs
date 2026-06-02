@@ -1722,6 +1722,35 @@ class Foo
         );
     }
 
+    /// Kotlin `@kotlin.jvm.JvmStatic class Foo` — qualified annotation on
+    /// class. Rightmost identifier wins (`JvmStatic`); intermediate segments
+    /// `kotlin` / `jvm` MUST NOT leak as separate sentinel edges. Mirrors
+    /// `csharp_class_attribute_qualified_emits_module_scope_edge` and is the
+    /// class-level analogue of `kotlin_qualified_annotation_rightmost`
+    /// (which covers the same shape on a function).
+    #[test]
+    fn kotlin_class_annotation_qualified_emits_module_scope_edge() {
+        let src = r#"
+@kotlin.jvm.JvmStatic
+class Foo
+"#;
+        let edges = extract_call_edges(src, Language::Kotlin);
+        assert!(
+            edges.iter().any(|(caller, line, callee, _)| {
+                caller.is_empty() && *line == 0 && callee == "JvmStatic"
+            }),
+            "expected sentinel edge for rightmost `JvmStatic`; got: {edges:?}"
+        );
+        for leak in ["kotlin", "jvm"] {
+            assert!(
+                !edges
+                    .iter()
+                    .any(|(_, _, callee, _)| callee.as_str() == leak),
+                "intermediate path identifier `{leak}` must not leak as a separate edge: {edges:?}"
+            );
+        }
+    }
+
     /// Kotlin `@Component("x") class Foo` — constructor_invocation form.
     #[test]
     fn kotlin_class_annotation_with_args_emits_module_scope_edge() {

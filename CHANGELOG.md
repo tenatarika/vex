@@ -150,7 +150,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   identifier, scoped, marker, and annotation-with-args variants per
   language, plus a disjointness pin (`java_class_and_method_annotations_have_disjoint_attribution`)
   that locks "class-level decorators attribute to module, method-level
-  decorators attribute to their method".
+  decorators attribute to their method". A v1.12.0 follow-up adds the
+  three-segment qualified class-level test (`kotlin_class_annotation_qualified_emits_module_scope_edge`)
+  pinning `@kotlin.jvm.JvmStatic class Foo` → only `JvmStatic` leaks
+  (intermediates `kotlin` / `jvm` must not), symmetric with the
+  existing C# `csharp_class_attribute_qualified_emits_module_scope_edge`.
 - **`vex index --no-wait` / `vex update --no-wait`.** New CLI flag for
   callers that would rather no-op than wait on a peer's build lock.
   When set, the underlying `pipeline::run_or_busy` / `pipeline::update_or_busy`
