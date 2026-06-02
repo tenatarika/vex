@@ -6,6 +6,89 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.11.2] - 2026-06-02
+
+Patch release that completes the concurrency hardening started in v1.11.1
+and tidies up the OSS surface (LICENSE, CODE_OF_CONDUCT, Cargo metadata).
+
+### Fixed
+
+- **`vex index` thundering herd closed.** v1.11.1 fixed the herd for
+  `vex update` (lock held across parse + embed + write + HNSW with a
+  manifest re-check under the lock) but left `vex index` (full rebuild)
+  with the lock acquired *after* parse and embed. Under multi-agent
+  fan-out (`vex index` from N parallel CI jobs or subagents), every
+  instance still loaded the embedder and re-parsed the whole tree in
+  parallel. `pipeline::run` now acquires `IndexLock` before
+  `parse_files`/`generate_embeddings` and re-loads the manifest under the
+  lock: if a peer already produced an index with an identical file
+  fingerprint, the rebuild is skipped. Verified by
+  `concurrent_run_skips_when_index_already_fresh` in
+  `tests/concurrency_test.rs` (manifest mtime survives N concurrent
+  `vex index` calls). Note: this also means a single user running
+  `vex index` twice back-to-back on an unchanged tree will see the
+  second invocation skip — matching the behaviour `vex update` already
+  had for the same input.
+
+### Changed
+
+- **Cargo package metadata aligned with the v1.11.1 tag and OSS surface.**
+  `version` bumped from `1.11.0` to `1.11.1` (since `Cargo.toml` was not
+  updated in the v1.11.1 release), and `authors`, `repository`,
+  `homepage`, and `readme` fields added so crates.io listings and IDE
+  manifests render the project correctly. Then `1.11.2` for this
+  release.
+
+### Added
+
+- **`LICENSE` (MIT) at the repo root.** The license type was already
+  declared in `Cargo.toml` but the conventional plain-text file was
+  missing — GitHub and crates.io expect both.
+- **`CODE_OF_CONDUCT.md` (Contributor Covenant 2.1).** Reports route
+  through GitHub Issues (or GitHub DM to the maintainer for confidential
+  matters).
+
+## [1.11.1] - 2026-06-02
+
+Patch release. Closes a thundering-herd concurrency bug in `vex update`
+that surfaced under multi-agent fan-out. Tag was placed at the merge
+commit of PR #2 (`AlexeiDolgolyov:fix/concurrent-update-herd`); this
+CHANGELOG entry was added retroactively in v1.11.2 to document what was
+shipped under that tag.
+
+### Fixed
+
+- **`vex update` no longer thundering-herds the rebuild under multi-agent
+  fan-out.** When several `vex` instances ran `auto_update` against the
+  same stale index concurrently (an agent harness fanning out subagents
+  that each shelled out to `vex` on a dirty branch), each instance
+  independently parsed and embedded the changed files. The build lock
+  only wrapped the final write, and `update` generated embeddings before
+  reaching it, so the expensive parse + embed ran in parallel across
+  every instance — N redundant rebuilds saturating CPU and RAM until
+  they finished. Fix: hold the build lock across the whole rebuild
+  (parse + embed + write + HNSW) in both `run` and `update`, via an RAII
+  `IndexLock` guard. `update` acquires it before parse + embed and
+  double-checks staleness under it: the first instance does the work;
+  the rest wait, observe the now-fresh index, and skip.
+- **Lock-file sentinel never unlinked.** The previous lock guard
+  deleted the lock file on drop, which is the classic `flock` + unlink
+  race — a queued waiter keeps its handle on the now-unlinked inode
+  while a new instance creates a fresh inode under the same name and
+  locks it immediately, so both run at once. The sentinel is now
+  created once and never removed.
+- **`vex index` / HNSW pair published atomically.** `run` now holds the
+  lock across `build_hnsw` too (previously only `update` did), so the
+  `index.vex` / `index.hnsw` pair is published under one critical
+  section and concurrent writers can't desync or clobber it.
+
+### Tests
+
+- Adds `concurrent_update_rebuilds_once_not_per_thread` in
+  `tests/concurrency_test.rs`: asserts that of N concurrent updates on
+  a stale index, exactly one rebuilds and the rest skip. Fails without
+  the fix, where all N rebuild.
+
 ## [1.11.0] - 2026-06-01
 
 v1.11.0 is a minor release that closes five external-review items
