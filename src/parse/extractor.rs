@@ -53,6 +53,12 @@ pub fn extract_symbols_and_imports(
 
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
+    // v1.12.0 P4 — precompute line slices once so the per-capture context
+    // lookup is O(1) instead of `content.lines().nth(n)`'s O(line_count).
+    // The match loop fires per captured symbol/import; on a 5k-LOC file
+    // with a few hundred captures the old pattern was O(N × K) — small per
+    // file but visible at workspace scale.
+    let line_slices: Vec<&str> = content.lines().collect();
 
     while let Some(m) = matches.next() {
         for capture in m.captures {
@@ -65,7 +71,7 @@ pub fn extract_symbols_and_imports(
             let line = node.start_position().row + 1;
 
             if *capture_name == "import.name" {
-                let context = content.lines().nth(line - 1).map(|l| l.trim().to_string());
+                let context = line_slices.get(line - 1).map(|l| l.trim().to_string());
                 imports.push(ParsedRef {
                     name: strip_import_quotes(name).to_string(),
                     line,
@@ -481,13 +487,19 @@ pub fn extract_references_ast(content: &str, lang: Language) -> Result<Vec<Parse
     })?;
 
     let mut refs = Vec::new();
-    walk_for_refs(tree.root_node(), content, lang, &mut refs);
+    // v1.12.0 P4 — collect line slices once, then pass an O(1)-indexable
+    // view to the recursive walker. The old code did
+    // `content.lines().nth(n)` per identifier node; on identifier-dense
+    // files that compounded to O(line_count × ident_count).
+    let line_slices: Vec<&str> = content.lines().collect();
+    walk_for_refs(tree.root_node(), content, &line_slices, lang, &mut refs);
     Ok(refs)
 }
 
 fn walk_for_refs(
     node: tree_sitter::Node,
     content: &str,
+    lines: &[&str],
     lang: Language,
     refs: &mut Vec<ParsedRef>,
 ) {
@@ -512,7 +524,7 @@ fn walk_for_refs(
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == interp_kind {
-                walk_for_refs(child, content, lang, refs);
+                walk_for_refs(child, content, lines, lang, refs);
             }
         }
         return;
@@ -522,7 +534,7 @@ fn walk_for_refs(
         let text = node.utf8_text(content.as_bytes()).unwrap_or_default();
         if is_meaningful_identifier(text) {
             let line = node.start_position().row + 1;
-            let context = content.lines().nth(line - 1).map(|l| l.trim().to_string());
+            let context = lines.get(line - 1).map(|l| l.trim().to_string());
             refs.push(ParsedRef {
                 name: text.to_string(),
                 line,
@@ -534,7 +546,7 @@ fn walk_for_refs(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_for_refs(child, content, lang, refs);
+        walk_for_refs(child, content, lines, lang, refs);
     }
 }
 

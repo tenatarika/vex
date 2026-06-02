@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Performance
 
+- **`content.lines().nth(n)` quadratic patterns eliminated (P4).** Two
+  hot sites in `extractor::extract_symbols_and_imports` and
+  `extractor::walk_for_refs` looked up the context line for every
+  captured symbol / import / identifier via `content.lines().nth(line - 1)`,
+  each O(line_count). On identifier-dense files (a 5k-LOC source with a
+  few hundred captures) that compounded to O(line_count × capture_count)
+  per file. Both sites now pre-collect line slices once and index O(1),
+  which is the natural shape given line numbers are already known. Small
+  per-file save; visible at workspace-scale.
 - **Per-thread `tree_sitter::Parser` pool (P3).** Every hot parse site
   (`extractor::extract_symbols_and_imports`,
   `extractor::extract_references_ast`, `body::extract_symbol_body_ts`,
