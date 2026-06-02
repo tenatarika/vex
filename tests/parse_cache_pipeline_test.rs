@@ -152,7 +152,7 @@ fn pipeline_run_caches_tracked_files_and_skips_rewrite_on_rerun() {
     let entry_path = cache_entry_path(&sha);
 
     // First run: cache miss, file is written.
-    let count1 = pipeline::run(
+    let (count1, _) = pipeline::run(
         &repo_root,
         pipeline::IndexOptions::default(),
         "minilm-l6-v2",
@@ -177,7 +177,7 @@ fn pipeline_run_caches_tracked_files_and_skips_rewrite_on_rerun() {
     std::thread::sleep(std::time::Duration::from_millis(1100));
 
     // Second run: cache hit, file must NOT be rewritten.
-    let count2 = pipeline::run(
+    let (count2, _) = pipeline::run(
         &repo_root,
         pipeline::IndexOptions::default(),
         "minilm-l6-v2",
@@ -235,7 +235,7 @@ fn pipeline_run_skips_blob_cache_for_dirty_tracked_file() {
     )
     .unwrap();
 
-    let count = pipeline::run(
+    let (count, _) = pipeline::run(
         &repo_root,
         pipeline::IndexOptions::default(),
         "minilm-l6-v2",
@@ -297,7 +297,7 @@ fn pipeline_run_does_not_cache_untracked_files() {
         String::from_utf8(out.stdout).unwrap().trim().to_string()
     };
 
-    let count = pipeline::run(
+    let (count, _) = pipeline::run(
         &repo_root,
         pipeline::IndexOptions::default(),
         "minilm-l6-v2",

@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (lib API) — `pipeline::run` now returns `Result<(usize,
+  bool)>` instead of `Result<usize>`.** The second tuple element is
+  `rebuilt`: `true` when the call did the work, `false` when the
+  manifest re-check proved a concurrent peer had already produced an
+  equivalent index and the rebuild was skipped. This mirrors
+  `pipeline::update`'s `(total, changed, deleted)` shape and is what
+  enables the new `concurrent_run_rebuilds_once_not_per_thread`
+  regression test to assert "exactly one rebuilds" — before this
+  signal, the v1.11.2 patch could only assert the skip-when-fresh
+  property. All workspace callers updated to bind both elements or
+  to take `.0` explicitly. CLI behaviour and JSON output for
+  `vex index` are unchanged; only library consumers see the new
+  shape.
+
 ### Fixed
 
 - **Options-aware skip-path in `pipeline::run` and `pipeline::update`.**

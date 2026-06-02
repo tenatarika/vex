@@ -91,7 +91,7 @@ When the peer finishes, the waiter takes the lock, runs its
 
 ## Tests
 
-The contract is pinned in `tests/concurrency_test.rs` (6 tests):
+The contract is pinned in `tests/concurrency_test.rs` (7 tests):
 
 - `parallel_index_serialized_by_lock` — N concurrent `vex index` calls
   do not corrupt the index.
@@ -104,20 +104,15 @@ The contract is pinned in `tests/concurrency_test.rs` (6 tests):
 - `concurrent_run_skips_when_index_already_fresh` — of N concurrent
   `vex index` calls when the index is *already fresh*, **zero**
   rewrite the manifest.
+- `concurrent_run_rebuilds_once_not_per_thread` — of N concurrent
+  `vex index` calls on a cold cache, **exactly one** rebuilds and the
+  rest skip via the manifest re-check under the lock. (v1.12.0:
+  enabled by the new `(usize, bool)` return on `pipeline::run` —
+  before that, rebuild-vs-skip was not observable from outside.)
 - `many_concurrent_readers` — 8 concurrent readers all see the same
   symbol count.
 
 Run them with `cargo test --test concurrency_test`.
-
-### Coverage gap
-
-There is no symmetric "of N concurrent `vex index` calls on a *stale*
-index, exactly one rebuilds and the rest skip" test yet — `pipeline::run`
-returns only the symbol count, so the test would need either a new
-return signal or instrumentation hook to distinguish a real rebuild
-from the skip path. The `update` analogue distinguishes them via the
-`(total, changed, deleted)` return tuple. Tracked as a v1.12.0
-follow-up.
 
 ## Known limitations
 

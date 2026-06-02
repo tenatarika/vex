@@ -178,7 +178,7 @@ pub(crate) fn ensure_index_exists(
         with_bm25: resolve_section_enabled(false, cfg.bm25, None),
         with_pattern_index: resolve_section_enabled(false, cfg.pattern_index, None),
     };
-    let count = pipeline::run(root, opts, &embedder_id, &cfg.exclude)
+    let (count, _rebuilt) = pipeline::run(root, opts, &embedder_id, &cfg.exclude)
         .with_context(|| format!("bootstrap index for {}", root.display()))?;
     eprintln!(
         "Bootstrap complete: {count} symbols indexed{}.",

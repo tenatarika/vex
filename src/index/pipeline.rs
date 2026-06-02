@@ -48,12 +48,18 @@ impl Default for IndexOptions {
 }
 
 /// Full rebuild: index all files from scratch.
+///
+/// Returns `(symbol_count, rebuilt)`. `rebuilt` is `false` when the manifest
+/// re-check under the build lock proved a peer just produced an equivalent
+/// index — the caller sees the same symbol count it would have produced and
+/// can distinguish a real rebuild from a thundering-herd skip for telemetry /
+/// test purposes. Matches `pipeline::update`'s tuple-return shape.
 pub fn run(
     root: &Path,
     opts: IndexOptions,
     embedder_id: &str,
     excludes: &[String],
-) -> Result<usize> {
+) -> Result<(usize, bool)> {
     let root = root.canonicalize().context("canonicalize root")?;
     let files = discover_files(&root, excludes)?;
     tracing::info!(count = files.len(), "discovered files");
@@ -97,7 +103,7 @@ pub fn run(
                 tracing::info!(
                     "index already built by a concurrent vex instance; skipping rebuild"
                 );
-                return existing_symbol_count(&root);
+                return Ok((existing_symbol_count(&root)?, false));
             }
         }
     }
@@ -149,7 +155,7 @@ pub fn run(
         vectors = vectors.len(),
         "indexing complete"
     );
-    Ok(symbol_count)
+    Ok((symbol_count, true))
 }
 
 /// Symbol count of the existing on-disk index, or 0 if there is none. Shared by

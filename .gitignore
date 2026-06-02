@@ -27,6 +27,11 @@ CLAUDE.md
 .cocoindex_code/
 .python-version
 
+# Working-copy junk: clipboard / extracted dumps that occasionally appear
+# at the repo root and must not be committed.
+/COPYCLD/
+/COPYCLD.zip
+
 # IDE
 .idea/
 .vscode/

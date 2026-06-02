@@ -28,6 +28,7 @@ fn run_index(project_dir: &std::path::Path) -> usize {
         &[],
     )
     .expect("pipeline::run failed")
+    .0
 }
 
 fn open_reader(project_dir: &std::path::Path) -> IndexReader {
@@ -185,7 +186,7 @@ fn empty_directory_indexes_without_error() {
     // Create an empty src/ subdirectory — no files inside.
     std::fs::create_dir_all(project_dir.join("src")).unwrap();
 
-    let count = pipeline::run(
+    let (count, _) = pipeline::run(
         &project_dir,
         vex::index::pipeline::IndexOptions::default(),
         "minilm-l6-v2",
@@ -225,7 +226,7 @@ fn symlink_to_file() {
     symlink(src_dir.join("real.rs"), src_dir.join("link.rs")).unwrap();
 
     // Must not panic — pipeline handles the symlink gracefully.
-    let count = pipeline::run(
+    let (count, _) = pipeline::run(
         &project_dir,
         vex::index::pipeline::IndexOptions::default(),
         "minilm-l6-v2",

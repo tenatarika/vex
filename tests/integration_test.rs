@@ -829,7 +829,7 @@ fn incremental_update_reuses_unchanged_symbols() {
     std::fs::write(project_dir.join("src/changing.rs"), "pub fn old_func() {}").unwrap();
 
     // Full index
-    let count = vex::index::pipeline::run(
+    let (count, _) = vex::index::pipeline::run(
         &project_dir,
         vex::index::pipeline::IndexOptions::default(),
         "minilm-l6-v2",
@@ -935,7 +935,7 @@ fn incremental_update_noop_when_nothing_changed() {
 
     std::fs::write(project_dir.join("src/main.rs"), "pub fn main() {}").unwrap();
 
-    let count = vex::index::pipeline::run(
+    let (count, _) = vex::index::pipeline::run(
         &project_dir,
         vex::index::pipeline::IndexOptions::default(),
         "minilm-l6-v2",

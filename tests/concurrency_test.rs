@@ -417,3 +417,61 @@ fn concurrent_run_skips_when_index_already_fresh() {
         "alpha should still be findable"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 8. Symmetric to test #6 for `vex index`: of N concurrent run() calls on a
+//    cold cache (no existing index), exactly one thread reports rebuilt=true
+//    and the rest report rebuilt=false. v1.12.0 added the (usize, bool)
+//    return signal precisely so this property is observable from the outside
+//    — before that, the "exactly one rebuilds" claim for `pipeline::run` had
+//    no test pinning it (`vex update`'s `(total, changed, deleted)` tuple
+//    let test #6 distinguish rebuilt-vs-skipped via `changed > 0`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn concurrent_run_rebuilds_once_not_per_thread() {
+    const THREADS: usize = 4;
+
+    let dir = tempdir().unwrap();
+    write_src(dir.path(), "a.rs", "pub fn alpha() {}\npub fn beta() {}\n");
+
+    let root = dir.path().to_path_buf();
+    let barrier = Arc::new(Barrier::new(THREADS));
+
+    let handles: Vec<_> = (0..THREADS)
+        .map(|_| {
+            let r = root.clone();
+            let b = Arc::clone(&barrier);
+            thread::spawn(move || {
+                b.wait();
+                let r = r.canonicalize().unwrap();
+                pipeline::run(
+                    &r,
+                    vex::index::pipeline::IndexOptions::default(),
+                    "minilm-l6-v2",
+                    &[],
+                )
+                .expect("run")
+            })
+        })
+        .collect();
+
+    let outcomes: Vec<(usize, bool)> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+    // Exactly one thread rebuilt. The rest waited on the build lock, observed
+    // the manifest the first thread wrote, and took the skip path.
+    let rebuilt = outcomes.iter().filter(|(_, r)| *r).count();
+    assert_eq!(
+        rebuilt, 1,
+        "expected exactly one rebuild and the rest to skip; got {outcomes:?}"
+    );
+
+    // Every thread should report the same final symbol count, regardless of
+    // whether it did the work or skipped.
+    let counts: Vec<usize> = outcomes.iter().map(|(c, _)| *c).collect();
+    assert!(
+        counts.iter().all(|c| *c == counts[0]),
+        "all threads should observe the same symbol count; got {counts:?}"
+    );
+    assert!(counts[0] >= 2, "expected at least 2 symbols, got {counts:?}");
+}

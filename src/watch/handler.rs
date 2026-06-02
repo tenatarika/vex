@@ -22,7 +22,7 @@ pub fn watch(
     let root = root.canonicalize().context("canonicalize root")?;
 
     println!("Building initial index...");
-    let count = pipeline::run(&root, opts, embedder_id, excludes)?;
+    let (count, _rebuilt) = pipeline::run(&root, opts, embedder_id, excludes)?;
     println!(
         "Watching {} ({count} symbols). Press Ctrl+C to stop.",
         root.display()

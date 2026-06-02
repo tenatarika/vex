@@ -45,7 +45,7 @@ pub(crate) fn index(
         ctx.cfg,
         None,
     );
-    let count = pipeline::run(&root, opts, &embedder_id, ctx.excludes)?;
+    let (count, _rebuilt) = pipeline::run(&root, opts, &embedder_id, ctx.excludes)?;
     let elapsed = start.elapsed();
     let index_path = config::index_path(&root.canonicalize()?);
 

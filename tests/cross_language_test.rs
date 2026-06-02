@@ -31,7 +31,7 @@ fn same_symbol_name_across_languages() {
     write_src_file(&tmp, "config.ts", "export class Config {}");
 
     // Full structural index (no embeddings).
-    let count = vex::index::pipeline::run(
+    let (count, _) = vex::index::pipeline::run(
         tmp.path(),
         vex::index::pipeline::IndexOptions::default(),
         "minilm-l6-v2",
