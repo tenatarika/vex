@@ -919,7 +919,7 @@ impl IndexLock {
         // parse + embed + write.
         match fs2::FileExt::try_lock_exclusive(&file) {
             Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(e) if is_lock_contended(&e) => {
                 tracing::info!(
                     lock = %path.display(),
                     "waiting for index lock (another vex instance is indexing)"
@@ -933,6 +933,24 @@ impl IndexLock {
         }
         Ok(Self { file })
     }
+}
+
+/// True when `e` describes a lock-contention failure from `try_lock_exclusive`.
+/// POSIX returns `ErrorKind::WouldBlock`; Windows returns `ERROR_LOCK_VIOLATION`
+/// (raw OS error 33) which historically maps to `ErrorKind::Other` (the Rust
+/// stdlib has not always normalized this). Matching both shapes keeps the
+/// try-then-block diagnostic path working across platforms — without the
+/// raw-code check, every Windows contention would bypass the "waiting for
+/// index lock" log and return an outright error, breaking the
+/// thundering-herd serialization the lock exists to provide.
+fn is_lock_contended(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::WouldBlock {
+        return true;
+    }
+    // ERROR_LOCK_VIOLATION on Windows. The constant is exposed via
+    // `winapi`/`windows-sys`, but we want to avoid adding a Windows-only
+    // dep for one number — and the value is stable platform ABI.
+    matches!(e.raw_os_error(), Some(33))
 }
 
 impl Drop for IndexLock {

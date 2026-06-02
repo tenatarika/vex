@@ -367,9 +367,12 @@ fn concurrent_run_skips_when_index_already_fresh() {
     let manifest_path = config::manifest_path(&root_canon);
     let mtime_before = fs::metadata(&manifest_path).unwrap().modified().unwrap();
 
-    // Ensure any subsequent manifest write would have a measurably newer
-    // mtime than the initial build (50ms is well above filesystem mtime
-    // resolution on every modern FS).
+    // Ensure that any subsequent manifest rewrite is *temporally* after
+    // the initial build, not just byte-equal. 50ms is well above mtime
+    // resolution on every FS we care about (APFS / ext4 / NTFS / tmpfs
+    // all do ≥1µs); the concern this guards against is write-ordering
+    // race within the same wall-clock tick, not clock precision — so do
+    // not lower this without understanding why it's here.
     thread::sleep(std::time::Duration::from_millis(50));
 
     let root = dir.path().to_path_buf();
