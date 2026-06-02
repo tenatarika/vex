@@ -79,6 +79,25 @@ cargo bench --no-run
 
 If any check fails, fix the code, not the gate. Clippy / fmt drift in particular is non-negotiable — every commit must land them clean.
 
+### Faster local runs with cargo-nextest (optional)
+
+`cargo test` parallelises tests within each test binary but runs the
+integration-test binaries themselves sequentially. With 20+ files in `tests/`,
+[`cargo-nextest`](https://nexte.st/) is meaningfully faster — it runs every
+test in its own process and parallelises across binaries.
+
+```bash
+cargo install cargo-nextest --locked
+
+cargo nextest run --workspace           # 2-5x faster than `cargo test`
+cargo nextest run --profile ci          # CI-shaped (more retries, louder output)
+cargo test --doc --workspace            # Still required: nextest cannot run doctests
+```
+
+Profile defaults live in `.config/nextest.toml`. CI keeps using `cargo test`
+to avoid an extra tool install per runner; nextest is purely a local-dev
+convenience.
+
 For language-specific grammar regression, the per-language `tests/<lang>_query_test.rs` files exercise each tree-sitter grammar's pinned query patterns. They catch ABI mismatches and AST node renames when a grammar crate is upgraded; never disable one to "make CI green" without rooting out the underlying ABI break.
 
 ### Lockfile / MSRV policy

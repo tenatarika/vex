@@ -1,0 +1,38 @@
+# cargo-nextest configuration. Install with:
+#   cargo install cargo-nextest --locked
+#
+# Run the suite with:
+#   cargo nextest run
+#
+# Compared to `cargo test`, nextest runs every test in its own process and
+# parallelises across integration-test binaries, which typically cuts our
+# wall-clock time by 2-5x on local machines with many cores.
+#
+# Note: nextest does NOT run doctests (cargo limitation). After a nextest
+# run, also run `cargo test --doc` if you've touched doc examples.
+
+[profile.default]
+# Re-run any test that fails up to twice. Catches the rare flake without
+# masking real regressions — three consecutive failures still fail the run.
+retries = 2
+
+# Treat any test that runs longer than 60s as slow; terminate after the
+# second 60s window (i.e. ~120s hard cap) so a hung test cannot wedge CI.
+# The concurrency_test suite intentionally spawns threads that take a few
+# hundred ms each, so the threshold is well above realistic durations.
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+# Print a one-line summary per slow test instead of silently waiting.
+status-level = "pass"
+final-status-level = "slow"
+
+# Sensible default for laptops; CI may override via `--test-threads` or the
+# `NEXTEST_TEST_THREADS` env var.
+test-threads = "num-cpus"
+
+[profile.ci]
+# CI profile: more retries (network/disk variance) and louder output so the
+# log captures everything needed to triage a failure.
+retries = 3
+failure-output = "immediate-final"
+fail-fast = false
