@@ -63,6 +63,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   end-to-end-tested via local manual runs because the OS-level
   notify wiring is hostile to deterministic integration tests.
 
+  A v1.12.0 follow-up (rust-reviewer N8) wraps fix 3 in an
+  `armed_dirs: HashSet<PathBuf>` so repeated `Create(Folder)`
+  events for the same path across batches don't re-invoke
+  `debouncer.watch(p, …)` — the upstream call runs an O(subtree)
+  `WalkDir` inside `FileIdMap::add_path` each time it's invoked
+  (its own `data.roots` dedupe runs *after* that walk), so long
+  sessions that keep recreating the same scratch dir would do real
+  work on every re-arm. The set is rolled back on watcher error so
+  a path that was momentarily missing can still arm on a later
+  batch. A final-review SHOULD-FIX wires `Remove(Folder)` events
+  into `armed_dirs.remove(&p)` before the re-arm loop runs, so a
+  delete-then-recreate scratch-dir pattern still re-arms on the
+  recreated path (without this, the set would short-circuit the
+  recreate and the new directory would silently stay un-watched).
+
 - **S8.2 — explicit exit-code contract (0 / 1 / 2).** Pre-v1.12.0 `vex`
   effectively always exited 0 — even when a search returned zero
   results, even on bad regex syntax that propagated up as anyhow

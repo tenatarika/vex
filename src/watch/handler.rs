@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -81,6 +82,17 @@ pub fn watch(
         .watch(&root, RecursiveMode::Recursive)
         .context("start watching")?;
 
+    // H10 fix 3 follow-up (rust-reviewer N8) — track every path we've
+    // armed so repeated `Create(Folder)` events for the same path don't
+    // call `debouncer.watch(p, …)` on every batch. The upstream
+    // `notify-debouncer-full::watch` runs an O(subtree) `WalkDir` inside
+    // `FileIdMap::add_path` each time it's invoked (its own `data.roots`
+    // dedupe runs AFTER that walk), so long sessions that keep recreating
+    // the same scratch dir would do real work on every re-arm. Track our
+    // own armed set so we short-circuit before the upstream call.
+    let mut armed_dirs: HashSet<PathBuf> = HashSet::new();
+    armed_dirs.insert(root.clone());
+
     while let Ok(events) = rx.recv() {
         // H10 fix 1 — drain every queued debouncer batch and merge them
         // before reacting. Avoids N redundant updates when the user
@@ -91,18 +103,38 @@ pub fn watch(
             all_events.extend(more);
         }
 
+        // Evict `Remove(Folder)`'d paths from `armed_dirs` BEFORE the
+        // re-arm loop so a `delete-then-recreate` scratch-dir pattern
+        // (rust-reviewer SHOULD-FIX) lets the re-arm fire again on the
+        // re-created path. Without this, `armed_dirs.insert` returns
+        // `false` on the recreate and the new directory silently stays
+        // un-watched for the rest of the session.
+        for gone_dir in extract_removed_directories(&all_events) {
+            armed_dirs.remove(&gone_dir);
+        }
+
         // H10 fix 3 — re-arm notify on every newly-created directory.
         // On the inotify backend (Linux) `RecursiveMode::Recursive`
         // does not auto-watch subdirs that didn't exist when `watch`
         // was first called. Re-arming the inner watcher is idempotent
         // on backends that already cover this (FSEvents, RDCW), so
-        // the call is safe to make unconditionally.
+        // the call is safe to make unconditionally — but we still
+        // dedupe against `armed_dirs` so we don't pay the upstream
+        // `FileIdMap::add_path` walk on a path we've already armed
+        // (rust-reviewer N8).
         for new_dir in extract_new_directories(&all_events) {
+            if !armed_dirs.insert(new_dir.clone()) {
+                continue;
+            }
             if let Err(e) = debouncer.watch(&new_dir, RecursiveMode::Recursive) {
                 eprintln!(
                     "Watch error: failed to arm new directory {}: {e}",
                     new_dir.display()
                 );
+                // Roll the path back out of `armed_dirs` so a retry
+                // (e.g. the dir was momentarily missing) can still
+                // succeed on a later batch.
+                armed_dirs.remove(&new_dir);
             }
         }
 
@@ -172,10 +204,33 @@ fn extract_new_directories(events: &[DebouncedEvent]) -> Vec<PathBuf> {
     out
 }
 
+/// Collect every distinct path from `Remove(Folder)` events. Used to
+/// evict armed-set entries so the recreate-after-delete scratch-dir
+/// pattern still re-arms on the recreated path. `is_dir()` is
+/// intentionally NOT checked — by the time the event reaches us the
+/// directory is already gone.
+fn extract_removed_directories(events: &[DebouncedEvent]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for e in events {
+        if !matches!(
+            e.event.kind,
+            EventKind::Remove(notify::event::RemoveKind::Folder)
+        ) {
+            continue;
+        }
+        for p in &e.event.paths {
+            if !out.contains(p) {
+                out.push(p.clone());
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::event::{CreateKind, Event};
+    use notify::event::{CreateKind, Event, RemoveKind};
     use notify_debouncer_full::DebouncedEvent;
     use std::time::Instant;
 
@@ -298,5 +353,43 @@ mod tests {
         let e2 = evt(EventKind::Create(CreateKind::Folder), vec![new_sub.clone()]);
         let dirs = extract_new_directories(&[e1, e2]);
         assert_eq!(dirs.len(), 1, "duplicate dir must be deduped: {dirs:?}");
+    }
+
+    /// Pins the rust-reviewer SHOULD-FIX from v1.12.0 final review:
+    /// `Remove(Folder)` events must be surfaced so the event loop can
+    /// evict them from `armed_dirs`, otherwise a delete-then-recreate
+    /// scratch-dir pattern silently leaves the recreated path
+    /// un-armed for the rest of the session.
+    #[test]
+    fn extract_removed_directories_filters_to_folder_removes() {
+        let gone = PathBuf::from("/tmp/vex_h10_phantom_dir");
+        let remove_dir = evt(EventKind::Remove(RemoveKind::Folder), vec![gone.clone()]);
+        let remove_file = evt(
+            EventKind::Remove(RemoveKind::File),
+            vec![PathBuf::from("/tmp/foo.rs")],
+        );
+        let create_dir = evt(
+            EventKind::Create(CreateKind::Folder),
+            vec![PathBuf::from("/tmp/other")],
+        );
+
+        let dirs = extract_removed_directories(&[remove_dir, remove_file, create_dir]);
+        assert_eq!(dirs, vec![gone]);
+    }
+
+    /// The eviction helper must dedupe within a single batch — repeated
+    /// `Remove(Folder)` events for the same path should yield one entry,
+    /// mirroring `extract_new_directories_dedupes_repeated_paths`.
+    #[test]
+    fn extract_removed_directories_dedupes_repeated_paths() {
+        let gone = PathBuf::from("/tmp/vex_h10_phantom_dup");
+        let e1 = evt(EventKind::Remove(RemoveKind::Folder), vec![gone.clone()]);
+        let e2 = evt(EventKind::Remove(RemoveKind::Folder), vec![gone.clone()]);
+        let dirs = extract_removed_directories(&[e1, e2]);
+        assert_eq!(
+            dirs.len(),
+            1,
+            "duplicate Remove(Folder) must dedupe: {dirs:?}"
+        );
     }
 }
