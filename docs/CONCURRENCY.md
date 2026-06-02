@@ -91,7 +91,7 @@ When the peer finishes, the waiter takes the lock, runs its
 
 ## Tests
 
-The contract is pinned in `tests/concurrency_test.rs`:
+The contract is pinned in `tests/concurrency_test.rs` (6 tests):
 
 - `parallel_index_serialized_by_lock` — N concurrent `vex index` calls
   do not corrupt the index.
@@ -102,12 +102,35 @@ The contract is pinned in `tests/concurrency_test.rs`:
 - `concurrent_update_rebuilds_once_not_per_thread` — of N concurrent
   `vex update` calls on a stale index, **exactly one** rebuilds.
 - `concurrent_run_skips_when_index_already_fresh` — of N concurrent
-  `vex index` calls when the index is fresh, **zero** rewrite the
-  manifest.
+  `vex index` calls when the index is *already fresh*, **zero**
+  rewrite the manifest.
 - `many_concurrent_readers` — 8 concurrent readers all see the same
   symbol count.
 
 Run them with `cargo test --test concurrency_test`.
+
+### Coverage gap
+
+There is no symmetric "of N concurrent `vex index` calls on a *stale*
+index, exactly one rebuilds and the rest skip" test yet — `pipeline::run`
+returns only the symbol count, so the test would need either a new
+return signal or instrumentation hook to distinguish a real rebuild
+from the skip path. The `update` analogue distinguishes them via the
+`(total, changed, deleted)` return tuple. Tracked as a v1.12.0
+follow-up.
+
+## Known limitations
+
+- **Skip path is fingerprint-only, not options-aware.** Both
+  `pipeline::run` and `pipeline::update` decide whether to skip a
+  rebuild purely from the file-hash diff. A peer that built without
+  `--semantic`, followed by a `vex index --semantic` waiter, will be
+  served the structural-only index from the skip path and *no error
+  is raised*. The waiter's `--semantic` request is silently
+  downgraded. Tracked as a v1.12.0 follow-up; the workaround is to
+  delete the cache directory and rebuild manually. This is a
+  pre-existing behaviour shared with `update` since v1.11.1, not a
+  regression introduced in v1.11.2.
 
 ## Things that intentionally are NOT locked
 
