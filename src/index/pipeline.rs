@@ -83,7 +83,17 @@ pub fn run(
     if index_path.exists() {
         if let Ok(current_manifest) = Manifest::load(&manifest_path) {
             let diff = manifest::diff_files(&file_hashes, &current_manifest);
-            if diff.changed.is_empty() && diff.deleted.is_empty() {
+            // v1.12.0: skip only if the on-disk index satisfies every option
+            // we were asked for. File-hash equality alone is not enough — a
+            // peer that built without `--semantic` would otherwise serve us
+            // an embedding-less manifest and silently downgrade our request.
+            // `run_can_skip` also rejects manifests written by `vex update`
+            // (pattern_index_full=Some(false)) when the user asked for the
+            // full pattern index by explicitly running `vex index`.
+            if diff.changed.is_empty()
+                && diff.deleted.is_empty()
+                && run_can_skip(&current_manifest, opts, embedder_id)
+            {
                 tracing::info!(
                     "index already built by a concurrent vex instance; skipping rebuild"
                 );
@@ -178,7 +188,14 @@ pub fn update(
 
     let diff = manifest::diff_files(&file_hashes, &old_manifest);
 
-    if diff.changed.is_empty() && diff.deleted.is_empty() {
+    // v1.12.0: skip only if the on-disk index satisfies every option we were
+    // asked for. Before this gate `vex update --semantic` on a no-change
+    // structural-only index would early-return and silently leave the
+    // embedder request unfulfilled.
+    if diff.changed.is_empty()
+        && diff.deleted.is_empty()
+        && update_can_skip(&old_manifest, opts, embedder_id)
+    {
         tracing::info!(unchanged = diff.unchanged, "nothing to update");
         return Ok((existing_symbol_count(&root)?, 0, 0));
     }
@@ -193,13 +210,18 @@ pub fn update(
     let _lock = IndexLock::acquire(&root)?;
 
     // Double-check under the lock: another instance may have refreshed the
-    // index while we waited. Re-diff against the now-current manifest; if it
-    // already matches the working tree, that peer did our work — skip.
-    let diff = {
+    // index while we waited. Re-diff against the now-current manifest AND
+    // re-check option coverage — a peer that built without our options'd
+    // otherwise serve us a downgraded index.
+    let (diff, current_manifest) = {
         let current_manifest = Manifest::load(&manifest_path)?;
-        manifest::diff_files(&file_hashes, &current_manifest)
+        let diff = manifest::diff_files(&file_hashes, &current_manifest);
+        (diff, current_manifest)
     };
-    if diff.changed.is_empty() && diff.deleted.is_empty() {
+    if diff.changed.is_empty()
+        && diff.deleted.is_empty()
+        && update_can_skip(&current_manifest, opts, embedder_id)
+    {
         tracing::info!("index refreshed by a concurrent vex instance; skipping rebuild");
         return Ok((existing_symbol_count(&root)?, 0, 0));
     }
@@ -884,6 +906,47 @@ fn collect_pattern_skeletons(parsed: &[ParsedFile]) -> SkeletonsForWriter {
     (skeletons, fingerprints)
 }
 
+/// True when `manifest` was built with options that at least cover what `opts`
+/// asks for — i.e. skipping a rebuild and reusing this index would not silently
+/// downgrade the caller's request. Only `with_embeddings` / `embedder_id` are
+/// checked here because they are *transient* (the user re-decides per
+/// invocation). The boolean opt-outs (`call_graph`, `bm25`, `pattern_index`)
+/// are *sticky* per their Manifest doc comments: the rebuild would preserve
+/// the existing value rather than honor the caller's `opts.with_*=true`, so
+/// blocking the skip for them would still produce the same on-disk result.
+fn manifest_options_cover(manifest: &Manifest, opts: IndexOptions, embedder_id: &str) -> bool {
+    if opts.with_embeddings {
+        match manifest.embedder_id.as_deref() {
+            Some(id) if id == embedder_id => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// `run`-specific skip gate. Calls [`manifest_options_cover`] and additionally
+/// rejects manifests that were written by `vex update` (incremental,
+/// `pattern_index_full == Some(false)`) when the caller explicitly ran
+/// `vex index` and opted into the pattern index — the partial pattern section
+/// is harmless but the user asked for the full one, so the rebuild is owed.
+fn run_can_skip(manifest: &Manifest, opts: IndexOptions, embedder_id: &str) -> bool {
+    if !manifest_options_cover(manifest, opts, embedder_id) {
+        return false;
+    }
+    if opts.with_pattern_index && manifest.pattern_index_full == Some(false) {
+        return false;
+    }
+    true
+}
+
+/// `update`-specific skip gate. Only the option-coverage check matters —
+/// `update` never produces `pattern_index_full == true`, so reusing a peer's
+/// partial pattern index is identical to what `update` itself would have
+/// emitted.
+fn update_can_skip(manifest: &Manifest, opts: IndexOptions, embedder_id: &str) -> bool {
+    manifest_options_cover(manifest, opts, embedder_id)
+}
+
 /// RAII guard over the per-index build lock (`<index>.lock`). Acquiring it
 /// blocks until no other vex instance is building the same index, so only one
 /// process runs the expensive parse + embed + write at a time. The lock is
@@ -1213,5 +1276,143 @@ mod tests {
         assert!(rendered.contains("CSharp"), "{rendered}");
         assert!(rendered.contains("42"), "{rendered}");
         assert!(rendered.contains("ABI mismatch v15"), "{rendered}");
+    }
+
+    // --- A1 (v1.12.0): options-aware skip-path helpers -------------------
+
+    fn manifest_with_embedder(id: Option<&str>) -> Manifest {
+        Manifest {
+            embedder_id: id.map(|s| s.to_string()),
+            ..Manifest::default()
+        }
+    }
+
+    #[test]
+    fn options_cover_when_caller_does_not_want_embeddings() {
+        let opts = IndexOptions {
+            with_embeddings: false,
+            ..IndexOptions::default()
+        };
+        // Peer with no embeddings: covered.
+        assert!(manifest_options_cover(
+            &manifest_with_embedder(None),
+            opts,
+            "minilm-l6-v2"
+        ));
+        // Peer that built MORE than we need (has embeddings): still covered —
+        // the extra section is harmless.
+        assert!(manifest_options_cover(
+            &manifest_with_embedder(Some("minilm-l6-v2")),
+            opts,
+            "minilm-l6-v2"
+        ));
+    }
+
+    #[test]
+    fn options_do_not_cover_when_caller_wants_embeddings_but_peer_has_none() {
+        let opts = IndexOptions {
+            with_embeddings: true,
+            ..IndexOptions::default()
+        };
+        // Peer skipped embeddings — we'd silently downgrade if we skipped here.
+        assert!(!manifest_options_cover(
+            &manifest_with_embedder(None),
+            opts,
+            "minilm-l6-v2"
+        ));
+    }
+
+    #[test]
+    fn options_do_not_cover_when_caller_and_peer_disagree_on_embedder_id() {
+        let opts = IndexOptions {
+            with_embeddings: true,
+            ..IndexOptions::default()
+        };
+        assert!(!manifest_options_cover(
+            &manifest_with_embedder(Some("bge-small")),
+            opts,
+            "minilm-l6-v2"
+        ));
+    }
+
+    #[test]
+    fn options_cover_when_embedder_ids_match() {
+        let opts = IndexOptions {
+            with_embeddings: true,
+            ..IndexOptions::default()
+        };
+        assert!(manifest_options_cover(
+            &manifest_with_embedder(Some("minilm-l6-v2")),
+            opts,
+            "minilm-l6-v2"
+        ));
+    }
+
+    #[test]
+    fn run_refuses_to_skip_partial_pattern_index_when_caller_opted_in() {
+        // The caller ran `vex index` (full rebuild) and the pattern index is
+        // wanted. A peer's manifest from `vex update` (pattern_index_full =
+        // Some(false)) does not satisfy the explicit ask, so skip is rejected.
+        let opts = IndexOptions {
+            with_embeddings: false,
+            with_pattern_index: true,
+            ..IndexOptions::default()
+        };
+        let m = Manifest {
+            pattern_index_full: Some(false),
+            ..Manifest::default()
+        };
+        assert!(!run_can_skip(&m, opts, "minilm-l6-v2"));
+    }
+
+    #[test]
+    fn run_accepts_full_or_pre_flag_pattern_index() {
+        let opts = IndexOptions {
+            with_embeddings: false,
+            with_pattern_index: true,
+            ..IndexOptions::default()
+        };
+        let full = Manifest {
+            pattern_index_full: Some(true),
+            ..Manifest::default()
+        };
+        assert!(run_can_skip(&full, opts, "minilm-l6-v2"));
+
+        // None on pre-11.4 manifests is treated as full per the Manifest doc.
+        let pre_flag = Manifest::default();
+        assert!(run_can_skip(&pre_flag, opts, "minilm-l6-v2"));
+    }
+
+    #[test]
+    fn run_ignores_pattern_index_full_when_caller_did_not_ask_for_pattern_index() {
+        let opts = IndexOptions {
+            with_embeddings: false,
+            with_pattern_index: false,
+            ..IndexOptions::default()
+        };
+        let m = Manifest {
+            pattern_index_full: Some(false),
+            ..Manifest::default()
+        };
+        assert!(run_can_skip(&m, opts, "minilm-l6-v2"));
+    }
+
+    #[test]
+    fn update_skip_is_strictly_options_cover() {
+        let opts = IndexOptions {
+            with_embeddings: true,
+            ..IndexOptions::default()
+        };
+        // update treats Some(false) pattern_index_full as fine — it's what
+        // update itself emits.
+        let m = Manifest {
+            pattern_index_full: Some(false),
+            ..manifest_with_embedder(Some("minilm-l6-v2"))
+        };
+        assert!(update_can_skip(&m, opts, "minilm-l6-v2"));
+
+        // But embedder mismatch still blocks skip.
+        let wrong_embedder = manifest_with_embedder(Some("bge-small"));
+        assert!(!update_can_skip(&wrong_embedder, opts, "minilm-l6-v2"));
     }
 }
