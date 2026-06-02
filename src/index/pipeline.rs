@@ -911,11 +911,26 @@ impl IndexLock {
             .write(true)
             .open(&path)
             .context("open index lock file")?;
-        // Blocks until acquired (advisory `flock` on POSIX, `LockFileEx` on
-        // Windows). Held across the caller's whole build so concurrent
-        // instances serialize rather than all rebuilding at once.
-        fs2::FileExt::lock_exclusive(&file)
-            .context("acquire index lock (another vex instance may be indexing)")?;
+        // Fast path: try without blocking. If a peer is already indexing,
+        // emit a single tracing event so users staring at a "stuck" CLI
+        // (or an agent harness watching for output) see why it's stuck
+        // before we settle into the blocking wait. Without this the CLI
+        // would just freeze silently for the duration of the peer's
+        // parse + embed + write.
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                tracing::info!(
+                    lock = %path.display(),
+                    "waiting for index lock (another vex instance is indexing)"
+                );
+                fs2::FileExt::lock_exclusive(&file)
+                    .context("acquire index lock (another vex instance may be indexing)")?;
+            }
+            Err(e) => {
+                return Err(anyhow::Error::from(e).context("try-lock index lock"));
+            }
+        }
         Ok(Self { file })
     }
 }
