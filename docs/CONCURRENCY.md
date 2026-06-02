@@ -67,6 +67,14 @@ the manifest) does *not* go through `try_acquire`: if there is nothing
 to do, there is no point deduping against a peer. Only the
 parse + embed + write section is gated.
 
+Caveat: the no-change fast path also requires options coverage — if
+the manifest does not satisfy the requested options (e.g. `--semantic`
+on a structural-only index), `update_can_skip` returns `false` and the
+function falls through to `try_acquire` even when the file fingerprint
+is otherwise clean. So `vex update --no-wait --semantic` on an
+outdated-by-options manifest can still report `busy` if a peer is
+mid-build.
+
 In both paths the lock-holding window is the entire expensive section.
 For a small project this is sub-second; for a large index built with
 `--semantic`, the HNSW build alone can take a minute or two on millions

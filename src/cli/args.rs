@@ -173,10 +173,12 @@ pub enum Commands {
         #[arg(long)]
         no_pattern_index: bool,
 
-        /// v1.12.0 — exit immediately with a "busy" status if another vex
-        /// instance is currently building the same index, instead of waiting
-        /// for it to finish. Useful for editor integrations and CI cron jobs
+        /// Exit immediately with a "busy" status if another vex instance
+        /// is currently building the same index, instead of waiting for
+        /// it to finish. Useful for editor integrations and CI cron jobs
         /// that would rather no-op than wedge for a peer's parse + embed.
+        /// Text mode prints a "Skipped" line and exits 0; JSON mode emits
+        /// `{"status":"busy",...}` so scripts can branch on outcome.
         #[arg(long)]
         no_wait: bool,
     },
@@ -375,9 +377,10 @@ pub enum Commands {
         #[arg(long)]
         no_pattern_index: bool,
 
-        /// v1.12.0 — exit immediately with a "busy" status if another vex
-        /// instance is currently building the same index, instead of waiting
-        /// for it to finish.
+        /// Exit immediately with a "busy" status if another vex instance
+        /// is currently building the same index, instead of waiting for
+        /// it to finish. See `--help` on `vex index --no-wait` for output
+        /// shape.
         #[arg(long)]
         no_wait: bool,
     },

@@ -46,7 +46,15 @@ thread_local! {
 /// access. Callers must finish reading any `Tree` they produced before
 /// returning from `f` — re-using the parser to re-parse another file is
 /// fine because tree-sitter `Tree`s are independently owned.
-pub fn with_parser<F, R>(lang: Language, f: F) -> Result<R>
+///
+/// # Panics
+///
+/// Panics if called re-entrantly from within `f` on the same thread —
+/// the underlying `RefCell::borrow_mut` will detect the double borrow.
+/// All current call sites are leaf parse wrappers; do not invoke another
+/// `with_parser` (or anything that does, transitively) from within a
+/// closure on the same thread.
+pub(crate) fn with_parser<F, R>(lang: Language, f: F) -> Result<R>
 where
     F: FnOnce(&mut Parser) -> Result<R>,
 {

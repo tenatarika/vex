@@ -218,14 +218,21 @@ pub fn update(
     embedder_id: &str,
     excludes: &[String],
 ) -> Result<(usize, usize, usize)> {
-    update_inner(
+    // The blocking variant cannot observe `Ok(None)` — that's only emitted
+    // by `update_inner`'s `no_wait` branch, and the `no_wait = false` arm
+    // routes through `IndexLock::acquire` which always returns `Self`.
+    // Use `unreachable!` so the impossibility is documented as an
+    // invariant rather than a runtime assertion.
+    match update_inner(
         root,
         opts,
         embedder_id,
         excludes,
         /* no_wait = */ false,
-    )
-    .map(|opt| opt.expect("blocking update never returns Busy"))
+    )? {
+        Some(outcome) => Ok(outcome),
+        None => unreachable!("update_inner(no_wait = false) never returns Ok(None)"),
+    }
 }
 
 /// v1.12.0 — non-blocking sibling of [`update`]. Returns `Ok(None)` when
@@ -1097,10 +1104,20 @@ impl IndexLock {
     /// expected to bail out with a "busy" outcome. Real I/O errors still
     /// propagate as `Err`.
     fn try_acquire(root: &Path) -> Result<Option<Self>> {
-        let (_path, file) = Self::open(root)?;
+        let (path, file) = Self::open(root)?;
         match fs2::FileExt::try_lock_exclusive(&file) {
             Ok(()) => Ok(Some(Self { file })),
-            Err(e) if is_lock_contended(&e) => Ok(None),
+            Err(e) if is_lock_contended(&e) => {
+                // Symmetric with `acquire`'s `tracing::info!` on contention,
+                // but at `debug` because the no-wait caller has explicitly
+                // opted into "skip on contention" — every contention event
+                // is already surfaced via `Ok(None)` to the caller.
+                tracing::debug!(
+                    lock = %path.display(),
+                    "try_acquire observed lock held; returning Busy"
+                );
+                Ok(None)
+            }
             Err(e) => Err(anyhow::Error::from(e).context("try-lock index lock")),
         }
     }
