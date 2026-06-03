@@ -51,6 +51,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `pub(super) fn new` constructor instead of cross-module field
   visibility; `parse_pattern` and `split_top_level` are `pub(super)`
   since their only callers are this module's tests.
+- **S6 — `hierarchy/mod.rs` 1213-LOC monolith split into a three-file
+  module.** Zero behaviour change; public surface
+  (`find_implementations`, `ImplMatch` at `crate::hierarchy::*`)
+  unchanged. New layout: `mod.rs` (125 — public types, entry point,
+  private `find_in_source` matcher), `queries.rs` (372 — per-language
+  `inheritance_query` SCM dispatch, `PHP_TRAIT_PATTERN_START` and
+  `RUBY_MIXIN_PATTERN_START` boundary constants, `relation_label`
+  pattern-index → label mapping), `tests.rs` (734 — verbatim test
+  move). Adding a new language now requires updating two `match` arms
+  in the same `queries.rs` file instead of navigating a 1.2k-LOC
+  monolith. The `ImplMatch.relation` field's inline doc was corrected
+  to list the full label vocabulary (`impl` / `extends` / `inherits`
+  / `include` / `uses`) — the stale comment had only three values.
 
 ### Performance
 
