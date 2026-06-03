@@ -64,6 +64,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   monolith. The `ImplMatch.relation` field's inline doc was corrected
   to list the full label vocabulary (`impl` / `extends` / `inherits`
   / `include` / `uses`) — the stale comment had only three values.
+- **S7 — `parse/extractor.rs` 1189-LOC monolith split into a five-file
+  directory module.** Zero behaviour change; public surface
+  (`extract_symbols_and_imports`, `extract_references_ast`,
+  `is_meaningful_identifier`, `GrammarLoadError` at
+  `crate::parse::extractor::*`) unchanged. New layout: `mod.rs` (152 —
+  `GrammarLoadError`, shared `is_keyword` and `is_meaningful_identifier`
+  helpers, re-exports), `symbols.rs` (219 — `extract_symbols_and_imports`
+  + import-quote / doc-above helpers), `body.rs` (145 —
+  `extract_body_tokens` + `tokenise_string_value`), `refs.rs` (224 —
+  `extract_references` + `extract_references_ast` walker + per-language
+  comment/string/identifier classifiers), `tests.rs` (504 — verbatim
+  move). Bundled `extract_doc_above` perf fix: now takes `&[&str]` and
+  reuses the caller's `line_slices` (v1.12.0 P4) instead of
+  re-collecting `content.lines()` per symbol.
 
 ### Performance
 
