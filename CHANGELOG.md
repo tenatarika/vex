@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Refactored
+
+- **S2 — `pattern/skeleton.rs` 4129-LOC monolith split into a four-file
+  directory module.** Zero behaviour change; public API
+  (`extract_skeletons`, `Skeleton`) stays at the same path. New layout:
+  `mod.rs` (396 — `Skeleton` struct, serde impls, walker, small
+  helpers), `kinds.rs` (535 — per-language `pattern_targetable_kinds`
+  allowlist dispatch), `ident.rs` (279 — per-language `extract_ident`
+  dispatch + private `child_by_kind`), `tests.rs` (2965 — verbatim move
+  of the original `#[cfg(test)] mod tests`). Adding a new language now
+  touches two `match` arms in `kinds.rs` and `ident.rs` instead of
+  navigating a single 4k-LOC file.
+
 ### Performance
 
 - **Per-thread `tree_sitter::Parser` pool (P3).** Every hot parse site
