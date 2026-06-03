@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 fn extract(lang: Language, src: &str) -> Vec<Skeleton> {
