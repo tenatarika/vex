@@ -78,6 +78,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   move). Bundled `extract_doc_above` perf fix: now takes `&[&str]` and
   reuses the caller's `line_slices` (v1.12.0 P4) instead of
   re-collecting `content.lines()` per symbol.
+- **S8 — `index/pipeline.rs` 1586-LOC critical indexing path split into
+  a five-file directory module.** Zero behaviour change; public surface
+  (`IndexOptions`, `run`, `run_or_busy`, `update`, `update_or_busy` at
+  `crate::index::pipeline::*`) unchanged. New layout: `mod.rs` (469 —
+  public entry points, orchestration, manifest skip-path predicates),
+  `lock.rs` (129 — `IndexLock` RAII guard, blocking + non-blocking
+  acquire, `is_lock_contended` cross-platform helper), `output.rs` (389
+  — BM25 / callgraph / pattern-skeleton / embedding / HNSW builders +
+  `write_output_locked`), `parse_files.rs` (485 — fan-out parser,
+  `reconstruct_unchanged` incremental fast path, file discovery /
+  hashing / heuristics), `tests.rs` (205 — verbatim move). The
+  `IndexLock` RAII contract, manifest re-check skip-path, and symbol-
+  index ordering invariant (`resolve_call_edges` matches
+  `writer::write_index_to`) all verified preserved by parallel reviewers.
+  Closes the v1.12.0 S-series refactor train (S2–S8).
 
 ### Performance
 
