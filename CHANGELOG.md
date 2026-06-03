@@ -29,6 +29,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (419 — per-language tree-sitter SCM query source dispatch),
   `tests.rs` (1518 — verbatim test move). The walker no longer competes
   with 1.5k LOC of SCM strings for screen real estate.
+- **S4 — `cli/cmd_bundle.rs` 1291-LOC monolith split into a per-mode
+  module.** Zero behaviour change; public surface
+  (`cmd_bundle::bundle`, `cmd_bundle::BundleModeFlag`, the three
+  `assemble_X` re-exports) unchanged. New layout: `mod.rs` (360 —
+  public types, dispatch, shared signal/rank helpers, inline tests),
+  `symbol.rs` (310), `pr_impact.rs` (338), `project.rs` (351). Each
+  `BundleModeFlag` arm now owns its assembler and its mode-only
+  helpers; shared helpers (`global_rank_percentile`, `signals_fst_hit`,
+  `caller_kind`) stay `pub(super)` in `mod.rs`. Pre-existing
+  `#[doc(hidden)]` misplacement on `MAX_PR_IMPACT_NODES` corrected in
+  passing.
 
 ### Performance
 
