@@ -18,6 +18,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of the original `#[cfg(test)] mod tests`). Adding a new language now
   touches two `match` arms in `kinds.rs` and `ident.rs` instead of
   navigating a single 4k-LOC file.
+- **S3 — `callgraph/mod.rs` 2473-LOC monolith split into a four-file
+  module.** Zero behaviour change; public surface
+  (`extract_call_edges`, `find_callers`, `find_callees`, `CallMatch`,
+  `CALLERS_FETCH_CAP`) unchanged at `crate::callgraph::*`. New layout:
+  `mod.rs` (102 — public query API + types + sub-module declarations +
+  `pub use extractor::extract_call_edges` re-export), `extractor.rs`
+  (490 — `COMPILED_QUERIES` static, `extract_callgraph` walker, edge
+  resolution, live-scan helpers, sibling-host filters), `queries.rs`
+  (419 — per-language tree-sitter SCM query source dispatch),
+  `tests.rs` (1518 — verbatim test move). The walker no longer competes
+  with 1.5k LOC of SCM strings for screen real estate.
 
 ### Performance
 
