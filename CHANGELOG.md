@@ -40,6 +40,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `caller_kind`) stay `pub(super)` in `mod.rs`. Pre-existing
   `#[doc(hidden)]` misplacement on `MAX_PR_IMPACT_NODES` corrected in
   passing.
+- **S5 — `pattern/matcher.rs` 1562-LOC monolith split into a three-file
+  module.** Zero behaviour change; public surface
+  (`parse_composite_pattern`, `find_matches_composite`,
+  `CompositePattern`) at `crate::pattern::matcher::*` unchanged. New
+  layout: `mod.rs` (640 — public types, matcher engine), `parse.rs`
+  (211 — `parse_pattern`/`parse_composite_pattern`/`split_top_level`
+  plus the `Segment` parser-input helpers), `tests.rs` (735 — verbatim
+  test move). `PatternTree.segments` now constructed via a
+  `pub(super) fn new` constructor instead of cross-module field
+  visibility; `parse_pattern` and `split_top_level` are `pub(super)`
+  since their only callers are this module's tests.
 
 ### Performance
 
