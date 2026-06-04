@@ -4,11 +4,21 @@
 //! `src/search/explain.rs`; these tests confirm the wiring all the way
 //! through the binary plus the alias `--min-score` on the `--threshold`
 //! flag.
+//!
+//! v1.12.0: switched from `vex index --semantic` (which downloads the
+//! MiniLM ONNX model and gets rate-limited on CI with HTTP 429) to the
+//! pre-baked-vectors pattern from `cli_similar_test.rs`:
+//! `write_index_full` drops a v6 vector-bearing index at the
+//! `local_cache = true` cache path, `--no-stale-check` skips the
+//! manifest probe. Tests run in <2s and have no network dependency.
 
 use std::path::Path;
 
 use assert_cmd::Command;
 use tempfile::TempDir;
+use vex::index::symbols::{ParsedFile, ParsedSymbol, SymbolKind};
+use vex::store::format::VECTOR_DIM;
+use vex::store::writer::write_index_full;
 
 mod common;
 use common::assert_ran;
@@ -16,17 +26,44 @@ use common::assert_ran;
 fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(dir);
-    cmd.env("VEX_CACHE_DIR", dir.join(".vex-test-cache"));
+    // Force `.vex.toml`'s `local_cache = true` to win so the index
+    // lands at a predictable `<dir>/.vex_cache/index.vex` and we can
+    // pre-place a vector-bearing index there.
+    cmd.env_remove("VEX_CACHE_DIR");
     cmd
 }
 
-/// Create a tempdir with two near-identical functions in different files
-/// so `vex duplicates` has something to surface.
-///
-/// The bodies differ by one line so the diff has exactly one `+` and
-/// one `-` change, which lets the test pin the explain output precisely.
+fn ones() -> Vec<f32> {
+    vec![1.0_f32; VECTOR_DIM as usize]
+}
+
+fn near_ones() -> Vec<f32> {
+    let mut v = ones();
+    v[0] = 0.999;
+    v
+}
+
+fn mk_sym(name: &str, line: usize) -> ParsedSymbol {
+    ParsedSymbol {
+        name: name.to_string(),
+        kind: SymbolKind::Function,
+        line,
+        signature: Some(format!("fn {name}()")),
+        doc: None,
+        body_tokens: None,
+    }
+}
+
+/// Lay out two near-identical functions in separate files and drop a
+/// pre-baked v6 index with vectors that guarantee a duplicate pair
+/// above any reasonable threshold. The bodies differ in one operator
+/// (`+` vs `*`) so `--explain` produces a one-line `+`/`-` diff —
+/// mirrors the shape of the previous `vex index --semantic` fixture
+/// without the network dependency.
 fn write_duplicate_project(dir: &Path) {
     std::fs::write(dir.join(".vex.toml"), "local_cache = true\n").unwrap();
+    let cache_root = dir.join(".vex_cache");
+    std::fs::create_dir_all(&cache_root).unwrap();
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("src").join("alpha.rs"),
@@ -48,8 +85,31 @@ fn write_duplicate_project(dir: &Path) {
          }\n",
     )
     .unwrap();
-    // Semantic index required — duplicates needs vectors.
-    vex_in(dir).args(["index", "--semantic"]).assert().success();
+
+    // Two symbols with near-identical vectors → cosine ≈ 1.0, well
+    // above any --threshold the tests set. Same name across two
+    // files is exactly the canonical "duplicate" shape.
+    let parsed = vec![
+        ParsedFile {
+            path: "src/alpha.rs".to_string(),
+            symbols: vec![mk_sym("payment_processor", 1)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![],
+            skeletons: Vec::new(),
+        },
+        ParsedFile {
+            path: "src/beta.rs".to_string(),
+            symbols: vec![mk_sym("payment_processor", 1)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![],
+            skeletons: Vec::new(),
+        },
+    ];
+    let vectors = vec![ones(), near_ones()];
+    write_index_full(&parsed, &vectors, 384, &cache_root.join("index.vex"))
+        .expect("write_index_full");
 }
 
 #[test]
@@ -64,6 +124,7 @@ fn duplicates_explain_emits_jaccard_and_diff() {
         "--min-body-lines",
         "1",
         "--explain",
+        "--no-stale-check",
         "--format",
         "json",
     ]));
@@ -114,6 +175,7 @@ fn duplicates_without_explain_omits_explanation_field() {
         "0.5",
         "--min-body-lines",
         "1",
+        "--no-stale-check",
         "--format",
         "json",
     ]));
@@ -146,6 +208,7 @@ fn min_score_alias_matches_threshold_behavior() {
         "0.99",
         "--min-body-lines",
         "1",
+        "--no-stale-check",
         "--format",
         "json",
     ]));
@@ -155,6 +218,7 @@ fn min_score_alias_matches_threshold_behavior() {
         "0.99",
         "--min-body-lines",
         "1",
+        "--no-stale-check",
         "--format",
         "json",
     ]));
