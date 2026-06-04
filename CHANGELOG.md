@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **T4 fuzz hardening — `fuzz_bloom_load` libFuzzer harness over
+  `SymbolBloom::load`.** Found and fixed two real defects on a crafted
+  sidecar: (1) `n_bits=0`/`k_num=0` passed the `n_bits == bitmap_len*8`
+  consistency guard but panicked in `bloomfilter::Bloom::check`'s
+  `hash % bitmap_bits` divide-by-zero; (2) `k_num` up to ~2.1B made
+  `may_contain` loop for 110+ sec per call (DoS, not a panic). The
+  load path now rejects degenerate sizes (`n_bits > 0 && k_num > 0`)
+  and caps `k_num <= MAX_K_NUM = 64` (legitimate filters at
+  FP = 1e-10 still have k_num ≈ 33). Both crash inputs minimised to
+  regression seeds in `fuzz/corpus/fuzz_bloom_load/` and pinned by
+  unit tests. After fixes: 2.7M iterations / 5 min clean, coverage
+  saturated at 179 features.
 - **T4 — Bloom-filter pre-filter for `vex check`.** Closes
   `TODO(phase4): wire into MCP server for fast pre-filtering` in
   `src/search/bloom.rs`. `vex index` and `vex update` now build a
