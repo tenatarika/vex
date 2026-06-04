@@ -78,6 +78,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   move). Bundled `extract_doc_above` perf fix: now takes `&[&str]` and
   reuses the caller's `line_slices` (v1.12.0 P4) instead of
   re-collecting `content.lines()` per symbol.
+- **T2 — doctests on key public APIs.** Project previously had zero
+  doctests. Six compile-tested examples on pure-function public seams:
+  `Language::from_extension`, `Language::ALL`, `extract_skeletons`,
+  `parse_composite_pattern`, `extract_call_edges`,
+  `extract_symbols_and_imports`. Each exercises a happy path plus a
+  degenerate case so the doc-test gate catches API-shape regressions.
 - **S10 — `Language::ALL` slice eliminates the `COMPILED_QUERIES` ↔
   `callgraph::queries::callgraph_query` sync requirement.** Adds
   `pub const ALL: &'static [Language]` covering every variant in
