@@ -84,6 +84,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `parse_composite_pattern`, `extract_call_edges`,
   `extract_symbols_and_imports`. Each exercises a happy path plus a
   degenerate case so the doc-test gate catches API-shape regressions.
+- **T3 — `cli/cmd_similar.rs` integration coverage lifted from 15.70%
+  to 93.48%** (the lowest of any `cli/*` handler with non-trivial
+  logic per the T1 baseline). New `tests/cli_similar_test.rs` carries
+  12 tests covering the previously-untested branches: no-vectors
+  `bail!`, `signal_no_results` exit-1 contract, `--filter` substring
+  match, `--include`/`--exclude` scope (incl. exclude-wins-over-
+  include + combined filter+include AND semantics), `--limit`
+  saturation, `print_similar` text/JSON, `--why` trace
+  (`seed_resolved`/`threshold_applied`/candidates/`filter_applied`),
+  negative `--why` contract (no `VEX_WHY:` on stderr without flag),
+  `--explain` (jaccard + bidirectional diff). Tests sidestep
+  `vex index --semantic` (60+ sec per test under `cli_explain_test`)
+  by pre-building a v6 vector-bearing index via `write_index_full` at
+  the `local_cache = true` cache path — full suite runs in < 2 sec.
+  Uncovered remainder (6.5%) is the defensive `eprintln!` for an
+  unreachable seed-resolution mismatch plus the `diff_filter_meta`
+  block (requires git worktree setup).
 - **S10 — `Language::ALL` slice eliminates the `COMPILED_QUERIES` ↔
   `callgraph::queries::callgraph_query` sync requirement.** Adds
   `pub const ALL: &'static [Language]` covering every variant in
