@@ -30,5 +30,10 @@ name = "fuzz_symbol_fst"
 path = "fuzz_targets/fuzz_symbol_fst.rs"
 doc = false
 
+[[bin]]
+name = "fuzz_bloom_load"
+path = "fuzz_targets/fuzz_bloom_load.rs"
+doc = false
+
 [workspace]
 members = ["."]

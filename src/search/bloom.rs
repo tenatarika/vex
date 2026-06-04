@@ -41,6 +41,14 @@ const SEED: [u8; 32] = *b"vex.bloom.seed.v1...............";
 /// rather than allocated.
 const MAX_BITMAP_LEN: usize = 256 * 1024 * 1024;
 
+/// Sanity cap on the on-disk hash-function count. `Bloom::check` runs
+/// a `for 0..k_num` loop, so a multi-billion `k_num` from a tampered
+/// sidecar would burn CPU for minutes per `may_contain` call. A
+/// legitimate filter at FP=1e-10 (extreme) still has k_num ≈ 33; 64
+/// is a generous upper bound. Found by `fuzz_bloom_load` on a crafted
+/// sidecar with `k_num = 2.1e9` that timed out after 110 sec/call.
+const MAX_K_NUM: u32 = 64;
+
 pub(crate) struct SymbolBloom {
     filter: Bloom<str>,
 }
@@ -202,6 +210,22 @@ impl SymbolBloom {
                 "bloom sidecar inconsistent: n_bits={n_bits} != bitmap_len_bytes={bitmap_len} * 8"
             );
         }
+        // Degenerate-but-consistent sizes (`n_bits == 0`, `k_num == 0`)
+        // satisfy the equation above but still blow up: `check()` does
+        // `hash % bitmap_bits` and panics on division by zero, and
+        // `k_num == 0` produces an always-true filter (no probes), which
+        // is the worst false-positive rate possible. Reject both
+        // explicitly. Found by `fuzz_bloom_load` on a crafted sidecar
+        // with `n_bits=0, k_num=252, bitmap_len=0`.
+        if n_bits == 0 || k_num == 0 {
+            bail!("bloom sidecar degenerate: n_bits={n_bits}, k_num={k_num} (both must be > 0)");
+        }
+        if k_num > MAX_K_NUM {
+            bail!(
+                "bloom sidecar k_num={k_num} exceeds MAX_K_NUM={MAX_K_NUM} \
+                 (would DoS may_contain via a multi-billion-iter SipHash loop)"
+            );
+        }
         if buf.len() < 64 + bitmap_len {
             bail!(
                 "bloom sidecar truncated: header claims bitmap_len={bitmap_len}, file has {} bytes",
@@ -212,6 +236,40 @@ impl SymbolBloom {
         let filter = Bloom::from_existing(bitmap, n_bits, k_num, [(k00, k01), (k10, k11)]);
         Ok(Some(Self { filter }))
     }
+}
+
+/// Fuzzing shim — exposed only to `vex-fuzz`. Writes `data` to a tmp
+/// file, calls [`SymbolBloom::load`], and on success drives a fixed
+/// set of `may_contain` probes so the `bloomfilter::Bloom::check`
+/// internals are exercised too. Hidden from rustdoc; the regular API
+/// stays `pub(crate)`. The path is best-effort temporary — fuzzing
+/// failure modes (full disk, permissions) are not asserted against.
+#[doc(hidden)]
+pub fn __fuzz_load_bytes(data: &[u8]) {
+    use std::io::Write as _;
+    // Reuse a single tmp file across iterations is intentional: we
+    // overwrite on every call so libfuzzer doesn't leak inodes.
+    let tmp_dir = std::env::temp_dir();
+    let path = tmp_dir.join("__vex_fuzz_bloom.bin");
+    {
+        let Ok(mut f) = std::fs::File::create(&path) else {
+            return;
+        };
+        if f.write_all(data).is_err() {
+            return;
+        }
+    }
+    let Ok(Some(bloom)) = SymbolBloom::load(&path) else {
+        return;
+    };
+    // Drive `may_contain` so any panic deeper in `bloomfilter::check`
+    // (e.g. n_bits/bitmap inconsistencies the load-guard missed) is
+    // surfaced. The probe names are fixed; libfuzzer doesn't need
+    // input-driven names to find these crashes.
+    let _ = bloom.may_contain("");
+    let _ = bloom.may_contain("a");
+    let _ = bloom.may_contain("PaymentService");
+    let _ = bloom.may_contain(&"x".repeat(4096));
 }
 
 #[cfg(test)]
@@ -323,6 +381,60 @@ mod tests {
             result.is_err(),
             "n_bits != bitmap_len * 8 must be rejected (else bloomfilter::check panics)"
         );
+    }
+
+    #[test]
+    fn load_rejects_huge_k_num() {
+        // Regression: fuzz_bloom_load produced a sidecar with
+        // k_num=0x7E000001 (~2.1B), which made `Bloom::check` loop
+        // for 110+ seconds per `may_contain`. The MAX_K_NUM cap
+        // rejects this before any check runs.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(&VERSION.to_le_bytes());
+        buf.extend_from_slice(&64_u64.to_le_bytes()); // n_bits
+        buf.extend_from_slice(&(MAX_K_NUM + 1).to_le_bytes());
+        buf.extend_from_slice(&[0_u8; 4]);
+        buf.extend_from_slice(&[0_u8; 32]);
+        buf.extend_from_slice(&8_u64.to_le_bytes());
+        buf.extend_from_slice(&[0xFF_u8; 8]);
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("huge_k.bloom");
+        std::fs::write(&path, buf).unwrap();
+        assert!(
+            SymbolBloom::load(&path).is_err(),
+            "k_num > MAX_K_NUM must be rejected before check() runs"
+        );
+    }
+
+    #[test]
+    fn load_rejects_zero_n_bits_or_zero_k_num() {
+        // Regression: fuzz_bloom_load (libfuzzer) hit a panic in
+        // `Bloom::check` when a crafted sidecar had n_bits=0 (and
+        // bitmap_len=0, so the consistency guard passed): the
+        // `hash % bitmap_bits` in `check` divided by zero.
+        // The guard now rejects both n_bits==0 and k_num==0.
+        let make = |n_bits: u64, k_num: u32| {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(MAGIC);
+            buf.extend_from_slice(&VERSION.to_le_bytes());
+            buf.extend_from_slice(&n_bits.to_le_bytes());
+            buf.extend_from_slice(&k_num.to_le_bytes());
+            buf.extend_from_slice(&[0_u8; 4]);
+            buf.extend_from_slice(&[0_u8; 32]);
+            buf.extend_from_slice(&(n_bits / 8).to_le_bytes());
+            buf.extend_from_slice(&vec![0_u8; (n_bits / 8) as usize]);
+            buf
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        for (n_bits, k_num) in [(0_u64, 252_u32), (0, 0), (64, 0)] {
+            let path = tmp.path().join(format!("d_{n_bits}_{k_num}.bloom"));
+            std::fs::write(&path, make(n_bits, k_num)).unwrap();
+            assert!(
+                SymbolBloom::load(&path).is_err(),
+                "degenerate sizes (n_bits={n_bits}, k_num={k_num}) must be rejected"
+            );
+        }
     }
 
     #[test]

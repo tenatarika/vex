@@ -72,3 +72,81 @@ fi
 
 echo "Generated $(ls "$CORPUS" | wc -l | tr -d ' ') seeds in $CORPUS"
 ls -lh "$CORPUS"
+
+# ---------------------------------------------------------------------
+# fuzz_bloom_load seed corpus (v1.12.0 T4)
+# ---------------------------------------------------------------------
+
+BLOOM_CORPUS="fuzz/corpus/fuzz_bloom_load"
+mkdir -p "$BLOOM_CORPUS"
+
+python3 - <<'PY'
+import os, struct
+CORPUS = "fuzz/corpus/fuzz_bloom_load"
+
+def write(name, payload):
+    open(os.path.join(CORPUS, name), "wb").write(payload)
+
+# Empty file — load returns Err(truncated).
+write("seed_empty", b"")
+
+# Header w/ valid VEXB magic but otherwise zeroed → degenerate n_bits/k_num
+# regression (fuzz_bloom_load found this; load now rejects).
+write("seed_zero_header", b"VEXB" + struct.pack("<I", 1) + b"\x00" * 56)
+
+# Valid magic + version, mismatched n_bits/bitmap_len → consistency guard.
+write(
+    "seed_truncated_bitmap",
+    b"VEXB"
+    + struct.pack("<I", 1)
+    + struct.pack("<Q", 64)
+    + struct.pack("<I", 1)
+    + b"\x00" * 4
+    + b"\x00" * 32
+    + struct.pack("<Q", 8),
+)
+
+# Minimal valid sidecar — load succeeds, drives the may_contain path.
+write(
+    "seed_valid_minimal",
+    b"VEXB"
+    + struct.pack("<I", 1)
+    + struct.pack("<Q", 64)
+    + struct.pack("<I", 1)
+    + b"\x00" * 4
+    + b"\x00" * 32
+    + struct.pack("<Q", 8)
+    + b"\xff" * 8,
+)
+
+# Implausibly large bitmap_len → MAX_BITMAP_LEN guard.
+write(
+    "seed_oversized_bitmap_len",
+    b"VEXB"
+    + struct.pack("<I", 1)
+    + struct.pack("<Q", 0)
+    + struct.pack("<I", 0)
+    + b"\x00" * 4
+    + b"\x00" * 32
+    + struct.pack("<Q", 2 ** 40),
+)
+
+# Huge k_num (DoS regression from fuzz_bloom_load) → MAX_K_NUM guard.
+write(
+    "seed_regression_huge_knum",
+    b"VEXB"
+    + struct.pack("<I", 1)
+    + struct.pack("<Q", 64)
+    + struct.pack("<I", 0x7E000001)
+    + b"\x00" * 4
+    + b"\x00" * 32
+    + struct.pack("<Q", 8)
+    + b"\xff" * 8,
+)
+
+# Future-version sidecar → version-mismatch bail.
+write("seed_future_version", b"VEXB" + struct.pack("<I", 999) + b"\x00" * 56)
+
+print(f"Generated {len(os.listdir(CORPUS))} bloom seeds in {CORPUS}")
+PY
+ls -lh "$BLOOM_CORPUS"
