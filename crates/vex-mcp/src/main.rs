@@ -1781,8 +1781,12 @@ mod tests {
         );
 
         // Scenario 3: VEX_BIN points at a directory → clear error.
+        // Use `env::temp_dir()` so the path exists on every platform —
+        // hard-coding `/tmp` made Windows CI fall through to the
+        // "no such file" branch instead of "not a regular file".
+        let dir = std::env::temp_dir();
         unsafe {
-            std::env::set_var("VEX_BIN", "/tmp");
+            std::env::set_var("VEX_BIN", &dir);
         }
         let err = resolve_vex_bin().expect_err("scenario 3 must fail");
         assert!(
