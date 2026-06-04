@@ -150,3 +150,55 @@ write("seed_future_version", b"VEXB" + struct.pack("<I", 999) + b"\x00" * 56)
 print(f"Generated {len(os.listdir(CORPUS))} bloom seeds in {CORPUS}")
 PY
 ls -lh "$BLOOM_CORPUS"
+
+# ---------------------------------------------------------------------
+# fuzz_pattern_parser seed corpus (v1.12.0 round-2 fuzz pass)
+# ---------------------------------------------------------------------
+
+PATTERN_CORPUS="fuzz/corpus/fuzz_pattern_parser"
+mkdir -p "$PATTERN_CORPUS"
+
+# Valid Phase 11.4 examples — get the parser past the empty-input bail
+# and into the metavar/composition paths.
+echo -n "fn \$NAME(\$\$\$BODY)" > "$PATTERN_CORPUS/seed_metavars"
+echo -n "fn \$N() || struct \$N" > "$PATTERN_CORPUS/seed_or_composition"
+echo -n "impl \$T && fn \$M" > "$PATTERN_CORPUS/seed_and_composition"
+echo -n "let x = \"a && b\"" > "$PATTERN_CORPUS/seed_string_with_operator"
+echo -n '$X.then($X)' > "$PATTERN_CORPUS/seed_backref"
+# Degenerate / boundary inputs the parser must reject without panicking.
+: > "$PATTERN_CORPUS/seed_empty"
+echo -n "   " > "$PATTERN_CORPUS/seed_whitespace_only"
+echo -n "||" > "$PATTERN_CORPUS/seed_just_or"
+echo -n "&&" > "$PATTERN_CORPUS/seed_just_and"
+echo -n "((((" > "$PATTERN_CORPUS/seed_unbalanced_paren"
+
+echo "Generated $(ls "$PATTERN_CORPUS" | wc -l | tr -d ' ') pattern seeds in $PATTERN_CORPUS"
+
+# ---------------------------------------------------------------------
+# fuzz_manifest_load seed corpus
+# ---------------------------------------------------------------------
+
+MANIFEST_CORPUS="fuzz/corpus/fuzz_manifest_load"
+mkdir -p "$MANIFEST_CORPUS"
+
+: > "$MANIFEST_CORPUS/seed_empty"
+echo -n "{}" > "$MANIFEST_CORPUS/seed_empty_object"
+echo -n '{"files":{}}' > "$MANIFEST_CORPUS/seed_empty_files"
+# Minimal-but-valid-ish manifest — should round-trip via serde.
+cat > "$MANIFEST_CORPUS/seed_minimal_valid" <<'JSON'
+{
+  "files": {"src/lib.rs": "deadbeef"},
+  "git_head": "abc123",
+  "indexed_at": 1700000000,
+  "embedder_id": null,
+  "call_graph": true,
+  "bm25": true,
+  "pattern_index": true,
+  "pattern_index_full": true
+}
+JSON
+# Malformed / truncated variants the loader must reject gracefully.
+echo -n '{"files": {' > "$MANIFEST_CORPUS/seed_truncated_json"
+echo -n 'not json at all' > "$MANIFEST_CORPUS/seed_plaintext"
+
+echo "Generated $(ls "$MANIFEST_CORPUS" | wc -l | tr -d ' ') manifest seeds in $MANIFEST_CORPUS"

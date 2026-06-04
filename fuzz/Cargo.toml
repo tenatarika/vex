@@ -35,5 +35,15 @@ name = "fuzz_bloom_load"
 path = "fuzz_targets/fuzz_bloom_load.rs"
 doc = false
 
+[[bin]]
+name = "fuzz_pattern_parser"
+path = "fuzz_targets/fuzz_pattern_parser.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_manifest_load"
+path = "fuzz_targets/fuzz_manifest_load.rs"
+doc = false
+
 [workspace]
 members = ["."]
