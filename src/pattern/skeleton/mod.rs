@@ -240,6 +240,17 @@ fn intern_static(s: String) -> &'static str {
 /// Walk `source` under `lang`'s grammar and emit one [`Skeleton`] per
 /// allowlisted node. Returns an empty `Vec` when the language has no
 /// allowlist (T2/T3 today) or when tree-sitter fails to parse.
+///
+/// ```
+/// use vex::parse::language::Language;
+/// use vex::pattern::skeleton::extract_skeletons;
+///
+/// let sk = extract_skeletons("fn double(x: i32) -> i32 { x * 2 }", Language::Rust);
+/// assert!(sk.iter().any(|s| s.kind == "function_item" && s.ident.as_deref() == Some("double")));
+///
+/// // Empty allowlist (T3 language) short-circuits to empty.
+/// assert!(extract_skeletons("[package]\nname = \"x\"", Language::Toml).is_empty());
+/// ```
 pub fn extract_skeletons(source: &str, lang: Language) -> Vec<Skeleton> {
     let allowlist = pattern_targetable_kinds(lang);
     if allowlist.is_empty() {

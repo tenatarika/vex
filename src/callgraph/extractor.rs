@@ -152,6 +152,20 @@ pub(super) fn callees_in_source(
 /// Used by `index::pipeline` to build the persistent call-graph sections at
 /// index time. Live-scan paths in this module still use the internal
 /// `extract_callgraph` (private — no intra-doc link).
+///
+/// ```
+/// use vex::parse::language::Language;
+/// use vex::callgraph::extract_call_edges;
+///
+/// let src = "fn caller() { callee(); }\nfn callee() {}\n";
+/// let edges = extract_call_edges(src, Language::Rust);
+/// assert!(edges.iter().any(|(caller, _line, callee, _)| {
+///     caller == "caller" && callee == "callee"
+/// }));
+///
+/// // Language without a callgraph query returns empty.
+/// assert!(extract_call_edges("# heading", Language::Markdown).is_empty());
+/// ```
 pub fn extract_call_edges(content: &str, lang: Language) -> Vec<(String, usize, String, usize)> {
     let Some((fns, calls)) = extract_callgraph(content, lang) else {
         return Vec::new();

@@ -33,6 +33,17 @@ impl Language {
     /// slice. Compile-time `assert_eq!(Language::ALL.len(), …)` in a
     /// test pins the count so a missing entry surfaces as a test
     /// failure rather than a silent gap in language-iterating consumers.
+    ///
+    /// ```
+    /// use vex::parse::language::Language;
+    ///
+    /// // Iterate every supported language — used by callgraph's
+    /// // `COMPILED_QUERIES` and pattern-skeleton fingerprinting so a
+    /// // new language additions don't need per-consumer registration.
+    /// for &lang in Language::ALL {
+    ///     assert!(lang.lang_id() >= 1 && lang.lang_id() <= 19);
+    /// }
+    /// ```
     pub const ALL: &'static [Language] = &[
         Self::Rust,
         Self::Kotlin,
@@ -56,6 +67,19 @@ impl Language {
     ];
 
     /// Detect language from file extension.
+    ///
+    /// The extension argument is the bare extension without the leading
+    /// dot. Returns `None` for unsupported or unknown extensions.
+    ///
+    /// ```
+    /// use vex::parse::language::Language;
+    ///
+    /// assert_eq!(Language::from_extension("rs"), Some(Language::Rust));
+    /// assert_eq!(Language::from_extension("py"), Some(Language::Python));
+    /// // JS variants share the TypeScript grammar.
+    /// assert_eq!(Language::from_extension("jsx"), Some(Language::TypeScript));
+    /// assert_eq!(Language::from_extension("zig"), None);
+    /// ```
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext {
             "rs" => Some(Self::Rust),

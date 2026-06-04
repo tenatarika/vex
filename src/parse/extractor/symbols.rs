@@ -20,6 +20,22 @@ use super::body::extract_body_tokens;
 use super::GrammarLoadError;
 
 /// Extract symbols and AST-based import references in a single tree-sitter parse.
+///
+/// Returns `(symbols, imports)`. Each [`ParsedSymbol`] carries the captured
+/// `name`, `kind`, `line`, `signature`, `doc`, and `body_tokens`; each
+/// [`ParsedRef`] is an import-site reference with the `name` and a `context`
+/// snippet of the source line. Errors as [`GrammarLoadError`] when the
+/// language grammar fails to load (ABI mismatch, renamed AST node).
+///
+/// ```
+/// use vex::parse::extractor::extract_symbols_and_imports;
+/// use vex::parse::language::Language;
+///
+/// let src = "use std::collections::HashMap;\nfn main() {}";
+/// let (symbols, imports) = extract_symbols_and_imports(src, Language::Rust).unwrap();
+/// assert!(symbols.iter().any(|s| s.name == "main"));
+/// assert!(imports.iter().any(|r| r.name == "HashMap"));
+/// ```
 pub fn extract_symbols_and_imports(
     content: &str,
     lang: Language,

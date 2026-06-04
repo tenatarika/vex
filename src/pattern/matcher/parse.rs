@@ -132,6 +132,22 @@ pub(super) fn parse_pattern(pattern: &str, lang: Language) -> Result<PatternTree
 /// one tree — semantically identical to [`parse_pattern`]. Patterns
 /// containing top-level composition operators are split first, then
 /// each leaf is parsed via [`parse_pattern`].
+///
+/// ```
+/// use vex::parse::language::Language;
+/// use vex::pattern::matcher::parse_composite_pattern;
+///
+/// // Single pattern — one disjunct, one tree, no OR.
+/// let single = parse_composite_pattern("fn $NAME()", Language::Rust).unwrap();
+/// assert!(!single.has_or());
+///
+/// // OR composition — multiple disjuncts.
+/// let or = parse_composite_pattern("fn $N() || struct $N", Language::Rust).unwrap();
+/// assert!(or.has_or());
+///
+/// // Empty patterns are rejected.
+/// assert!(parse_composite_pattern("", Language::Rust).is_err());
+/// ```
 pub fn parse_composite_pattern(pattern: &str, lang: Language) -> Result<CompositePattern> {
     if pattern.trim().is_empty() {
         anyhow::bail!(
