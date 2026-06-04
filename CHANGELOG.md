@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Broad fuzz pass — two new libFuzzer targets + smoke-verify of
+  existing four.** `fuzz_pattern_parser` over `parse_composite_pattern`
+  (the user-facing Phase 11.4 metavar / `&&` / `||` parser) and
+  `fuzz_manifest_load` over `Manifest::load` (JSON manifest reader)
+  each cleared 2.5M / 1.5M iterations with zero crashes. Existing
+  `fuzz_index_reader` / `fuzz_refs_fst` / `fuzz_symbol_fst` re-verified
+  clean post-T4 (no regressions from the bloom sidecar work). Cumulative
+  ~10M iterations across six targets this release. Seed corpora for the
+  two new targets bootstrapped via `fuzz/generate_seeds.sh`.
 - **T4 fuzz hardening — `fuzz_bloom_load` libFuzzer harness over
   `SymbolBloom::load`.** Found and fixed two real defects on a crafted
   sidecar: (1) `n_bits=0`/`k_num=0` passed the `n_bits == bitmap_len*8`
