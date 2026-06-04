@@ -416,6 +416,14 @@ pub fn hnsw_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("index.hnsw")
 }
 
+/// Full path to the bloom-filter sidecar (v1.12.0 T4). Lives next to
+/// `index.vex` like the HNSW sidecar; absence is a valid state
+/// (`SymbolBloom::load` returns `Ok(None)` and callers fall back to
+/// direct FST lookups).
+pub fn bloom_path(project_root: &std::path::Path) -> PathBuf {
+    index_dir(project_root).join("index.bloom")
+}
+
 /// Full path to the manifest file (tracks file hashes for incremental updates).
 pub fn manifest_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("manifest.json")

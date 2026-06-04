@@ -278,6 +278,26 @@ pub(super) fn write_output_locked(
     )
     .context("write index")?;
 
+    // v1.12.0 T4 — build + persist the bloom sidecar. Failure is
+    // non-fatal: callers fall back to direct FST lookups when the
+    // sidecar is absent or corrupt, so a write error must not block
+    // the index run. NOTE: ordering matters — `index.vex` is already
+    // atomically in place. A failed bloom write leaves either no
+    // sidecar (fresh first run) or a stale sidecar from a prior run.
+    // Both are safe: bloom only adds false positives, never false
+    // negatives, so even a stale sidecar can't make `vex check` miss a
+    // present symbol.
+    let bloom_path = config::bloom_path(root);
+    let bloom = crate::search::bloom::SymbolBloom::from_parsed_files(parsed);
+    if let Err(e) = bloom.save(&bloom_path) {
+        tracing::warn!(
+            path = %bloom_path.display(),
+            error = %e,
+            "failed to persist bloom sidecar (stale sidecar may remain); \
+             cmd_check will fall back to FST or use the stale bitmap"
+        );
+    }
+
     let manifest_path = config::manifest_path(root);
     let manifest = Manifest {
         files: file_hashes.iter().cloned().collect::<HashMap<_, _>>(),

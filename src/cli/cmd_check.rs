@@ -1,5 +1,11 @@
 //! `vex check` — fast symbol-existence probe via the FST.
 //! Extracted from `cli/mod.rs` in S1 Group B.2.
+//!
+//! v1.12.0 T4 — when the bloom sidecar (`index.bloom`) is present, each
+//! name is pre-filtered through it: a `may_contain == false` short-
+//! circuits the FST lookup to `(name, false)`. A missing or corrupt
+//! sidecar is non-fatal; we just skip the optimisation and fall
+//! through to the FST as before.
 
 use anyhow::{Context, Result};
 
@@ -8,7 +14,9 @@ use super::common::{resolve_root, CmdCtx};
 use super::index_management::ensure_index_ready;
 use super::output::print_envelope;
 use crate::protocol::capabilities;
+use crate::search::bloom::SymbolBloom;
 use crate::store::reader::IndexReader;
+use crate::util::config;
 
 pub(crate) fn check(
     ctx: &CmdCtx<'_>,
@@ -29,12 +37,36 @@ pub(crate) fn check(
 
     let reader = IndexReader::open(&index_path).context("open index")?;
 
-    // Case-insensitive exact match: FST candidates filtered by actual name
+    // Load bloom sidecar if present. `Err` (corruption) is treated the
+    // same as `Ok(None)`: silently degrade to direct FST lookups —
+    // bloom is an optimisation and a corrupt sidecar must not wedge
+    // `vex check`.
+    let bloom_path = config::bloom_path(&root);
+    let bloom = match SymbolBloom::load(&bloom_path) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::debug!(
+                path = %bloom_path.display(),
+                error = %e,
+                "bloom sidecar unreadable; falling back to direct FST"
+            );
+            None
+        }
+    };
+
+    // Case-insensitive exact match: FST candidates filtered by actual
+    // name. Pre-filtered by bloom (lowercased query) when the sidecar
+    // is loaded — a `may_contain == false` is a guaranteed miss.
     let results: Vec<(String, bool)> = if let Some(fst) = reader.symbol_fst_reader() {
         names
             .iter()
             .map(|n| {
                 let lower = n.to_lowercase();
+                if let Some(b) = bloom.as_ref() {
+                    if !b.may_contain(&lower) {
+                        return (n.clone(), false);
+                    }
+                }
                 let found = fst.find(n).iter().any(|&idx| {
                     reader
                         .symbol(idx as usize)
@@ -59,7 +91,15 @@ pub(crate) fn check(
             .collect();
         names
             .iter()
-            .map(|n| (n.clone(), all_lower.contains(&n.to_lowercase())))
+            .map(|n| {
+                let lower = n.to_lowercase();
+                if let Some(b) = bloom.as_ref() {
+                    if !b.may_contain(&lower) {
+                        return (n.clone(), false);
+                    }
+                }
+                (n.clone(), all_lower.contains(&lower))
+            })
             .collect()
     };
 
