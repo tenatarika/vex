@@ -6,6 +6,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **T4 — Bloom-filter pre-filter for `vex check`.** Closes
+  `TODO(phase4): wire into MCP server for fast pre-filtering` in
+  `src/search/bloom.rs`. `vex index` and `vex update` now build a
+  deterministic bloom (1% FP rate, fixed sip-key seed) over every
+  symbol name (with case-folded duplicates) and persist it as a
+  sidecar at `<index_dir>/index.bloom`, mirroring the HNSW sidecar
+  pattern. `vex check` lazily loads the sidecar and short-circuits on
+  `may_contain == false`, skipping the FST lookup entirely for
+  definitely-missing names. Format v6 of `index.vex` is unchanged —
+  bloom is a sidecar, not a section, so older readers stay binary-
+  compatible. A missing or corrupt sidecar is non-fatal: `vex check`
+  silently falls through to the FST. Lifts `search/bloom.rs` coverage
+  from 63.22% to 82.49% lines and removes the `#[allow(dead_code)]`
+  annotation — the module is finally live code.
+
 ### Refactored
 
 - **S2 — `pattern/skeleton.rs` 4129-LOC monolith split into a four-file
