@@ -23,6 +23,7 @@ The build lock lives next to the index file:
 <cache-dir>/<project-hash>/
 ├── index.vex          ← binary index
 ├── index.hnsw         ← optional HNSW vectors (when --semantic was used)
+├── index.bloom        ← optional bloom-filter sidecar (v1.12.0+, used by `vex check`)
 ├── manifest.json      ← file hashes + index metadata
 └── index.lock         ← persistent advisory-lock sentinel
 ```

@@ -168,6 +168,41 @@ fn check_falls_through_on_corrupt_bloom_sidecar() {
 }
 
 #[test]
+fn vex_update_rebuilds_bloom_with_newly_added_symbol() {
+    // `vex update` must rebuild the bloom from the merged symbol set
+    // so a name added in a later file is reachable via `vex check`.
+    // Without this, a stale bloom from the original `vex index` would
+    // false-negative the new symbol and `cmd_check` would short-
+    // circuit to `(name, false)` before consulting the FST.
+    let tmp = TempDir::new().unwrap();
+    make_indexed_project(tmp.path());
+    // Add a brand-new file with a symbol that wasn't in the original
+    // index. `freshly_added_symbol` is a deliberate distinctive name
+    // that cannot collide with anything in `make_indexed_project`'s
+    // fixture.
+    std::fs::write(
+        tmp.path().join("src").join("extra.rs"),
+        "pub fn freshly_added_symbol() {}\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["update"]).assert().success();
+
+    let assert = vex_in(tmp.path())
+        .args(["check", "freshly_added_symbol", "--format", "json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let env: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let results = env["results"].as_array().unwrap();
+    assert_eq!(
+        results[0]["exists"].as_bool(),
+        Some(true),
+        "bloom must be rebuilt by `vex update`; newly-added symbol \
+         must not be false-negatived: {results:?}"
+    );
+}
+
+#[test]
 fn check_is_case_insensitive_with_bloom_loaded() {
     let tmp = TempDir::new().unwrap();
     make_indexed_project(tmp.path());

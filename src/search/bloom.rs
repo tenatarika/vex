@@ -163,18 +163,23 @@ impl SymbolBloom {
         if &buf[0..4] != MAGIC {
             bail!("bloom sidecar magic mismatch");
         }
-        let version = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+        // Every `try_into().expect(...)` below reads a fixed-size
+        // sub-slice from `buf`. The `buf.len() < 64` guard above makes
+        // all eight reads in-bounds, so the conversion can't fail —
+        // the `expect` is a contract assertion, not error handling.
+        const SLICE_GUARD: &str = "guarded by buf.len() >= 64 above";
+        let version = u32::from_le_bytes(buf[4..8].try_into().expect(SLICE_GUARD));
         if version != VERSION {
             bail!("bloom sidecar version {version} != expected {VERSION}");
         }
-        let n_bits = u64::from_le_bytes(buf[8..16].try_into().unwrap());
-        let k_num = u32::from_le_bytes(buf[16..20].try_into().unwrap());
+        let n_bits = u64::from_le_bytes(buf[8..16].try_into().expect(SLICE_GUARD));
+        let k_num = u32::from_le_bytes(buf[16..20].try_into().expect(SLICE_GUARD));
         // bytes 20..24 = pad
-        let k00 = u64::from_le_bytes(buf[24..32].try_into().unwrap());
-        let k01 = u64::from_le_bytes(buf[32..40].try_into().unwrap());
-        let k10 = u64::from_le_bytes(buf[40..48].try_into().unwrap());
-        let k11 = u64::from_le_bytes(buf[48..56].try_into().unwrap());
-        let raw_bitmap_len = u64::from_le_bytes(buf[56..64].try_into().unwrap());
+        let k00 = u64::from_le_bytes(buf[24..32].try_into().expect(SLICE_GUARD));
+        let k01 = u64::from_le_bytes(buf[32..40].try_into().expect(SLICE_GUARD));
+        let k10 = u64::from_le_bytes(buf[40..48].try_into().expect(SLICE_GUARD));
+        let k11 = u64::from_le_bytes(buf[48..56].try_into().expect(SLICE_GUARD));
+        let raw_bitmap_len = u64::from_le_bytes(buf[56..64].try_into().expect(SLICE_GUARD));
         // Reject implausibly-large sizes before any allocation or
         // arithmetic. The cap guards against (a) `as usize` truncation
         // on 32-bit targets and (b) a `64 + bitmap_len` overflow in
