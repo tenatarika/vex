@@ -78,6 +78,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   move). Bundled `extract_doc_above` perf fix: now takes `&[&str]` and
   reuses the caller's `line_slices` (v1.12.0 P4) instead of
   re-collecting `content.lines()` per symbol.
+- **S10 — `Language::ALL` slice eliminates the `COMPILED_QUERIES` ↔
+  `callgraph::queries::callgraph_query` sync requirement.** Adds
+  `pub const ALL: &'static [Language]` covering every variant in
+  declaration order; `callgraph::extractor::COMPILED_QUERIES` now
+  iterates `Language::ALL.filter(|l| callgraph_query(l).is_some())`
+  instead of a hardcoded 8-language array. Adding a new callgraph
+  language is now a queries-only change — registration in `extractor.rs`
+  is automatic. Pin test `all_slice_covers_every_variant` blocks a
+  future variant addition that forgets to update the slice. Closes the
+  S3 review finding.
 - **S8 — `index/pipeline.rs` 1586-LOC critical indexing path split into
   a five-file directory module.** Zero behaviour change; public surface
   (`IndexOptions`, `run`, `run_or_busy`, `update`, `update_or_busy` at
