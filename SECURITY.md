@@ -7,8 +7,8 @@ are not patched — please upgrade to the latest release before reporting.
 
 | Version | Supported |
 |---------|-----------|
-| 1.11.x  | yes       |
-| < 1.11  | no — upgrade first |
+| 1.12.x  | yes       |
+| < 1.12  | no — upgrade first |
 
 `vex self-update` will fetch the latest GitHub release on Linux, macOS,
 and Windows.
@@ -44,8 +44,20 @@ These are the surfaces we treat as security-relevant:
   type-confusion across sections. The reader is exercised by three
   libFuzzer targets (`fuzz_index_reader`, `fuzz_refs_fst`,
   `fuzz_symbol_fst`); past fuzz-found bugs are listed in the README.
+- **Sidecar parsers**: any file the cache directory loads alongside
+  `index.vex` is also fuzzed as untrusted input. As of v1.12.0 the
+  bloom sidecar (`index.bloom`, parser in `src/search/bloom.rs`) is
+  covered by `fuzz_bloom_load`; two real defects were caught and fixed
+  during that round (`hash % 0` panic on degenerate `n_bits/k_num`,
+  and a DoS-via-huge-`k_num` that made `may_contain` loop for minutes).
+  See README for details.
 - **Mmap / unsafe paths**: any code path in `src/store/reader.rs` or
   the FST readers that can be tripped by a hand-crafted `.vex` file.
+- **User-facing parsers**: the pattern grammar behind `vex pattern '...'`
+  (`parse_composite_pattern`) and the JSON manifest at `manifest.json`
+  (`Manifest::load`) — both covered by libFuzzer targets
+  (`fuzz_pattern_parser`, `fuzz_manifest_load`) and expected to surface
+  `Err` rather than panic on adversarial input.
 - **MCP server (`crates/vex-mcp`)**: JSON-RPC parser, stdio handling,
   path-traversal in tool arguments (`VEX_ROOT` containment), or
   resource exhaustion via malformed `tools/call` payloads.
@@ -71,9 +83,11 @@ These are the surfaces we treat as security-relevant:
 
 If you're embedding vex into a multi-tenant environment:
 
-- Treat `.vex` index files as **untrusted input** even when you wrote
-  them yourself — they're consumed via mmap and parsed without copying.
-  The fuzz harness covers this, but defense in depth helps.
+- Treat `.vex` index files **and every sidecar in the cache directory**
+  (`index.hnsw`, `index.bloom`, `manifest.json`) as **untrusted input**
+  even when you wrote them yourself — they're consumed via mmap or
+  parsed without prior validation. The fuzz harness covers each parser,
+  but defense in depth helps.
 - The MCP server reads `VEX_ROOT` from the environment and rejects paths
   that escape it. Don't pass user-controlled values into `VEX_ROOT`.
 - `vex self-update` verifies release archives via zipsign signatures —

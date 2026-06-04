@@ -825,30 +825,51 @@ Test coverage includes:
 
 ### Fuzz Testing
 
-Fuzz tests exercise the binary format reader with arbitrary/corrupted data using [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) (libFuzzer + AddressSanitizer):
+Fuzz tests exercise every parser that consumes untrusted input — the
+binary index format, sidecar files, the user-facing pattern grammar,
+and the JSON manifest — using [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz)
+(libFuzzer + AddressSanitizer):
 
 ```bash
 # Install (once)
 cargo install cargo-fuzz
 
-# Generate seed corpus from local vex cache
+# Generate seed corpus for every target
 bash fuzz/generate_seeds.sh
 
 # Run (requires nightly)
-RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_index_reader -- -max_total_time=120
-RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_refs_fst -- -max_total_time=60
-RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_symbol_fst -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_index_reader    -- -max_total_time=120
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_refs_fst        -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_symbol_fst      -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_bloom_load      -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_pattern_parser  -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_manifest_load   -- -max_total_time=60
 ```
 
-Three fuzz targets cover all `unsafe` code paths in the reader:
+Six fuzz targets cover the reader's `unsafe` paths plus every text /
+sidecar parser that takes adversarial input:
 
-| Target | What it fuzzes | Unsafe paths exercised |
-|--------|---------------|----------------------|
+| Target | What it fuzzes | Surface |
+|--------|---------------|---------|
 | `fuzz_index_reader` | Arbitrary bytes as `.vex` file | `header()`, `symbol()`, `vector()`, `read_string()`, `file_paths()` |
 | `fuzz_refs_fst` | Arbitrary FST + posting bytes | `RefReader::find()`, `find_by_prefix()` |
 | `fuzz_symbol_fst` | Arbitrary FST + posting bytes | `SymbolFstReader::find()`, `find_fuzzy()`, `search_with_fallback()` |
+| `fuzz_bloom_load` (v1.12.0) | Arbitrary `index.bloom` sidecar | `SymbolBloom::load`, then `may_contain` probes |
+| `fuzz_pattern_parser` (v1.12.0) | Arbitrary UTF-8 as a pattern string | `parse_composite_pattern` (metavars, `&&` / `||`, quoted segments) |
+| `fuzz_manifest_load` (v1.12.0) | Arbitrary JSON as `manifest.json` | `Manifest::load` |
 
-Fuzzing found and fixed 3 bugs: out-of-bounds read on crafted `symbol_count`, misaligned pointer dereference on odd `symbols_offset`, and unchecked section offsets exceeding file size.
+Fuzzing has found and fixed five real defects across the project life:
+
+- v1.x: out-of-bounds read on crafted `symbol_count`, misaligned
+  pointer dereference on odd `symbols_offset`, unchecked section
+  offsets exceeding file size (binary reader hardening).
+- v1.12.0: `SymbolBloom::load` accepted a sidecar with `n_bits = 0`
+  + `k_num = 0` whose consistency guard passed but later panicked
+  inside `bloomfilter::Bloom::check` on `hash % 0`. Fix: reject
+  degenerate sizes during load.
+- v1.12.0: `SymbolBloom::load` accepted `k_num` up to ~2.1B, which
+  made every `may_contain` call loop for 110+ seconds (DoS, not a
+  panic). Fix: cap `k_num <= MAX_K_NUM = 64` at load time.
 
 ## Architecture
 
