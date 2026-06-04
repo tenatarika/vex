@@ -23,6 +23,38 @@ pub enum Language {
 }
 
 impl Language {
+    /// Every supported [`Language`] variant in declaration order.
+    ///
+    /// The order MUST match the enum variant declaration so callers that
+    /// rely on positional indexing (none today; tracked here so a future
+    /// reordering can't silently break it) stay correct. Adding a new
+    /// language requires appending it to both the enum AND this slice;
+    /// removing one leaves a gap in `lang_id` but is removed from this
+    /// slice. Compile-time `assert_eq!(Language::ALL.len(), …)` in a
+    /// test pins the count so a missing entry surfaces as a test
+    /// failure rather than a silent gap in language-iterating consumers.
+    pub const ALL: &'static [Language] = &[
+        Self::Rust,
+        Self::Kotlin,
+        Self::TypeScript,
+        Self::Python,
+        Self::Go,
+        Self::Java,
+        Self::CSharp,
+        Self::Ruby,
+        Self::Swift,
+        Self::Sql,
+        Self::Markdown,
+        Self::Cpp,
+        Self::Php,
+        Self::Bash,
+        Self::Lua,
+        Self::Css,
+        Self::Html,
+        Self::Yaml,
+        Self::Toml,
+    ];
+
     /// Detect language from file extension.
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext {
@@ -150,5 +182,29 @@ impl Language {
             Self::Yaml => "yaml",
             Self::Toml => "toml",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pin the `Language::ALL` cardinality so a future variant addition
+    /// that forgets to update the slice surfaces here instead of silently
+    /// shrinking language-iterating consumers (callgraph `COMPILED_QUERIES`,
+    /// pattern-skeleton grammar fingerprints, …).
+    #[test]
+    fn all_slice_covers_every_variant() {
+        // Every `lang_id` is in `1..=19` (slot 0 reserved for "not
+        // fingerprinted"), so the slice must have the same count.
+        assert_eq!(Language::ALL.len(), 19);
+        // `lang_id` is also our canonical ordinal; the slice must list
+        // each one exactly once.
+        let mut ids: Vec<u8> = Language::ALL.iter().map(|l| l.lang_id()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), Language::ALL.len(), "duplicate variant in ALL");
+        assert_eq!(*ids.first().unwrap(), 1, "lang_id starts at 1");
+        assert_eq!(*ids.last().unwrap(), 19, "lang_id ends at 19");
     }
 }

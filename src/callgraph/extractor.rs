@@ -184,22 +184,12 @@ pub fn extract_call_edges(content: &str, lang: Language) -> Vec<(String, usize, 
 /// `Query` is `Send + Sync` (read-only after compile).
 static COMPILED_QUERIES: LazyLock<HashMap<Language, Query>> = LazyLock::new(|| {
     let mut m = HashMap::new();
-    // This list MUST stay in sync with the explicit match arms in
-    // `super::queries::callgraph_query`; a language present here but
-    // absent there silently produces empty results, and vice versa.
-    // Eliminating the dance requires a `Language::ALL` slice or
-    // `IntoEnumIterator` on the `Language` enum — tracked separately,
-    // out of scope for the S3 split.
-    for lang in [
-        Language::Rust,
-        Language::Python,
-        Language::Java,
-        Language::TypeScript,
-        Language::Go,
-        Language::Cpp,
-        Language::Kotlin,
-        Language::CSharp,
-    ] {
+    // Iterate every supported language and probe `callgraph_query`; the
+    // returned `Some(_)` set is the canonical "this grammar contributes
+    // to the persistent call graph" registry. Adding a new language is
+    // now a queries-only change — no risk of forgetting to register it
+    // here. (S10, v1.12.0 — closes the S3 review-finding.)
+    for &lang in Language::ALL {
         if let Some(src) = callgraph_query(lang) {
             match Query::new(&lang.ts_language(), src) {
                 Ok(q) => {
