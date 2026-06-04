@@ -6,6 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-06-04
+
+Major test, refactor, and hardening consolidation. The full S-series LOC
+split train (`pattern/skeleton`, `callgraph`, `cli/cmd_bundle`,
+`pattern/matcher`, `hierarchy`, `parse/extractor`, `index/pipeline`,
+plus `Language::ALL`) lands with zero behaviour change. T-series
+testing follow-ups raise overall coverage to 88.31% lines and lift
+`cli/cmd_similar.rs` from 15.70% to 93.48%. T4 wires the previously-
+dead bloom filter into `vex check` via an `index.bloom` sidecar
+(format v6 of `index.vex` unchanged) and a libFuzzer round on the
+load path catches two real defects (`hash % 0` panic; multi-billion-
+`k_num` DoS) — both fixed. Headline features: `vex index --no-wait`
+for editor/CI integrations, Phase 14.6 class-level decorator
+callgraph edges (Python / Java / TS / Kotlin / C#), and the S8.2
+exit-code contract (0/1/2) wired across every query subcommand. Two
+BREAKING lib-API changes: `pipeline::run` returns `(usize, bool)`,
+and the v1.11.0 envelope/JSON-RPC error-code contract continues
+unchanged.
+
 ### Added
 
 - **Broad fuzz pass — two new libFuzzer targets + smoke-verify of
