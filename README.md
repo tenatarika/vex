@@ -361,7 +361,11 @@ What this changes for the user:
   inner scope, not the outer.
 - A `use ext::Foo;` / `import { Foo } from './ext'` / `from ext import
   Foo` makes a ref to `Foo` resolve cross-file to whatever defines it
-  in the index.
+  in the index. For C++, **quoted `#include "..."`** (v1.14+) walks
+  the transitive include graph via BFS to resolve `Foo` against
+  symbols defined in any reachable header. System headers
+  `<vector>` / `<string>` and macro includes (`#include MY_HEADER`)
+  stay unresolved by design.
 - A name imported but never defined in the index stays `Unresolved`
   and produces no edge — better than a coincidental match.
 
@@ -555,7 +559,7 @@ For an agent making 10-20 code lookups per task, vex saves **5,000-20,000 tokens
 | TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx` | classes, interfaces, enums, functions, arrows, type aliases | `import` | cross-file | indexed |
 | Python | `.py` | classes, functions (incl. async, decorated) | `import`, `from..import` | cross-file | indexed |
 | C# | `.cs` | classes, interfaces, structs, enums, methods, properties | — | in-file | live-scan |
-| C/C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | classes, structs, functions, methods, templates, enums | `#include` | in-file | live-scan |
+| C/C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | classes, structs, functions, methods, templates, enums | `#include` | cross-file (v1.14 BFS over quoted `#include "..."`; class methods still in-file) | live-scan |
 | Go | `.go` | functions, methods, structs, interfaces | `import` | — | live-scan |
 | Java | `.java` | classes, interfaces, enums, methods, constructors | `import` | — | live-scan |
 | Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` | — | live-scan |

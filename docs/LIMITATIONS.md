@@ -179,7 +179,9 @@ shipped in v1.8.0). It reads the v5 `reference_edges` section produced
 by the scope binder: every ref is type-aware, cross-file imports are
 resolved, no false positives from same-named identifiers in unrelated
 scopes. Use it for refactoring on Rust / TypeScript / Python / C# /
-C++.
+C++. **C++ cross-file via `#include "..."`** is v1.14+; see
+[§4a](#4a-c-include-driven-cross-file-resolution-v114) for the v1.14
+contract and remaining gaps (class members, system headers).
 
 **What is invisible in both modes:**
 
@@ -269,6 +271,64 @@ falls back to the legacy refs FST. Quality notes:
 **Recommendation:** for refactor-grade accuracy on T1 languages, always
 use `--strict`. For everything else, treat `vex usages` results as a
 starting set and filter manually.
+
+---
+
+## 4a. C++ `#include`-driven cross-file resolution (v1.14)
+
+Before v1.14, every C++ ref to a symbol declared in a separate header
+landed as `Unresolved` and produced **no `--strict` edge**. The one
+working pattern was `using app::Gateway;` (which goes through
+`BindTarget::Imported`). v1.14 adds a Pass-2 BFS over the quoted
+`#include "..."` graph in `src/store/include_resolver.rs`: for each
+`Unresolved` ref in a `.cpp` / `.h` / `.cxx` / etc. file, BFS walks
+the transitively-included headers and resolves against the first
+file that defines a symbol with the matching name.
+
+**What works (v1.14+):**
+
+- Free functions declared in a `.h` and called from a `.cpp` that
+  `#include`s that header (direct or transitive).
+- Classes / structs / namespaces referenced after `#include "foo.h"`
+  by bare name (`Gateway gw;`, `app::Gateway gw;`).
+- Mutual includes (`A.h ⇄ B.h`) — BFS uses a `HashSet<file_id>`
+  visited set, terminates on cycles.
+- Basename fallback when the exact relative path doesn't match:
+  e.g. `#include "util.h"` resolves to `src/util.h` if that's the
+  only `util.h` in the project; ambiguous matches break ties as
+  same-dir > shortest-path-from-root > alphabetical (deterministic
+  rather than always-correct).
+
+**What still does NOT resolve cross-file in C++:**
+
+- **Class member methods** — `gw.Charge()` where `Charge` is a
+  method of `class Gateway`. The scope binder emits a
+  `field_identifier` ref for `Charge` but the symbol extractor
+  treats class members as nested-scope, not top-level. v1.14 only
+  fixes the `BindTarget::Unresolved → free symbol` path. Pending
+  scope-binder work.
+- **System headers** — `#include <vector>`, `#include <string>`.
+  Tree-sitter classifies these as `system_lib_string`; the parser
+  filters them out so `std::vector` stays `Unresolved`. The vex
+  index doesn't contain libstdc++.
+- **Macro includes** — `#include MY_HEADER`. The path is an
+  `identifier` node, not a literal. Resolving these would require
+  preprocessor state vex doesn't track.
+- **`-I` compiler search paths** — vex only sees the project tree;
+  it does not consume `compile_commands.json` or `-I` flags. Headers
+  in `third_party/` or `vendor/` that the build feeds via `-I` are
+  visible to vex only via basename fallback.
+- **`using namespace std;`** — wildcard imports stay unresolved.
+- **Conditional includes via `#ifdef`** — both branches of an
+  `#ifdef WIN32 / #else` block contribute to the include graph
+  (parser doesn't evaluate the macro), so resolution is
+  optimistic across platforms.
+
+Use `vex status` to confirm an index was built with v1.14+ resolution:
+the line `C++ includes: yes` (text) / `"cpp_includes_processed": true`
+(JSON) marks indexes that ran Pass-2. Pre-v1.14 indexes show
+`C++ includes: no (run \`vex index\` to enable cross-file C++ refs)`
+— rebuild to pick up the resolver.
 
 ---
 
