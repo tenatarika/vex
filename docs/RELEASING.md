@@ -31,8 +31,8 @@ A push of `v<X>.<Y>.<Z>` to GitHub triggers `.github/workflows/release.yml`:
 
 `vex self-update` downloads from this same release, verifies the
 embedded zipsign signature against the public key compiled into the
-binary (`VEX_RELEASE_PUBKEY` in `src/cli/mod.rs`), and only then
-extracts and replaces the running binary.
+binary (`VEX_RELEASE_PUBKEY` in `src/cli/cmd_self_update.rs`), and
+only then extracts and replaces the running binary.
 
 ## Signing keypair
 
@@ -60,8 +60,8 @@ base64 -i vex.priv
 ```
 
 Then:
-1. Replace `VEX_RELEASE_PUBKEY` in `src/cli/mod.rs` with the new public
-   bytes and commit.
+1. Replace `VEX_RELEASE_PUBKEY` in `src/cli/cmd_self_update.rs` with the
+   new public bytes and commit.
 2. Add (or rotate) the `ZIPSIGN_PRIVATE_KEY_B64` secret in
    GitHub → Settings → Secrets and variables → Actions.
 3. Shred the local key files. They are not needed again until rotation.

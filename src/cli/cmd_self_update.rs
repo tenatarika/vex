@@ -39,10 +39,39 @@ pub(crate) fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> 
     let pubkey: [u8; 32] = VEX_RELEASE_PUBKEY
         .try_into()
         .expect("checked at compile time");
+    // U1 bug fix: self_update's default asset matcher does
+    // `name.contains(target_triple)`, and the v1.12.0 release ships
+    // TWO archives matching `x86_64-pc-windows-msvc` (and likewise on
+    // every other platform):
+    //
+    //   vex-x86_64-pc-windows-msvc.tar.gz       (the CLI — what we want)
+    //   vex-mcp-x86_64-pc-windows-msvc.tar.gz   (the MCP server — wrong)
+    //
+    // Without an `identifier`, `self_update::Release::asset_for`
+    // returns the first matching asset in iteration order. The
+    // GitHub API lists assets alphabetically and `vex-mcp-…` precedes
+    // `vex-x86_64-…`, so the updater downloaded the MCP archive and
+    // then failed to extract `vex.exe` from it.
+    //
+    // The fix narrows the match via `identifier = "vex-<target>"` —
+    // `name.contains("vex-x86_64-pc-windows-msvc")` is true for the
+    // CLI archive but false for `vex-mcp-x86_64-pc-windows-msvc.tar.gz`
+    // because the `vex-` is followed by `mcp-`, not the target triple.
+    // NB: `contains` is a substring check, not a prefix — narrow but
+    // not anchored. A future release that adds e.g.
+    // `vex-x86_64-pc-windows-msvc-debug.tar.gz` would also match this
+    // identifier; if that happens the right fix is to assert the
+    // archive entry path explicitly via `bin_path_in_archive`. The
+    // regression tests below pin every CURRENT release-matrix triple
+    // AND reproduce the original bug when identifier is absent, so a
+    // future self_update semantics drift surfaces immediately.
+    let target = self_update::get_target();
+    let identifier = format!("vex-{target}");
     let status = self_update::backends::github::Update::configure()
         .repo_owner("tenatarika")
         .repo_name("vex")
         .bin_name("vex")
+        .identifier(&identifier)
         .current_version(current)
         .show_download_progress(true)
         .no_confirm(no_confirm)
@@ -83,4 +112,81 @@ pub(crate) fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> 
         self_update::Status::Updated(v) => println!("Updated to vex {v}. Restart any open shells."),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use self_update::update::{Release, ReleaseAsset};
+
+    /// Construct a synthetic v1.12.0-shaped release with BOTH the CLI
+    /// archive and the MCP archive matching the requested target — the
+    /// exact configuration that bit Windows users in v1.12. The
+    /// matcher pre-1.13.1 would pick the MCP archive (alphabetically
+    /// first); the fix's `identifier = "vex-{target}"` anchors the
+    /// CLI archive uniquely.
+    fn synthetic_release(target: &str) -> Release {
+        Release {
+            name: format!("vex {target} test"),
+            version: "1.12.0".to_string(),
+            date: "2026-06-04".to_string(),
+            body: None,
+            assets: vec![
+                // Lexical order matters — `vex-mcp-...` < `vex-x86_64-...`
+                // alphabetically, so the unanchored matcher picked
+                // this one first.
+                ReleaseAsset {
+                    name: format!("vex-mcp-{target}.tar.gz"),
+                    download_url: format!("https://example.test/vex-mcp-{target}.tar.gz"),
+                },
+                ReleaseAsset {
+                    name: format!("vex-{target}.tar.gz"),
+                    download_url: format!("https://example.test/vex-{target}.tar.gz"),
+                },
+            ],
+        }
+    }
+
+    fn assert_picks_cli(target: &str) {
+        let release = synthetic_release(target);
+        let identifier = format!("vex-{target}");
+        let picked = release
+            .asset_for(target, Some(&identifier))
+            .expect("identifier must select an asset");
+        assert_eq!(
+            picked.name,
+            format!("vex-{target}.tar.gz"),
+            "identifier `vex-{{target}}` should anchor the CLI archive on {target}"
+        );
+        // Sanity: without the identifier, the MCP archive wins —
+        // reproduces the original bug. If this stops failing, the
+        // self_update crate changed semantics and we should re-audit.
+        let bug = release
+            .asset_for(target, None)
+            .expect("unanchored matcher must still pick *something*");
+        assert_eq!(
+            bug.name,
+            format!("vex-mcp-{target}.tar.gz"),
+            "unanchored matcher should reproduce the v1.12 bug (picks MCP on {target})"
+        );
+    }
+
+    #[test]
+    fn identifier_picks_cli_archive_on_windows_x64() {
+        assert_picks_cli("x86_64-pc-windows-msvc");
+    }
+
+    #[test]
+    fn identifier_picks_cli_archive_on_linux_x64() {
+        assert_picks_cli("x86_64-unknown-linux-gnu");
+    }
+
+    #[test]
+    fn identifier_picks_cli_archive_on_apple_arm64() {
+        assert_picks_cli("aarch64-apple-darwin");
+    }
+
+    #[test]
+    fn identifier_picks_cli_archive_on_apple_x64() {
+        assert_picks_cli("x86_64-apple-darwin");
+    }
 }
