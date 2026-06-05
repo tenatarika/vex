@@ -613,6 +613,24 @@ pub(super) fn compute_hashes_for(parsed: &[ParsedFile], embedder_id: &str) -> Re
 /// stale numeric-keyed `index.hnsw` without a sidecar degrades to
 /// brute-force search (same as a missing HNSW altogether).
 pub(super) fn build_hnsw(root: &Path, vectors: &[Vec<f32>], hashes: &[u64]) -> Result<()> {
+    let hnsw_path = config::hnsw_path(root);
+    let hash_index_path = config::hash_index_path(root);
+    build_hnsw_at(&hnsw_path, &hash_index_path, vectors, hashes)
+}
+
+/// Core HNSW + sidecar builder with explicit paths. The `build_hnsw`
+/// wrapper above resolves them via `config::hnsw_path` /
+/// `config::hash_index_path`; this layer is split out so unit tests can
+/// drive the same code path without touching the `set_cache_override`
+/// `OnceLock` (which under `cargo test` is shared across thread-parallel
+/// sibling tests and produces the wrong cache dir for whichever ran
+/// second). Production callers should always go through `build_hnsw`.
+pub(super) fn build_hnsw_at(
+    hnsw_path: &Path,
+    hash_index_path: &Path,
+    vectors: &[Vec<f32>],
+    hashes: &[u64],
+) -> Result<()> {
     use usearch::{new_index, IndexOptions, MetricKind, ScalarKind};
 
     anyhow::ensure!(
@@ -643,7 +661,6 @@ pub(super) fn build_hnsw(root: &Path, vectors: &[Vec<f32>], hashes: &[u64]) -> R
         index.add(h, vec).context("add vector to HNSW index")?;
     }
 
-    let hnsw_path = config::hnsw_path(root);
     let path_str = hnsw_path
         .to_str()
         .context("HNSW path contains non-UTF-8 characters")?;
@@ -651,8 +668,7 @@ pub(super) fn build_hnsw(root: &Path, vectors: &[Vec<f32>], hashes: &[u64]) -> R
 
     // Sidecar: paired sym_idx-ordered hash list. Without this the query
     // path can't materialise the hash→sym_idx mapping HnswHandle needs.
-    let hash_index_path = config::hash_index_path(root);
-    crate::search::hash_index::save(&hash_index_path, hashes)
+    crate::search::hash_index::save(hash_index_path, hashes)
         .context("save HNSW hash-index sidecar")?;
 
     tracing::info!(
@@ -768,20 +784,20 @@ mod tests {
     /// `hash → sym_idx` translation.
     #[test]
     fn build_hnsw_with_hashes_and_query_returns_sym_idx() {
+        // Uses `build_hnsw_at` with explicit paths so this test never
+        // touches `crate::util::config::set_cache_override` — that's an
+        // `OnceLock<CacheLayout>` and under `cargo test` the sibling
+        // `all_hit_returns_cached_vectors_without_model_load` test
+        // racing for it would leave whichever ran second pointing at a
+        // dropped TempDir. The production wrapper `build_hnsw(root, ..)`
+        // does the config lookup; `build_hnsw_at` covers the same
+        // builder + sidecar path with zero process-wide state.
         let tmp = tempfile::TempDir::new().unwrap();
-        let root = tmp.path();
-        // `set_cache_override` is one-shot (OnceLock); if a sibling
-        // test in this binary already set it we'd silently land on the
-        // sibling's tempdir which is gone. Use the test's own root as
-        // the override path AND skip the hash subdir so build_hnsw's
-        // `index.save` lands directly under root (which exists).
-        let cache_root = root.join(".vex_cache");
-        std::fs::create_dir_all(&cache_root).unwrap();
-        // skip_hash_subdir=true → hnsw_path = cache_root/index.hnsw
-        // (no extra `<hash>/` segment). Without this, build_hnsw would
-        // try to save to `<root>/.vex_cache/<hash>/index.hnsw` and
-        // bail on the missing subdir.
-        crate::util::config::set_cache_override(cache_root, true);
+        let hnsw_path = tmp.path().join("index.hnsw");
+        // `HnswHandle::open` derives the sidecar as `hnsw_path.parent()
+        // .join("index.hashes")`, so co-locating the two files mirrors
+        // the production layout.
+        let hash_index_path = tmp.path().join("index.hashes");
 
         // Two orthogonal MiniLM-shaped vectors at sym_idx 0 and 1 with
         // synthetic but plausible context hashes. Orthogonal so the
@@ -795,20 +811,24 @@ mod tests {
         let h_foo: u64 = 0xFEED_C0FF_EEC0_DE42;
         let h_bar: u64 = 0x00BA_0BAB_DEAD_BEEF;
 
-        build_hnsw(root, &[v_foo.clone(), v_bar.clone()], &[h_foo, h_bar]).expect("build_hnsw");
+        build_hnsw_at(
+            &hnsw_path,
+            &hash_index_path,
+            &[v_foo.clone(), v_bar.clone()],
+            &[h_foo, h_bar],
+        )
+        .expect("build_hnsw_at");
 
-        // HNSW + sidecar should land at the conventional paths.
-        assert!(config::hnsw_path(root).exists(), "HNSW file must exist");
-        assert!(
-            config::hash_index_path(root).exists(),
-            "hash-index sidecar must exist"
-        );
+        // Both files must exist after the build — `HnswHandle::open`
+        // bails on a missing sidecar even if the HNSW is fine.
+        assert!(hnsw_path.exists(), "HNSW file must exist");
+        assert!(hash_index_path.exists(), "hash-index sidecar must exist");
 
         // Open the handle: expected_symbols = 2 (matches both HNSW size
         // and sidecar length). Should succeed; missing sidecar would
         // return None.
-        let handle = crate::search::semantic::HnswHandle::open(&config::hnsw_path(root), dim, 2)
-            .expect("open HnswHandle");
+        let handle =
+            crate::search::semantic::HnswHandle::open(&hnsw_path, dim, 2).expect("open HnswHandle");
 
         // Query with v_foo — top-1 must be sym_idx 0 with similarity
         // ~1.0 (the stored vector under hash h_foo).
