@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.14.1] - 2026-06-06
+
+Follow-up release closing every cross-file `--strict` ref gap the v1.14.0 release left behind (Python / C# / TypeScript class member methods + C++ class methods + name_to_global index-space bug), reorganising HNSW around content-addressed keys (prerequisite for B1.2 incremental update), and parallelising the embed pipeline's context-string build. Also bumps `CACHE_FORMAT_VERSION` 1 → 2 retroactively for the v1.14.0 `ParsedFile.cpp_includes` field — pre-1.14.1 blob caches are silently invalidated on next `vex index` (no user action; a one-time re-parse).
+
 ### Performance
 
 - **Embed pipeline Step 1 parallelised.** `generate_embeddings`'s
@@ -174,7 +178,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   model load entirely. Three pre-existing `context_hash_*` unit tests
   pin the determinism contract.
 
-## [1.14.0] - 2026-06-05
+## [1.14.0] - 2026-06-05 (no separate release — folded into 1.14.1)
 
 ### Added
 

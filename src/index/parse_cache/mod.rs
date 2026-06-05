@@ -45,7 +45,13 @@ pub const MAGIC: &[u8; 4] = b"VXBC";
 
 /// Bump this whenever `ParsedFile` (or any type it embeds) changes shape.
 /// Stale entries with a different version are silently ignored.
-pub const CACHE_FORMAT_VERSION: u16 = 1;
+///
+/// History:
+/// - `1`: initial v1.13.0 layout.
+/// - `2`: v1.14.1 — covers v1.14.0's `ParsedFile.cpp_includes: Vec<String>`
+///   addition (a structurally-incompatible shape change shipped without
+///   a bump in v1.14.0 — this version closes the gap retroactively).
+pub const CACHE_FORMAT_VERSION: u16 = 2;
 
 /// On-disk header size: 4 (magic) + 2 (version) + 4 (fingerprint).
 const HEADER_SIZE: usize = 10;
