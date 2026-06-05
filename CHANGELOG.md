@@ -6,6 +6,132 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-06-05
+
+Performance pass closing every open `P*` item from the v1.9.1 external
+review (P1 / P2 / P5 / P7 / P8), plus two hotfixes: E2b is a
+content-addressed embedding cache that closes a pre-existing unforced
+error where `vex update` re-embedded every symbol in any touched file,
+and U1 fixes a `vex self-update` asset-selection bug that downloaded
+the wrong archive on every platform. No on-disk format change
+(`index.vex` stays v6); no public CLI API change. Two reviewer
+passes (rust-reviewer + code-reviewer in parallel) applied before
+ship; 4M libFuzzer iterations across four targets clean.
+
+**⚠️ Upgrade note for v1.12.0 users.** `vex self-update` on v1.12.0
+is itself broken (U1) — it picks the wrong release archive. Do **NOT**
+rely on `vex self-update` to reach v1.13.0; install once manually via
+`brew upgrade vex`, your package manager, or by downloading the
+`vex-<target>.tar.gz` archive from the GitHub release. Subsequent
+`vex self-update` invocations from v1.13.0 onward work correctly.
+
+### Performance
+
+- **P2 — ONNX SHA-256 marker cache.** `verify_with_marker` writes a
+  sibling `<onnx>.sha256.marker` (text format, atomic rename) recording
+  `(mtime_ns, size, sha256_hex)`. Subsequent `vex search --semantic`
+  invocations skip the 86 MiB rehash when on-disk mtime + size match
+  the marker. **Bench: 163.73 ms → 10.71 μs warm (~15,280×).** Slow
+  path unchanged; marker write failures are non-fatal. 8 new unit
+  tests cover cold-first-call, hit-skips-rehash, size invalidation,
+  magic-mismatch, malformed marker, wrong-sha marker bail, tamper
+  detection, and `VEX_EMBEDDER_SKIP_CHECK` bypass.
+- **P1 — HNSW handle hoist.** New `semantic::HnswHandle` wraps a
+  single opened `usearch::Index` + `view()`. `find_similar` /
+  `find_duplicates` open the handle once before any HNSW lookup; the
+  latter previously reopened + mmap'd the HNSW file per outer-loop
+  iter (`symbol_count` mmap cycles per query). `nearest_neighbors`
+  now takes `Option<&HnswHandle>` instead of `&Path`. **Bench:
+  28.70 ms → 14.10 ms at 500 sym (~2.0×).** Win scales linearly with
+  `symbol_count`.
+- **P5 — vectors L2-normalized at write time.** New
+  `Manifest::vectors_normalized: Option<bool>` gates the brute-force
+  fast path. `pipeline::run` and `pipeline::update` normalize before
+  persist; `update` reads the existing manifest first and skips
+  re-normalizing already-unit `unchanged_vectors` to avoid
+  floating-point drift across many watch-mode cycles. CLI handlers
+  thread the flag through `find_similar` / `find_duplicates` /
+  `search_with_embedder` / `BundleCtx`. Brute-force similarity
+  collapses to a dot product on unit vectors (skips per-call `sqrt`
+  + norm computations). **Bench: 97.74 ms → 33.71 ms (~2.9×).** Three
+  new unit tests pin `dot_product == cosine_similarity` within float
+  epsilon for normalized inputs.
+- **P7 — FST builders BTreeMap → Vec + sort.** All five builders
+  (`symbol_fst`, `refs_fst`, `call_graph::{callers,callees}`,
+  `ref_edges`, `bm25::Bm25IndexBuilder`) migrated. New
+  `encode_caller_key_into(&mut [u8; 10], u32)` writes the 10-digit
+  decimal key into a stack buffer, replacing the per-edge
+  `format!("{:010}", n)` allocation in `build_callees_fst` /
+  `build_ref_edges_section`. Reader-side `encode_caller_key`
+  unchanged. **Bench: decimal-key 545 μs → 88.2 μs (6.17×);
+  string-key 1.06 ms → 957 μs (1.11×).** Byte-equality test pins the
+  stack encoder against `format!`.
+- **P8 — BM25 tokenizer share-owning-String refactor.** Single
+  upfront `text.to_lowercase()` + `HashSet<&str>` over its slices,
+  collapsing the previous per-token `to_lowercase()` + per-unique
+  `String::clone()` pattern. Allocation profile O(M + N) → O(N + 1).
+  **Bench: 4.09 μs → 2.64 μs (~1.55×, 35%).** Behavior preserved by a
+  parity table (13 inputs covering case-insensitive dedup, Cyrillic,
+  Greek Ω lowercasing, digits in identifiers, punctuation splits) +
+  invariants test (all lowercase, all length ≥ 2, deduped).
+
+### Fixed
+
+- **E2b — `vex update` embedding cache (closes a pre-existing
+  unforced error).** Before v1.13, any single-symbol edit in a file
+  caused `vex update` to re-embed *every* symbol in that file (the
+  file-level content hash flipped, the file went into `changed_set`,
+  `parse_files` returned all symbols, `generate_embeddings` re-ran on
+  every one). On a 100-symbol file, 99 of 100 embeds were wasted
+  compute. New content-addressed sidecar
+  `<index_dir>/embed_cache_<embedder_id>.bin` keyed by
+  `xxh3_64(embedder_id || \0 || context_string)` lets
+  `generate_embeddings` partition contexts into cache hits + misses,
+  embed only the misses, and persist updates. **When every context
+  hits the cache, the ONNX model load is skipped entirely** — biggest
+  watch-mode win on no-op or comment-only updates. Magic / version /
+  embedder_id / dim mismatch on load discards the cache and starts
+  empty (cold-start path); atomic `.tmp` + rename on save. 12 cache
+  unit tests + 1 end-to-end integration test that proves the
+  all-hit path completes in < 10 ms (no model load possible).
+- **U1 — `vex self-update` downloaded the wrong release archive.**
+  User reported on Windows: `vex self-update` fetched
+  `vex-mcp-x86_64-pc-windows-msvc.tar.gz` instead of
+  `vex-x86_64-pc-windows-msvc.tar.gz`, then failed extracting
+  `vex.exe` ("Could not find the required path in the archive").
+  Root cause: `self_update` crate's `Release::asset_for` does
+  `name.contains(target_triple)`; both archives match the triple,
+  and without an `identifier` the alphabetically-first asset wins
+  (`vex-mcp-…` precedes `vex-x86_64-…`). Bug affects EVERY platform
+  the release ships, not only Windows. Fix: anchor the asset name
+  via `.identifier(format!("vex-{target}"))` — that substring is
+  unique to the CLI archive (the MCP archive has `vex-mcp-…` after
+  `vex-`, breaking the substring match). 4 regression tests pin the
+  fix per target triple (Windows x64, Linux x64, macOS ARM64, macOS
+  x64) AND assert the unanchored matcher still reproduces the
+  original bug — if a future `self_update` version changes its
+  matching semantics, the tests fail loudly. **Users on v1.12.0
+  cannot reach v1.13.0 via `vex self-update`; a one-time manual
+  install is required** (see the upgrade note above).
+
+### Added
+
+- **Benchmark scaffold `benches/perf_v113.rs`.** Six Criterion
+  benches with legacy-vs-new side-by-side measurement for every
+  P-item where a fair comparison is possible: P2 cold/warm, P5
+  brute cosine vs dot, P1 per-iter reopen vs hoisted, P7 string vs
+  decimal key build, P8 legacy vs current tokenizer. Run via
+  `cargo bench --bench perf_v113`. Raw run output captured to
+  `benches/results/v1.13-baseline-23565a3.txt` (gitignored).
+- **`__fuzz_*` shims for the v1.13 attack surface.** Two new
+  libFuzzer targets driven through `#[doc(hidden)] pub fn` entry
+  points: `fuzz_marker_load` over `EmbedCache`-adjacent
+  `read_marker` + `verify_with_marker` (P2 sidecar parser), and
+  `fuzz_tokenize_document` over the P8 BM25 tokenizer.
+  Cumulative **4M iterations** across the two new targets plus the
+  P7-adjacent `fuzz_symbol_fst` / `fuzz_refs_fst` smoke runs.
+  Zero crashes / panics / UB.
+
 ## [1.12.0] - 2026-06-04
 
 Major test, refactor, and hardening consolidation. The full S-series LOC
