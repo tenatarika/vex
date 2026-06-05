@@ -107,6 +107,28 @@ pub fn load(path: &Path) -> Result<Vec<u64>> {
     Ok(hashes)
 }
 
+/// Fuzzing shim — exposed only to `vex-fuzz`. Writes `data` as a
+/// hash-index sidecar to a process-temp path, then drives [`load`].
+/// Goal: no panics, no UB on any byte sequence the parser sees, since
+/// the sidecar is loaded at every `vex search --semantic` query and
+/// `HnswHandle::open` would otherwise propagate a panic to the caller.
+/// Mirrors the [`crate::embed::integrity::__fuzz_marker_bytes`] pattern
+/// (a `pub(crate)` parser exercised via a doc-hidden shim so the
+/// public API stays narrow).
+#[doc(hidden)]
+pub fn __fuzz_hash_index_bytes(data: &[u8]) {
+    let path = std::env::temp_dir().join("__vex_fuzz_hash_index.bin");
+    // Tmp I/O failure (full disk / permission) — return rather than
+    // assert; libfuzzer will move on with a new sample.
+    if std::fs::write(&path, data).is_err() {
+        return;
+    }
+    // The parser's contract is "any malformed input is an `Err`, never
+    // a panic". We discard the result — libfuzzer's success metric is
+    // process survival, not a returned value.
+    let _ = load(&path);
+}
+
 fn read_u32<R: Read>(r: &mut R) -> Result<u32> {
     let mut buf = [0u8; 4];
     r.read_exact(&mut buf)?;
