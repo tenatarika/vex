@@ -6,6 +6,56 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-06-05
+
+### Added
+
+- **C++ `#include` cross-file resolution for `vex usages --strict`.**
+  Pass-2 BFS in `src/store/include_resolver.rs` walks the transitive
+  quoted-`#include "..."` graph at index time and resolves
+  `BindTarget::Unresolved` C++ refs against symbols in reachable
+  headers. Closes the original user bug where strict refs returned
+  empty for **every** C++ symbol on a 50k-symbol Windows codebase.
+
+  Two-branch include-path resolution: relative-to-file first
+  (`dir(from_path)` + include string, `./` / `..` collapsed without
+  I/O), then project-wide basename fallback with deterministic
+  tie-break (same-dir > shortest-path-from-root > alphabetical).
+  BFS uses `HashSet<file_id>` for cycle safety — mutual includes
+  (`A.h ⇄ B.h`) and `#pragma once` patterns terminate cleanly.
+
+  **Out of scope (still unresolved):** class member methods accessed
+  via `obj.method()` or `Class::method()` — the symbol extractor
+  treats class members as nested-scope, not top-level, so the binder
+  emits `field_identifier` refs that bypass `Unresolved`. System
+  headers (`<vector>`), macro includes (`#include MY_HEADER`), `-I`
+  compiler search paths, and `using namespace std;` continue to
+  produce no edges. See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
+  §4a for the full contract.
+
+  Storage: inline into the existing `ref_edges` section, **no format
+  bump** (v6 index still v6). Architect-locked Pass-2 placement
+  piggybacks on the existing `name_to_global` resolution loop in
+  `src/store/writer.rs:306-371` — NOT a per-language binder hook
+  (would break rayon parallelism) NOR a new pipeline stage. A new
+  parallel `Vec<file_id>` indexed by sym_entries position maps
+  candidate `sym_idx` → defining file_id for BFS intersection.
+
+  New `Manifest::cpp_includes_processed: Option<bool>` marker
+  unconditionally `Some(true)` for v1.14+ writes; `None` on pre-1.14
+  manifests. Surfaced in `vex status`: text shows `C++ includes:
+  yes` for `Some(true)` and `no (run \`vex index\` to enable
+  cross-file C++ refs)` for `None`; JSON exposes
+  `cpp_includes_processed: bool`.
+
+  30 new unit tests in `store::include_resolver::tests` (path
+  resolver branches + include graph build + BFS), 3 new manifest
+  round-trip tests, 6 new end-to-end integration tests in
+  `tests/cpp_strict_refs_test.rs` (sibling include, transitive
+  depth-2 chain, mutual cycle termination, `<vector>` system header
+  ignored, `using` regression guard, unincluded header doesn't
+  pollute refs).
+
 ## [1.13.0] - 2026-06-05
 
 Performance pass closing every open `P*` item from the v1.9.1 external
