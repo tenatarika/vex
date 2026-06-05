@@ -66,6 +66,18 @@ pub struct Manifest {
     /// this to `Some(true)`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vectors_normalized: Option<bool>,
+
+    /// v1.14: `Some(true)` when this index was built with Pass-2 C++
+    /// `#include "..."` resolution (`src/store/include_resolver.rs` BFS).
+    /// `None` on pre-1.14 manifests means strict C++ cross-file refs were
+    /// not produced — `vex usages --strict <symbol>` will silently
+    /// under-report for C++ codebases until the next `vex index`. The
+    /// flag is purely a version marker; it does not encode whether the
+    /// project has any C++ files (a pure-Rust project still gets
+    /// `Some(true)` because the resolver ran trivially over an empty
+    /// C++ set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpp_includes_processed: Option<bool>,
 }
 
 impl Manifest {
@@ -175,5 +187,46 @@ mod tests {
         assert!(diff.changed.is_empty());
         assert!(diff.deleted.is_empty());
         assert_eq!(diff.unchanged, 1);
+    }
+
+    #[test]
+    fn cpp_includes_processed_round_trip() {
+        // Writers set `Some(true)` from v1.14; serialise → parse must
+        // preserve the value verbatim. Guards against an accidental
+        // `skip_serializing_if = "Option::is_none"` regression that
+        // would drop a populated field.
+        let m = Manifest {
+            cpp_includes_processed: Some(true),
+            ..Manifest::default()
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("\"cpp_includes_processed\":true"));
+        let back: Manifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cpp_includes_processed, Some(true));
+    }
+
+    #[test]
+    fn cpp_includes_processed_defaults_none_on_pre_v1_14_manifest() {
+        // A pre-1.14 manifest has no `cpp_includes_processed` key at all.
+        // `#[serde(default)]` must deserialise it as `None` instead of
+        // erroring — that's the back-compat contract every other
+        // `Option<bool>` field already follows.
+        let pre_v1_14_json = r#"{"files": {}}"#;
+        let m: Manifest = serde_json::from_str(pre_v1_14_json).unwrap();
+        assert_eq!(m.cpp_includes_processed, None);
+    }
+
+    #[test]
+    fn cpp_includes_processed_none_is_omitted_from_serialised_form() {
+        // Symmetric to the load case: when the field is `None`, the
+        // serialised JSON must not contain the key. Keeps old readers
+        // (pre-1.14 self-update users running on a fresh v1.14 binary
+        // that decided to opt out) from seeing unfamiliar keys.
+        let m = Manifest::default();
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            !json.contains("cpp_includes_processed"),
+            "expected key absent for None, got: {json}"
+        );
     }
 }

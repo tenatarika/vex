@@ -97,6 +97,7 @@ fn write_duplicate_project(dir: &Path) {
             call_edges: vec![],
             bound_refs: vec![],
             skeletons: Vec::new(),
+            cpp_includes: Vec::new(),
         },
         ParsedFile {
             path: "src/beta.rs".to_string(),
@@ -105,6 +106,7 @@ fn write_duplicate_project(dir: &Path) {
             call_edges: vec![],
             bound_refs: vec![],
             skeletons: Vec::new(),
+            cpp_includes: Vec::new(),
         },
     ];
     let vectors = vec![ones(), near_ones()];

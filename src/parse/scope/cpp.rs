@@ -59,6 +59,62 @@ impl ScopeBinder for CppBinder {
     }
 }
 
+/// v1.14 — extract quoted `#include "…"` directives from a C++ file.
+/// System headers (`#include <…>`), macro-named (`#include MY_HEADER`),
+/// and function-like macro-style includes are deliberately skipped:
+/// they have no in-file string we can resolve against the project tree.
+/// The Pass-2 ref resolver in `store::writer` consumes the returned
+/// list to walk the include graph for unresolved C++ refs.
+///
+/// Returns an empty vec on parse failure rather than `Err` — include
+/// resolution is best-effort, never the trust boundary that should
+/// abort indexing.
+pub fn extract_cpp_includes(content: &str) -> Vec<String> {
+    let Ok(tree) = parse_with(Language::Cpp, content) else {
+        return Vec::new();
+    };
+    let bytes = content.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    visit_for_includes(tree.root_node(), bytes, &mut out);
+    out
+}
+
+fn visit_for_includes(node: Node, bytes: &[u8], out: &mut Vec<String>) {
+    if node.kind() == "preproc_include" {
+        // `path` field is one of:
+        //   string_literal     — `"foo.h"` (target)
+        //   system_lib_string  — `<vector>` (skip)
+        //   identifier         — `MY_HEADER` (macro, skip)
+        //   call_expression    — `INCLUDE(x)` (macro, skip)
+        if let Some(path_node) = node.child_by_field_name("path") {
+            if path_node.kind() == "string_literal" {
+                let raw = &bytes[path_node.byte_range()];
+                // string_literal includes the surrounding quotes; strip
+                // them and reject empties / non-utf8 defensively.
+                if raw.len() >= 2 && raw[0] == b'"' && raw[raw.len() - 1] == b'"' {
+                    if let Ok(s) = std::str::from_utf8(&raw[1..raw.len() - 1]) {
+                        if !s.is_empty() {
+                            out.push(s.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        // preproc_include can't nest meaningfully; no need to recurse
+        // into its children for further includes.
+        return;
+    }
+    // Recurse to find includes nested inside `#ifdef` / `#if` branches —
+    // tree-sitter-cpp models conditional regions as preproc_if/ifdef
+    // wrapping inner statements (including preproc_include). Each
+    // recursion uses its own TreeCursor so children-iterator lifetimes
+    // don't entangle with the outer call's cursor.
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        visit_for_includes(child, bytes, out);
+    }
+}
+
 fn dispatch(w: &mut Walker, node: Node, scope: ScopeId) {
     let kind = node.kind();
 
@@ -383,4 +439,81 @@ pub(crate) fn extract_inner_identifier(node: Node) -> Option<Node> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod include_extraction_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_quoted_include() {
+        let out = extract_cpp_includes("#include \"foo.h\"\n");
+        assert_eq!(out, vec!["foo.h"]);
+    }
+
+    #[test]
+    fn extracts_path_bearing_quoted_include() {
+        let out = extract_cpp_includes("#include \"util/bar.h\"\n");
+        assert_eq!(out, vec!["util/bar.h"]);
+    }
+
+    #[test]
+    fn skips_system_lib_includes() {
+        // `<vector>` is `system_lib_string`, not `string_literal` — must
+        // not appear in output. If the binder regressed to including
+        // system headers, this test surfaces it before users hit
+        // resolution failures looking for `std::*` symbols that the
+        // project doesn't define.
+        let out = extract_cpp_includes("#include <vector>\n#include <string>\n");
+        assert!(out.is_empty(), "unexpected system includes: {out:?}");
+    }
+
+    #[test]
+    fn skips_macro_named_includes() {
+        // `#include MY_HEADER` — path is `identifier`. Skip.
+        let out = extract_cpp_includes("#include MY_HEADER\n");
+        assert!(out.is_empty(), "macro include leaked: {out:?}");
+    }
+
+    #[test]
+    fn extracts_from_inside_ifdef() {
+        // Conditional regions are real in C++ — extracting only the
+        // top-level includes would silently miss platform-specific
+        // headers. Walker recurses into preproc_if children.
+        let src = "\
+#ifdef WIN32\n\
+#include \"win_only.h\"\n\
+#else\n\
+#include \"posix.h\"\n\
+#endif\n";
+        let mut out = extract_cpp_includes(src);
+        out.sort();
+        assert_eq!(out, vec!["posix.h", "win_only.h"]);
+    }
+
+    #[test]
+    fn mixed_quoted_and_system_keeps_only_quoted() {
+        let src = "\
+#include \"a.h\"\n\
+#include <iostream>\n\
+#include \"b.h\"\n\
+#include <map>\n";
+        let mut out = extract_cpp_includes(src);
+        out.sort();
+        assert_eq!(out, vec!["a.h", "b.h"]);
+    }
+
+    #[test]
+    fn empty_input_is_empty_output() {
+        assert!(extract_cpp_includes("").is_empty());
+        assert!(extract_cpp_includes("int main() { return 0; }").is_empty());
+    }
+
+    #[test]
+    fn deduplication_is_caller_concern() {
+        // Same include twice → emitted twice. The Pass-2 resolver dedupes
+        // by file_id during BFS; the parser keeps the raw shape.
+        let out = extract_cpp_includes("#include \"a.h\"\n#include \"a.h\"\n");
+        assert_eq!(out, vec!["a.h", "a.h"]);
+    }
 }

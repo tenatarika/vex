@@ -43,6 +43,7 @@ fn one_symbol_parsed() -> Vec<ParsedFile> {
         call_edges: vec![],
         bound_refs: vec![],
         skeletons: Vec::new(),
+        cpp_includes: Vec::new(),
     }]
 }
 

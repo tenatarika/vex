@@ -238,6 +238,7 @@ fn sim_fixture() -> &'static SimFixture {
                 call_edges: vec![],
                 bound_refs: vec![],
                 skeletons: Vec::new(),
+                cpp_includes: Vec::new(),
             });
         }
 

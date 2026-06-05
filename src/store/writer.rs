@@ -9,6 +9,7 @@ use super::format::{
     CallEdge, CallGraphHeader, Header, PatternSkeletonHeader, SymbolRecord, V5SectionHeader, MAGIC,
     VECTOR_DIM, VERSION,
 };
+use super::include_resolver;
 use super::pattern_skeletons::build_pattern_skeleton_section;
 use super::ref_edges::{build_ref_edges_section, RefEdgeBuilder};
 use super::{refs_fst, symbol_fst};
@@ -318,6 +319,49 @@ fn write_index_to(
         }
         m
     };
+
+    // v1.14 — parallel `Vec<file_id>` indexed by `sym_entries` position.
+    // The C++ include-BFS resolver (below) takes any sym_idx stored in
+    // `name_to_global` values and translates it back to the defining
+    // file_id. Both walks iterate `parsed → file.symbols` and skip Module
+    // rows the same way, so positions agree by construction.
+    let sym_to_file_id: Vec<u32> = {
+        let mut out: Vec<u32> = Vec::with_capacity(sym_entries.len());
+        for file in parsed {
+            let fid = *file_ids.get(&file.path).expect("file_id must exist");
+            for sym in &file.symbols {
+                if sym.kind != crate::index::symbols::SymbolKind::Module {
+                    out.push(fid);
+                }
+            }
+        }
+        out
+    };
+    // `sym_to_file_id` and `sym_entries` walk `parsed` with the SAME
+    // Module-skip filter and MUST stay in 1:1 correspondence — the BFS
+    // below indexes into the first using sym_idx values pulled from
+    // `name_to_global` (positions in the second). A drift here would
+    // silently drop ref edges (BFS's `sym_to_file_id.get(...)` returns
+    // None on out-of-bounds), so we assert at debug time.
+    debug_assert_eq!(
+        sym_to_file_id.len(),
+        sym_entries.len(),
+        "sym_to_file_id and sym_entries must stay 1:1 — Module-skip filter drift",
+    );
+
+    // v1.14 — include graph for C++ files only. Non-C++ paths are filtered
+    // out at the caller (extension via `Language::from_extension`) so the
+    // graph stays small and `include_graph.contains_key(file_id)` doubles
+    // as the "is this file C++?" gate inside the BFS.
+    let include_graph = {
+        let basename_index = include_resolver::build_basename_index(&file_ids);
+        let cpp_files = parsed
+            .iter()
+            .filter(|f| is_cpp_path(&f.path))
+            .map(|f| (f.path.as_str(), f.cpp_includes.as_slice()));
+        include_resolver::build_include_graph(cpp_files, &file_ids, &basename_index)
+    };
+
     let mut ref_edge_builders: Vec<RefEdgeBuilder> = Vec::new();
     {
         let mut base_idx: u32 = 0;
@@ -343,7 +387,34 @@ fn write_index_to(
                         .last()
                         .and_then(|name| name_to_global.get(name.as_str()))
                         .and_then(|hits| hits.first().copied()),
-                    BindTarget::Local(_) | BindTarget::Unresolved => None,
+                    BindTarget::Local(_) => None,
+                    // v1.14 — C++ include-BFS fallback. The BFS itself
+                    // bails for non-C++ files via the include_graph
+                    // membership check, so this branch stays language-
+                    // agnostic; the gate lives in include_graph build.
+                    //
+                    // Index-space contract: the value returned here goes
+                    // into `RefEdgeBuilder::to_sym_idx` alongside results
+                    // from the `Imported` arm above. Both routes return
+                    // **`sym_entries`-positions** (post Module-filter),
+                    // matching `name_to_global`'s value space. The
+                    // `ModuleSymbol` arm above uses **SymbolRecord
+                    // positions** (counting Module rows) — a pre-existing
+                    // inconsistency we inherit, not introduce. Files with
+                    // synthetic `<module:path>` rows that appear *before*
+                    // a target symbol would expose it, but the symbol
+                    // FST already skips Module rows so reader paths reach
+                    // either index space correctly for non-Module names.
+                    // Future global fix: unify both arms on
+                    // SymbolRecord-position by pushing `entries[i].1`
+                    // into `name_to_global` instead of `i`.
+                    BindTarget::Unresolved => include_resolver::resolve_via_include_bfs(
+                        &r.name,
+                        file_id,
+                        &name_to_global,
+                        &sym_to_file_id,
+                        &include_graph,
+                    ),
                 };
                 if let Some(global) = to_sym_idx {
                     ref_edge_builders.push(RefEdgeBuilder {
@@ -650,4 +721,16 @@ fn write_index_to(
     );
 
     Ok(())
+}
+
+/// v1.14 — predicate for the C++ include-graph filter. Uses the same
+/// extension → `Language` map the parser uses (`parse::language`), so adding
+/// a new C++ extension there propagates here automatically. `.c` is
+/// intentionally NOT included — the parser doesn't index plain C files
+/// either.
+fn is_cpp_path(path: &str) -> bool {
+    path.rsplit('.')
+        .next()
+        .and_then(crate::parse::language::Language::from_extension)
+        == Some(crate::parse::language::Language::Cpp)
 }

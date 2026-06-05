@@ -1,6 +1,7 @@
 pub mod bm25;
 pub mod call_graph;
 pub mod format;
+pub mod include_resolver;
 pub mod inverted;
 pub mod pattern_skeletons;
 pub mod reader;

@@ -33,6 +33,15 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
     // treat their `file_symbols` arg as legitimate local definitions, and
     // `<module:path>` is not a real definition.
     let bound_refs = scope::bind_refs(content, lang, &symbols)?;
+    // v1.14 — C++ `#include "…"` directives. Only quoted includes; system
+    // headers and macro-named includes are skipped at extract time.
+    // Transient: the Pass-2 ref resolver consumes these in the writer and
+    // they never reach disk. Non-C++ files get an empty vec for free.
+    let cpp_includes = if matches!(lang, Language::Cpp) {
+        scope::cpp::extract_cpp_includes(content)
+    } else {
+        Vec::new()
+    };
     // 11.4 Inc 4 — extract pattern skeletons while source is hot. T2/T3
     // langs return an empty Vec via the allowlist short-circuit.
     let skeletons = crate::pattern::skeleton::extract_skeletons(content, lang);
@@ -63,5 +72,6 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
         call_edges,
         bound_refs,
         skeletons,
+        cpp_includes,
     })
 }

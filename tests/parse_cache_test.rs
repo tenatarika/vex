@@ -145,6 +145,7 @@ fn make_rich_parsed_file() -> ParsedFile {
         call_edges: vec![call_edge],
         bound_refs: vec![bound_ref],
         skeletons: vec![skeleton],
+        cpp_includes: Vec::new(),
     }
 }
 
@@ -426,6 +427,7 @@ fn blob_cache_evict_to_cap_removes_oldest_entries() {
             call_edges: Vec::new(),
             bound_refs: Vec::new(),
             skeletons: Vec::new(),
+            cpp_includes: Vec::new(),
         };
         let payload = bincode::serialize(&pf).expect("serialize");
         let mut f = fs::File::create(&path).unwrap();
@@ -509,6 +511,7 @@ fn blob_cache_evict_to_cap_under_cap_is_noop() {
         call_edges: Vec::new(),
         bound_refs: Vec::new(),
         skeletons: Vec::new(),
+        cpp_includes: Vec::new(),
     };
     let payload = bincode::serialize(&pf).expect("serialize");
     let mut f = fs::File::create(&path).unwrap();

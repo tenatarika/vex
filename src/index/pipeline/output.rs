@@ -323,6 +323,13 @@ pub(super) fn write_output_locked(
         // no-embeddings case keeps pre-1.13 readers happy and avoids
         // a misleading "normalized: true" for an empty vector array.
         vectors_normalized: (!vectors.is_empty()).then_some(true),
+        // v1.14: unconditional `Some(true)` — every index written by this
+        // build performed Pass-2 C++ include resolution. The flag is a
+        // version marker, not a project-content predicate (pure-Rust
+        // projects still get `Some(true)` because the resolver ran over
+        // an empty C++ set). Pre-1.14 manifests have `None` and `vex
+        // status` surfaces that as "re-run `vex index` to enable".
+        cpp_includes_processed: Some(true),
     };
     manifest.save(&manifest_path)?;
     Ok(())
@@ -547,6 +554,7 @@ mod tests {
             call_edges: vec![],
             bound_refs: vec![],
             skeletons: Vec::new(),
+            cpp_includes: Vec::new(),
         }];
 
         // Pre-seed the cache with synthetic vectors keyed by the same

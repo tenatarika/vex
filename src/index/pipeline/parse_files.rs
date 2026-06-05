@@ -77,6 +77,7 @@ pub(super) fn reconstruct_unchanged(
                 call_edges: Vec::new(),
                 bound_refs: Vec::new(),
                 skeletons: Vec::new(),
+                cpp_includes: Vec::new(),
             });
         }
         current_path = path;
@@ -131,6 +132,7 @@ pub(super) fn reconstruct_unchanged(
             call_edges: Vec::new(),
             bound_refs: Vec::new(),
             skeletons: Vec::new(),
+            cpp_includes: Vec::new(),
         });
     }
 

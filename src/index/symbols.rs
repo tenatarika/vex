@@ -315,4 +315,12 @@ pub struct ParsedFile {
     /// index during `vex update`. Populated only for files actually
     /// re-parsed from source. Inc 5 reads from the persistent section.
     pub skeletons: Vec<crate::pattern::skeleton::Skeleton>,
+    /// v1.14 — C++ `#include "…"` directives extracted at parse time.
+    /// Quoted includes only (`<system_headers>` skipped). Transient — NOT
+    /// persisted to the on-disk index; consumed by the Pass-2 ref
+    /// resolver in `store::writer` and discarded. Empty for non-C++ files
+    /// and for files reconstructed from an existing index (resolution
+    /// already ran when the index was written; unchanged-file refs are
+    /// carried in the persistent reference_edges section).
+    pub cpp_includes: Vec<String>,
 }
