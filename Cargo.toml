@@ -147,3 +147,12 @@ harness = false
 [[bench]]
 name = "perf_v113"
 harness = false
+
+# v1.14.0 — Pass-2 C++ #include-resolution micro-benches. Validates the
+# architect's "~2-10s wall on Pass-2 for 50k-symbol corpus" estimate by
+# isolating the two hot functions in `store::include_resolver`:
+# `build_include_graph` (once per index build) and
+# `resolve_via_include_bfs` (once per Unresolved C++ ref).
+[[bench]]
+name = "perf_v114"
+harness = false
