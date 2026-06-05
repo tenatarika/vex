@@ -317,27 +317,46 @@ pub(super) fn write_output_locked(
         // skeletons) and would silently drop matches in unchanged
         // files. `is_update` is plumbed by the writer wrapper.
         pattern_index_full: Some(is_full_rebuild),
+        // v1.13 P5: vectors are L2-normalized by `pipeline::run` /
+        // `pipeline::update` before they reach this writer. Only
+        // meaningful when vectors are present; `None` for the
+        // no-embeddings case keeps pre-1.13 readers happy and avoids
+        // a misleading "normalized: true" for an empty vector array.
+        vectors_normalized: (!vectors.is_empty()).then_some(true),
     };
     manifest.save(&manifest_path)?;
     Ok(())
 }
 
+/// v1.13 E2b: persistent embedding cache. Contexts whose
+/// `xxh3(embedder_id || \0 || ctx)` hits the on-disk cache reuse the
+/// stored vector and skip the embed step. ONNX model load is deferred
+/// until at least one miss — `vex update` runs with no embedding-
+/// affecting changes (e.g. comment-only edits on already-indexed
+/// files, or no-op re-runs) skip the ~80 MB model load entirely.
+///
+/// Cache is updated in-place with newly-embedded vectors and saved
+/// atomically before return. Cache load failures degrade silently
+/// to the all-miss path — never block the embedding run.
 pub(super) fn generate_embeddings(
     parsed: &[ParsedFile],
     embedder_id: &str,
+    root: &Path,
 ) -> Result<Vec<Vec<f32>>> {
-    let start = Instant::now();
-    tracing::info!(embedder = embedder_id, "loading embedding model");
-    let mut embedder = embed::make_embedder(embedder_id)?;
-    let budget = embedder.char_budget();
-    tracing::info!(
-        elapsed = ?start.elapsed(),
-        model = embedder.id(),
-        dim = embedder.dim(),
-        "model loaded"
-    );
+    let total_start = Instant::now();
 
-    let mut contexts = Vec::new();
+    // Resolve embedder dim + char budget WITHOUT touching the ONNX
+    // model — these are compile-time consts for each known embedder.
+    // Lets us pre-build contexts and probe the cache before deciding
+    // whether the model load is needed at all.
+    let dim = embed::embedder_dim(embedder_id)
+        .with_context(|| format!("unknown embedder `{embedder_id}` — no recorded dim"))?;
+    let budget = embed::embedder_char_budget(embedder_id)
+        .with_context(|| format!("unknown embedder `{embedder_id}` — no recorded char budget"))?;
+
+    // Step 1: build context strings + hashes in output order.
+    let mut contexts: Vec<String> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
     for file in parsed {
         for sym in &file.symbols {
             let ctx = embed::build_context(
@@ -349,21 +368,102 @@ pub(super) fn generate_embeddings(
                 sym.body_tokens.as_deref(),
                 budget,
             );
+            let h = embed::cache::context_hash(embedder_id, &ctx);
             contexts.push(ctx);
+            hashes.push(h);
+        }
+    }
+    let total = contexts.len();
+
+    // Step 2: load cache + partition into hits / misses.
+    let cache_path = config::embed_cache_path(root, embedder_id);
+    let mut cache = embed::cache::EmbedCache::load(&cache_path, embedder_id, dim);
+
+    let mut all_vectors: Vec<Vec<f32>> = vec![Vec::new(); total];
+    let mut miss_indices: Vec<usize> = Vec::new();
+    for (i, &h) in hashes.iter().enumerate() {
+        match cache.get(h) {
+            Some(cached) => all_vectors[i] = cached.to_vec(),
+            None => miss_indices.push(i),
         }
     }
 
-    let total = contexts.len();
-    tracing::info!(total, "embedding symbols");
-    let embed_start = Instant::now();
+    let hits = total - miss_indices.len();
+    let misses = miss_indices.len();
+    tracing::info!(
+        total,
+        hits,
+        misses,
+        cache_size_before = cache.len(),
+        "embed cache partition"
+    );
 
-    let mut all_vectors = Vec::with_capacity(total);
-    for batch in contexts.chunks(EMBED_BATCH_SIZE) {
-        let vectors = embedder.embed_batch(batch)?;
-        all_vectors.extend(vectors);
+    // Step 3: if everything hit, return immediately — no ONNX load.
+    if misses == 0 {
+        tracing::info!(
+            total,
+            elapsed = ?total_start.elapsed(),
+            "embedding complete (all cached, model load skipped)"
+        );
+        return Ok(all_vectors);
     }
 
-    tracing::info!(total, elapsed = ?embed_start.elapsed(), "embedding complete");
+    // Step 4: embed misses only.
+    let model_start = Instant::now();
+    tracing::info!(embedder = embedder_id, "loading embedding model");
+    let mut embedder = embed::make_embedder(embedder_id)?;
+    tracing::info!(
+        elapsed = ?model_start.elapsed(),
+        model = embedder.id(),
+        dim = embedder.dim(),
+        "model loaded"
+    );
+
+    let embed_start = Instant::now();
+    // Collect miss contexts as owned `String`s; embed_batch takes
+    // `&[String]`. Slice borrowing across the chunks would require a
+    // separate vec anyway, so just clone — cost is dominated by the
+    // embed call itself.
+    let miss_contexts: Vec<String> = miss_indices.iter().map(|&i| contexts[i].clone()).collect();
+    let mut miss_vectors: Vec<Vec<f32>> = Vec::with_capacity(misses);
+    for batch in miss_contexts.chunks(EMBED_BATCH_SIZE) {
+        let vectors = embedder.embed_batch(batch)?;
+        miss_vectors.extend(vectors);
+    }
+    tracing::info!(
+        misses,
+        elapsed = ?embed_start.elapsed(),
+        "embedding misses complete"
+    );
+
+    // Step 5: place miss vectors into output + update cache.
+    for (j, &out_idx) in miss_indices.iter().enumerate() {
+        let vec = miss_vectors[j].clone();
+        cache.insert(hashes[out_idx], vec.clone());
+        all_vectors[out_idx] = vec;
+    }
+
+    // Step 6: persist cache. Failure is non-fatal — vectors are still
+    // returned; next run will re-embed and re-attempt to persist.
+    if let Err(e) = cache.save(&cache_path) {
+        tracing::warn!(
+            path = %cache_path.display(),
+            error = %e,
+            "embed cache: save failed; next run will rehash misses"
+        );
+    } else {
+        tracing::info!(
+            cache_size_after = cache.len(),
+            path = %cache_path.display(),
+            "embed cache persisted"
+        );
+    }
+
+    tracing::info!(
+        total,
+        elapsed = ?total_start.elapsed(),
+        "embedding complete"
+    );
     Ok(all_vectors)
 }
 
@@ -406,4 +506,92 @@ pub(super) fn build_hnsw(root: &Path, vectors: &[Vec<f32>]) -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embed::{cache::context_hash, MINILM_CHAR_BUDGET, MINILM_DIM, MINILM_ID};
+    use crate::index::symbols::{ParsedSymbol, SymbolKind};
+
+    fn mk_sym(name: &str, line: usize) -> ParsedSymbol {
+        ParsedSymbol {
+            name: name.to_string(),
+            kind: SymbolKind::Function,
+            line,
+            signature: Some(format!("fn {name}()")),
+            doc: None,
+            body_tokens: None,
+        }
+    }
+
+    /// End-to-end E2b check: when every context hashes to a cache hit,
+    /// `generate_embeddings` returns the cached vectors and does NOT
+    /// touch the ONNX model. The proof-of-no-model-load is implicit
+    /// (this test runs in < 100 ms vs > 1 s for an ONNX load + first
+    /// embed) but the public-API behavior — correct vectors returned
+    /// in symbol order — is what users actually depend on.
+    #[test]
+    fn all_hit_returns_cached_vectors_without_model_load() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let cache_root = root.join(".vex_cache");
+        std::fs::create_dir_all(&cache_root).unwrap();
+        std::fs::write(root.join(".vex.toml"), "local_cache = true\n").unwrap();
+        crate::util::config::set_cache_override(cache_root, false);
+
+        let parsed = vec![ParsedFile {
+            path: "a.rs".to_string(),
+            symbols: vec![mk_sym("foo", 1), mk_sym("bar", 10)],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![],
+            skeletons: Vec::new(),
+        }];
+
+        // Pre-seed the cache with synthetic vectors keyed by the same
+        // hash function `generate_embeddings` will use. Using
+        // distinguishable per-symbol vectors so we can prove the
+        // results came back in the right output order.
+        let ctx_foo = embed::build_context(
+            "function",
+            "foo",
+            "a.rs",
+            Some("fn foo()"),
+            None,
+            None,
+            MINILM_CHAR_BUDGET,
+        );
+        let ctx_bar = embed::build_context(
+            "function",
+            "bar",
+            "a.rs",
+            Some("fn bar()"),
+            None,
+            None,
+            MINILM_CHAR_BUDGET,
+        );
+        let h_foo = context_hash(MINILM_ID, &ctx_foo);
+        let h_bar = context_hash(MINILM_ID, &ctx_bar);
+        let mut v_foo = vec![0.0_f32; MINILM_DIM as usize];
+        v_foo[0] = 1.0;
+        let mut v_bar = vec![0.0_f32; MINILM_DIM as usize];
+        v_bar[1] = 1.0;
+
+        let mut cache = embed::cache::EmbedCache::empty(MINILM_ID, MINILM_DIM);
+        cache.insert(h_foo, v_foo.clone());
+        cache.insert(h_bar, v_bar.clone());
+        let cache_path = crate::util::config::embed_cache_path(root, MINILM_ID);
+        std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        cache.save(&cache_path).unwrap();
+
+        // The call must NOT load ONNX (no network, no model file in
+        // tmp). If the all-hit early-return ever regresses, the test
+        // either hangs on download or panics in `make_embedder`.
+        let out = generate_embeddings(&parsed, MINILM_ID, root).expect("generate_embeddings");
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], v_foo, "foo position 0");
+        assert_eq!(out[1], v_bar, "bar position 1");
+    }
 }

@@ -62,12 +62,17 @@ pub(crate) fn duplicates(
         } else {
             limit
         };
+    let normalized = crate::index::manifest::Manifest::load(&config::manifest_path(&root))
+        .ok()
+        .and_then(|m| m.vectors_normalized)
+        .unwrap_or(false);
     let pairs = crate::search::similar::find_duplicates(
         &reader,
         &hnsw,
         threshold,
         min_body_lines,
         fetch_limit,
+        normalized,
     )?;
     let pairs_before_filter = pairs.len();
     let filtered_pairs: Vec<_> = pairs

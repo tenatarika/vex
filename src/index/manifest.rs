@@ -55,6 +55,17 @@ pub struct Manifest {
     /// on pre-11.4 manifests is treated as `false` (conservative).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern_index_full: Option<bool>,
+
+    /// v1.13 P5: `true` when the on-disk vectors are L2-normalized
+    /// (unit length). `vex similar` / `vex duplicates` / `vex search
+    /// --semantic` switch to a dot-product fast path that skips the
+    /// per-call norm + sqrt. `None` / `Some(false)` on pre-1.13
+    /// manifests is treated as un-normalized and the cosine-similarity
+    /// path runs — guaranteed-correct, just slower. The next
+    /// `vex update` (or `vex index`) normalizes everything and flips
+    /// this to `Some(true)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vectors_normalized: Option<bool>,
 }
 
 impl Manifest {

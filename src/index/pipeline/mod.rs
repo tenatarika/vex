@@ -205,11 +205,20 @@ fn run_with_lock(
     let all_parsed = parse_files(root, &files, &blob_map, &cache)?;
     let symbol_count: usize = all_parsed.iter().map(|f| f.symbols.len()).sum();
 
-    let vectors = if opts.with_embeddings && symbol_count > 0 {
-        generate_embeddings(&all_parsed, embedder_id)?
+    let mut vectors = if opts.with_embeddings && symbol_count > 0 {
+        generate_embeddings(&all_parsed, embedder_id, root)?
     } else {
         Vec::new()
     };
+    // v1.13 P5: L2-normalize at write time. Brute-force similarity
+    // (`search_brute_force`, `find_similar`/`find_duplicates`) then
+    // collapses to a dot product — skipping the per-call sqrt + norms.
+    // HNSW already uses cosine internally; unit-length input is
+    // equivalent. Manifest's `vectors_normalized: Some(true)` is the
+    // gate the readers consult.
+    for v in vectors.iter_mut() {
+        crate::search::semantic::normalize_in_place(v);
+    }
 
     let manifest_embedder = if opts.with_embeddings && !vectors.is_empty() {
         Some(embedder_id.to_string())
@@ -389,6 +398,15 @@ fn update_inner(
     } else {
         (Vec::new(), Vec::new())
     };
+    // v1.13 P5: existing index's `vectors_normalized` flag drives the
+    // partial-normalize decision below. Loaded once before the merge so
+    // we can skip re-normalizing already-unit vectors (avoiding
+    // floating-point drift that would accumulate across many
+    // `vex update` cycles in watch mode).
+    let existing_normalized = crate::index::manifest::Manifest::load(&config::manifest_path(&root))
+        .ok()
+        .and_then(|m| m.vectors_normalized)
+        .unwrap_or(false);
 
     let unchanged_sym_count: usize = unchanged_parsed.iter().map(|f| f.symbols.len()).sum();
     tracing::info!(
@@ -414,9 +432,14 @@ fn update_inner(
     let newly_parsed = parse_files(&root, &changed_paths, &blob_map, &cache)?;
     let new_sym_count: usize = newly_parsed.iter().map(|f| f.symbols.len()).sum();
 
-    // Generate embeddings only for new/changed symbols
+    // Generate embeddings for symbols in changed files. The E2b
+    // embedding cache (`<index_dir>/embed_cache_<embedder_id>.bin`)
+    // dedups by content-hash inside `generate_embeddings` — symbols
+    // whose context_string is byte-identical to a previous run reuse
+    // the stored vector and skip the embed step. When 100% of contexts
+    // hit the cache, the ONNX model is never loaded.
     let new_vectors = if opts.with_embeddings && new_sym_count > 0 {
-        generate_embeddings(&newly_parsed, embedder_id)?
+        generate_embeddings(&newly_parsed, embedder_id, &root)?
     } else {
         Vec::new()
     };
@@ -426,8 +449,27 @@ fn update_inner(
     all_parsed.extend(newly_parsed);
     let symbol_count: usize = all_parsed.iter().map(|f| f.symbols.len()).sum();
 
+    let unchanged_count = unchanged_vectors.len();
     let mut all_vectors = unchanged_vectors;
     all_vectors.extend(new_vectors);
+    // v1.13 P5: normalize the merged set so the result is always
+    // L2-normalized regardless of legacy state. Key subtlety: when the
+    // existing index is ALREADY normalized (v1.13+), re-normalizing
+    // unit vectors is a no-op mathematically but accumulates
+    // floating-point drift over many `vex update` cycles (watch mode).
+    // So skip the unchanged slice when the manifest confirms it's
+    // already normalized; otherwise normalize everything (legacy
+    // pre-1.13 lazy-promotion path).
+    if existing_normalized {
+        // Only the freshly-embedded tail needs normalization.
+        for v in all_vectors[unchanged_count..].iter_mut() {
+            crate::search::semantic::normalize_in_place(v);
+        }
+    } else {
+        for v in all_vectors.iter_mut() {
+            crate::search::semantic::normalize_in_place(v);
+        }
+    }
 
     let manifest_embedder = if opts.with_embeddings && !all_vectors.is_empty() {
         Some(embedder_id.to_string())

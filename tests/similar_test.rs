@@ -181,7 +181,7 @@ fn similar_excludes_self() {
     );
     let reader = IndexReader::open(&path).unwrap();
 
-    let results = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 0.0).unwrap();
+    let results = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 0.0, false).unwrap();
     assert!(
         results.iter().all(|m| m.name != "Foo"),
         "find_similar must not return the target symbol itself"
@@ -206,7 +206,7 @@ fn similar_respects_limit() {
     );
     let reader = IndexReader::open(&path).unwrap();
 
-    let results = find_similar(&reader, &no_hnsw(tmp.path()), "A", 3, 0.0).unwrap();
+    let results = find_similar(&reader, &no_hnsw(tmp.path()), "A", 3, 0.0, false).unwrap();
     assert!(
         results.len() <= 3,
         "find_similar with limit=3 should return at most 3 results, got {}",
@@ -230,7 +230,7 @@ fn similar_respects_threshold() {
     );
     let reader = IndexReader::open(&path).unwrap();
 
-    let results = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 0.99).unwrap();
+    let results = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 0.99, false).unwrap();
     assert!(
         results.iter().all(|m| m.similarity >= 0.99),
         "all results must have similarity >= threshold"
@@ -252,7 +252,7 @@ fn similar_orthogonal_vectors_have_zero_similarity() {
     let reader = IndexReader::open(&path).unwrap();
 
     // Threshold just above 0 — orthogonal vector should not appear.
-    let results = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 1e-6).unwrap();
+    let results = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 1e-6, false).unwrap();
     assert!(
         results.iter().all(|m| m.name != "Bar"),
         "Bar with orthogonal vector should not appear when threshold > 0"
@@ -273,7 +273,7 @@ fn similar_identical_vectors_have_similarity_1() {
     );
     let reader = IndexReader::open(&path).unwrap();
 
-    let results = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 0.0).unwrap();
+    let results = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 0.0, false).unwrap();
     assert!(!results.is_empty(), "should find Bar");
     let bar = results
         .iter()
@@ -298,7 +298,14 @@ fn similar_unknown_symbol_errors() {
     );
     let reader = IndexReader::open(&path).unwrap();
 
-    let result = find_similar(&reader, &no_hnsw(tmp.path()), "NonexistentSymbol", 10, 0.0);
+    let result = find_similar(
+        &reader,
+        &no_hnsw(tmp.path()),
+        "NonexistentSymbol",
+        10,
+        0.0,
+        false,
+    );
     assert!(result.is_err(), "should return Err for unknown symbol");
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -321,7 +328,7 @@ fn similar_no_vectors_errors() {
     write_index_full(&parsed, &[], 384, &path).unwrap();
     let reader = IndexReader::open(&path).unwrap();
 
-    let result = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 0.0);
+    let result = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 0.0, false);
     assert!(
         result.is_err(),
         "should return Err when index has no vectors"
@@ -350,7 +357,7 @@ fn similar_skips_symbols_without_vector() {
     );
     let reader = IndexReader::open(&path).unwrap();
 
-    let results = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 0.0).unwrap();
+    let results = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 0.0, false).unwrap();
     assert!(
         results.iter().all(|m| m.name != "Baz"),
         "symbol without vector (Baz) must not appear in results"
@@ -382,7 +389,7 @@ fn similar_descending_by_similarity() {
     );
     let reader = IndexReader::open(&path).unwrap();
 
-    let results = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 0.0).unwrap();
+    let results = find_similar(&reader, &no_hnsw(tmp.path()), "Foo", 10, 0.0, false).unwrap();
     assert!(results.len() >= 2, "should find at least 2 results");
     for w in results.windows(2) {
         assert!(
@@ -412,7 +419,7 @@ fn duplicates_no_self_pairs() {
     );
     let reader = IndexReader::open(&path).unwrap();
 
-    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.0, 0, 100).unwrap();
+    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.0, 0, 100, false).unwrap();
     for (a, b) in &pairs {
         assert_ne!(
             (&a.name, &a.path, a.line),
@@ -438,7 +445,7 @@ fn duplicates_pairs_are_canonical() {
     );
     let reader = IndexReader::open(&path).unwrap();
 
-    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.0, 0, 100).unwrap();
+    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.0, 0, 100, false).unwrap();
 
     // Build a set of (sorted name pair) to detect both orderings.
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
@@ -473,7 +480,7 @@ fn duplicates_respects_threshold() {
     let reader = IndexReader::open(&path).unwrap();
 
     let threshold = 0.99_f32;
-    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), threshold, 0, 100).unwrap();
+    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), threshold, 0, 100, false).unwrap();
     for (a, b) in &pairs {
         assert!(
             a.similarity >= threshold,
@@ -516,7 +523,7 @@ fn duplicates_descending_by_similarity() {
     );
     let reader = IndexReader::open(&path).unwrap();
 
-    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.0, 0, 100).unwrap();
+    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.0, 0, 100, false).unwrap();
     for w in pairs.windows(2) {
         assert!(
             w[0].0.similarity >= w[1].0.similarity,
@@ -542,7 +549,7 @@ fn duplicates_respects_limit() {
     );
     let reader = IndexReader::open(&path).unwrap();
 
-    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.0, 0, 2).unwrap();
+    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.0, 0, 2, false).unwrap();
     assert!(
         pairs.len() <= 2,
         "find_duplicates with limit=2 should return at most 2 pairs, got {}",
@@ -566,7 +573,7 @@ fn duplicates_no_vectors_errors() {
     write_index_full(&parsed, &[], 384, &path).unwrap();
     let reader = IndexReader::open(&path).unwrap();
 
-    let result = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.9, 0, 100);
+    let result = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.9, 0, 100, false);
     assert!(
         result.is_err(),
         "should return Err when index has no vectors"
@@ -609,7 +616,7 @@ fn duplicates_skips_short_bodies() {
     let reader = IndexReader::open(&path).unwrap();
 
     // min_body_lines = 10 → ShortA (body ≈ 4 lines) and ShortB (body ≈ 4 lines) are skipped.
-    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.0, 10, 100).unwrap();
+    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.0, 10, 100, false).unwrap();
 
     for (a, b) in &pairs {
         assert!(
@@ -633,7 +640,7 @@ fn duplicates_empty_index_returns_empty() {
     // The index has no vectors (write_index_full with empty slices), but
     // the implementation must handle the zero-symbol case before the
     // no-vectors check and return Ok(vec![]).
-    let result = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.9, 0, 100);
+    let result = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.9, 0, 100, false);
     // Either Ok(empty) or Err(no vectors) are acceptable for truly empty index.
     // The spec says Ok(vec![]) — if it returns Err, the test will fail once GREEN.
     match result {
@@ -657,7 +664,7 @@ fn duplicates_single_symbol_returns_empty() {
     );
     let reader = IndexReader::open(&path).unwrap();
 
-    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.0, 0, 100).unwrap();
+    let pairs = find_duplicates(&reader, &no_hnsw(tmp.path()), 0.0, 0, 100, false).unwrap();
     assert!(
         pairs.is_empty(),
         "single-symbol index cannot form a pair, expected empty, got {} pairs",

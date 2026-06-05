@@ -108,6 +108,11 @@ pub struct BundleCtx<'a> {
     pub reader: &'a IndexReader,
     pub hnsw_path: PathBuf,
     pub excludes: &'a [String],
+    /// v1.13 P5: `true` when the index's manifest records vectors as
+    /// L2-normalized. Passed through to `find_similar` so the
+    /// brute-force fallback uses the dot-product fast path. Defaults
+    /// to `false` for pre-1.13 indexes (cosine path remains correct).
+    pub vectors_normalized: bool,
 }
 
 /// One row in the bundle response. `core` carries the symbol pointer,
@@ -262,12 +267,17 @@ pub(crate) fn bundle(
         directory_tree_only,
         directory_tree_top,
     };
+    let vectors_normalized = crate::index::manifest::Manifest::load(&config::manifest_path(&root))
+        .ok()
+        .and_then(|m| m.vectors_normalized)
+        .unwrap_or(false);
     let bctx = BundleCtx {
         root,
         scope: &scope,
         reader: &reader,
         hnsw_path,
         excludes: ctx.excludes,
+        vectors_normalized,
     };
     cmd_bundle(args, bctx)
 }

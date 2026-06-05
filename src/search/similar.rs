@@ -44,6 +44,7 @@ pub fn find_similar(
     target_name: &str,
     limit: usize,
     threshold: f32,
+    normalized: bool,
 ) -> Result<Vec<SimilarMatch>> {
     if !reader.has_vectors() {
         bail!(
@@ -69,8 +70,12 @@ pub fn find_similar(
         .vector(target_rec.vector_index)
         .context("failed to read target vector from index")?;
 
-    // Try HNSW first; fall back to brute-force.
-    let scored = nearest_neighbors(reader, target_vec, limit + 1, hnsw_path);
+    // v1.13 P1: open the HNSW handle once. For `find_similar` this is
+    // a single query, so the win is zero — but keeping the same shape
+    // as `find_duplicates` makes the code uniform and prevents future
+    // multi-query callers from accidentally reopening.
+    let hnsw = semantic::HnswHandle::open(hnsw_path, target_vec.len(), reader.symbol_count());
+    let scored = nearest_neighbors(reader, target_vec, limit + 1, hnsw.as_ref(), normalized);
 
     // Filter: drop self, drop below threshold, drop out-of-bounds indices
     // (defence-in-depth against stale HNSW returning bad keys), sort
@@ -105,6 +110,7 @@ pub fn find_duplicates(
     threshold: f32,
     min_body_lines: usize,
     limit: usize,
+    normalized: bool,
 ) -> Result<Vec<(SimilarMatch, SimilarMatch)>> {
     // Zero-symbol index — return empty immediately (before the vector check).
     if reader.symbol_count() == 0 {
@@ -126,6 +132,18 @@ pub fn find_duplicates(
     // larger than ~6 elements. Bounded by `symbol_count` to avoid asking HNSW
     // for more keys than exist. Minimum of 6 = 5 neighbors + self.
     let neighbors_per_sym = limit.saturating_add(1).max(6).min(reader.symbol_count());
+
+    // v1.13 P1: open the HNSW handle ONCE before the outer loop. The
+    // previous code reopened + mmap'd the HNSW file inside every call
+    // to `nearest_neighbors` — `symbol_count` mmap cycles per query.
+    // `vector_dim_for_search` is the dim of the first stored vector;
+    // every vector in the index shares the same dim by construction.
+    let query_dim = reader
+        .symbol(0)
+        .and_then(|rec| reader.vector(rec.vector_index))
+        .map(|v| v.len())
+        .unwrap_or(crate::store::format::VECTOR_DIM as usize);
+    let hnsw = semantic::HnswHandle::open(hnsw_path, query_dim, reader.symbol_count());
 
     let mut seen: HashSet<(usize, usize)> = HashSet::new();
     let mut pairs: Vec<(f32, usize, usize)> = Vec::new(); // (similarity, a, b)
@@ -151,7 +169,13 @@ pub fn find_duplicates(
             None => continue,
         };
 
-        let scored = nearest_neighbors(reader, query_vec, neighbors_per_sym, hnsw_path);
+        let scored = nearest_neighbors(
+            reader,
+            query_vec,
+            neighbors_per_sym,
+            hnsw.as_ref(),
+            normalized,
+        );
 
         for (other_idx, sim) in scored {
             // Drop self-pairs.
@@ -216,12 +240,15 @@ fn nearest_neighbors(
     reader: &IndexReader,
     query_vec: &[f32],
     top_k: usize,
-    hnsw_path: &Path,
+    hnsw: Option<&semantic::HnswHandle>,
+    normalized: bool,
 ) -> Vec<(usize, f32)> {
-    if let Some(scored) =
-        semantic::search_hnsw_at(hnsw_path, query_vec, top_k, reader.symbol_count())
-    {
-        return scored;
+    if let Some(handle) = hnsw {
+        if let Some(scored) = handle.search(query_vec, top_k) {
+            return scored;
+        }
+        // search() returned None — usearch internal error. Fall through
+        // to brute-force rather than returning empty.
     }
 
     // Brute-force fallback.
@@ -229,7 +256,11 @@ fn nearest_neighbors(
     for i in 0..reader.symbol_count() {
         if let Some(rec) = reader.symbol(i) {
             if let Some(vec) = reader.vector(rec.vector_index) {
-                let sim = semantic::cosine_similarity(query_vec, vec);
+                let sim = if normalized {
+                    semantic::dot_product(query_vec, vec)
+                } else {
+                    semantic::cosine_similarity(query_vec, vec)
+                };
                 scored.push((i, sim));
             }
         }

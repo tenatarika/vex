@@ -59,8 +59,18 @@ pub(crate) fn similar(
         } else {
             limit
         };
-    let matches =
-        crate::search::similar::find_similar(&reader, &hnsw, &name, fetch_limit, threshold)?;
+    let normalized = crate::index::manifest::Manifest::load(&config::manifest_path(&root))
+        .ok()
+        .and_then(|m| m.vectors_normalized)
+        .unwrap_or(false);
+    let matches = crate::search::similar::find_similar(
+        &reader,
+        &hnsw,
+        &name,
+        fetch_limit,
+        threshold,
+        normalized,
+    )?;
     // `find_similar` returns an empty Vec when the seed name
     // doesn't resolve to a stored vector — `resolve_seed_match`
     // here distinguishes "no match for seed" from "seed found

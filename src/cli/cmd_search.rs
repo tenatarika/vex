@@ -121,6 +121,7 @@ pub(crate) fn search(
             &query,
             fetch_limit,
             &hnsw_path,
+            manifest.vectors_normalized.unwrap_or(false),
         )?;
         if want_prefusion {
             trace_semantic = semantic_results.clone();

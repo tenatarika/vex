@@ -134,6 +134,7 @@ pub fn assemble_symbol(
             name,
             args.similar_max.saturating_add(1),
             0.0,
+            ctx.vectors_normalized,
         )
         .unwrap_or_default();
         probe_and_truncate(probe, args.similar_max)
