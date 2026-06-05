@@ -10,8 +10,6 @@
 //! [Posting lists]     — packed (count: u32, [(file_id: u32, line: u32); count])
 //! ```
 
-use std::collections::BTreeMap;
-
 use anyhow::{Context, Result};
 
 use crate::index::symbols::ParsedRef;
@@ -25,49 +23,60 @@ pub struct RefEntry {
 
 /// Build FST + posting lists from parsed refs.
 /// Returns (fst_bytes, posting_bytes).
+///
+/// v1.13 P7: `Vec<(String, RefEntry)>` + final sort beats the previous
+/// `BTreeMap<String, Vec<RefEntry>>` — saves the per-insert tree node
+/// and the dup-hit `r.name.clone()` wasted allocation.
 pub fn build_refs_fst(
     parsed_files: &[(u32, &[ParsedRef])], // (file_id, refs)
 ) -> Result<(Vec<u8>, Vec<u8>)> {
-    // Collect all refs grouped by name, sorted
-    let mut refs_by_name: BTreeMap<String, Vec<RefEntry>> = BTreeMap::new();
+    let total: usize = parsed_files.iter().map(|(_, refs)| refs.len()).sum();
+    let mut entries: Vec<(String, RefEntry)> = Vec::with_capacity(total);
 
     for &(file_id, refs) in parsed_files {
         for r in refs {
-            refs_by_name
-                .entry(r.name.clone())
-                .or_default()
-                .push(RefEntry {
+            entries.push((
+                r.name.clone(),
+                RefEntry {
                     file_id,
                     line: r.line as u32,
-                });
+                },
+            ));
         }
     }
 
-    // Build posting lists: each name gets a contiguous block of (file_id, line) pairs
-    let capacity: usize = refs_by_name.values().map(|v| 4 + v.len() * 8).sum();
-    let mut posting_data: Vec<u8> = Vec::with_capacity(capacity);
+    // Primary sort: name. Secondary: (file_id, line) so iteration order
+    // inside a group matches the BTreeMap-era insertion order (which
+    // mirrored input order across files; existing tests pin that
+    // [PaymentService@10, PaymentService@25] comes back in that order).
+    entries.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then((a.1.file_id, a.1.line).cmp(&(b.1.file_id, b.1.line)))
+    });
+
+    let mut posting_data: Vec<u8> = Vec::with_capacity(entries.len() * 8 + entries.len());
     let mut fst_builder = fst::MapBuilder::memory();
 
-    for (name, entries) in &refs_by_name {
-        let offset = posting_data.len() as u64;
-
-        // Write count
-        let count = entries.len() as u32;
-        posting_data.extend_from_slice(&count.to_le_bytes());
-
-        // Write entries
-        for entry in entries {
-            posting_data.extend_from_slice(&entry.file_id.to_le_bytes());
-            posting_data.extend_from_slice(&entry.line.to_le_bytes());
+    let mut i = 0;
+    while i < entries.len() {
+        let mut j = i + 1;
+        while j < entries.len() && entries[j].0 == entries[i].0 {
+            j += 1;
         }
-
+        let offset = posting_data.len() as u64;
+        let count = (j - i) as u32;
+        posting_data.extend_from_slice(&count.to_le_bytes());
+        for (_, ref_entry) in &entries[i..j] {
+            posting_data.extend_from_slice(&ref_entry.file_id.to_le_bytes());
+            posting_data.extend_from_slice(&ref_entry.line.to_le_bytes());
+        }
         fst_builder
-            .insert(name.as_bytes(), offset)
+            .insert(entries[i].0.as_bytes(), offset)
             .context("fst insert")?;
+        i = j;
     }
 
     let fst_bytes = fst_builder.into_inner().context("finalize fst")?;
-
     Ok((fst_bytes, posting_data))
 }
 

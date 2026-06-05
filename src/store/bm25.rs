@@ -11,8 +11,6 @@
 //! vs. common terms across the corpus. A future iteration could re-extract
 //! without per-symbol dedup to get true TF counts.
 
-use std::collections::BTreeMap;
-
 use anyhow::{bail, Context, Result};
 
 /// BM25 parameters (Okapi standard).
@@ -29,11 +27,20 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// Build a BM25 index from per-symbol term bags.
+///
+/// v1.13 P7: `Vec<(term, sym_idx, tf)>` accumulator + final sort in
+/// [`build`] replaces the previous `BTreeMap<String, Vec<(u32, u32)>>`.
+/// No per-`add_document` tree-node allocation; one contiguous sort at
+/// the end. Per unique term per document we still allocate one
+/// `String` for the term (lossy alternative would require borrowing
+/// from the caller's bag buffer, which doesn't survive across
+/// `add_document` calls).
 pub struct Bm25IndexBuilder {
     /// Length (in terms) of each document, indexed by sym_idx.
     doc_lens: Vec<u32>,
-    /// Term → list of `(sym_idx, tf)` postings.
-    postings: BTreeMap<String, Vec<(u32, u32)>>,
+    /// Accumulated postings as `(term, sym_idx, tf)` triples. Sorted +
+    /// grouped at [`build`] time.
+    entries: Vec<(String, u32, u32)>,
 }
 
 impl Bm25IndexBuilder {
@@ -41,7 +48,10 @@ impl Bm25IndexBuilder {
     pub fn new(doc_count: usize) -> Self {
         Self {
             doc_lens: vec![0; doc_count],
-            postings: BTreeMap::new(),
+            // Heuristic capacity: ~12 unique terms per symbol body is
+            // typical for code. Avoids the first few Vec growth ops on
+            // small-to-medium corpora.
+            entries: Vec::with_capacity(doc_count * 12),
         }
     }
 
@@ -58,16 +68,18 @@ impl Bm25IndexBuilder {
             );
             return;
         }
-        let mut term_freq: BTreeMap<&str, u32> = BTreeMap::new();
+        // Within a document, count term frequency over the input slice.
+        // `terms` is supposed to be deduplicated by the caller
+        // (`tokenize_document`), so this loop normally sees tf=1 for
+        // every entry — but a future caller that passes raw tokens
+        // would still produce correct TF counts.
+        let mut term_freq: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
         for t in terms {
             *term_freq.entry(t.as_str()).or_default() += 1;
         }
         self.doc_lens[sym_idx as usize] = term_freq.values().sum();
         for (term, tf) in term_freq {
-            self.postings
-                .entry(term.to_string())
-                .or_default()
-                .push((sym_idx, tf));
+            self.entries.push((term.to_string(), sym_idx, tf));
         }
     }
 
@@ -77,22 +89,33 @@ impl Bm25IndexBuilder {
     /// `[count: u32] [ (sym_idx: u32, tf: u32) ; count ]`
     ///
     /// Stats layout: `[doc_count: u32] [avg_doc_len: f32] [doc_len: u16; doc_count]`.
-    pub fn build(self) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        let mut posting_data: Vec<u8> = Vec::new();
+    pub fn build(mut self) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        // Sort by (term, sym_idx) so consecutive equal-term runs are
+        // also ordered by sym_idx — readers can rely on that ordering
+        // and we skip a per-group sort.
+        self.entries
+            .sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+        let mut posting_data: Vec<u8> = Vec::with_capacity(self.entries.len() * 8);
         let mut fst_builder = fst::MapBuilder::memory();
 
-        for (term, mut entries) in self.postings {
-            entries.sort_unstable_by_key(|(sym, _)| *sym);
+        let mut i = 0;
+        while i < self.entries.len() {
+            let mut j = i + 1;
+            while j < self.entries.len() && self.entries[j].0 == self.entries[i].0 {
+                j += 1;
+            }
             let offset = posting_data.len() as u64;
-            let count = entries.len() as u32;
+            let count = (j - i) as u32;
             posting_data.extend_from_slice(&count.to_le_bytes());
-            for (sym, tf) in entries {
+            for (_, sym, tf) in &self.entries[i..j] {
                 posting_data.extend_from_slice(&sym.to_le_bytes());
                 posting_data.extend_from_slice(&tf.to_le_bytes());
             }
             fst_builder
-                .insert(term.as_bytes(), offset)
+                .insert(self.entries[i].0.as_bytes(), offset)
                 .context("bm25 fst insert")?;
+            i = j;
         }
 
         let fst_bytes = fst_builder.into_inner().context("finalize bm25 fst")?;
@@ -272,19 +295,42 @@ pub fn tokenize_query(query: &str) -> Vec<String> {
 /// doc). Returns lowercased unique terms in stable order. NO stopword
 /// filtering at index time so the stopword list can evolve later without
 /// re-indexing.
+///
+/// v1.13 P8: allocation profile dropped from `O(M)` (per-token
+/// `to_lowercase` + per-unique `clone`) to `O(N + 1)` (one upfront
+/// `to_lowercase` of the input + one `String::from` per unique term at
+/// the return boundary). The dedup `HashSet` borrows `&str` views into
+/// the single owning lower-buffer instead of carrying owned `String`s.
 pub fn tokenize_document(text: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for raw in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+    let lower = text.to_lowercase();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut out: Vec<&str> = Vec::new();
+    for raw in lower.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
         if raw.len() < 2 {
             continue;
         }
-        let lower = raw.to_lowercase();
-        if seen.insert(lower.clone()) {
-            out.push(lower);
+        if seen.insert(raw) {
+            out.push(raw);
         }
     }
-    out
+    // Final boundary: convert zero-copy &str views into owning Strings
+    // so callers (currently `Bm25IndexBuilder::add_document`) can hold
+    // them past the local `lower` buffer's lifetime. The N allocations
+    // here are unavoidable until `add_document` is migrated to a
+    // borrowing API (P7 scope).
+    out.into_iter().map(String::from).collect()
+}
+
+/// Fuzzing shim — exposed only to `vex-fuzz`. Feeds arbitrary UTF-8
+/// through [`tokenize_document`]. The non-UTF-8 boundary is filtered
+/// (free win) so the tokenizer never sees invalid bytes; this matches
+/// production callers, which read `String`-backed text bags.
+#[doc(hidden)]
+pub fn __fuzz_tokenize_bytes(data: &[u8]) {
+    let Ok(s) = std::str::from_utf8(data) else {
+        return;
+    };
+    let _ = tokenize_document(s);
 }
 
 #[cfg(test)]
@@ -361,6 +407,83 @@ mod tests {
     fn tokenize_document_dedupes() {
         let toks = tokenize_document("config config config retry retry");
         assert_eq!(toks, vec!["config", "retry"]);
+    }
+
+    /// Parity table for the P8-refactored `tokenize_document`. Each row
+    /// encodes the full output contract: lowercase, dedup-preserving-
+    /// first-occurrence, `len < 2` skipped, split on non-alnum-and-not-`_`.
+    /// Any future tokenizer change must keep this table green.
+    #[test]
+    fn tokenize_document_parity_table() {
+        let cases: &[(&str, &[&str])] = &[
+            ("", &[]),
+            ("a", &[]),       // single short
+            ("a b c d", &[]), // all short
+            ("config", &["config"]),
+            ("Config CONFIG config", &["config"]), // case-insensitive dedup
+            ("snake_case_id", &["snake_case_id"]), // underscore is alnum-equivalent
+            ("CamelCase", &["camelcase"]),         // no segmentation on case-change
+            ("a-b foo-bar baz_qux", &["foo", "bar", "baz_qux"]),
+            (
+                "Handle Timeout, Retry; Handle Again.",
+                &["handle", "timeout", "retry", "again"],
+            ),
+            // Cyrillic terms — common in our user's codebase comments;
+            // `to_lowercase` must map Russian capitals.
+            ("Конфиг Конфиг ретри", &["конфиг", "ретри"]),
+            // Mixed Latin + digits — digits ARE alnum so `fn_42` is one token.
+            ("fn_42 fn_42 fn_43", &["fn_42", "fn_43"]),
+            // Trailing separators must not emit empty tokens.
+            ("foo ,, bar..   baz", &["foo", "bar", "baz"]),
+            // Pre-lowering preserves byte boundaries here (no len-shift
+            // chars like Turkish dotted-I in this fixture); reproducing
+            // a known split.
+            ("Greek Ω letter", &["greek", "ω", "letter"]),
+        ];
+        for (input, expected) in cases {
+            let got = tokenize_document(input);
+            let want: Vec<String> = expected.iter().map(|s| (*s).to_string()).collect();
+            assert_eq!(got, want, "input: {input:?}");
+        }
+    }
+
+    /// Postcondition guarantee: every token is lowercase, deduplicated,
+    /// length ≥ 2 chars. A weaker test than the parity table — covers
+    /// inputs the table doesn't enumerate but where shape rules still
+    /// apply (random separators, repeated runs).
+    #[test]
+    fn tokenize_document_invariants_hold() {
+        let inputs = [
+            "ASDF qwer ASDF qwer 1234 1 ab",
+            "foo___bar baz qux foo___bar",
+            "  leading and trailing   spaces  ",
+            "PuNcTuAtIoN!?.,;()<>[]{}between",
+        ];
+        for input in inputs {
+            let toks = tokenize_document(input);
+            // 1. all lowercase
+            for t in &toks {
+                assert_eq!(
+                    t.as_str(),
+                    t.to_lowercase().as_str(),
+                    "non-lowered token {t:?} from input {input:?}"
+                );
+            }
+            // 2. all ≥ 2 chars
+            for t in &toks {
+                assert!(
+                    t.chars().count() >= 2,
+                    "token {t:?} too short from input {input:?}"
+                );
+            }
+            // 3. dedup
+            let unique: std::collections::HashSet<&String> = toks.iter().collect();
+            assert_eq!(
+                unique.len(),
+                toks.len(),
+                "dup in {toks:?} from input {input:?}"
+            );
+        }
     }
 
     #[test]

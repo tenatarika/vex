@@ -11,8 +11,6 @@
 //! This mirrors the shape of `call_graph.rs::build_callees_fst` so the
 //! reader code can lean on the same posting-list invariants.
 
-use std::collections::BTreeMap;
-
 use anyhow::{Context, Result};
 
 use super::format::RefEdge;
@@ -46,7 +44,10 @@ pub fn build_ref_edges_section(edges: &[RefEdgeBuilder]) -> Result<(Vec<u8>, Vec
     sorted.sort_by_key(|e| (e.to_sym_idx, e.from_file_id, e.line, e.col));
 
     let mut edge_bytes: Vec<u8> = Vec::with_capacity(sorted.len() * RefEdge::SIZE);
-    let mut grouped: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+    // v1.13 P7: `Vec<(u32, u32)>` (to_sym_idx, edge_idx) accumulator
+    // replaces the previous `BTreeMap<String, Vec<u32>>`. Saves one
+    // `format!("{:010}")` per edge and the per-insert tree-node alloc.
+    let mut entries: Vec<(u32, u32)> = Vec::with_capacity(sorted.len());
 
     for (idx, e) in sorted.iter().enumerate() {
         // 24-bit column ceiling — unreachable in real source files (no
@@ -71,25 +72,39 @@ pub fn build_ref_edges_section(edges: &[RefEdgeBuilder]) -> Result<(Vec<u8>, Vec
         };
         edge_bytes.extend_from_slice(bytes);
 
-        grouped
-            .entry(encode_to_sym_key(e.to_sym_idx))
-            .or_default()
-            .push(idx as u32);
+        entries.push((e.to_sym_idx, idx as u32));
     }
+
+    // The outer `sort_by_key` above already grouped edges by
+    // `to_sym_idx`, and we pushed `(to_sym_idx, idx)` in iteration
+    // order — so `entries` is already sorted by key + ascending idx
+    // within group. No extra sort needed; the FST builder will get
+    // keys in ascending order.
 
     let mut posting_data: Vec<u8> = Vec::new();
     let mut fst_builder = fst::MapBuilder::memory();
-    for (key, edge_indices) in grouped.iter() {
-        let offset = posting_data.len() as u64;
-        let count = edge_indices.len() as u32;
-        posting_data.extend_from_slice(&count.to_le_bytes());
-        for &idx in edge_indices.iter() {
-            posting_data.extend_from_slice(&idx.to_le_bytes());
+    let mut key_buf = [b'0'; 10];
+
+    let mut i = 0;
+    while i < entries.len() {
+        let key = entries[i].0;
+        let mut j = i + 1;
+        while j < entries.len() && entries[j].0 == key {
+            j += 1;
         }
+        let offset = posting_data.len() as u64;
+        let count = (j - i) as u32;
+        posting_data.extend_from_slice(&count.to_le_bytes());
+        for slot in &entries[i..j] {
+            posting_data.extend_from_slice(&slot.1.to_le_bytes());
+        }
+        super::call_graph::encode_caller_key_into(&mut key_buf, key);
         fst_builder
-            .insert(key.as_bytes(), offset)
+            .insert(key_buf, offset)
             .context("fst insert (ref edges)")?;
+        i = j;
     }
+
     let fst_bytes = fst_builder.into_inner().context("finalize ref-edges fst")?;
     Ok((edge_bytes, fst_bytes, posting_data))
 }

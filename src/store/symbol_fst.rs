@@ -3,54 +3,68 @@
 //! This replaces the in-memory InvertedIndex with a persistent, zero-copy FST.
 //! CamelCase sub-tokens are indexed: "PaymentService" → ["paymentservice", "payment", "service"].
 
-use std::collections::BTreeMap;
-
 use anyhow::{Context, Result};
 
 /// Build symbol FST + posting lists from symbol records.
 /// Each symbol name and its CamelCase sub-tokens are inserted.
 /// Returns (fst_bytes, posting_bytes).
+///
+/// v1.13 P7: `Vec<(String, u32)>` + final sort beats the previous
+/// `BTreeMap<String, Vec<u32>>` — no per-insert tree node, contiguous
+/// sort, and the duplicate-key path no longer clones the key on each
+/// hit. CamelCase sub-tokens still emit one `to_lowercase` allocation
+/// each but no longer pay the `entry().clone()` tax on dup names.
 pub fn build_symbol_fst(
     symbols: &[(String, u32)], // (name, symbol_index)
 ) -> Result<(Vec<u8>, Vec<u8>)> {
-    // Group symbol indices by lowercased name and sub-tokens
-    let mut entries: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+    // Worst case: one primary key + a handful of CamelCase tokens per
+    // symbol. Reserve 3× as a heuristic — most identifiers split into
+    // 1–3 tokens.
+    let mut entries: Vec<(String, u32)> = Vec::with_capacity(symbols.len() * 3);
 
     for (name, idx) in symbols {
         let lower = name.to_lowercase();
-        entries.entry(lower.clone()).or_default().push(*idx);
-
-        // CamelCase sub-tokens
+        // Push the primary lowercased name, then any CamelCase
+        // sub-tokens that differ from it.
         for token in split_camel_case(name) {
             let token_lower = token.to_lowercase();
             if token_lower != lower {
-                entries.entry(token_lower).or_default().push(*idx);
+                entries.push((token_lower, *idx));
             }
         }
+        entries.push((lower, *idx));
     }
 
-    // Build posting lists
-    let capacity: usize = entries.values().map(|v| 4 + v.len() * 4).sum();
-    let mut posting_data: Vec<u8> = Vec::with_capacity(capacity);
+    entries.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    let mut posting_data: Vec<u8> = Vec::with_capacity(entries.len() * 4 + entries.len());
     let mut fst_builder = fst::MapBuilder::memory();
 
-    for (key, indices) in &mut entries {
-        // Deduplicate indices (CamelCase tokens can produce duplicates like "FooFoo")
-        indices.sort_unstable();
-        indices.dedup();
-
-        let offset = posting_data.len() as u64;
-
-        let count = indices.len() as u32;
-        posting_data.extend_from_slice(&count.to_le_bytes());
-
-        for &idx in indices.iter() {
-            posting_data.extend_from_slice(&idx.to_le_bytes());
+    let mut i = 0;
+    while i < entries.len() {
+        let mut j = i + 1;
+        while j < entries.len() && entries[j].0 == entries[i].0 {
+            j += 1;
         }
-
+        // Dedup ascending edge indices in-place over the contiguous group.
+        let group = &mut entries[i..j];
+        let mut write = 0;
+        for read in 0..group.len() {
+            if write == 0 || group[read].1 != group[write - 1].1 {
+                group.swap(read, write);
+                write += 1;
+            }
+        }
+        let offset = posting_data.len() as u64;
+        let count = write as u32;
+        posting_data.extend_from_slice(&count.to_le_bytes());
+        for slot in group.iter().take(write) {
+            posting_data.extend_from_slice(&slot.1.to_le_bytes());
+        }
         fst_builder
-            .insert(key.as_bytes(), offset)
+            .insert(entries[i].0.as_bytes(), offset)
             .context("fst insert")?;
+        i = j;
     }
 
     let fst_bytes = fst_builder.into_inner().context("finalize fst")?;
