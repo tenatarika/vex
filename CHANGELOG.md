@@ -6,6 +6,174 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+
+- **Embed pipeline Step 1 parallelised.** `generate_embeddings`'s
+  context-string + `context_hash` build now runs over `rayon::par_iter`
+  instead of a sequential loop. `build_context` (string assembly +
+  identifier tokenisation + path-keyword extraction) plus `xxh3_64`
+  averages ~5μs/symbol; at 50k symbols the old sequential pass cost
+  ~250ms wall on a warm M1, an outright second on slower laptops.
+  Parallel collection preserves sym_idx order via rayon's ordered
+  `unzip` contract, so cache lookup / `hash_index` sidecar / vector
+  slot alignment stay correct. Pure CPU win — no impact on ORT model
+  load, embedding throughput, or cache semantics. Tracing logs Step 1
+  elapsed at `debug` for visibility.
+
+  This is the **first concrete deliverable of the v1.13 B-track
+  redirect**: investigation found that the original "E1 warm-clone /
+  B2 parallel sessions" plan was blocked at the fastembed boundary
+  (`TextEmbedding::embed` takes `&mut self`; `UserDefinedEmbeddingModel`
+  consumes `Vec<u8>` by value preventing Arc-shared weights; fastembed
+  already saturates CPU via ORT's `intra_threads = available_parallelism()`,
+  so spawning N sessions adds memory and contention without throughput).
+  Future B-track work focuses on single-session pipeline optimisations
+  like this one rather than multi-session spawn.
+
+### Changed
+
+- **B1.1 — HNSW now keyed by `context_hash`, not by sym_idx.** The
+  `vex index --semantic` build writes a paired `index.hashes` sidecar
+  (`<index_dir>/index.hashes`, 4-byte `VEXH` magic + version + count +
+  `Vec<u64>` in sym_idx order) so the query path can map HNSW results
+  (which are now hash-keyed) back to `SymbolRecord` positions. This is
+  the architectural prerequisite for B1.2 incremental update: a
+  symbol's HNSW key is stable across `vex update` runs (content-based,
+  same hash the v1.13 E2b embed cache uses), while the old
+  sym_idx-as-key broke whenever any earlier file's symbol count
+  changed — the entire HNSW had to be rebuilt for every update.
+  Existing pre-1.14.1 indexes have no sidecar; `HnswHandle::open`
+  bails to brute-force, matching the existing missing/stale HNSW
+  degradation path. Re-run `vex index --semantic` to upgrade. 8 new
+  unit tests in `search::hash_index` (round-trip, atomic save, bad
+  magic / version / count / truncated body / missing file), plus an
+  end-to-end smoke test that builds a hash-keyed HNSW and confirms
+  `HnswHandle::search` returns the expected sym_idx via the hash map.
+  Note: B1.1 does not yet do incremental update — both
+  `vex index --semantic` and `vex update --semantic` still
+  full-rebuild the HNSW. B1.2 will wire `load()` + `add()` +
+  `remove()` + tombstone threshold once persisted body_tokens or a
+  body-agnostic hash scheme stabilises the per-symbol hash across the
+  fresh-parse / reconstruct boundary.
+
+### Fixed
+
+- **Python / C# cross-file method-call refs silently dropped under
+  `--strict`.** The v1.14 Pass-2 resolver had no fallback for
+  non-C++ files: `BindTarget::Unresolved` refs (method calls on
+  instances, namespace members not pulled in by an explicit
+  `import` / `using A.B.X;` symbol-aliasing) early-exited the C++
+  include-BFS and produced no ref edge. Symptom: `gw.do_charge()`
+  in Python and `gw.DoCharge()` in C# returned empty strict refs;
+  C# was worse — every file had zero resolved refs, making the
+  entire `reference_edges` section empty and `--strict` bail with
+  "this index is v6 or has no resolved refs". Fix adds a
+  **single-candidate fallback** to the Unresolved arm of the Pass-2
+  loop in `store::writer`: when `name_to_global` holds exactly one
+  entry for the name, resolve to it; with two or more candidates
+  the resolver bails (no `Imported`-style first-match-wins for
+  duck-typed method calls — disambiguating that needs type
+  inference). Three new integration tests pin the contract
+  (Python single-resolution, multi-candidate safety, C#
+  namespace-aliased method call). Modest false-positive risk for
+  projects where the same method name lives in two unrelated
+  classes — those refs stay Unresolved like before.
+
+- **TypeScript class methods + member access invisible.** Two gaps
+  closed in one fix. (1) `queries/typescript.scm` had no patterns for
+  `method_definition` (regular + static class methods),
+  `method_signature` (interface signatures), or
+  `abstract_method_signature` (abstract methods) — only free
+  `function_declaration` was indexed, so `vex search do_charge` on a
+  class returned nothing. (2) `src/parse/scope/typescript.rs` binder
+  only emitted refs for `identifier` / `type_identifier`; member access
+  (`gw.do_charge()`) puts the method name as `property_identifier` on
+  the rhs of `member_expression`, never reaching the dispatch table.
+  Fix adds three SCM patterns (all index as `SymbolKind::Method`)
+  plus a `member_expression` walker that emits the property as a Value
+  ref so the v1.14.1 single-candidate fallback can resolve it
+  cross-file. Targeted at `member_expression.property` specifically —
+  NOT a global `property_identifier` match — to avoid phantom refs
+  from object-literal pair keys (`{ key: value }` uses the same node
+  kind but it's a binding, not a usage). One integration test pins
+  three method shapes (regular, static, interface signature) cross-file.
+
+- **C++ class member methods invisible to vex.** `queries/cpp.scm`
+  only covered free `function_definition` and file-level `declaration`
+  shapes; methods declared inside a class body are `field_declaration`
+  nodes — they never reached the index. Symptom: `vex search
+  do_charge` on a header with `class Gateway { int do_charge(); }`
+  returned only `Gateway`, and `vex usages do_charge --strict` had
+  nothing to resolve to (the v1.14 Pass-2 BFS walked the include
+  graph but couldn't find a matching name in `name_to_global`). Two
+  new SCM patterns close it: `field_declaration → function_declarator
+  → field_identifier` for header-declared prototypes, and
+  `function_definition → function_declarator → field_identifier` for
+  inline definitions inside the class body (the existing free-fn
+  query only matches `identifier`-shaped declarators). Both index
+  with `SymbolKind::Method`. Two integration tests pin the fix:
+  `class_member_method_resolves_cross_file_via_include` (both
+  declared-and-defined-elsewhere `do_charge` and inline
+  `inline_method`) and `qualified_static_method_call_resolves_cross_file`
+  (`app::Gateway::static_method()` qualified call site). The v1.14
+  documented limitation "class member methods still don't resolve
+  cross-file" is now closed.
+
+- **`vex usages --strict` silently empty for files with module-level
+  expressions.** Long-standing (since Phase 11.1.3c) inconsistency in
+  the Pass-2 ref resolver: `name_to_global` pushed the post-Module-
+  filter enumeration index `i` instead of the real SymbolRecord
+  position carried in `sym_entries[i].1`. Any cross-file ref whose
+  target lived after a synthetic `<module:path>` row in its defining
+  file (Phase 14.1 sentinel — emitted for every Python file with a
+  top-level statement, every Rust file with a module-level static,
+  TypeScript with module expressions, etc.) had its `to_sym_idx`
+  silently pointed at the Module row, not the intended symbol. Reader
+  filters Module rows from `usages` output → empty result. After the
+  fix, all three Pass-2 arms (`ModuleSymbol`, `Imported`, and v1.14
+  `Unresolved` C++ BFS) share the SymbolRecord-position convention.
+  `sym_to_file_id` was also rebuilt 1:1 with `records` (no longer
+  Module-filtered) so the C++ include-BFS lookup stays correct under
+  the new index-space contract. Regression test
+  `strict_resolves_cross_file_ref_past_module_row_in_target_file`
+  pins the bug: pre-fix it returned `No usages found`; post-fix it
+  returns the expected `b.py:4` call site. The bug was invisible to
+  the existing 2255-test suite because every prior fixture used files
+  without module-level statements.
+
+### Changed
+
+- **E3 — embed cache mark-and-sweep.** New
+  `EmbedCache::sweep_to(&live_hashes)` drops every entry whose hash is
+  not in the current build's live-symbol set; called by the pipeline
+  orchestrator (`pipeline::run` / `pipeline::update`) via the
+  `prune_embed_cache` helper once the **full** set of live hashes is
+  known. Closes the v1.13 E2b follow-up: the cache used to grow
+  monotonically across runs because deleted or renamed symbols left
+  their entries behind. After E3 the cache size equals live symbol
+  count exactly — no thresholds, no LRU bookkeeping, self-healing in
+  one cycle. Three new unit tests pin the sweep contract (keeps live,
+  clears empty, no-op when all live); tracing log surfaces `swept N`
+  only when there was work to do. Cache binary format unchanged (still
+  v1, `VEXE` magic). **Reviewer-caught:** earlier draft ran sweep
+  inside `generate_embeddings`, which in the `vex update` path saw
+  only the changed-files hashes — would have evicted every unchanged
+  symbol's cache entry on each update, defeating the cache. Now sweep
+  is hoisted; `pipeline::update` passes `compute_hashes_for(all_parsed)`
+  so the live set covers the entire corpus.
+
+### Audited (no code change)
+
+- **E2a — symbol-level diff on update.** Audit conclusion: **already
+  fully closed by v1.13 E2b.** The cache key `xxh3_64(embedder_id ⨁
+  kind ⨁ name ⨁ path-keywords ⨁ signature ⨁ doc ⨁ body_tokens ⨁
+  budget)` is built from stable symbol-shape inputs only — no
+  timestamps, no wall-clock leak, no mtime data. Changing one symbol
+  in a file means exactly one cache miss; the other N-1 symbols
+  cache-hit. The all-hit fast path additionally skips the 80 MB ONNX
+  model load entirely. Three pre-existing `context_hash_*` unit tests
+  pin the determinism contract.
+
 ## [1.14.0] - 2026-06-05
 
 ### Added
