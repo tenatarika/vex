@@ -16,12 +16,13 @@ struct SymFstInput {
 ///
 /// Exercises exact, prefix, fuzzy (Levenshtein), and fallback search.
 fuzz_target!(|input: SymFstInput| {
-    let reader =
-        match vex::store::symbol_fst::SymbolFstReader::new(&input.fst_bytes, &input.posting_bytes)
-        {
-            Ok(r) => r,
-            Err(_) => return,
-        };
+    let reader = match vex::store::symbol_fst::SymbolFstReader::new(
+        &input.fst_bytes,
+        &input.posting_bytes,
+    ) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
 
     for query in &input.queries {
         let _ = reader.find(query);

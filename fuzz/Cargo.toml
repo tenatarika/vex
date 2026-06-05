@@ -45,5 +45,19 @@ name = "fuzz_manifest_load"
 path = "fuzz_targets/fuzz_manifest_load.rs"
 doc = false
 
+# v1.13.0 P2 — marker-cache sidecar parser. New untrusted text
+# surface introduced by the SHA-marker fast path.
+[[bin]]
+name = "fuzz_marker_load"
+path = "fuzz_targets/fuzz_marker_load.rs"
+doc = false
+
+# v1.13.0 P8 — BM25 tokenizer hot path after the share-owning-String
+# refactor. Paranoia layer against unicode edge cases.
+[[bin]]
+name = "fuzz_tokenize_document"
+path = "fuzz_targets/fuzz_tokenize_document.rs"
+doc = false
+
 [workspace]
 members = ["."]

@@ -200,6 +200,9 @@ fn bench_symbol_assembly(c: &mut Criterion) {
         reader: &reader,
         hnsw_path: fx.hnsw_path.clone(),
         excludes: &excludes,
+        // No semantic / find_similar path exercised by this bench fixture
+        // (no vectors written); cosine fallback is the safe default.
+        vectors_normalized: false,
     };
     let target: &str = &fx.target_name;
     let args = BundleArgs {
