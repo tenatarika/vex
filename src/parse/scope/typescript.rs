@@ -69,7 +69,69 @@ fn dispatch(w: &mut Walker, node: Node, scope: ScopeId) {
         }
         "identifier" => w.emit_ref(node, scope, RefKind::Value),
         "type_identifier" => w.emit_ref(node, scope, RefKind::Type),
+        // v1.14.1 — member access (`obj.foo` / `obj?.foo` / `obj.foo()`).
+        // The property side is `property_identifier`; without this branch
+        // `do_charge` in `gw.do_charge()` never produced a ref, so the
+        // v1.14.1 Pass-2 single-candidate fallback couldn't resolve it
+        // cross-file. We dispatch on `member_expression` (and the
+        // optional-chaining variant) instead of matching `property_identifier`
+        // globally — that would also fire on `{ key: value }` object-literal
+        // pair keys (which use `property_identifier` but are bindings, not
+        // usages) and produce phantom refs from definition sites.
+        "member_expression" | "subscript_expression" => walk_member_expression(w, node, scope),
         _ => w.walk_children(node, scope),
+    }
+}
+
+/// Emit refs for both sides of a member access. Tree-sitter-typescript
+/// uses `member_expression` with field `object` (lhs) and `property`
+/// (rhs, a `property_identifier`). Recursion onto the object handles
+/// the regular value-ref path; we explicitly emit the property when
+/// it's a `property_identifier` so the v1.14.1 Pass-2 single-candidate
+/// fallback can resolve `do_charge` in `gw.do_charge()`.
+///
+/// Also handles `subscript_expression` (`obj[expr]`) for the object side
+/// only — the bracketed `expr` is already a value position and recurses
+/// via `walk_children` style.
+fn walk_member_expression(w: &mut Walker, node: Node, scope: ScopeId) {
+    // Cache the field-name lookups: each `child_by_field_name` call does
+    // a linear scan over `node.children`. Calling it twice (once to
+    // process, once to fetch ID for the dedup filter below) walks the
+    // child list twice — code-reviewer flagged this both as cost and as
+    // a logic trap if a future grammar version returns a different
+    // node instance on the second call.
+    let object = node.child_by_field_name("object");
+    let property = node.child_by_field_name("property");
+    if let Some(o) = object {
+        w.walk(o, scope);
+    }
+    if let Some(p) = property {
+        if p.kind() == "property_identifier" {
+            w.emit_ref(p, scope, RefKind::Value);
+        } else {
+            // `subscript_expression`'s "property" is an arbitrary
+            // expression node — recurse so its sub-identifiers still
+            // get emitted as refs.
+            w.walk(p, scope);
+        }
+    }
+    // Tree-sitter-typescript also exposes positional children on some
+    // `subscript_expression` grammar versions. Walk every remaining
+    // child that isn't object/property already handled so we don't
+    // drop identifiers in the bracketed expression.
+    let object_id = object.map(|n| n.id());
+    let prop_id = property.map(|n| n.id());
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if Some(child.id()) == object_id || Some(child.id()) == prop_id {
+            continue;
+        }
+        // Skip punctuation/syntax tokens by their kind shape; recurse
+        // into actual expression children.
+        if matches!(child.kind(), "." | "[" | "]" | "?." | "(" | ")") {
+            continue;
+        }
+        w.walk(child, scope);
     }
 }
 

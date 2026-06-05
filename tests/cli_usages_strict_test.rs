@@ -232,3 +232,294 @@ fn strict_filters_out_string_literal_noise_that_legacy_fst_keeps() {
         "string-literal mention on line 5 must not survive strict mode, got: {stdout}"
     );
 }
+
+#[test]
+fn strict_resolves_cross_file_ref_past_module_row_in_target_file() {
+    // Regression for the v1.14.1 name_to_global index-space fix.
+    //
+    // Phase 14.1 inserts a synthetic `<module:path>` SymbolKind::Module
+    // row at file.symbols[0] whenever a file has a module-scope call
+    // edge (sentinel `caller_fn_name == "" && caller_fn_line == 0`).
+    // Pre-1.14.1, `name_to_global` was keyed by the post-Module-filter
+    // enumeration index instead of the real SymbolRecord position —
+    // so any cross-file `Imported` (or v1.14 `Unresolved` C++ BFS) ref
+    // whose target lived AFTER a Module row in its defining file got
+    // its `to_sym_idx` silently pointed at the Module row, not the
+    // intended symbol. User-visible: `vex usages --strict <fn>` ran
+    // empty for Python / Rust / TS files with any top-level expression.
+    //
+    // This test pins the post-fix behaviour. `payment_processor` is
+    // defined in a.py *after* a module-scope `print(...)` call (which
+    // triggers the sentinel + Module row). b.py imports and calls it.
+    // Pre-fix: zero results (silent bug). Post-fix: line 4 of b.py.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::write(
+        tmp.path().join("a.py"),
+        "print(\"loaded\")\n\
+         \n\
+         def payment_processor():\n\
+         \x20\x20\x20\x20return 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("b.py"),
+        "from a import payment_processor\n\
+         \n\
+         def caller_fn():\n\
+         \x20\x20\x20\x20payment_processor()\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "payment_processor", "--strict"]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    // The call site in b.py is line 4 (`    payment_processor()`).
+    assert!(
+        stdout.contains("b.py:4") || stdout.contains("b.py:4\n"),
+        "expected b.py:4 call site for cross-file `payment_processor` after module-row offset fix; \
+         got:\n{stdout}"
+    );
+}
+
+#[test]
+fn strict_resolves_python_class_method_cross_file() {
+    // v1.14.1 single-candidate fallback for `BindTarget::Unresolved`.
+    //
+    // Before the fallback, `gw.do_charge()` in `main.py` got binder
+    // target `Unresolved` (Python's binder emits identifier refs but
+    // can't disambiguate method calls without type inference). The
+    // v1.14 C++ include-BFS path early-outs for non-C++ files, so
+    // no ref edge was produced even though `do_charge` IS indexed
+    // (Python's tree-sitter grammar uses `function_definition` for
+    // both free fns and class methods — already in `records[]`).
+    //
+    // After the fallback: when `name_to_global` holds exactly one
+    // entry for the name, Pass-2 resolves to it. Multi-candidate
+    // names stay Unresolved (next test). Heuristic but predictable.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::write(
+        tmp.path().join("gateway.py"),
+        "class Gateway:\n\
+         \x20\x20\x20\x20def do_charge(self):\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20return 100\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("main.py"),
+        "from gateway import Gateway\n\
+         def caller():\n\
+         \x20\x20\x20\x20gw = Gateway()\n\
+         \x20\x20\x20\x20return gw.do_charge()\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "do_charge", "--strict"]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("main.py:4") || stdout.contains("main.py:4\n"),
+        "expected main.py:4 call site for `gw.do_charge()`, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn strict_bails_on_multi_candidate_unresolved_to_avoid_false_positive() {
+    // Pin the safety side of the single-candidate fallback: when
+    // multiple definitions exist for the same name, Pass-2 must NOT
+    // pick one — that would silently mis-attribute the ref. The
+    // existing Imported arm's first-match-wins is fine for explicit
+    // imports (the user named the path), but Unresolved is by
+    // definition "binder couldn't figure it out", so picking a
+    // random match is worse than empty.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    // Two unrelated `process_payment` definitions in different files.
+    std::fs::write(
+        tmp.path().join("billing.py"),
+        "class Billing:\n\
+         \x20\x20\x20\x20def process_payment(self):\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20return \"billing\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("refunds.py"),
+        "class Refunds:\n\
+         \x20\x20\x20\x20def process_payment(self):\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20return \"refund\"\n",
+    )
+    .unwrap();
+    // Caller mixes unambiguous + ambiguous. `unique_helper` resolves
+    // (single-candidate); `process_payment` must bail (multi-candidate).
+    // Need the unambiguous one so the ref_edges section isn't empty —
+    // an empty section causes `--strict` to bail with exit 2 before
+    // we can inspect stdout for the ambiguity test.
+    std::fs::write(
+        tmp.path().join("util.py"),
+        "def unique_helper():\n\
+         \x20\x20\x20\x20return 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("main.py"),
+        "from util import unique_helper\n\
+         def caller(obj):\n\
+         \x20\x20\x20\x20unique_helper()\n\
+         \x20\x20\x20\x20return obj.process_payment()\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "process_payment", "--strict"]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    // The ambiguous call site (`main.py:4`) MUST NOT appear in strict
+    // refs. With multi-candidate names the single-candidate fallback
+    // bails — no edge is emitted at all, and `--strict` correctly
+    // reports "No usages found" (strict shows REFs, not definitions).
+    assert!(
+        !stdout.contains("main.py:4"),
+        "ambiguous call must not resolve under single-candidate fallback, got:\n{stdout}"
+    );
+
+    // Positive guard for the OTHER side of the test: confirm
+    // single-candidate resolution still works in this same build. If
+    // a regression silently empties the ref_edges section entirely
+    // (e.g. the name_to_global index-space bug returning), the
+    // negative assertion above would pass vacuously. Probing
+    // `unique_helper` — which has exactly one definition and one
+    // unambiguous call from main.py:3 — proves Pass-2 produced ref
+    // edges and reached the disambiguation gate before bailing.
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "unique_helper", "--strict"]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("main.py:3") || stdout.contains("main.py:3\n"),
+        "expected main.py:3 for `unique_helper()` to confirm Pass-2 emitted \
+         ref edges in this build, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn strict_resolves_csharp_class_method_cross_file_via_using_namespace() {
+    // Mirrors the Python test for C#: `using App;` brings the namespace
+    // into scope but our binder only binds the namespace name itself,
+    // not its member types. So `new Gateway()` and `gw.DoCharge()` end
+    // up `Unresolved`. The single-candidate fallback resolves them when
+    // there's exactly one definition project-wide. Before the fix the
+    // C# index had `has_ref_edges == false` (all refs were Unresolved,
+    // none produced edges), so `vex usages --strict DoCharge` bailed
+    // with "this index is v6 or has no resolved refs".
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("Gateway.cs"),
+        "namespace App {\n\
+         \x20\x20\x20\x20public class Gateway {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20public int DoCharge() { return 100; }\n\
+         \x20\x20\x20\x20}\n\
+         }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("Main.cs"),
+        "using App;\n\
+         public class Main {\n\
+         \x20\x20\x20\x20public int Run() {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20var gw = new Gateway();\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20return gw.DoCharge();\n\
+         \x20\x20\x20\x20}\n\
+         }\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "DoCharge", "--strict"]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("src/Main.cs:5") || stdout.contains("src\\Main.cs:5"),
+        "expected Main.cs:5 call site for `gw.DoCharge()`, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn strict_resolves_typescript_class_method_cross_file() {
+    // v1.14.1 — TypeScript needed BOTH halves of the fix:
+    //
+    // (1) SCM gap in `queries/typescript.scm` — only free
+    //     `function_declaration` was extracted; class methods
+    //     (`method_definition`), interface signatures
+    //     (`method_signature`), and abstract methods
+    //     (`abstract_method_signature`) all weren't symbols.
+    //
+    // (2) Binder gap in `src/parse/scope/typescript.rs` — even after
+    //     SCM indexed the methods, the TS binder only emitted refs for
+    //     `identifier` / `type_identifier`. Member access
+    //     (`gw.do_charge()` → `property_identifier` on the rhs) was
+    //     silently dropped. Added a `member_expression` walker that
+    //     emits the property as a Value ref so the single-candidate
+    //     fallback in writer's Pass-2 can resolve it cross-file.
+    //
+    // This test exercises all three method shapes (regular, static,
+    // interface signature) in one project so a regression in either
+    // (1) or (2) shows up immediately.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("gateway.ts"),
+        "export class Gateway {\n\
+         \x20\x20\x20\x20do_charge(): number {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20return 100;\n\
+         \x20\x20\x20\x20}\n\
+         \x20\x20\x20\x20static static_method(): number {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20return 200;\n\
+         \x20\x20\x20\x20}\n\
+         }\n\
+         export interface Processor {\n\
+         \x20\x20\x20\x20process_item(x: number): string;\n\
+         }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("main.ts"),
+        "import { Gateway, Processor } from './gateway';\n\
+         function caller(p: Processor): number {\n\
+         \x20\x20\x20\x20const gw = new Gateway();\n\
+         \x20\x20\x20\x20const a = gw.do_charge();\n\
+         \x20\x20\x20\x20const b = Gateway.static_method();\n\
+         \x20\x20\x20\x20p.process_item(a + b);\n\
+         \x20\x20\x20\x20return a + b;\n\
+         }\n",
+    )
+    .unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    // Regular instance method: call site at main.ts:4.
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "do_charge", "--strict"]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("src/main.ts:4") || stdout.contains("src\\main.ts:4"),
+        "expected main.ts:4 for `gw.do_charge()`, got:\n{stdout}"
+    );
+
+    // Static method via `Class.method()` — same `member_expression`
+    // shape, ensures the walker doesn't accidentally skip when the
+    // object side is a class identifier rather than an instance.
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "static_method", "--strict"]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("src/main.ts:5") || stdout.contains("src\\main.ts:5"),
+        "expected main.ts:5 for `Gateway.static_method()`, got:\n{stdout}"
+    );
+
+    // Interface signature called on a parameter — `process_item` is
+    // declared as `method_signature` (new SCM pattern), so both the
+    // indexing AND the call-site resolution need to succeed.
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "process_item", "--strict"]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("src/main.ts:6") || stdout.contains("src\\main.ts:6"),
+        "expected main.ts:6 for `p.process_item(...)`, got:\n{stdout}"
+    );
+}

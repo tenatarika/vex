@@ -265,3 +265,102 @@ fn unincluded_header_does_not_pollute_cross_file_refs() {
         "main.cpp never references `should_not_show`; strict must not invent a ref. stdout:\n{stdout}"
     );
 }
+
+#[test]
+fn class_member_method_resolves_cross_file_via_include() {
+    // v1.14.1 follow-up to the v1.14 cross-file refs work.
+    //
+    // Before this fix, C++ class member methods were INVISIBLE to vex:
+    // (a) the SCM query covered free `function_definition` and file-
+    //     level `declaration` shapes, but methods declared inside a
+    //     class body are `field_declaration` nodes — they never reached
+    //     `records[]`, so `vex search do_charge` returned only the
+    //     containing class.
+    // (b) consequently `vex usages --strict` had nothing to resolve to;
+    //     the v1.14 Pass-2 BFS would walk the include graph looking for
+    //     `do_charge`'s defining file but never find a symbol with that
+    //     name in `name_to_global`.
+    //
+    // The fix adds two SCM patterns in `queries/cpp.scm`: one for
+    // method declarations (`field_declaration → function_declarator →
+    // field_identifier`) and one for inline method definitions
+    // (`function_definition → function_declarator → field_identifier`).
+    // Both index as `SymbolKind::Method`. This test pins both: the
+    // header-declared `do_charge` and the inline `inline_method` must
+    // be findable AND their cross-file call sites in `main.cpp` must
+    // resolve under `--strict`.
+    let tmp = TempDir::new().unwrap();
+    write_local_cache_config(tmp.path());
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("gateway.h"),
+        "#pragma once\n\
+         namespace app {\n\
+         \x20\x20\x20\x20class Gateway {\n\
+         \x20\x20\x20\x20public:\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20int do_charge();\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20int inline_method() { return 42; }\n\
+         \x20\x20\x20\x20};\n\
+         }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("main.cpp"),
+        "#include \"gateway.h\"\n\
+         int main() {\n\
+         \x20\x20\x20\x20app::Gateway gw;\n\
+         \x20\x20\x20\x20return gw.do_charge() + gw.inline_method();\n\
+         }\n",
+    )
+    .unwrap();
+
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    // Declared method: cross-file call site in main.cpp:4 must resolve.
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "do_charge", "--strict"]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert_contains_call_site(&stdout, "src/main.cpp", 4);
+
+    // Inline method definition: same expectation. Catches a regression
+    // where the SCM patch only covered field_declaration prototypes
+    // and forgot the inline-definition shape.
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "inline_method", "--strict"]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert_contains_call_site(&stdout, "src/main.cpp", 4);
+}
+
+#[test]
+fn qualified_static_method_call_resolves_cross_file() {
+    // `app::Gateway::static_method()` is a `qualified_identifier` call
+    // expression. The trailing `static_method` part must still match
+    // a top-level symbol after the v1.14.1 SCM patch indexes class
+    // member methods. Pre-fix: empty (method wasn't a symbol at all).
+    let tmp = TempDir::new().unwrap();
+    write_local_cache_config(tmp.path());
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("gateway.h"),
+        "#pragma once\n\
+         namespace app {\n\
+         \x20\x20\x20\x20class Gateway {\n\
+         \x20\x20\x20\x20public:\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20static int static_method();\n\
+         \x20\x20\x20\x20};\n\
+         }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("main.cpp"),
+        "#include \"gateway.h\"\n\
+         int main() {\n\
+         \x20\x20\x20\x20return app::Gateway::static_method();\n\
+         }\n",
+    )
+    .unwrap();
+
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "static_method", "--strict"]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert_contains_call_site(&stdout, "src/main.cpp", 3);
+}

@@ -312,41 +312,52 @@ fn write_index_to(
     // pick the first hit for now — the plan reserves a future
     // `RefKind::Ambiguous` flag, but that needs `--explain` to surface
     // it usefully so it's deferred.
+    // v1.14.1 — `name_to_global` values are **SymbolRecord positions**
+    // (the same space `BindTarget::ModuleSymbol(base_idx + local)` uses),
+    // NOT sym_entries-positions. This is the fix for a long-standing
+    // (since Phase 11.1.3c) inconsistency: before, the loop pushed the
+    // post-Module-filter enumeration index `i`, so a ref resolved via
+    // the `Imported` (or v1.14 `Unresolved` BFS) arm pointed at the
+    // wrong `SymbolRecord` whenever any synthetic `<module:path>` row
+    // sat before the target in `parsed → file.symbols`. Python /
+    // TypeScript / Rust files with module-level statements all emit
+    // such rows (Phase 14.1), so the bug fired on real projects, just
+    // silently. Pushing `entries[i].1` (which carries the real
+    // SymbolRecord position by construction — `sym_entries` was already
+    // designed for this) unifies all three Pass-2 arms.
     let name_to_global: HashMap<&str, Vec<u32>> = {
         let mut m: HashMap<&str, Vec<u32>> = HashMap::with_capacity(records.len());
-        for (i, (name, _)) in sym_entries.iter().enumerate() {
-            m.entry(name.as_str()).or_default().push(i as u32);
+        for (name, global_idx) in &sym_entries {
+            m.entry(name.as_str()).or_default().push(*global_idx);
         }
         m
     };
 
-    // v1.14 — parallel `Vec<file_id>` indexed by `sym_entries` position.
-    // The C++ include-BFS resolver (below) takes any sym_idx stored in
+    // v1.14 — parallel `Vec<file_id>` indexed by **SymbolRecord position**.
+    // The C++ include-BFS resolver below takes any sym_idx stored in
     // `name_to_global` values and translates it back to the defining
-    // file_id. Both walks iterate `parsed → file.symbols` and skip Module
-    // rows the same way, so positions agree by construction.
+    // file_id. We include Module rows in this walk so the resulting Vec
+    // is 1:1 with `records` — same indexing convention as the post-fix
+    // `name_to_global` and the existing `ModuleSymbol(base_idx + local)`
+    // arm.
     let sym_to_file_id: Vec<u32> = {
-        let mut out: Vec<u32> = Vec::with_capacity(sym_entries.len());
+        let mut out: Vec<u32> = Vec::with_capacity(records.len());
         for file in parsed {
             let fid = *file_ids.get(&file.path).expect("file_id must exist");
-            for sym in &file.symbols {
-                if sym.kind != crate::index::symbols::SymbolKind::Module {
-                    out.push(fid);
-                }
+            for _sym in &file.symbols {
+                out.push(fid);
             }
         }
         out
     };
-    // `sym_to_file_id` and `sym_entries` walk `parsed` with the SAME
-    // Module-skip filter and MUST stay in 1:1 correspondence — the BFS
-    // below indexes into the first using sym_idx values pulled from
-    // `name_to_global` (positions in the second). A drift here would
-    // silently drop ref edges (BFS's `sym_to_file_id.get(...)` returns
-    // None on out-of-bounds), so we assert at debug time.
+    // 1:1 with `records` is the new invariant. A length drift here
+    // would silently corrupt every cross-file ref the BFS resolves
+    // (`sym_to_file_id.get(...)` returns None on out-of-bounds, BFS
+    // skips the candidate, the symbol resolves nowhere).
     debug_assert_eq!(
         sym_to_file_id.len(),
-        sym_entries.len(),
-        "sym_to_file_id and sym_entries must stay 1:1 — Module-skip filter drift",
+        records.len(),
+        "sym_to_file_id and records must stay 1:1 (SymbolRecord position)",
     );
 
     // v1.14 — include graph for C++ files only. Non-C++ paths are filtered
@@ -393,28 +404,49 @@ fn write_index_to(
                     // membership check, so this branch stays language-
                     // agnostic; the gate lives in include_graph build.
                     //
-                    // Index-space contract: the value returned here goes
-                    // into `RefEdgeBuilder::to_sym_idx` alongside results
-                    // from the `Imported` arm above. Both routes return
-                    // **`sym_entries`-positions** (post Module-filter),
-                    // matching `name_to_global`'s value space. The
-                    // `ModuleSymbol` arm above uses **SymbolRecord
-                    // positions** (counting Module rows) — a pre-existing
-                    // inconsistency we inherit, not introduce. Files with
-                    // synthetic `<module:path>` rows that appear *before*
-                    // a target symbol would expose it, but the symbol
-                    // FST already skips Module rows so reader paths reach
-                    // either index space correctly for non-Module names.
-                    // Future global fix: unify both arms on
-                    // SymbolRecord-position by pushing `entries[i].1`
-                    // into `name_to_global` instead of `i`.
-                    BindTarget::Unresolved => include_resolver::resolve_via_include_bfs(
-                        &r.name,
-                        file_id,
-                        &name_to_global,
-                        &sym_to_file_id,
-                        &include_graph,
-                    ),
+                    // Index-space contract (locked v1.14.1): every arm
+                    // here returns a **SymbolRecord position** — same
+                    // space as `ModuleSymbol(base_idx + local)` above.
+                    // `name_to_global` values were rewritten to push
+                    // `entries[i].1` (the real SymbolRecord index) so
+                    // the BFS's hits cleanly index into both records[]
+                    // and the `sym_to_file_id` Vec built right above.
+                    // Pre-1.14.1 builds pushed `i` (post Module-filter
+                    // enumeration index) and silently mis-pointed every
+                    // Imported/Unresolved ref whose target sat after
+                    // any `<module:path>` synthetic row.
+                    BindTarget::Unresolved => {
+                        // First try the v1.14 C++ include-BFS path. Returns
+                        // None for non-C++ files (their file_id isn't in
+                        // `include_graph`) or when the target isn't reachable
+                        // through any included header.
+                        include_resolver::resolve_via_include_bfs(
+                            &r.name,
+                            file_id,
+                            &name_to_global,
+                            &sym_to_file_id,
+                            &include_graph,
+                        )
+                        // v1.14.1 single-candidate fallback. Languages without
+                        // an include graph (Python, C#, TypeScript, Rust) emit
+                        // `Unresolved` for method calls on instances, namespace
+                        // members not pulled in by name, etc. — there's no
+                        // structured graph to walk for them today. When the
+                        // name has **exactly one** definition project-wide,
+                        // the resolution is unambiguous and we link it; with
+                        // two or more candidates we bail rather than guess
+                        // (the Imported arm's first-match-wins is fine for
+                        // explicit `using`/`import`, but applying it to
+                        // duck-typed method calls would silently mis-attribute
+                        // refs). Disambiguating beyond single-candidate
+                        // requires type inference, which is out of scope.
+                        .or_else(|| {
+                            name_to_global
+                                .get(r.name.as_str())
+                                .filter(|hits| hits.len() == 1)
+                                .and_then(|hits| hits.first().copied())
+                        })
+                    }
                 };
                 if let Some(global) = to_sym_idx {
                     ref_edge_builders.push(RefEdgeBuilder {
