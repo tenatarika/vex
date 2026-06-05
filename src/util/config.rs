@@ -416,6 +416,16 @@ pub fn hnsw_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("index.hnsw")
 }
 
+/// v1.14.1 B1.1: HNSW hash-index sidecar. Stores `Vec<u64>` of
+/// `context_hash` values in sym_idx order so the query path can map
+/// HNSW results (which are keyed by hash) back to SymbolRecord
+/// positions. Lives next to `index.hnsw`; absence makes
+/// `HnswHandle::open` bail to brute-force, matching the existing
+/// stale-HNSW degradation path.
+pub fn hash_index_path(project_root: &std::path::Path) -> PathBuf {
+    index_dir(project_root).join("index.hashes")
+}
+
 /// Full path to the bloom-filter sidecar (v1.12.0 T4). Lives next to
 /// `index.vex` like the HNSW sidecar; absence is a valid state
 /// (`SymbolBloom::load` returns `Ok(None)` and callers fall back to

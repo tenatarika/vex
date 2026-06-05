@@ -345,11 +345,16 @@ pub(super) fn write_output_locked(
 /// Cache is updated in-place with newly-embedded vectors and saved
 /// atomically before return. Cache load failures degrade silently
 /// to the all-miss path — never block the embedding run.
+/// Returns `(vectors, hashes)` paired by sym_idx. `hashes[i]` is the
+/// `context_hash` that gates `vectors[i]` in the embed cache AND that
+/// the HNSW index keys by (v1.14.1 B1.1). Callers thread `hashes`
+/// through to `build_hnsw` so the search path can map HNSW results
+/// back to sym_idx via the `hash_index` sidecar.
 pub(super) fn generate_embeddings(
     parsed: &[ParsedFile],
     embedder_id: &str,
     root: &Path,
-) -> Result<Vec<Vec<f32>>> {
+) -> Result<(Vec<Vec<f32>>, Vec<u64>)> {
     let total_start = Instant::now();
 
     // Resolve embedder dim + char budget WITHOUT touching the ONNX
@@ -362,25 +367,46 @@ pub(super) fn generate_embeddings(
         .with_context(|| format!("unknown embedder `{embedder_id}` — no recorded char budget"))?;
 
     // Step 1: build context strings + hashes in output order.
-    let mut contexts: Vec<String> = Vec::new();
-    let mut hashes: Vec<u64> = Vec::new();
-    for file in parsed {
-        for sym in &file.symbols {
-            let ctx = embed::build_context(
-                sym.kind.as_str(),
-                &sym.name,
-                &file.path,
-                sym.signature.as_deref(),
-                sym.doc.as_deref(),
-                sym.body_tokens.as_deref(),
-                budget,
-            );
-            let h = embed::cache::context_hash(embedder_id, &ctx);
-            contexts.push(ctx);
-            hashes.push(h);
-        }
-    }
+    //
+    // v1.14.1 — parallelised via rayon. `build_context` (string assembly
+    // + identifier tokenisation + path-keyword extraction) plus
+    // `xxh3_64` over the result averages ~5μs/symbol; at 50k symbols
+    // the sequential loop cost ~250ms on a warm M1, an outright second
+    // on slower laptops. `par_iter().unzip()` preserves source order
+    // (rayon contract) so the resulting `(contexts, hashes)` Vecs stay
+    // sym_idx-aligned with everything downstream (cache lookup,
+    // `hash_index` sidecar, vector slot). Pure CPU, no model load —
+    // safe to run before the ONNX init decision below.
+    let step1_start = Instant::now();
+    let pairs: Vec<(&ParsedFile, &crate::index::symbols::ParsedSymbol)> = parsed
+        .iter()
+        .flat_map(|f| f.symbols.iter().map(move |s| (f, s)))
+        .collect();
+    let (contexts, hashes): (Vec<String>, Vec<u64>) = {
+        use rayon::prelude::*;
+        pairs
+            .par_iter()
+            .map(|(file, sym)| {
+                let ctx = embed::build_context(
+                    sym.kind.as_str(),
+                    &sym.name,
+                    &file.path,
+                    sym.signature.as_deref(),
+                    sym.doc.as_deref(),
+                    sym.body_tokens.as_deref(),
+                    budget,
+                );
+                let h = embed::cache::context_hash(embedder_id, &ctx);
+                (ctx, h)
+            })
+            .unzip()
+    };
     let total = contexts.len();
+    tracing::debug!(
+        symbols = total,
+        elapsed = ?step1_start.elapsed(),
+        "embed: step 1 parallel context+hash build complete"
+    );
 
     // Step 2: load cache + partition into hits / misses.
     let cache_path = config::embed_cache_path(root, embedder_id);
@@ -412,7 +438,7 @@ pub(super) fn generate_embeddings(
             elapsed = ?total_start.elapsed(),
             "embedding complete (all cached, model load skipped)"
         );
-        return Ok(all_vectors);
+        return Ok((all_vectors, hashes));
     }
 
     // Step 4: embed misses only.
@@ -450,6 +476,14 @@ pub(super) fn generate_embeddings(
         all_vectors[out_idx] = vec;
     }
 
+    // NOTE: E3 mark-and-sweep used to live here but ran against `hashes`,
+    // which in the `vex update` path is the **changed-files-only** subset
+    // — it would evict every unchanged symbol's cache entry, defeating
+    // the cache on the very next update. Sweep is now hoisted to
+    // `prune_embed_cache`, called from the pipeline orchestrator
+    // (`pipeline::run` / `pipeline::update`) after the full set of live
+    // hashes is known. See `prune_embed_cache` below.
+
     // Step 6: persist cache. Failure is non-fatal — vectors are still
     // returned; next run will re-embed and re-attempt to persist.
     if let Err(e) = cache.save(&cache_path) {
@@ -471,11 +505,122 @@ pub(super) fn generate_embeddings(
         elapsed = ?total_start.elapsed(),
         "embedding complete"
     );
-    Ok(all_vectors)
+    Ok((all_vectors, hashes))
 }
 
-pub(super) fn build_hnsw(root: &Path, vectors: &[Vec<f32>]) -> Result<()> {
+/// v1.14.1 E3 — load the embed cache, sweep orphan entries against the
+/// **full** live-hash set, and save it back. Called by the pipeline
+/// orchestrator (`pipeline::run` and `pipeline::update`) once the full
+/// set of currently-indexed `context_hash`es is known. NOT called from
+/// inside `generate_embeddings` because the update path invokes it with
+/// only the changed-files slice — sweeping against that subset would
+/// silently evict every unchanged symbol's cache entry, defeating the
+/// cache on the next update (the bug the original E3 inadvertently
+/// introduced; rust-reviewer found it before the change landed).
+///
+/// Cache-load failure (missing/malformed sidecar) is the cold-start
+/// path: `EmbedCache::load` returns empty and there's nothing to sweep.
+/// Save failure is non-fatal — we log and continue; next run rehashes.
+pub(super) fn prune_embed_cache(
+    root: &Path,
+    embedder_id: &str,
+    dim: u32,
+    live_hashes: &[u64],
+) -> Result<()> {
+    let cache_path = config::embed_cache_path(root, embedder_id);
+    let mut cache = embed::cache::EmbedCache::load(&cache_path, embedder_id, dim);
+    if cache.is_empty() {
+        return Ok(());
+    }
+    let before = cache.len();
+    let swept = cache.sweep_to(live_hashes);
+    if swept == 0 {
+        return Ok(());
+    }
+    tracing::info!(
+        swept,
+        cache_size_before = before,
+        cache_size_after = cache.len(),
+        "embed cache: reclaimed orphan entries (E3 mark-and-sweep)"
+    );
+    if let Err(e) = cache.save(&cache_path) {
+        tracing::warn!(
+            path = %cache_path.display(),
+            error = %e,
+            "embed cache: post-sweep save failed; orphans will reappear next run"
+        );
+    }
+    Ok(())
+}
+
+/// Compute `context_hash` for every symbol in `parsed`, in sym_idx
+/// order. Used by the v1.14.1 B1.1 update path which already has the
+/// merged `all_vectors` (unchanged + freshly-embedded) but needs the
+/// matching `hashes` slice to key the HNSW. `generate_embeddings`
+/// produces hashes only for changed files; this helper covers the
+/// whole index in one pass.
+///
+/// **Note on stability across builds:** `body_tokens` participates in
+/// the hash. Symbols reconstructed from an existing index have
+/// `body_tokens: None` (the field isn't persisted today — see
+/// `parse_files::reconstruct_unchanged`), so the same symbol's hash
+/// will differ between a fresh `vex index` and a subsequent `vex
+/// update` that reconstructs it. That's fine for B1.1's full-rebuild
+/// path (the sidecar is regenerated from scratch); B1.2's incremental
+/// path will need either persisted body_tokens or a body-agnostic
+/// hash to keep this stable.
+pub(super) fn compute_hashes_for(parsed: &[ParsedFile], embedder_id: &str) -> Result<Vec<u64>> {
+    let budget = embed::embedder_char_budget(embedder_id)
+        .with_context(|| format!("unknown embedder `{embedder_id}` — no recorded char budget"))?;
+    // Parallel mirror of `generate_embeddings` Step 1. The update path
+    // calls this over the full merged corpus (unchanged + newly parsed),
+    // potentially 50k+ symbols — sequential would re-introduce the
+    // ~250ms wall-clock bottleneck Step 1 was parallelised away from.
+    // Same ordered-unzip contract: rayon preserves source order so the
+    // resulting Vec stays sym_idx-aligned with `all_vectors` and the
+    // `index.hashes` sidecar.
+    use rayon::prelude::*;
+    let pairs: Vec<(&ParsedFile, &crate::index::symbols::ParsedSymbol)> = parsed
+        .iter()
+        .flat_map(|f| f.symbols.iter().map(move |s| (f, s)))
+        .collect();
+    let hashes: Vec<u64> = pairs
+        .par_iter()
+        .map(|(file, sym)| {
+            let ctx = embed::build_context(
+                sym.kind.as_str(),
+                &sym.name,
+                &file.path,
+                sym.signature.as_deref(),
+                sym.doc.as_deref(),
+                sym.body_tokens.as_deref(),
+                budget,
+            );
+            embed::cache::context_hash(embedder_id, &ctx)
+        })
+        .collect();
+    Ok(hashes)
+}
+
+/// v1.14.1 B1.1: build HNSW keyed by `context_hash` (not by sym_idx).
+/// Content-based keys are stable across `vex update` runs — the
+/// prerequisite for B1.2 incremental update. The pairing sidecar
+/// `index.hashes` is written alongside so the query path can map HNSW
+/// results back to sym_idx via `search::hash_index::load`.
+///
+/// Pre-1.14.1 indexes keyed by sym_idx are rebuilt on next `vex
+/// index`; `HnswHandle::open` requires the sidecar to be present so a
+/// stale numeric-keyed `index.hnsw` without a sidecar degrades to
+/// brute-force search (same as a missing HNSW altogether).
+pub(super) fn build_hnsw(root: &Path, vectors: &[Vec<f32>], hashes: &[u64]) -> Result<()> {
     use usearch::{new_index, IndexOptions, MetricKind, ScalarKind};
+
+    anyhow::ensure!(
+        vectors.len() == hashes.len(),
+        "build_hnsw: vectors/hashes length mismatch ({} vs {})",
+        vectors.len(),
+        hashes.len(),
+    );
 
     let dim = vectors[0].len(); // guaranteed non-empty by caller
 
@@ -494,10 +639,8 @@ pub(super) fn build_hnsw(root: &Path, vectors: &[Vec<f32>]) -> Result<()> {
         .reserve(vectors.len())
         .context("reserve HNSW capacity")?;
 
-    for (i, vec) in vectors.iter().enumerate() {
-        index
-            .add(i as u64, vec)
-            .context("add vector to HNSW index")?;
+    for (vec, &h) in vectors.iter().zip(hashes.iter()) {
+        index.add(h, vec).context("add vector to HNSW index")?;
     }
 
     let hnsw_path = config::hnsw_path(root);
@@ -506,9 +649,16 @@ pub(super) fn build_hnsw(root: &Path, vectors: &[Vec<f32>]) -> Result<()> {
         .context("HNSW path contains non-UTF-8 characters")?;
     index.save(path_str).context("save HNSW index")?;
 
+    // Sidecar: paired sym_idx-ordered hash list. Without this the query
+    // path can't materialise the hash→sym_idx mapping HnswHandle needs.
+    let hash_index_path = config::hash_index_path(root);
+    crate::search::hash_index::save(&hash_index_path, hashes)
+        .context("save HNSW hash-index sidecar")?;
+
     tracing::info!(
         vectors = vectors.len(),
         path = %hnsw_path.display(),
+        sidecar = %hash_index_path.display(),
         "HNSW index built"
     );
 
@@ -596,10 +746,76 @@ mod tests {
         // The call must NOT load ONNX (no network, no model file in
         // tmp). If the all-hit early-return ever regresses, the test
         // either hangs on download or panics in `make_embedder`.
-        let out = generate_embeddings(&parsed, MINILM_ID, root).expect("generate_embeddings");
+        let (out, hashes) =
+            generate_embeddings(&parsed, MINILM_ID, root).expect("generate_embeddings");
 
         assert_eq!(out.len(), 2);
         assert_eq!(out[0], v_foo, "foo position 0");
         assert_eq!(out[1], v_bar, "bar position 1");
+        // v1.14.1 B1.1: the returned hashes must be sym_idx-ordered
+        // and identical to the cache keys — that's the contract
+        // `build_hnsw` and the `index.hashes` sidecar rely on.
+        assert_eq!(hashes, vec![h_foo, h_bar]);
+    }
+
+    /// v1.14.1 B1.1 end-to-end: build a hash-keyed HNSW from a tiny
+    /// fixture, open it via `HnswHandle`, query the v_foo vector and
+    /// confirm the top result maps back to sym_idx 0. This is the
+    /// query path the rest of vex relies on for `vex search
+    /// --semantic` / `vex similar` / `vex duplicates` once the index
+    /// carries v1.14.1 sidecars. Catches regressions in either the
+    /// builder (sidecar / HNSW pair drift) or the handle's
+    /// `hash → sym_idx` translation.
+    #[test]
+    fn build_hnsw_with_hashes_and_query_returns_sym_idx() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        // `set_cache_override` is one-shot (OnceLock); if a sibling
+        // test in this binary already set it we'd silently land on the
+        // sibling's tempdir which is gone. Use the test's own root as
+        // the override path AND skip the hash subdir so build_hnsw's
+        // `index.save` lands directly under root (which exists).
+        let cache_root = root.join(".vex_cache");
+        std::fs::create_dir_all(&cache_root).unwrap();
+        // skip_hash_subdir=true → hnsw_path = cache_root/index.hnsw
+        // (no extra `<hash>/` segment). Without this, build_hnsw would
+        // try to save to `<root>/.vex_cache/<hash>/index.hnsw` and
+        // bail on the missing subdir.
+        crate::util::config::set_cache_override(cache_root, true);
+
+        // Two orthogonal MiniLM-shaped vectors at sym_idx 0 and 1 with
+        // synthetic but plausible context hashes. Orthogonal so the
+        // top-1 result is unambiguous (cosine = 1 for the query vector
+        // matching its own stored copy, ~0 for the other).
+        let dim = MINILM_DIM as usize;
+        let mut v_foo = vec![0.0_f32; dim];
+        v_foo[0] = 1.0;
+        let mut v_bar = vec![0.0_f32; dim];
+        v_bar[1] = 1.0;
+        let h_foo: u64 = 0xFEED_C0FF_EEC0_DE42;
+        let h_bar: u64 = 0x00BA_0BAB_DEAD_BEEF;
+
+        build_hnsw(root, &[v_foo.clone(), v_bar.clone()], &[h_foo, h_bar]).expect("build_hnsw");
+
+        // HNSW + sidecar should land at the conventional paths.
+        assert!(config::hnsw_path(root).exists(), "HNSW file must exist");
+        assert!(
+            config::hash_index_path(root).exists(),
+            "hash-index sidecar must exist"
+        );
+
+        // Open the handle: expected_symbols = 2 (matches both HNSW size
+        // and sidecar length). Should succeed; missing sidecar would
+        // return None.
+        let handle = crate::search::semantic::HnswHandle::open(&config::hnsw_path(root), dim, 2)
+            .expect("open HnswHandle");
+
+        // Query with v_foo — top-1 must be sym_idx 0 with similarity
+        // ~1.0 (the stored vector under hash h_foo).
+        let results = handle.search(&v_foo, 1).expect("search succeeds");
+        assert_eq!(results.len(), 1);
+        let (sym_idx, sim) = results[0];
+        assert_eq!(sym_idx, 0, "top-1 must resolve to sym_idx 0 via hash map");
+        assert!(sim > 0.99, "self-similarity should be ~1.0, got {sim}");
     }
 }

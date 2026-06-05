@@ -168,9 +168,25 @@ impl EmbedCache {
         self.entries.len()
     }
 
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// v1.14 E3 — drop every cache entry whose hash is not in
+    /// `live_hashes`. Returns the number of entries removed. The pipeline
+    /// calls this once per `vex index` / `vex update` build, right after
+    /// the miss-insertion step, with the full set of currently-indexed
+    /// context hashes. Reclaims storage for symbols that got deleted or
+    /// renamed since the last build — without this the cache grew
+    /// monotonically and orphaned entries persisted forever.
+    ///
+    /// Safe to call with an empty slice (clears the cache). O(N + M)
+    /// where N = `live_hashes.len()` and M = `self.entries.len()`.
+    pub fn sweep_to(&mut self, live_hashes: &[u64]) -> usize {
+        let live: std::collections::HashSet<u64> = live_hashes.iter().copied().collect();
+        let before = self.entries.len();
+        self.entries.retain(|hash, _| live.contains(hash));
+        before - self.entries.len()
     }
 
     /// Atomic save: write to `.tmp` then rename. Matches the
@@ -377,5 +393,55 @@ mod tests {
         let leftover = p.with_extension("bin.tmp");
         assert!(!leftover.exists(), "tmp file should be renamed away");
         assert!(p.exists(), "final cache file should exist");
+    }
+
+    #[test]
+    fn sweep_keeps_only_live_hashes() {
+        // The headline E3 contract: orphaned entries (hashes that left
+        // the index after a rename or deletion) are reclaimed; live
+        // entries survive untouched. Without this, the cache grew
+        // monotonically across every `vex index` invocation.
+        let mut cache = EmbedCache::empty("minilm-l6-v2", 4);
+        cache.insert(1, vec_of(4, 1.0));
+        cache.insert(2, vec_of(4, 2.0));
+        cache.insert(3, vec_of(4, 3.0));
+        assert_eq!(cache.len(), 3);
+
+        let removed = cache.sweep_to(&[1, 3]);
+        assert_eq!(removed, 1, "hash 2 should have been swept");
+        assert_eq!(cache.len(), 2);
+        assert!(cache.get(1).is_some(), "hash 1 should survive");
+        assert!(cache.get(2).is_none(), "hash 2 should be gone");
+        assert!(cache.get(3).is_some(), "hash 3 should survive");
+    }
+
+    #[test]
+    fn sweep_with_empty_live_set_clears_cache() {
+        // Edge case: `live_hashes = []` should drop every entry. The
+        // pipeline never produces this in practice (every indexed file
+        // contributes at least one symbol), but the predicate must hold
+        // — `sweep_to(&[])` is the simplest possible test of the loop's
+        // termination behaviour.
+        let mut cache = EmbedCache::empty("minilm-l6-v2", 4);
+        cache.insert(1, vec_of(4, 1.0));
+        cache.insert(2, vec_of(4, 2.0));
+        let removed = cache.sweep_to(&[]);
+        assert_eq!(removed, 2);
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn sweep_no_op_when_all_live() {
+        // Steady-state: every cached hash is in the live set → zero
+        // removals, identical content. The pipeline's tracing logs
+        // gate the "reclaimed N orphans" line on this returning > 0,
+        // so the no-op path matters for log noise as much as correctness.
+        let mut cache = EmbedCache::empty("minilm-l6-v2", 4);
+        cache.insert(10, vec_of(4, 7.0));
+        cache.insert(20, vec_of(4, 8.0));
+        let removed = cache.sweep_to(&[10, 20, 30]);
+        // 30 wasn't in the cache, so no harm; nothing to remove.
+        assert_eq!(removed, 0);
+        assert_eq!(cache.len(), 2);
     }
 }

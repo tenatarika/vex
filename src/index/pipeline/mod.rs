@@ -11,7 +11,10 @@ mod output;
 mod parse_files;
 
 use lock::IndexLock;
-use output::{build_hnsw, generate_embeddings, vector_dim_for, write_output_locked};
+use output::{
+    build_hnsw, compute_hashes_for, generate_embeddings, prune_embed_cache, vector_dim_for,
+    write_output_locked,
+};
 use parse_files::{
     build_blob_cache, discover_files, hash_files, parse_files, reconstruct_unchanged,
 };
@@ -205,10 +208,10 @@ fn run_with_lock(
     let all_parsed = parse_files(root, &files, &blob_map, &cache)?;
     let symbol_count: usize = all_parsed.iter().map(|f| f.symbols.len()).sum();
 
-    let mut vectors = if opts.with_embeddings && symbol_count > 0 {
+    let (mut vectors, hashes) = if opts.with_embeddings && symbol_count > 0 {
         generate_embeddings(&all_parsed, embedder_id, root)?
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     // v1.13 P5: L2-normalize at write time. Brute-force similarity
     // (`search_brute_force`, `find_similar`/`find_duplicates`) then
@@ -238,12 +241,26 @@ fn run_with_lock(
     )?;
 
     if !vectors.is_empty() {
-        build_hnsw(root, &vectors)?;
+        build_hnsw(root, &vectors, &hashes)?;
+        // E3 sweep — full-rebuild path: `hashes` from generate_embeddings
+        // is already the full live set, no separate compute_hashes_for
+        // needed. Reclaims entries for symbols deleted/renamed since
+        // the previous build.
+        let dim = vector_dim_for(embedder_id, &vectors);
+        let _ = prune_embed_cache(root, embedder_id, dim, &hashes);
     } else {
-        // Remove stale HNSW from a previous --semantic run to prevent wrong results
+        // Remove stale HNSW + hash-index sidecar from a previous
+        // --semantic run to prevent wrong results when the user
+        // re-runs without `--semantic`. Both files come and go as a
+        // pair (v1.14.1 B1.1).
         let hnsw_path = config::hnsw_path(root);
         if hnsw_path.exists() {
             std::fs::remove_file(&hnsw_path).context("remove stale HNSW index")?;
+        }
+        let hash_index_path = config::hash_index_path(root);
+        if hash_index_path.exists() {
+            std::fs::remove_file(&hash_index_path)
+                .context("remove stale HNSW hash-index sidecar")?;
         }
     }
 
@@ -438,10 +455,18 @@ fn update_inner(
     // whose context_string is byte-identical to a previous run reuse
     // the stored vector and skip the embed step. When 100% of contexts
     // hit the cache, the ONNX model is never loaded.
-    let new_vectors = if opts.with_embeddings && new_sym_count > 0 {
+    // v1.14.1 B1.1 — `generate_embeddings` now returns `(vectors,
+    // hashes)`. We discard the changed-file hashes here and recompute
+    // hashes for the full merged set below via `compute_hashes_for`;
+    // that keeps the HNSW key space consistent across the changed +
+    // reconstructed slices (reconstructed symbols come with
+    // `body_tokens: None`, which produces a different hash than the
+    // body-aware one `generate_embeddings` would emit for the same
+    // symbol if it were freshly parsed).
+    let (new_vectors, _new_hashes) = if opts.with_embeddings && new_sym_count > 0 {
         generate_embeddings(&newly_parsed, embedder_id, &root)?
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
     // Merge: unchanged first (vectors align with symbol order)
@@ -489,11 +514,26 @@ fn update_inner(
     )?;
 
     if !all_vectors.is_empty() {
-        build_hnsw(&root, &all_vectors)?;
+        let all_hashes = compute_hashes_for(&all_parsed, embedder_id)?;
+        build_hnsw(&root, &all_vectors, &all_hashes)?;
+        // E3 sweep — update path: must use `all_hashes` over
+        // `unchanged + newly_parsed`, NOT just `_new_hashes` from
+        // generate_embeddings (that would evict every unchanged
+        // symbol's cache entry and defeat the cache on the next run).
+        let dim = vector_dim_for(embedder_id, &all_vectors);
+        let _ = prune_embed_cache(&root, embedder_id, dim, &all_hashes);
     } else {
+        // Same paired cleanup as the full-rebuild path — drop both
+        // sidecars together so the next `vex search --semantic` gets
+        // a consistent picture (or bails to brute force).
         let hnsw_path = config::hnsw_path(&root);
         if hnsw_path.exists() {
             std::fs::remove_file(&hnsw_path).context("remove stale HNSW index")?;
+        }
+        let hash_index_path = config::hash_index_path(&root);
+        if hash_index_path.exists() {
+            std::fs::remove_file(&hash_index_path)
+                .context("remove stale HNSW hash-index sidecar")?;
         }
     }
 

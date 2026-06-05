@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
 use crate::embed::Embedder;
 use crate::index::symbols::SymbolKind;
-use crate::search::{MatchType, SearchResult};
+use crate::search::{hash_index, MatchType, SearchResult};
 use crate::store::reader::IndexReader;
 
 /// Semantic search using HNSW index (fast) with brute-force fallback.
@@ -66,20 +67,32 @@ pub fn search_with_embedder(
 /// fresh `usearch::Index` per call — `find_duplicates`'s outer loop
 /// then mmap'd the HNSW file `symbol_count` times per invocation. The
 /// handle lifts that cost to once per query.
+///
+/// v1.14.1 B1.1: the HNSW is keyed by `context_hash`, not by sym_idx.
+/// The handle loads the paired `index.hashes` sidecar (a sym_idx-
+/// ordered `Vec<u64>`) at open time and builds a `hash → sym_idx`
+/// map so `search()` can translate HNSW results back to the
+/// `SymbolRecord` positions the rest of the codebase expects. Missing
+/// or mismatched sidecar → `open` returns None and callers degrade to
+/// brute-force, same path as a missing HNSW file.
 pub(crate) struct HnswHandle {
     index: usearch::Index,
+    hash_to_sym_idx: HashMap<u64, u32>,
 }
 
 impl HnswHandle {
     /// Open the HNSW file at `hnsw_path` and prepare it for repeated
     /// `search()` calls. Returns `None` for the same reasons
-    /// `search_hnsw_at` previously returned `None`:
-    /// - file missing
+    /// `search_hnsw_at` previously returned `None`, plus the new
+    /// v1.14.1 B1.1 cases:
+    /// - HNSW file missing
     /// - index creation / view failed
     /// - the persisted index is empty
     /// - the persisted index size disagrees with `expected_symbols`
-    ///   (stale HNSW relative to the live index — caller should fall
-    ///   back to brute-force).
+    /// - the paired `index.hashes` sidecar is missing or malformed
+    ///   (pre-1.14.1 indexes have no sidecar — re-run `vex index
+    ///   --semantic` to upgrade)
+    /// - the sidecar length disagrees with `expected_symbols`
     pub(crate) fn open(
         hnsw_path: &Path,
         query_dim: usize,
@@ -126,11 +139,73 @@ impl HnswHandle {
             return None;
         }
 
-        Some(Self { index })
+        // Load the hash-index sidecar that pairs HNSW hash-keys with
+        // sym_idx positions. Sibling file `index.hashes`; if missing or
+        // malformed the HNSW is unusable (we'd return correct top-k by
+        // hash but couldn't map back to records[]) — bail to brute force.
+        let hash_index_path = hnsw_path.parent()?.join("index.hashes");
+        let hashes = hash_index::load(&hash_index_path)
+            .map_err(|e| {
+                tracing::warn!(
+                    path = %hash_index_path.display(),
+                    error = %e,
+                    "HNSW hash-index sidecar missing or malformed — falling back to brute-force"
+                )
+            })
+            .ok()?;
+        if hashes.len() != expected_symbols {
+            tracing::warn!(
+                sidecar = hashes.len(),
+                symbols = expected_symbols,
+                "HNSW hash-index sidecar size mismatch — falling back to brute-force"
+            );
+            return None;
+        }
+
+        // Build the `hash → sym_idx` lookup. Hash collisions on
+        // xxh3_64 are astronomically improbable for random inputs, but
+        // a v1.14.1 update path keys symbols by hashes computed with
+        // `body_tokens: None` for reconstructed unchanged rows — two
+        // methods sharing `(kind, name, path, signature, doc)` would
+        // collide deterministically. `entry().or_insert` keeps the
+        // first sym_idx (matches usearch's `multi: false` behaviour
+        // where the first `add` wins), and the tracing line surfaces
+        // the anomaly so a real collision shows up in logs rather
+        // than as silent wrong refs.
+        let mut hash_to_sym_idx: HashMap<u64, u32> = HashMap::with_capacity(hashes.len());
+        let mut collisions: u32 = 0;
+        for (i, h) in hashes.into_iter().enumerate() {
+            use std::collections::hash_map::Entry;
+            match hash_to_sym_idx.entry(h) {
+                Entry::Vacant(v) => {
+                    v.insert(i as u32);
+                }
+                Entry::Occupied(_) => collisions += 1,
+            }
+        }
+        if collisions > 0 {
+            tracing::warn!(
+                hnsw = %hnsw_path.display(),
+                collisions,
+                "HNSW hash-index sidecar has duplicate hashes — first sym_idx wins; \
+                 typically a `body_tokens: None` reconstructed-symbol collision"
+            );
+        }
+
+        Some(Self {
+            index,
+            hash_to_sym_idx,
+        })
     }
 
     /// Query the opened index. Returns `None` only if usearch reports
     /// a search error; an empty result set is `Some(Vec::new())`.
+    ///
+    /// v1.14.1 B1.1: HNSW returns keys = `context_hash` values. We
+    /// translate each back to a sym_idx via the sidecar map. A hash
+    /// we don't recognize in the map is silently dropped — that's the
+    /// defensive path against an HNSW/sidecar drift that
+    /// `expected_symbols` checks at open didn't catch.
     pub(crate) fn search(&self, query_vec: &[f32], top_k: usize) -> Option<Vec<(usize, f32)>> {
         let results = self.index.search(query_vec, top_k).ok()?;
         Some(
@@ -138,10 +213,11 @@ impl HnswHandle {
                 .keys
                 .iter()
                 .zip(results.distances.iter())
-                .map(|(&key, &dist)| {
+                .filter_map(|(&key, &dist)| {
+                    let sym_idx = *self.hash_to_sym_idx.get(&key)?;
                     // usearch cosine distance = 1 - similarity
                     let similarity = (1.0 - dist).max(0.0);
-                    (key as usize, similarity)
+                    Some((sym_idx as usize, similarity))
                 })
                 .collect(),
         )

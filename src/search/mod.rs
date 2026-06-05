@@ -2,6 +2,7 @@ pub mod bloom;
 pub mod bm25;
 pub mod explain;
 pub mod fusion;
+pub mod hash_index;
 pub mod metadata;
 pub mod rerank;
 pub mod semantic;
