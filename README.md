@@ -842,15 +842,18 @@ cargo install cargo-fuzz
 bash fuzz/generate_seeds.sh
 
 # Run (requires nightly)
-RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_index_reader    -- -max_total_time=120
-RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_refs_fst        -- -max_total_time=60
-RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_symbol_fst      -- -max_total_time=60
-RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_bloom_load      -- -max_total_time=60
-RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_pattern_parser  -- -max_total_time=60
-RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_manifest_load   -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_index_reader        -- -max_total_time=120
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_refs_fst            -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_symbol_fst          -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_bloom_load          -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_pattern_parser      -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_manifest_load       -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_marker_load         -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_tokenize_document   -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_hash_index_load     -- -max_total_time=60
 ```
 
-Six fuzz targets cover the reader's `unsafe` paths plus every text /
+Nine fuzz targets cover the reader's `unsafe` paths plus every text /
 sidecar parser that takes adversarial input:
 
 | Target | What it fuzzes | Surface |
@@ -861,6 +864,18 @@ sidecar parser that takes adversarial input:
 | `fuzz_bloom_load` (v1.12.0) | Arbitrary `index.bloom` sidecar | `SymbolBloom::load`, then `may_contain` probes |
 | `fuzz_pattern_parser` (v1.12.0) | Arbitrary UTF-8 as a pattern string | `parse_composite_pattern` (metavars, `&&` / `||`, quoted segments) |
 | `fuzz_manifest_load` (v1.12.0) | Arbitrary JSON as `manifest.json` | `Manifest::load` |
+| `fuzz_marker_load` (v1.13.0) | Arbitrary text as `<onnx>.sha256.marker` | `verify_with_marker` parser + decision tree |
+| `fuzz_tokenize_document` (v1.13.0) | Arbitrary UTF-8 as BM25 input | `tokenize_document` (post share-owning-String refactor) |
+| `fuzz_hash_index_load` (v1.14.1) | Arbitrary bytes as `index.hashes` sidecar | `hash_index::load` (`VEXH` magic, MAX_COUNT guard, truncation) |
+
+Most recent system-wide audit (v1.14.1, 2026-06-05): **5,792,231 total
+iterations across all 9 targets in ~9 min wall-clock, zero crashes /
+panics / AddressSanitizer hits / leaks.** Plus a focused 3,000,000-
+iter run on `fuzz_hash_index_load` alone — clean. Coverage saturated
+for the small binary-header parsers (bloom, marker, hash_index);
+JSON / grammar parsers still surfacing new features at saturation
+(`fuzz_manifest_load` reached `cov:1355 ft:4191 / 1311 corpus`,
+`fuzz_pattern_parser` `cov:551 ft:3693 / 1210 corpus`).
 
 Fuzzing has found and fixed five real defects across the project life:
 
@@ -874,6 +889,12 @@ Fuzzing has found and fixed five real defects across the project life:
 - v1.12.0: `SymbolBloom::load` accepted `k_num` up to ~2.1B, which
   made every `may_contain` call loop for 110+ seconds (DoS, not a
   panic). Fix: cap `k_num <= MAX_K_NUM = 64` at load time.
+
+The v1.13.0 / v1.14.1 additions found no defects in fresh code — the
+review-driven `MAX_COUNT` guards on `hash_index::save` / `load` were
+added as defence-in-depth before the fuzzer ran (rust-reviewer +
+code-reviewer flagged the truncating `as u32` cast on save), and the
+sustained 3M / 5.8M iteration runs confirmed they hold.
 
 ## Architecture
 

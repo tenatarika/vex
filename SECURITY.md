@@ -7,8 +7,9 @@ are not patched — please upgrade to the latest release before reporting.
 
 | Version | Supported |
 |---------|-----------|
-| 1.12.x  | yes       |
-| < 1.12  | no — upgrade first |
+| 1.14.x  | yes       |
+| 1.13.x  | yes       |
+| < 1.13  | no — upgrade first |
 
 `vex self-update` will fetch the latest GitHub release on Linux, macOS,
 and Windows.
@@ -44,20 +45,35 @@ These are the surfaces we treat as security-relevant:
   type-confusion across sections. The reader is exercised by three
   libFuzzer targets (`fuzz_index_reader`, `fuzz_refs_fst`,
   `fuzz_symbol_fst`); past fuzz-found bugs are listed in the README.
-- **Sidecar parsers**: any file the cache directory loads alongside
-  `index.vex` is also fuzzed as untrusted input. As of v1.12.0 the
-  bloom sidecar (`index.bloom`, parser in `src/search/bloom.rs`) is
-  covered by `fuzz_bloom_load`; two real defects were caught and fixed
-  during that round (`hash % 0` panic on degenerate `n_bits/k_num`,
-  and a DoS-via-huge-`k_num` that made `may_contain` loop for minutes).
-  See README for details.
+- **Sidecar parsers**: every file the cache directory loads alongside
+  `index.vex` is fuzzed as untrusted input. Covered surfaces:
+  - `index.bloom` (`src/search/bloom.rs`, `fuzz_bloom_load`, v1.12.0)
+    — two real defects caught and fixed (`hash % 0` panic on degenerate
+    `n_bits/k_num`, and DoS-via-huge-`k_num` looping for minutes).
+  - `<onnx>.sha256.marker` (`src/embed/integrity.rs`, `fuzz_marker_load`,
+    v1.13.0) — P2 fast-path marker for the ONNX integrity check.
+  - `embed_cache_<id>.bin` (`src/embed/cache.rs`) — content-addressed
+    embedding cache from v1.13 E2b. Validated at load (magic + dim
+    bound) but not yet fuzzed; defence-in-depth via existing roundtrip
+    unit tests.
+  - `index.hashes` (`src/search/hash_index.rs`, `fuzz_hash_index_load`,
+    v1.14.1) — `VEXH` sidecar pairing HNSW hash keys with sym_idx
+    positions; `MAX_COUNT` guard on both save + load paths after a
+    parallel-reviewer audit. 3M-iter focused + 5.8M-iter system-wide
+    runs (2026-06-05) clean.
+
+  See README §Fuzz Testing for the full target list and historical
+  defects.
 - **Mmap / unsafe paths**: any code path in `src/store/reader.rs` or
   the FST readers that can be tripped by a hand-crafted `.vex` file.
 - **User-facing parsers**: the pattern grammar behind `vex pattern '...'`
   (`parse_composite_pattern`) and the JSON manifest at `manifest.json`
   (`Manifest::load`) — both covered by libFuzzer targets
   (`fuzz_pattern_parser`, `fuzz_manifest_load`) and expected to surface
-  `Err` rather than panic on adversarial input.
+  `Err` rather than panic on adversarial input. The BM25 hot-path
+  tokenizer (`tokenize_document`) is also fuzzed (`fuzz_tokenize_document`,
+  v1.13.0) since it walks attacker-supplied UTF-8 byte-by-byte during
+  every `vex index`.
 - **MCP server (`crates/vex-mcp`)**: JSON-RPC parser, stdio handling,
   path-traversal in tool arguments (`VEX_ROOT` containment), or
   resource exhaustion via malformed `tools/call` payloads.
@@ -84,10 +100,13 @@ These are the surfaces we treat as security-relevant:
 If you're embedding vex into a multi-tenant environment:
 
 - Treat `.vex` index files **and every sidecar in the cache directory**
-  (`index.hnsw`, `index.bloom`, `manifest.json`) as **untrusted input**
+  (`index.hnsw`, `index.bloom`, `index.hashes`, `manifest.json`,
+  `embed_cache_<id>.bin`, `<onnx>.sha256.marker`) as **untrusted input**
   even when you wrote them yourself — they're consumed via mmap or
-  parsed without prior validation. The fuzz harness covers each parser,
-  but defense in depth helps.
+  parsed without prior validation. The fuzz harness covers each
+  binary-input parser, but defence in depth helps. The most recent
+  system-wide audit (v1.14.1, 2026-06-05) ran ~5.8M iterations across
+  all 9 targets with zero crashes.
 - The MCP server reads `VEX_ROOT` from the environment and rejects paths
   that escape it. Don't pass user-controlled values into `VEX_ROOT`.
 - `vex self-update` verifies release archives via zipsign signatures —
