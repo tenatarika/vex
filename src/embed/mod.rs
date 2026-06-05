@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod integrity;
 pub mod minilm;
 pub mod model;
@@ -5,7 +6,7 @@ pub mod tokenizer;
 
 use anyhow::{bail, Result};
 
-pub use minilm::{MiniLMEmbedder, MINILM_DIM, MINILM_ID};
+pub use minilm::{MiniLMEmbedder, MINILM_CHAR_BUDGET, MINILM_DIM, MINILM_ID};
 pub use model::build_context;
 
 /// Stable identifier of the default embedder. Persisted in the manifest of
@@ -30,6 +31,13 @@ pub trait Embedder: Send {
     /// Character budget for the context string passed to [`embed`]. Callers
     /// (e.g. `build_context`) truncate to this size to fit the model's
     /// token-window. Varies per model.
+    ///
+    /// As of v1.13 E2b the bin no longer calls this through the trait —
+    /// `embedder_char_budget(id)` reads the per-embedder const directly
+    /// so we can pre-build contexts without instantiating the model.
+    /// The trait method stays for downstream embedders that need
+    /// per-instance variability.
+    #[allow(dead_code)]
     fn char_budget(&self) -> usize;
 
     /// Embed a single string.
@@ -60,6 +68,18 @@ pub fn make_embedder(id: &str) -> Result<Box<dyn Embedder>> {
 pub fn embedder_dim(id: &str) -> Option<u32> {
     match id {
         MINILM_ID => Some(MINILM_DIM),
+        _ => None,
+    }
+}
+
+/// Character budget for [`build_context`] without instantiating the
+/// model. v1.13 E2b: lets the embedding-cache pre-build all contexts
+/// (and check the cache) before deciding whether the ONNX model is
+/// even needed — when every context hits the cache we skip the
+/// ~80 MB model load entirely.
+pub fn embedder_char_budget(id: &str) -> Option<usize> {
+    match id {
+        MINILM_ID => Some(MINILM_CHAR_BUDGET),
         _ => None,
     }
 }

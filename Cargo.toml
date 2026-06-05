@@ -127,6 +127,9 @@ predicates = "3.1"
 insta = "1.41"
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1.5"
+# Needed by the P2 marker-cache tests to set an explicit mtime on a
+# temp file — proves the fast path is taken when mtime + size match.
+filetime = "0.2"
 
 # Phase 13.2 Inc 7 — first Criterion benchmark in the repo. Establishes a
 # latency baseline for the `vex bundle` modes (BFS, indegree scan, symbol
@@ -134,4 +137,13 @@ proptest = "1.5"
 # the BFS bench measures > 100 ms on the synthetic 50-change fixture.
 [[bench]]
 name = "bundle"
+harness = false
+
+# v1.13.0 — baseline benches for the open Performance items (P1 HNSW
+# per-symbol reopen, P2 ONNX SHA on every --semantic, P5 vectors not
+# L2-normalized at write time, P7 BTreeMap allocations in FST builders,
+# P8 BM25 tokenizer allocations). Run before each P-item lands; diff
+# against `benches/results/v1.13-baseline-<sha>.txt`.
+[[bench]]
+name = "perf_v113"
 harness = false

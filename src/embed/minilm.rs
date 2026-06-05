@@ -57,7 +57,11 @@ impl MiniLMEmbedder {
         // so a fastembed upgrade doesn't break vex for everyone.
         match super::integrity::find_minilm_onnx(&cache_dir) {
             Some(onnx_path) => {
-                super::integrity::verify_file_sha256(
+                // v1.13 P2: `verify_with_marker` caches `(mtime, size,
+                // sha)` next to the ONNX so the warm path skips the
+                // ~163 ms full hash. First run hashes + writes marker;
+                // every subsequent `vex search --semantic` is ~μs.
+                super::integrity::verify_with_marker(
                     &onnx_path,
                     super::integrity::MINILM_ONNX_SHA256,
                 )?;

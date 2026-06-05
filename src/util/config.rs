@@ -429,6 +429,14 @@ pub fn manifest_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("manifest.json")
 }
 
+/// Full path to the v1.13 E2b embedding cache sidecar. One file per
+/// embedder so switching embedders doesn't poison the cache — absent
+/// file is the valid cold-start state (`EmbedCache::load` returns an
+/// empty cache and the writer fills it as embeds happen).
+pub fn embed_cache_path(project_root: &std::path::Path, embedder_id: &str) -> PathBuf {
+    index_dir(project_root).join(format!("embed_cache_{embedder_id}.bin"))
+}
+
 /// Cache directory for embedding model files (e.g. MiniLM ONNX weights).
 /// The model is identical across projects and is ~86 MB, so we store it
 /// at `<cache-root>/embeddings/` instead of per-project. Crucially we
