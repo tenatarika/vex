@@ -156,3 +156,14 @@ harness = false
 [[bench]]
 name = "perf_v114"
 harness = false
+
+# v1.15.0 B1.2 — incremental vs full-rebuild HNSW write path. The
+# headline number is the speedup at typical churn rates (1-10%) over
+# the v1.14.1 baseline (`build_hnsw_at` full rebuild). The tombstone
+# threshold (25%) is also pinned: at the boundary the incremental
+# path applies; over it the function returns Ok(false) and the
+# orchestrator falls back to a full rebuild — bench compares the bail
+# cost to the rebuild cost to verify the threshold isn't too tight.
+[[bench]]
+name = "perf_b12"
+harness = false
