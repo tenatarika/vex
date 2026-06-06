@@ -10,8 +10,11 @@
 # Index files
 *.vex
 
-# Claude Code config (local, not shared)
-.claude/
+# Claude Code config (local, not shared) — except the public-artifact
+# `skills/` subtree, which ships with the repo so contributors and
+# downstream users get the `/vex` skill catalog (`.claude/skills/vex/`).
+.claude/*
+!.claude/skills/
 CLAUDE.md
 
 # Fastembed model cache
