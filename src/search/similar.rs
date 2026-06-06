@@ -145,65 +145,44 @@ pub fn find_duplicates(
         .unwrap_or(crate::store::format::VECTOR_DIM as usize);
     let hnsw = semantic::HnswHandle::open(hnsw_path, query_dim, reader.symbol_count());
 
+    // v1.15.0 A1: parallel outer loop. Each symbol's `nearest_neighbors`
+    // call is independent — reader/body_lines/hnsw are all `&` borrows,
+    // `usearch::Index` is marked `unsafe impl Send + Sync` upstream
+    // (verified against usearch 2.25.3). The dedup (`HashSet`) stays
+    // sequential since it's the cheap part; per-symbol HNSW search at
+    // 1k+ symbols dominates wall time.
+    //
+    // Architect's verdict (memory `A1`): expected 2-3× on this loop,
+    // not 5-8× — usearch's `search()` has internal OpenMP that can
+    // contend with rayon workers. The win is real but bounded.
+    //
+    // Determinism preserved: rayon's `flat_map_iter` + `collect` keeps
+    // the source iterator order on the output Vec, so equal-similarity
+    // pairs hit `seen.insert` in the same sequence as the previous
+    // sequential implementation.
+    use rayon::prelude::*;
+    let candidates: Vec<(f32, usize, usize)> = (0..reader.symbol_count())
+        .into_par_iter()
+        .flat_map_iter(|sym_idx| {
+            per_symbol_duplicate_candidates(
+                sym_idx,
+                reader,
+                &body_lines,
+                hnsw.as_ref(),
+                neighbors_per_sym,
+                threshold,
+                min_body_lines,
+                normalized,
+            )
+        })
+        .collect();
+
     let mut seen: HashSet<(usize, usize)> = HashSet::new();
-    let mut pairs: Vec<(f32, usize, usize)> = Vec::new(); // (similarity, a, b)
-
-    for sym_idx in 0..reader.symbol_count() {
-        let rec = match reader.symbol(sym_idx) {
-            Some(r) => r,
-            None => continue,
-        };
-
-        // Skip symbols without a vector.
-        if rec.vector_index == u32::MAX {
-            continue;
-        }
-
-        // Skip symbols with short bodies.
-        if body_lines[sym_idx] < min_body_lines {
-            continue;
-        }
-
-        let query_vec = match reader.vector(rec.vector_index) {
-            Some(v) => v,
-            None => continue,
-        };
-
-        let scored = nearest_neighbors(
-            reader,
-            query_vec,
-            neighbors_per_sym,
-            hnsw.as_ref(),
-            normalized,
-        );
-
-        for (other_idx, sim) in scored {
-            // Drop self-pairs.
-            if other_idx == sym_idx {
-                continue;
-            }
-
-            // Bounds-check before indexing body_lines (defence-in-depth
-            // against HNSW returning out-of-bounds keys).
-            let Some(&other_body_lines) = body_lines.get(other_idx) else {
-                continue;
-            };
-
-            // Both members must satisfy min_body_lines.
-            if other_body_lines < min_body_lines {
-                continue;
-            }
-
-            // Drop below threshold.
-            if sim < threshold {
-                continue;
-            }
-
-            // Canonical dedup.
-            let key = (sym_idx.min(other_idx), sym_idx.max(other_idx));
-            if seen.insert(key) {
-                pairs.push((sim, key.0, key.1));
-            }
+    let mut pairs: Vec<(f32, usize, usize)> = Vec::with_capacity(candidates.len());
+    for (sim, a, b) in candidates {
+        let key = (a.min(b), a.max(b));
+        if seen.insert(key) {
+            pairs.push((sim, key.0, key.1));
         }
     }
 
@@ -230,6 +209,59 @@ pub fn find_duplicates(
         .collect();
 
     Ok(result)
+}
+
+/// Score one symbol against its top-K nearest neighbours and return the
+/// post-filter pair candidates as `(similarity, sym_idx, other_idx)`
+/// tuples. Caller dedups via canonical `(min, max)` keys.
+///
+/// Returns an empty `Vec` when the symbol can't participate (no vector,
+/// short body, missing record) — `flat_map_iter` flattens these
+/// transparently. Sequential equivalent of the inner loop in the
+/// pre-A1 `find_duplicates` body; extracted so the parallel outer loop
+/// has a clean closure body.
+#[allow(clippy::too_many_arguments)]
+fn per_symbol_duplicate_candidates(
+    sym_idx: usize,
+    reader: &IndexReader,
+    body_lines: &[usize],
+    hnsw: Option<&semantic::HnswHandle>,
+    neighbors_per_sym: usize,
+    threshold: f32,
+    min_body_lines: usize,
+    normalized: bool,
+) -> Vec<(f32, usize, usize)> {
+    let Some(rec) = reader.symbol(sym_idx) else {
+        return Vec::new();
+    };
+    if rec.vector_index == u32::MAX {
+        return Vec::new();
+    }
+    if body_lines[sym_idx] < min_body_lines {
+        return Vec::new();
+    }
+    let Some(query_vec) = reader.vector(rec.vector_index) else {
+        return Vec::new();
+    };
+
+    let scored = nearest_neighbors(reader, query_vec, neighbors_per_sym, hnsw, normalized);
+    let mut out = Vec::with_capacity(scored.len());
+    for (other_idx, sim) in scored {
+        if other_idx == sym_idx {
+            continue;
+        }
+        let Some(&other_body_lines) = body_lines.get(other_idx) else {
+            continue;
+        };
+        if other_body_lines < min_body_lines {
+            continue;
+        }
+        if sim < threshold {
+            continue;
+        }
+        out.push((sim, sym_idx, other_idx));
+    }
+    out
 }
 
 /// Run HNSW (if available) or brute-force nearest-neighbor search.
