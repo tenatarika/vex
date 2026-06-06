@@ -1,0 +1,12 @@
+# Snippet — paste under your existing ~/.codex/config.toml (or .codex/config.toml in your project).
+# Optional fields shown commented; uncomment if you index a very large repo or want
+# to whitelist specific tools.
+
+[mcp_servers.vex]
+command = "/path/to/vex-mcp"
+env = { VEX_ROOT = "/path/to/your/project" }
+
+# startup_timeout_sec = 30        # default 10s — bump for cold-start of large repos
+# tool_timeout_sec = 120          # default 60s — bump if `search --semantic` is slow on first call
+# enabled_tools = ["search", "show", "usages", "callers", "callees", "outline"]
+# default_tools_approval_mode = "auto"   # auto / prompt / approve

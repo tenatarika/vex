@@ -1,0 +1,10 @@
+# Drop this file at `.continue/mcpServers/vex.yaml` in your workspace root,
+# or merge the `mcpServers:` block into your existing `.continue/config.yaml`.
+# Note: Continue.dev only consults MCP servers in Agent mode.
+
+mcpServers:
+  - name: vex
+    type: stdio
+    command: /path/to/vex-mcp
+    env:
+      VEX_ROOT: /path/to/your/project

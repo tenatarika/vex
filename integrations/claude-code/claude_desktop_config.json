@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "vex": {
+      "command": "/path/to/vex-mcp",
+      "env": {
+        "VEX_ROOT": "/path/to/your/project"
+      }
+    }
+  }
+}

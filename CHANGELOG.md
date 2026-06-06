@@ -73,6 +73,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
+- **`integrations/` folder — per-agent MCP setup for Cursor / Codex
+  CLI / Windsurf / Cline / Continue.dev / Zed (plus Claude Code for
+  completeness).** The same `vex-mcp` binary already shipped with
+  prebuilt releases since v1.11.2 works with every MCP-compatible
+  client — only the config file path and serialization format differ.
+  Each agent gets its own subdirectory with a ready-to-paste config
+  file in the format that client expects (JSON for Cursor / Windsurf /
+  Cline / Zed / Claude Code, TOML for Codex CLI, YAML for
+  Continue.dev). Filenames mirror the upstream config name
+  (`mcp.json` / `config.toml` / `mcp_config.json` / `vex.yaml` /
+  `settings.json`) so users can `cp` straight into place. The new
+  `integrations/README.md` is the index — target paths, per-agent
+  caveats (Cline auto-approve, Codex timeout overrides, Continue
+  agent-mode gate, Zed status indicator), and a link back to the
+  Integration section in the project README. The README's
+  `Other MCP Clients` block was trimmed from six inline snippet blocks
+  to a single table pointing at `integrations/`, keeping the README
+  scannable while making the snippets directly diff-able and
+  copy-pasteable. Closes the "MCP server exists but only Claude Code
+  is documented" gap noted during the v1.15 prep cycle.
+
 - **`/vex` skill catalog (`.claude/skills/vex/SKILL.md`).** Full
   command catalog (search / show / usages — text + scope-bound
   `--strict` — structural AST patterns, call graph, semantic search,

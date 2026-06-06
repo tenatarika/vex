@@ -724,6 +724,24 @@ cargo build --release -p vex-mcp
 
 The schemas follow a canonical vocabulary (`query` / `symbol` / `symbols` / `path` / `pattern` / `filter` / `include` / `exclude`); pre-v1.7 aliases (`name`, `file`, `names`, etc.) still work and emit `_meta.deprecated_args: [...]` in the JSON-RPC response. Malformed JSON-RPC input now returns the spec-compliant `-32700 Parse error` response (v1.9.2 fix) with a 512-codepoint echo of the offending line in the `data` field; broken-pipe / EOF on stdin cleanly shuts down the server instead of dropping in-flight tool calls. See [`docs/MCP-SCHEMA.md`](docs/MCP-SCHEMA.md).
 
+For other MCP-compatible clients (Cursor, Codex CLI, Windsurf, Cline, Continue.dev, Zed), see [Other MCP Clients](#other-mcp-clients) below — same `vex-mcp` binary, different config files.
+
+### Other MCP Clients
+
+The same `vex-mcp` binary works with any MCP-compatible client. The binary install is identical to the Claude Code section above; only the per-client config file location and format differ. Copy-pasteable snippets for the most common ones live under [`integrations/`](integrations/):
+
+| Agent              | Snippet                                                                            | Target file on disk                                                  |
+| ------------------ | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Claude Code        | [`integrations/claude-code/claude_desktop_config.json`](integrations/claude-code/claude_desktop_config.json) | `~/.claude/claude_desktop_config.json`                               |
+| Cursor             | [`integrations/cursor/mcp.json`](integrations/cursor/mcp.json)                     | `~/.cursor/mcp.json` *or* `<project>/.cursor/mcp.json`               |
+| Codex CLI (OpenAI) | [`integrations/codex-cli/config.toml`](integrations/codex-cli/config.toml)         | `~/.codex/config.toml` *or* `<project>/.codex/config.toml`           |
+| Windsurf (Codeium) | [`integrations/windsurf/mcp_config.json`](integrations/windsurf/mcp_config.json)   | `~/.codeium/windsurf/mcp_config.json`                                |
+| Cline (VS Code)    | [`integrations/cline/mcp.json`](integrations/cline/mcp.json)                       | Cline panel → MCP Servers → Configure tab                            |
+| Continue.dev       | [`integrations/continue/vex.yaml`](integrations/continue/vex.yaml)                 | `<project>/.continue/mcpServers/vex.yaml`                            |
+| Zed                | [`integrations/zed/settings.json`](integrations/zed/settings.json)                 | `~/.config/zed/settings.json`                                        |
+
+Per-agent caveats (auto-approve flags, timeout overrides, agent-mode requirements) are documented in [`integrations/README.md`](integrations/README.md).
+
 ### Shell Integration
 
 ```bash
