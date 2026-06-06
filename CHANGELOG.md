@@ -73,6 +73,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
+- **`/vex` skill catalog (`.claude/skills/vex/SKILL.md`).** Full
+  command catalog (search / show / usages — text + scope-bound
+  `--strict` — structural AST patterns, call graph, semantic search,
+  filters, cross-file binder coverage matrix, common pitfalls) lives
+  as a lazy-loaded Claude Code skill instead of being inlined in every
+  project's `CLAUDE.md`. ~2.5k tokens of catalog now load only when
+  `/vex` is explicitly invoked; the parent `CLAUDE.md` keeps only six
+  load-bearing rules and a pointer to the skill. Mirror to
+  `~/.claude/skills/vex/SKILL.md` for global cross-project availability
+  (`cp` after edits — there is no auto-sync).
+
 - **`docs/SEMANTIC.md` — authoritative semantic-pipeline spec.**
   Consolidates the parse → `build_context` → `context_hash` → embed
   cache → HNSW build/incremental → search flow that was previously
