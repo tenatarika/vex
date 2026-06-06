@@ -332,6 +332,48 @@ the line `C++ includes: yes` (text) / `"cpp_includes_processed": true`
 
 ---
 
+## 4b. B1.2 incremental HNSW — first-update cold start (v1.15.0)
+
+**What works:** from v1.15.0, `vex update --semantic` performs an
+*incremental* HNSW update — usearch `load` → `remove` orphan hashes →
+`add` new hashes → `save`, against the existing `index.hashes` sidecar.
+Tombstone threshold of 25% triggers a transparent fall-back to full
+rebuild for high-churn updates. The diff is enabled by the new
+`index.bodytokens` sidecar (`VEXT` magic v1), which persists per-symbol
+body_tokens so reconstructed symbols produce the same `context_hash` as
+fresh-parsed ones.
+
+**First update after upgrade is full rebuild.** Pre-v1.15 indexes have
+no `index.bodytokens` sidecar. The first `vex update --semantic`
+after upgrading reads `body_tokens: None` for unchanged symbols,
+recomputes body-less hashes, and the diff against the v1.14.1
+`index.hashes` sidecar treats every symbol as a remove+add → full
+rebuild. `vex update --semantic` works correctly but doesn't benefit
+from incremental until you run `vex index --semantic` ONCE to write
+the sidecar. Confirm via `vex status`:
+
+```
+$ vex status
+...
+Body tokens: yes (incremental HNSW update enabled)
+```
+
+`no` here means the next semantic update will be a full rebuild. The
+status field is also surfaced in `vex status --format json` as
+`body_tokens_persisted: bool`.
+
+**Cold-start applies per-index, not globally.** Each project's index
+needs the `vex index --semantic` priming separately. The `vex update`
+that follows will be incremental.
+
+**Non-semantic `vex update` is unaffected.** B1.2 only changes the
+HNSW path. The structural (FST), BM25, and call-graph sections were
+already rebuilt incrementally and continue to work as before — the
+body_tokens persistence side-effect closes the legacy "BM25 recall
+drops for unchanged symbols after `vex update`" warning.
+
+---
+
 ## 5. `vex grep` is the right fallback
 
 Whenever vex's indexed surface misses something the user can see in the

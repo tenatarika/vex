@@ -6,6 +6,71 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **B1.2 — incremental HNSW update on `vex update --semantic`.** `vex
+  update` now tries `usearch::Index::load() → remove() → add() → save()`
+  on the existing HNSW instead of rebuilding it from scratch on every
+  run. The diff between the old `index.hashes` sidecar and the freshly
+  computed hash set determines which keys to remove (orphans) and which
+  to add (new symbols); the HNSW key is `context_hash` (B1.1) so
+  reordered sym_idx slots no longer trigger a wholesale rebuild. When
+  removals exceed a 25% tombstone threshold the path bails to a full
+  rebuild — at high churn the per-key `remove()` + lingering tombstone
+  overhead outweighs the rebuild. Missing / corrupt sidecar, dim
+  mismatch (embedder switch), or any usearch-level error degrades to
+  the same full-rebuild fallback, so the feature can never produce a
+  worse on-disk state than v1.14.1. 7 new unit tests in
+  `pipeline::output::tests` pin every fallback branch + the
+  small-add-remove end-to-end query (post-update HnswHandle resolves
+  the new sym_idx mapping correctly via the rewritten sidecar) +
+  exact-25%-boundary strict-GT regression guard.
+
+  **Activation requirements:** incremental HNSW only fires for
+  `vex update --semantic` (or `vex update` when `.vex.toml` has
+  `semantic = true`). Non-semantic updates don't touch the HNSW.
+  **First-update-after-upgrade cold start:** pre-v1.15 indexes lack
+  the `index.bodytokens` sidecar, so the next `vex update --semantic`
+  falls back to full rebuild. Run `vex index --semantic` once to write
+  the sidecar; the run after that will be incremental. `vex status`
+  surfaces the migration state as `Body tokens: yes/no`. See
+  `docs/LIMITATIONS.md` §4b for the full cold-start contract.
+
+- **`index.bodytokens` sidecar (v1.15.0 B1.2 prerequisite).** New
+  per-index sidecar at `<index_dir>/index.bodytokens` (`VEXT` magic v1,
+  u32 count, records of `u32 byte_len` + UTF-8 bytes with `u32::MAX`
+  encoding `None`) persists `ParsedSymbol.body_tokens` in sym_idx
+  order. `parse_files::reconstruct_unchanged` loads the sidecar
+  best-effort and feeds the restored body_tokens back into the
+  reconstructed `ParsedSymbol`. Without this persistence, reconstructed
+  symbols produced body-less `context_hash` values that drifted from
+  the fresh `vex index` baseline — the diff between the old
+  `index.hashes` sidecar and the recomputed hashes would treat every
+  unchanged symbol as a `remove → re-add` pair, defeating B1.2. Closes
+  the long-standing "BM25 recall regressed for unchanged symbols after
+  `vex update`" warning in `reconstruct_unchanged` — body-aware BM25
+  bags now survive incremental updates. Format-version stays at v6;
+  pre-v1.15 indexes have no sidecar, `reconstruct_unchanged` falls
+  back to `body_tokens: None` (legacy behaviour), and `vex update`
+  takes the full HNSW rebuild path until the next `vex index` writes
+  the sidecar. 12 new unit tests in `store::body_tokens` (round-trip
+  mixed Some/None, atomic save, bad magic / version / count, byte_len
+  cap, non-UTF-8, truncated body, missing file, sym_idx position
+  preservation) + 4 integration tests in `cli_body_tokens_sidecar_test`
+  (sidecar written next to `index.vex`, content-equal across a no-op
+  `vex update`, marker surfaces in `vex status` text + JSON).
+
+- **`Manifest.body_tokens_persisted: Option<bool>` + `vex status`
+  surface.** Mirrors the v1.14 `cpp_includes_processed` pattern: every
+  v1.15+ build writes `Some(true)` unconditionally (version marker,
+  not project-content predicate); pre-1.15 manifests carry `None`.
+  `vex status` renders `Body tokens: yes (incremental HNSW update
+  enabled)` for `Some(true)` and an actionable `Body tokens: no (run
+  vex index to enable incremental HNSW update)` for `None`. JSON
+  envelope exposes the same value as a literal bool (`jq
+  '.body_tokens_persisted'` works without unwrapping). 3 new unit
+  tests in `manifest::tests` pin the back-compat round-trip pattern.
+
 ## [1.14.1] - 2026-06-06
 
 Follow-up release closing every cross-file `--strict` ref gap the v1.14.0 release left behind (Python / C# / TypeScript class member methods + C++ class methods + name_to_global index-space bug), reorganising HNSW around content-addressed keys (prerequisite for B1.2 incremental update), and parallelising the embed pipeline's context-string build. Also bumps `CACHE_FORMAT_VERSION` 1 → 2 retroactively for the v1.14.0 `ParsedFile.cpp_includes` field — pre-1.14.1 blob caches are silently invalidated on next `vex index` (no user action; a one-time re-parse).
