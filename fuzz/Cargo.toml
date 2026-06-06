@@ -67,5 +67,16 @@ name = "fuzz_hash_index_load"
 path = "fuzz_targets/fuzz_hash_index_load.rs"
 doc = false
 
+# v1.15.0 B1.2 — incremental HNSW update path. Drives the full
+# `build_hnsw_incremental_at(scratch_hnsw, scratch_hash, vectors,
+# new_hashes)` against a baked baseline fixture with `new_hashes`
+# decoded from the fuzz input. Catches panics in HashSet diff,
+# tombstone arithmetic, and usearch's add/remove edge cases on a
+# real (small) HNSW.
+[[bin]]
+name = "fuzz_incremental_hnsw"
+path = "fuzz_targets/fuzz_incremental_hnsw.rs"
+doc = false
+
 [workspace]
 members = ["."]

@@ -1,5 +1,16 @@
 #![no_main]
 
+//! Fuzz the IndexReader with arbitrary bytes as the index file.
+//!
+//! Exercises all unsafe code paths in reader.rs:
+//! - header() — raw pointer cast to Header
+//! - symbol(idx) — raw pointer cast to SymbolRecord
+//! - vector(idx) — raw pointer cast to &[f32]
+//! - read_string(offset) — string slice from mmap
+//! - file_paths() — u32 reads from file table section
+//!
+//! Goal: no panics, no UB, no out-of-bounds reads. Errors are fine.
+
 use libfuzzer_sys::fuzz_target;
 use std::io::Write;
 
@@ -7,16 +18,6 @@ use std::io::Write;
 static FUZZ_DIR: std::sync::LazyLock<tempfile::TempDir> =
     std::sync::LazyLock::new(|| tempfile::tempdir().unwrap());
 
-/// Fuzz the IndexReader with arbitrary bytes as the index file.
-///
-/// Exercises all unsafe code paths in reader.rs:
-/// - header() — raw pointer cast to Header
-/// - symbol(idx) — raw pointer cast to SymbolRecord
-/// - vector(idx) — raw pointer cast to &[f32]
-/// - read_string(offset) — string slice from mmap
-/// - file_paths() — u32 reads from file table section
-///
-/// Goal: no panics, no UB, no out-of-bounds reads. Errors are fine.
 fuzz_target!(|data: &[u8]| {
     let path = FUZZ_DIR.path().join("fuzz.vex");
     {

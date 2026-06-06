@@ -1,5 +1,10 @@
 #![no_main]
 
+//! Fuzz RefReader with arbitrary FST and posting bytes.
+//!
+//! The reader does bounds-checked reads from posting lists,
+//! but we want to ensure no panics on malformed data.
+
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 
@@ -12,10 +17,6 @@ struct RefsInput {
     queries: Vec<String>,
 }
 
-/// Fuzz RefReader with arbitrary FST and posting bytes.
-///
-/// The reader does bounds-checked reads from posting lists,
-/// but we want to ensure no panics on malformed data.
 fuzz_target!(|input: RefsInput| {
     let reader = match vex::store::refs_fst::RefReader::new(&input.fst_bytes, &input.posting_bytes)
     {

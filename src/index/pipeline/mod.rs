@@ -15,6 +15,20 @@ use output::{
     build_hnsw, build_hnsw_incremental, compute_hashes_for, generate_embeddings, prune_embed_cache,
     vector_dim_for, write_output_locked,
 };
+
+// v1.15.0 B1.2 — bench / test / fuzz reach into the real `build_hnsw_at`
+// and `build_hnsw_incremental_at` via this re-export so they exercise
+// the exact code path production does (mirrors the v1.12.0
+// `__fuzz_*_bytes` doc-hidden export convention). Keeping the symbols
+// `#[doc(hidden)]` keeps them out of rustdoc and out of the user-facing
+// API contract; SemVer treats them as private.
+//
+// `#[allow(unused_imports)]` because the re-export is consumed by
+// external crates (bench / integration test) and the bin target's
+// `lib`-feature compile doesn't itself reference these names.
+#[doc(hidden)]
+#[allow(unused_imports)]
+pub use output::{__fuzz_incremental_hnsw_bytes, build_hnsw_at, build_hnsw_incremental_at};
 use parse_files::{
     build_blob_cache, discover_files, hash_files, parse_files, reconstruct_unchanged,
 };

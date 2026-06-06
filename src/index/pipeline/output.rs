@@ -661,6 +661,16 @@ pub(super) fn build_hnsw(root: &Path, vectors: &[Vec<f32>], hashes: &[u64]) -> R
     build_hnsw_at(&hnsw_path, &hash_index_path, vectors, hashes)
 }
 
+// v1.15.0 B1.2 — `build_hnsw_at` and `build_hnsw_incremental_at` are
+// exposed `pub` (re-exported via `#[doc(hidden)]` from `pipeline::mod`)
+// so the bench (`benches/perf_b12.rs`) and the integration test
+// (`tests/cli_incremental_hnsw_test.rs`) drive the EXACT same code
+// path production does, instead of inlining an "equivalent" copy
+// that could silently drift on parameter changes (e.g. usearch
+// `IndexOptions` tweaks). The shim convention matches the v1.12.0
+// `__fuzz_*` doc-hidden exports — keeps the user-facing public
+// surface minimal while letting bench/test/fuzz reach the real impl.
+
 /// Core HNSW + sidecar builder with explicit paths. The `build_hnsw`
 /// wrapper above resolves them via `config::hnsw_path` /
 /// `config::hash_index_path`; this layer is split out so unit tests can
@@ -668,7 +678,7 @@ pub(super) fn build_hnsw(root: &Path, vectors: &[Vec<f32>], hashes: &[u64]) -> R
 /// `OnceLock` (which under `cargo test` is shared across thread-parallel
 /// sibling tests and produces the wrong cache dir for whichever ran
 /// second). Production callers should always go through `build_hnsw`.
-pub(super) fn build_hnsw_at(
+pub fn build_hnsw_at(
     hnsw_path: &Path,
     hash_index_path: &Path,
     vectors: &[Vec<f32>],
@@ -763,7 +773,7 @@ pub(super) fn build_hnsw_incremental(
 /// for testability: lets unit tests target a temp directory without
 /// touching the `set_cache_override` `OnceLock`. Production callers go
 /// through `build_hnsw_incremental`.
-pub(super) fn build_hnsw_incremental_at(
+pub fn build_hnsw_incremental_at(
     hnsw_path: &Path,
     hash_index_path: &Path,
     new_vectors: &[Vec<f32>],
@@ -948,6 +958,108 @@ pub(super) fn build_hnsw_incremental_at(
     );
 
     Ok(true)
+}
+
+/// v1.15.0 B1.2 libFuzzer shim — drives `build_hnsw_incremental_at`
+/// against a baked baseline HNSW + sidecar, with the input bytes
+/// decoded as the `new_hashes` slice. Goal: no panic on any byte
+/// sequence the diff/mutate path sees, since the function is invoked
+/// on every `vex update --semantic` run with content the user has
+/// no direct control over (the hash set is derived from
+/// `compute_hashes_for` over freshly parsed code).
+///
+/// Risk surface this catches:
+///   - HashSet construction on adversarial duplicate-heavy `new_hashes`
+///   - tombstone-threshold arithmetic at boundary inputs
+///   - usearch's `add(k, v)` / `remove(k)` reaction to corner cases
+///     (collisions with already-removed keys, multi-remove of the
+///     same key, add of a key that was just removed)
+///   - the sidecar-rewrite-after-HNSW-save error path
+///
+/// Same convention as `crate::search::hash_index::__fuzz_hash_index_bytes`
+/// and the v1.12.0 bloom / v1.13.0 marker harnesses — `pub fn` under a
+/// `#[doc(hidden)]` umbrella so the fuzz crate can reach it without
+/// widening the user-facing API.
+#[doc(hidden)]
+pub fn __fuzz_incremental_hnsw_bytes(data: &[u8]) {
+    use std::sync::OnceLock;
+
+    // One-time baseline build. 8 vectors at dim 8 — small enough that
+    // each fuzz iteration's HNSW load + mutate completes in <1ms,
+    // dense enough to exercise usearch's neighbour-link relaxation.
+    static BASELINE: OnceLock<(std::path::PathBuf, std::path::PathBuf, usize)> = OnceLock::new();
+    let (baseline_hnsw, baseline_hash, dim) = BASELINE.get_or_init(|| {
+        const FUZZ_DIM: usize = 8;
+        let baseline_dir = std::env::temp_dir().join("__vex_fuzz_inc_hnsw_baseline");
+        // Idempotent setup: clear any stale baseline from a prior crashed
+        // run so we don't accidentally seed from a corrupt fixture.
+        let _ = std::fs::remove_dir_all(&baseline_dir);
+        std::fs::create_dir_all(&baseline_dir).expect("baseline dir create");
+        let baseline_hnsw = baseline_dir.join("index.hnsw");
+        let baseline_hash = baseline_dir.join("index.hashes");
+
+        let vectors: Vec<Vec<f32>> = (0..8)
+            .map(|i| {
+                let mut v = vec![0.0_f32; FUZZ_DIM];
+                v[i] = 1.0;
+                v
+            })
+            .collect();
+        let hashes: Vec<u64> = (0..8).map(|i| 0xCAFE_0000_u64 + i as u64).collect();
+        build_hnsw_at(&baseline_hnsw, &baseline_hash, &vectors, &hashes)
+            .expect("baseline build_hnsw_at — fuzz harness setup");
+        (baseline_hnsw, baseline_hash, FUZZ_DIM)
+    });
+
+    // Per-iteration scratch — copy of the baseline so the mutation
+    // path can't corrupt the fixture for subsequent iterations.
+    let scratch_dir =
+        std::env::temp_dir().join(format!("__vex_fuzz_inc_hnsw_iter_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+    if std::fs::create_dir_all(&scratch_dir).is_err() {
+        // Disk failure (full / permission) — libfuzzer will move on.
+        return;
+    }
+    let scratch_hnsw = scratch_dir.join("index.hnsw");
+    let scratch_hash = scratch_dir.join("index.hashes");
+    if std::fs::copy(baseline_hnsw, &scratch_hnsw).is_err() {
+        return;
+    }
+    if std::fs::copy(baseline_hash, &scratch_hash).is_err() {
+        return;
+    }
+
+    // Decode the fuzz input as a `Vec<u64>` of new_hashes. Cap at 256
+    // to keep iteration time bounded — at higher counts the HNSW
+    // `add()` loop dominates and reduces effective fuzz throughput.
+    const MAX_HASHES: usize = 256;
+    let n_hashes = (data.len() / 8).min(MAX_HASHES);
+    let mut new_hashes: Vec<u64> = Vec::with_capacity(n_hashes);
+    for i in 0..n_hashes {
+        let chunk = &data[i * 8..i * 8 + 8];
+        // `try_into` on an exact-8-byte slice can't fail; this is just
+        // appeasing the compiler. `unwrap_or` keeps the shim total.
+        let arr: [u8; 8] = chunk.try_into().unwrap_or([0; 8]);
+        new_hashes.push(u64::from_le_bytes(arr));
+    }
+
+    // Matching synthetic vectors — deterministic one-hot at slot
+    // `i % dim`. usearch requires equal lengths; the shim's only
+    // job is "no panic", so vector quality is irrelevant.
+    let new_vectors: Vec<Vec<f32>> = (0..new_hashes.len())
+        .map(|i| {
+            let mut v = vec![0.0_f32; *dim];
+            v[i % *dim] = 1.0;
+            v
+        })
+        .collect();
+
+    // Drive incremental. Result discarded — Ok(true), Ok(false), or
+    // any Err is acceptable. Only a panic / abort signals a real
+    // defect. The function MUST be total over byte-sequence input.
+    let _ = build_hnsw_incremental_at(&scratch_hnsw, &scratch_hash, &new_vectors, &new_hashes);
+
+    let _ = std::fs::remove_dir_all(&scratch_dir);
 }
 
 #[cfg(test)]

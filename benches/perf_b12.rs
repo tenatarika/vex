@@ -49,11 +49,10 @@ use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use tempfile::TempDir;
+use vex::index::pipeline::{build_hnsw_at, build_hnsw_incremental_at};
 
 const DIM: usize = 384;
 const DEFAULT_CORPUS_SIZE: usize = 5_000;
-const TOMBSTONE_NUMERATOR: usize = 1;
-const TOMBSTONE_DENOMINATOR: usize = 4;
 
 fn corpus_size() -> usize {
     std::env::var("VEX_BENCH_CORPUS_SIZE")
@@ -125,86 +124,14 @@ fn seed_baseline(cache_dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
     let hnsw_path = cache_dir.join("index.hnsw");
     let hash_path = cache_dir.join("index.hashes");
     let c = corpus();
-    write_hnsw(&hnsw_path, &c.vectors, &c.hashes);
-    vex::search::hash_index::save(&hash_path, &c.hashes).expect("seed hash-index sidecar");
+    // v1.15.0 D-cleanup: drives production `build_hnsw_at` directly via
+    // the `#[doc(hidden)]` re-export. Previously inlined a copy of the
+    // usearch options + add loop; that copy could silently drift on
+    // production parameter changes. Now the bench tracks production
+    // exactly — a connectivity / expansion tweak in output.rs applies
+    // here without code-level synchronisation.
+    build_hnsw_at(&hnsw_path, &hash_path, &c.vectors, &c.hashes).expect("seed build_hnsw_at");
     (hnsw_path, hash_path)
-}
-
-/// Inline copy of `build_hnsw_at` (production `pub(super)`). Stays in
-/// sync via the `usearch::IndexOptions` shape; a parameter drift would
-/// surface as dim-mismatch panic during the load round-trip below.
-fn write_hnsw(path: &Path, vectors: &[Vec<f32>], hashes: &[u64]) {
-    use usearch::{new_index, IndexOptions, MetricKind, ScalarKind};
-    let options = IndexOptions {
-        dimensions: DIM,
-        metric: MetricKind::Cos,
-        quantization: ScalarKind::F32,
-        connectivity: 0,
-        expansion_add: 0,
-        expansion_search: 0,
-        multi: false,
-    };
-    let index = new_index(&options).expect("new_index");
-    index.reserve(vectors.len()).expect("reserve");
-    for (vec, &h) in vectors.iter().zip(hashes.iter()) {
-        index.add(h, vec).expect("add");
-    }
-    index
-        .save(path.to_str().expect("hnsw path utf-8"))
-        .expect("save HNSW");
-}
-
-/// Inline copy of `build_hnsw_incremental_at`'s load/diff/mutate/save
-/// core. Returns the `Ok(true)` / `Ok(false)` contract of production.
-fn incremental_apply(
-    hnsw_path: &Path,
-    hash_index_path: &Path,
-    new_vectors: &[Vec<f32>],
-    new_hashes: &[u64],
-) -> bool {
-    use std::collections::HashSet;
-    use usearch::{new_index, IndexOptions, MetricKind, ScalarKind};
-
-    let old_hashes = vex::search::hash_index::load(hash_index_path).expect("load old sidecar");
-    let old_set: HashSet<u64> = old_hashes.iter().copied().collect();
-    let new_set: HashSet<u64> = new_hashes.iter().copied().collect();
-
-    let to_remove: Vec<u64> = old_set.difference(&new_set).copied().collect();
-    let to_add_indices: Vec<usize> = new_hashes
-        .iter()
-        .enumerate()
-        .filter(|(_, h)| !old_set.contains(h))
-        .map(|(i, _)| i)
-        .collect();
-
-    if to_remove.len() * TOMBSTONE_DENOMINATOR > old_hashes.len() * TOMBSTONE_NUMERATOR {
-        return false;
-    }
-
-    let options = IndexOptions {
-        dimensions: DIM,
-        metric: MetricKind::Cos,
-        quantization: ScalarKind::F32,
-        connectivity: 0,
-        expansion_add: 0,
-        expansion_search: 0,
-        multi: false,
-    };
-    let index = new_index(&options).expect("new_index");
-    let path_str = hnsw_path.to_str().expect("hnsw path utf-8");
-    index.load(path_str).expect("load HNSW");
-    index
-        .reserve(old_hashes.len() + to_add_indices.len())
-        .expect("reserve");
-    for h in &to_remove {
-        let _ = index.remove(*h);
-    }
-    for &i in &to_add_indices {
-        index.add(new_hashes[i], &new_vectors[i]).expect("add");
-    }
-    index.save(path_str).expect("save HNSW");
-    vex::search::hash_index::save(hash_index_path, new_hashes).expect("save new sidecar");
-    true
 }
 
 /// Replace the first `churn` entries of the cached corpus with fresh
@@ -284,8 +211,8 @@ fn bench_b12(c: &mut Criterion) {
             |tmp| {
                 let hnsw_path = tmp.path().join("index.hnsw");
                 let hash_path = tmp.path().join("index.hashes");
-                write_hnsw(&hnsw_path, &cor.vectors, &cor.hashes);
-                vex::search::hash_index::save(&hash_path, &cor.hashes).expect("save sidecar");
+                build_hnsw_at(&hnsw_path, &hash_path, &cor.vectors, &cor.hashes)
+                    .expect("build_hnsw_at");
                 black_box(tmp)
             },
             BatchSize::SmallInput,
@@ -302,7 +229,9 @@ fn bench_b12(c: &mut Criterion) {
                 (tmp, hnsw_path, hash_path)
             },
             |(tmp, hnsw_path, hash_path)| {
-                let applied = incremental_apply(&hnsw_path, &hash_path, &cor.vectors, &cor.hashes);
+                let applied =
+                    build_hnsw_incremental_at(&hnsw_path, &hash_path, &cor.vectors, &cor.hashes)
+                        .expect("incremental_apply");
                 assert!(applied, "no-change incremental must apply");
                 black_box(tmp)
             },
@@ -319,7 +248,8 @@ fn bench_b12(c: &mut Criterion) {
                 (tmp, hnsw_path, hash_path)
             },
             |(tmp, hnsw_path, hash_path)| {
-                let applied = incremental_apply(&hnsw_path, &hash_path, &v_1pct, &h_1pct);
+                let applied = build_hnsw_incremental_at(&hnsw_path, &hash_path, &v_1pct, &h_1pct)
+                    .expect("incremental_apply");
                 assert!(applied, "1% churn must apply");
                 black_box(tmp)
             },
@@ -336,7 +266,9 @@ fn bench_b12(c: &mut Criterion) {
                 (tmp, hnsw_path, hash_path)
             },
             |(tmp, hnsw_path, hash_path)| {
-                let applied = incremental_apply(&hnsw_path, &hash_path, &v_add_5pct, &h_add_5pct);
+                let applied =
+                    build_hnsw_incremental_at(&hnsw_path, &hash_path, &v_add_5pct, &h_add_5pct)
+                        .expect("incremental_apply");
                 assert!(applied, "pure-add must apply (zero removes)");
                 black_box(tmp)
             },
@@ -353,7 +285,9 @@ fn bench_b12(c: &mut Criterion) {
                 (tmp, hnsw_path, hash_path)
             },
             |(tmp, hnsw_path, hash_path)| {
-                let applied = incremental_apply(&hnsw_path, &hash_path, &v_rm_5pct, &h_rm_5pct);
+                let applied =
+                    build_hnsw_incremental_at(&hnsw_path, &hash_path, &v_rm_5pct, &h_rm_5pct)
+                        .expect("incremental_apply");
                 assert!(applied, "pure-remove 5% below threshold must apply");
                 black_box(tmp)
             },
@@ -370,7 +304,8 @@ fn bench_b12(c: &mut Criterion) {
                 (tmp, hnsw_path, hash_path)
             },
             |(tmp, hnsw_path, hash_path)| {
-                let applied = incremental_apply(&hnsw_path, &hash_path, &v_10pct, &h_10pct);
+                let applied = build_hnsw_incremental_at(&hnsw_path, &hash_path, &v_10pct, &h_10pct)
+                    .expect("incremental_apply");
                 assert!(applied, "10% churn must apply");
                 black_box(tmp)
             },
@@ -387,7 +322,8 @@ fn bench_b12(c: &mut Criterion) {
                 (tmp, hnsw_path, hash_path)
             },
             |(tmp, hnsw_path, hash_path)| {
-                let applied = incremental_apply(&hnsw_path, &hash_path, &v_25pct, &h_25pct);
+                let applied = build_hnsw_incremental_at(&hnsw_path, &hash_path, &v_25pct, &h_25pct)
+                    .expect("incremental_apply");
                 assert!(applied, "exactly 25% must apply (strict-GT)");
                 black_box(tmp)
             },
@@ -404,7 +340,8 @@ fn bench_b12(c: &mut Criterion) {
                 (tmp, hnsw_path, hash_path)
             },
             |(tmp, hnsw_path, hash_path)| {
-                let applied = incremental_apply(&hnsw_path, &hash_path, &v_over, &h_over);
+                let applied = build_hnsw_incremental_at(&hnsw_path, &hash_path, &v_over, &h_over)
+                    .expect("incremental_apply");
                 assert!(!applied, "over-threshold must fall back");
                 black_box(tmp)
             },
@@ -425,12 +362,13 @@ fn bench_b12(c: &mut Criterion) {
                 (tmp, hnsw_path, hash_path)
             },
             |(tmp, hnsw_path, hash_path)| {
-                let applied = incremental_apply(&hnsw_path, &hash_path, &v_over, &h_over);
+                let applied = build_hnsw_incremental_at(&hnsw_path, &hash_path, &v_over, &h_over)
+                    .expect("incremental_apply");
                 assert!(!applied);
                 // Mirror what `pipeline::update` does on Ok(false): call
-                // build_hnsw with the same `new_vectors` / `new_hashes`.
-                write_hnsw(&hnsw_path, &v_over, &h_over);
-                vex::search::hash_index::save(&hash_path, &h_over).expect("save sidecar");
+                // build_hnsw_at over the new corpus to overwrite the
+                // stale HNSW + sidecar pair in one shot.
+                build_hnsw_at(&hnsw_path, &hash_path, &v_over, &h_over).expect("build_hnsw_at");
                 black_box(tmp)
             },
             BatchSize::SmallInput,

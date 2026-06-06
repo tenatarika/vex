@@ -1,5 +1,9 @@
 #![no_main]
 
+//! Fuzz SymbolFstReader with arbitrary FST and posting bytes.
+//!
+//! Exercises exact, prefix, fuzzy (Levenshtein), and fallback search.
+
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 
@@ -12,9 +16,6 @@ struct SymFstInput {
     queries: Vec<String>,
 }
 
-/// Fuzz SymbolFstReader with arbitrary FST and posting bytes.
-///
-/// Exercises exact, prefix, fuzzy (Levenshtein), and fallback search.
 fuzz_target!(|input: SymFstInput| {
     let reader = match vex::store::symbol_fst::SymbolFstReader::new(
         &input.fst_bytes,

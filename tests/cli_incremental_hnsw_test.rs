@@ -26,6 +26,7 @@ use vex::embed::cache::{context_hash, EmbedCache};
 use vex::embed::{build_context, MINILM_CHAR_BUDGET, MINILM_DIM, MINILM_ID};
 use vex::index::hasher;
 use vex::index::manifest::Manifest;
+use vex::index::pipeline::build_hnsw_at;
 use vex::index::symbols::{ParsedFile, ParsedSymbol, SymbolKind};
 use vex::search::hash_index;
 use vex::store::body_tokens;
@@ -132,16 +133,19 @@ fn bake_v115_index(dir: &Path) -> PathBuf {
     let h_alpha = hash_for("function", "alpha", "src/alpha.rs", Some("alpha"));
     let hnsw_path = cache_root.join("index.hnsw");
     let hash_path = cache_root.join("index.hashes");
-    // The HNSW + hash-index sidecar pair: build via the same code path
-    // production does. We reach in via the `search::semantic` module's
-    // public entry rather than `pipeline::output::build_hnsw_at`
-    // (pub(super), not test-accessible from `tests/`).
-    build_hnsw_via_public_api(
+    // The HNSW + hash-index sidecar pair: drive the same code path
+    // production uses via the `#[doc(hidden)]` re-export from
+    // `vex::index::pipeline`. Previously this test inlined a copy of
+    // the usearch options + add loop; v1.15.0 D-cleanup removed the
+    // duplication so a future `IndexOptions` tweak in `output.rs`
+    // applies here transparently.
+    build_hnsw_at(
         &hnsw_path,
         &hash_path,
         std::slice::from_ref(&vec_alpha),
         &[h_alpha],
-    );
+    )
+    .expect("build_hnsw_at");
 
     // body_tokens sidecar — `Some("alpha")` matches what
     // `extract_body_tokens` produces for a `pub fn alpha() {}` AST.
@@ -195,40 +199,6 @@ fn bake_v115_index(dir: &Path) -> PathBuf {
         .expect("embed cache save");
 
     cache_root
-}
-
-/// Workaround for `pipeline::output::build_hnsw_at` being `pub(super)`:
-/// stamp out an HNSW + hash-index sidecar via the same usearch entry
-/// points the production code uses, then write the sidecar via
-/// `hash_index::save`. Mirrors the `build_hnsw_at` body line-for-line —
-/// kept private to this test to avoid widening the production API just
-/// for an integration fixture.
-fn build_hnsw_via_public_api(
-    hnsw_path: &Path,
-    hash_index_path: &Path,
-    vectors: &[Vec<f32>],
-    hashes: &[u64],
-) {
-    use usearch::{new_index, IndexOptions, MetricKind, ScalarKind};
-    let dim = vectors[0].len();
-    let options = IndexOptions {
-        dimensions: dim,
-        metric: MetricKind::Cos,
-        quantization: ScalarKind::F32,
-        connectivity: 0,
-        expansion_add: 0,
-        expansion_search: 0,
-        multi: false,
-    };
-    let index = new_index(&options).expect("new_index");
-    index.reserve(vectors.len()).expect("reserve");
-    for (vec, &h) in vectors.iter().zip(hashes.iter()) {
-        index.add(h, vec).expect("add");
-    }
-    index
-        .save(hnsw_path.to_str().expect("hnsw path utf-8"))
-        .expect("save HNSW");
-    hash_index::save(hash_index_path, hashes).expect("save hash-index sidecar");
 }
 
 #[test]
