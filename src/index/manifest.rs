@@ -78,6 +78,19 @@ pub struct Manifest {
     /// C++ set).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpp_includes_processed: Option<bool>,
+
+    /// v1.15.0 B1.2: `Some(true)` when this index was built with the
+    /// `index.bodytokens` sidecar persisted. Required so the next
+    /// `vex update`'s `reconstruct_unchanged` can restore body_tokens
+    /// for unchanged symbols, which keeps `context_hash` stable across
+    /// fresh-parse / reconstruct boundary and enables the B1.2
+    /// incremental HNSW path. `None` on pre-1.15 manifests means the
+    /// sidecar isn't present — `vex update` falls back to body-less
+    /// hashes and full HNSW rebuild. The flag is a version marker; a
+    /// pure non-semantic index still gets `Some(true)` because the
+    /// sidecar write is unconditional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_tokens_persisted: Option<bool>,
 }
 
 impl Manifest {
@@ -226,6 +239,35 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         assert!(
             !json.contains("cpp_includes_processed"),
+            "expected key absent for None, got: {json}"
+        );
+    }
+
+    #[test]
+    fn body_tokens_persisted_round_trip() {
+        let m = Manifest {
+            body_tokens_persisted: Some(true),
+            ..Manifest::default()
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("\"body_tokens_persisted\":true"));
+        let back: Manifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.body_tokens_persisted, Some(true));
+    }
+
+    #[test]
+    fn body_tokens_persisted_defaults_none_on_pre_v1_15_manifest() {
+        let pre_json = r#"{"files": {}}"#;
+        let m: Manifest = serde_json::from_str(pre_json).unwrap();
+        assert_eq!(m.body_tokens_persisted, None);
+    }
+
+    #[test]
+    fn body_tokens_persisted_none_is_omitted_from_serialised_form() {
+        let m = Manifest::default();
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            !json.contains("body_tokens_persisted"),
             "expected key absent for None, got: {json}"
         );
     }

@@ -65,6 +65,11 @@ pub(crate) fn status(
                 // from v1.14+. Serialised as a literal bool so scripts
                 // can `jq '.cpp_includes_processed'` without unwrapping.
                 "cpp_includes_processed": manifest.cpp_includes_processed.unwrap_or(false),
+                // v1.15.0 B1.2 marker — None on pre-1.15 manifests means
+                // the body_tokens sidecar isn't on disk, so the next
+                // `vex update` will fall back to full HNSW rebuild.
+                // Same `jq`-friendly bool projection.
+                "body_tokens_persisted": manifest.body_tokens_persisted.unwrap_or(false),
             });
             if let Some(c) = &coverage_report {
                 json["coverage"] = serde_json::to_value(c)?;
@@ -99,6 +104,15 @@ pub(crate) fn status(
                 Some(true) => println!("C++ includes: yes"),
                 Some(false) | None => {
                     println!("C++ includes: no (run `vex index` to enable cross-file C++ refs)")
+                }
+            }
+            // v1.15.0 B1.2: surface the body_tokens sidecar marker. Pre-v1.15
+            // indexes lack the file → the next `vex update` falls back to a
+            // full HNSW rebuild instead of the incremental path.
+            match manifest.body_tokens_persisted {
+                Some(true) => println!("Body tokens: yes (incremental HNSW update enabled)"),
+                Some(false) | None => {
+                    println!("Body tokens: no (run `vex index` to enable incremental HNSW update)")
                 }
             }
             if let Some(c) = &coverage_report {

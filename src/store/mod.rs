@@ -1,4 +1,5 @@
 pub mod bm25;
+pub mod body_tokens;
 pub mod call_graph;
 pub mod format;
 pub mod include_resolver;

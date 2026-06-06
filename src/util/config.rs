@@ -426,6 +426,17 @@ pub fn hash_index_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("index.hashes")
 }
 
+/// v1.15.0 B1.2: body_tokens sidecar. Stores `Vec<Option<String>>` of
+/// per-symbol body_tokens in sym_idx order so
+/// `parse_files::reconstruct_unchanged` can restore them and produce
+/// body-aware `context_hash` values for unchanged symbols. Lives next
+/// to `index.vex`; absence is the legacy state for pre-v1.15 indexes
+/// (the loader bubbles up an error and the reconstruct path falls
+/// back to `body_tokens: None`).
+pub fn body_tokens_path(project_root: &std::path::Path) -> PathBuf {
+    index_dir(project_root).join("index.bodytokens")
+}
+
 /// Full path to the bloom-filter sidecar (v1.12.0 T4). Lives next to
 /// `index.vex` like the HNSW sidecar; absence is a valid state
 /// (`SymbolBloom::load` returns `Ok(None)` and callers fall back to

@@ -30,24 +30,36 @@ use super::CHUNK_SIZE;
 /// Reconstruct ParsedFile + vectors for unchanged files from the existing index.
 /// Symbols are in index order (file-contiguous), vectors align 1:1 with symbols.
 ///
-/// **Known limitation**: `body_tokens` is set to `None` because the on-disk
-/// SymbolRecord does not preserve them — we only stored vectors, names,
-/// signatures, kinds, lines, paths. Consequently the next BM25 rebuild for
-/// these unchanged symbols has only `name + signature` to draw from, which
-/// degrades recall on rare body terms after an incremental update relative
-/// to a fresh `vex index`. Emitting a one-shot `tracing::warn!` below so a
-/// user running `RUST_LOG=warn vex update` can see the regression.
-/// Persisting body_tokens to the index → roadmap follow-up.
+/// `body_tokens_sidecar` carries per-sym_idx body_tokens loaded from
+/// `index.bodytokens` (v1.15.0 B1.2):
+///   - `Some(&slice)` — sidecar loaded successfully; per-symbol lookup
+///     returns the stored body_tokens. A zero-length slice here is a
+///     legitimate empty-index state, NOT a failure signal.
+///   - `None` — sidecar absent / malformed / pre-v1.15 index; every
+///     reconstructed symbol falls back to `body_tokens: None` and the
+///     BM25 / `compute_hashes_for` rebuild on this update is body-less
+///     for the unchanged slice.
+///
+/// Encoding "load succeeded but empty" vs "load failed" as `Option` (not
+/// "empty slice means failed") keeps the BM25-regression warning from
+/// firing on legitimate empty-corpus updates and prevents a truncated
+/// sidecar from silently suppressing the warning for a partially-loaded
+/// state.
 pub(super) fn reconstruct_unchanged(
     reader: &crate::store::reader::IndexReader,
     changed: &HashSet<&str>,
     deleted: &HashSet<&str>,
+    body_tokens_sidecar: Option<&[Option<String>]>,
 ) -> (Vec<ParsedFile>, Vec<Vec<f32>>) {
-    if reader.has_bm25() && (!changed.is_empty() || !deleted.is_empty()) {
+    if reader.has_bm25()
+        && (!changed.is_empty() || !deleted.is_empty())
+        && body_tokens_sidecar.is_none()
+    {
         tracing::warn!(
             "incremental update is reconstructing unchanged symbols without body_tokens; \
              BM25 recall for those symbols will rely on name+signature only until next full \
-             `vex index`. Tracking as a roadmap follow-up to persist body_tokens."
+             `vex index`. Persisting body_tokens lands in v1.15.0 B1.2 — re-run \
+             `vex index` once to enable."
         );
     }
     let has_vectors = reader.has_vectors();
@@ -107,13 +119,18 @@ pub(super) fn reconstruct_unchanged(
             }
         };
 
+        let body_tokens = body_tokens_sidecar
+            .and_then(|s| s.get(i))
+            .cloned()
+            .flatten();
+
         current_symbols.push(ParsedSymbol {
             name,
             kind,
             line: rec.line as usize,
             signature: sig,
             doc: None,
-            body_tokens: None,
+            body_tokens,
         });
 
         if has_vectors {

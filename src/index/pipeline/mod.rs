@@ -12,8 +12,8 @@ mod parse_files;
 
 use lock::IndexLock;
 use output::{
-    build_hnsw, compute_hashes_for, generate_embeddings, prune_embed_cache, vector_dim_for,
-    write_output_locked,
+    build_hnsw, build_hnsw_incremental, compute_hashes_for, generate_embeddings, prune_embed_cache,
+    vector_dim_for, write_output_locked,
 };
 use parse_files::{
     build_blob_cache, discover_files, hash_files, parse_files, reconstruct_unchanged,
@@ -406,12 +406,43 @@ fn update_inner(
     let changed_set: HashSet<&str> = diff.changed.iter().map(|s| s.as_str()).collect();
     let deleted_set: HashSet<&str> = diff.deleted.iter().map(|s| s.as_str()).collect();
 
-    // Reconstruct unchanged symbols (+ vectors) from existing index
+    // Reconstruct unchanged symbols (+ vectors) from existing index.
+    // v1.15.0 B1.2 — also load the body_tokens sidecar (best-effort).
+    // `None` means pre-v1.15 index OR sidecar load failed — the
+    // reconstructed symbols carry `body_tokens: None` and the HNSW
+    // incremental path falls back to full rebuild on this update.
+    // `Some(vec)` means the sidecar loaded successfully (zero-length
+    // is a legitimate empty-index state, NOT failure — keeping these
+    // distinct prevents the BM25-regression warning from misfiring).
     let index_path = config::index_path(&root);
+    let body_tokens_sidecar: Option<Vec<Option<String>>> = {
+        let path = config::body_tokens_path(&root);
+        if path.exists() {
+            match crate::store::body_tokens::load(&path) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "body_tokens sidecar load failed; reconstructed symbols will \
+                         fall back to body_tokens: None and HNSW update will be full rebuild"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
     let (unchanged_parsed, unchanged_vectors) = if index_path.exists() {
         let reader = crate::store::reader::IndexReader::open(&index_path)
             .context("open existing index for incremental merge")?;
-        reconstruct_unchanged(&reader, &changed_set, &deleted_set)
+        reconstruct_unchanged(
+            &reader,
+            &changed_set,
+            &deleted_set,
+            body_tokens_sidecar.as_deref(),
+        )
     } else {
         (Vec::new(), Vec::new())
     };
@@ -515,7 +546,25 @@ fn update_inner(
 
     if !all_vectors.is_empty() {
         let all_hashes = compute_hashes_for(&all_parsed, embedder_id)?;
-        build_hnsw(&root, &all_vectors, &all_hashes)?;
+        // v1.15.0 B1.2: try the incremental HNSW path first.
+        //   Ok(true)  — incremental applied; HNSW + hash-index sidecar
+        //               on disk in post-update state. SKIP full rebuild.
+        //   Ok(false) — function bailed before any disk mutation
+        //               (cold start, tombstone threshold, dim mismatch,
+        //               corrupt sidecar, usearch load failure). FALL
+        //               THROUGH to full rebuild — safe because the
+        //               on-disk HNSW from the previous build hasn't
+        //               been touched.
+        //   Err       — HNSW saved successfully but the sidecar rewrite
+        //               then failed. The two files are inconsistent;
+        //               propagate so the orchestrator surfaces the
+        //               error loudly. (`HnswHandle::open` size-check
+        //               will bail to brute force until the next
+        //               successful update self-heals.)
+        match build_hnsw_incremental(&root, &all_vectors, &all_hashes)? {
+            true => tracing::debug!("HNSW incremental update applied; skipping full rebuild"),
+            false => build_hnsw(&root, &all_vectors, &all_hashes)?,
+        }
         // E3 sweep — update path: must use `all_hashes` over
         // `unchanged + newly_parsed`, NOT just `_new_hashes` from
         // generate_embeddings (that would evict every unchanged

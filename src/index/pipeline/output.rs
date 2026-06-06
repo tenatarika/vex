@@ -298,6 +298,39 @@ pub(super) fn write_output_locked(
         );
     }
 
+    // v1.15.0 B1.2 — persist body_tokens sidecar in sym_idx order so a
+    // subsequent `vex update` can restore body_tokens for unchanged
+    // symbols (`reconstruct_unchanged`). Without this, reconstructed
+    // symbols would produce body-less `context_hash` values that drift
+    // from the fresh `vex index` baseline, defeating the B1.2 HNSW
+    // incremental-update diff. Failure is non-fatal: missing sidecar
+    // gracefully degrades to the pre-v1.15 reconstruct path (every
+    // body_tokens is `None`), at the cost of incremental HNSW falling
+    // back to full rebuild on the next update. The save outcome gates
+    // `Manifest::body_tokens_persisted` below so `vex status` and the
+    // next update's diagnostics stay accurate (without this gate, a
+    // failed write would still record `Some(true)` and `vex status`
+    // would report "Body tokens: yes" for a missing file).
+    let body_tokens_path = config::body_tokens_path(root);
+    let body_token_strings: Vec<Option<String>> = parsed
+        .iter()
+        .flat_map(|f| f.symbols.iter().map(|s| s.body_tokens.clone()))
+        .collect();
+    let body_tokens_saved =
+        match crate::store::body_tokens::save(&body_tokens_path, &body_token_strings) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(
+                    path = %body_tokens_path.display(),
+                    error = %e,
+                    "failed to persist body_tokens sidecar; next `vex update` will \
+                     fall back to body-less context_hash for unchanged symbols and \
+                     trigger a full HNSW rebuild"
+                );
+                false
+            }
+        };
+
     let manifest_path = config::manifest_path(root);
     let manifest = Manifest {
         files: file_hashes.iter().cloned().collect::<HashMap<_, _>>(),
@@ -330,6 +363,16 @@ pub(super) fn write_output_locked(
         // an empty C++ set). Pre-1.14 manifests have `None` and `vex
         // status` surfaces that as "re-run `vex index` to enable".
         cpp_includes_processed: Some(true),
+        // v1.15.0 B1.2: gated on the actual sidecar save outcome.
+        // `Some(true)` when the file is on disk; `Some(false)` when the
+        // save failed (full disk, permission error, rename race);
+        // `None` only for pre-v1.15 manifests. `vex status` reads this
+        // and renders accordingly — gating on the real outcome keeps
+        // the diagnostic honest. Either `Some(false)` or `None`
+        // triggers the same fallback: next `vex update` reconstructs
+        // body_tokens as `None`, embed cache misses for unchanged
+        // symbols, full HNSW rebuild.
+        body_tokens_persisted: Some(body_tokens_saved),
     };
     manifest.save(&manifest_path)?;
     Ok(())
@@ -560,15 +603,15 @@ pub(super) fn prune_embed_cache(
 /// produces hashes only for changed files; this helper covers the
 /// whole index in one pass.
 ///
-/// **Note on stability across builds:** `body_tokens` participates in
-/// the hash. Symbols reconstructed from an existing index have
-/// `body_tokens: None` (the field isn't persisted today — see
-/// `parse_files::reconstruct_unchanged`), so the same symbol's hash
-/// will differ between a fresh `vex index` and a subsequent `vex
-/// update` that reconstructs it. That's fine for B1.1's full-rebuild
-/// path (the sidecar is regenerated from scratch); B1.2's incremental
-/// path will need either persisted body_tokens or a body-agnostic
-/// hash to keep this stable.
+/// **Stability across builds (v1.15.0 B1.2 closure):** `body_tokens`
+/// participates in the hash. Reconstructed symbols load body_tokens
+/// from the `index.bodytokens` sidecar via
+/// `parse_files::reconstruct_unchanged`, so the hash a `vex update`
+/// computes for an unchanged symbol matches what a fresh `vex index`
+/// would produce. Pre-v1.15 indexes lack the sidecar; reconstructed
+/// symbols get `body_tokens: None` and `build_hnsw_incremental`
+/// falls back to full rebuild for that one update cycle (the next
+/// `vex index` writes the sidecar).
 pub(super) fn compute_hashes_for(parsed: &[ParsedFile], embedder_id: &str) -> Result<Vec<u64>> {
     let budget = embed::embedder_char_budget(embedder_id)
         .with_context(|| format!("unknown embedder `{embedder_id}` — no recorded char budget"))?;
@@ -679,6 +722,232 @@ pub(super) fn build_hnsw_at(
     );
 
     Ok(())
+}
+
+/// v1.15.0 B1.2: tombstone threshold for incremental HNSW updates.
+/// When removed hashes exceed this fraction of the old index, the
+/// incremental path bails and the caller falls back to a full rebuild —
+/// at high churn the per-key `remove()` cost (HNSW relinks neighbours)
+/// plus the lingering tombstone overhead in the on-disk file outweighs
+/// the rebuild. 25% is the same heuristic used by usearch's internal
+/// compaction guidance and matches our SHOULD-FIX/SHOULD-bench number.
+/// Expressed as integer arithmetic (`removed * 4 > old_len`) so the
+/// check is exact across small `old_len` values where a float
+/// comparison could disagree with intuition.
+pub(super) const INCREMENTAL_TOMBSTONE_NUMERATOR: usize = 1;
+pub(super) const INCREMENTAL_TOMBSTONE_DENOMINATOR: usize = 4;
+
+/// v1.15.0 B1.2: try an incremental HNSW update. Returns `Ok(true)` when
+/// the incremental path succeeded; the caller MUST NOT call `build_hnsw`
+/// after a `true` result (the index + sidecar are already on disk).
+/// Returns `Ok(false)` for the "expected fallback" reasons: no prior
+/// HNSW or hash-index sidecar on disk (cold start / pre-v1.14.1 index),
+/// tombstone threshold exceeded, or vectors slice empty. Returns `Err`
+/// only for true I/O / usearch errors the caller should surface.
+///
+/// **Why a bool instead of an enum**: the caller pattern is
+/// `if !try_incremental { full_rebuild }` — every fallback reason
+/// degrades to the same recovery action. Reasons are surfaced via
+/// `tracing::debug!` for diagnostics, not via the return type.
+pub(super) fn build_hnsw_incremental(
+    root: &Path,
+    new_vectors: &[Vec<f32>],
+    new_hashes: &[u64],
+) -> Result<bool> {
+    let hnsw_path = config::hnsw_path(root);
+    let hash_index_path = config::hash_index_path(root);
+    build_hnsw_incremental_at(&hnsw_path, &hash_index_path, new_vectors, new_hashes)
+}
+
+/// Core incremental builder with explicit paths. Mirrors `build_hnsw_at`
+/// for testability: lets unit tests target a temp directory without
+/// touching the `set_cache_override` `OnceLock`. Production callers go
+/// through `build_hnsw_incremental`.
+pub(super) fn build_hnsw_incremental_at(
+    hnsw_path: &Path,
+    hash_index_path: &Path,
+    new_vectors: &[Vec<f32>],
+    new_hashes: &[u64],
+) -> Result<bool> {
+    use std::collections::HashSet;
+    use usearch::{new_index, IndexOptions, MetricKind, ScalarKind};
+
+    anyhow::ensure!(
+        new_vectors.len() == new_hashes.len(),
+        "build_hnsw_incremental: vectors/hashes length mismatch ({} vs {})",
+        new_vectors.len(),
+        new_hashes.len(),
+    );
+
+    if new_vectors.is_empty() {
+        tracing::debug!("HNSW incremental: empty corpus → fall back to caller cleanup");
+        return Ok(false);
+    }
+
+    if !hnsw_path.exists() {
+        tracing::debug!(
+            path = %hnsw_path.display(),
+            "HNSW incremental: no prior HNSW file → cold start, fall back to full rebuild"
+        );
+        return Ok(false);
+    }
+    if !hash_index_path.exists() {
+        tracing::debug!(
+            path = %hash_index_path.display(),
+            "HNSW incremental: no prior hash-index sidecar → pre-v1.14.1 index, fall back"
+        );
+        return Ok(false);
+    }
+
+    let old_hashes = match crate::search::hash_index::load(hash_index_path) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::debug!(
+                path = %hash_index_path.display(),
+                error = %e,
+                "HNSW incremental: hash-index sidecar load failed → fall back"
+            );
+            return Ok(false);
+        }
+    };
+
+    let old_set: HashSet<u64> = old_hashes.iter().copied().collect();
+    let new_set: HashSet<u64> = new_hashes.iter().copied().collect();
+
+    let to_remove: Vec<u64> = old_set.difference(&new_set).copied().collect();
+    let to_add_indices: Vec<usize> = new_hashes
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| !old_set.contains(h))
+        .map(|(i, _)| i)
+        .collect();
+
+    // Tombstone threshold: `removed * DENOM > old_len * NUM` i.e.
+    // `removed / old_len > NUM / DENOM` without the float comparison.
+    // Overflow safety: both operands are bounded by `hash_index::MAX_COUNT`
+    // = 10M; `10M * 4` = 40M, well within `usize::MAX` even on 32-bit
+    // targets (4G). No `checked_mul` needed under that invariant.
+    if to_remove.len() * INCREMENTAL_TOMBSTONE_DENOMINATOR
+        > old_hashes.len() * INCREMENTAL_TOMBSTONE_NUMERATOR
+    {
+        // Threshold-exceeded is an expected performance-tuning event,
+        // not an error — log at `debug` so it doesn't spam RUST_LOG=info
+        // output during normal large-refactor runs.
+        tracing::debug!(
+            removed = to_remove.len(),
+            old_size = old_hashes.len(),
+            "HNSW incremental: tombstone threshold exceeded ({}/{} > {}/{}) → full rebuild",
+            to_remove.len(),
+            old_hashes.len(),
+            INCREMENTAL_TOMBSTONE_NUMERATOR,
+            INCREMENTAL_TOMBSTONE_DENOMINATOR,
+        );
+        return Ok(false);
+    }
+
+    // Open a mutable index, then `load()` reads the existing graph into
+    // it. Dim mismatch (e.g. embedder changed) surfaces here as a load
+    // error — `Ok(false)` falls back to full rebuild which writes a
+    // fresh index with the right dim.
+    let dim = new_vectors[0].len();
+    let options = IndexOptions {
+        dimensions: dim,
+        metric: MetricKind::Cos,
+        quantization: ScalarKind::F32,
+        connectivity: 0,
+        expansion_add: 0,
+        expansion_search: 0,
+        multi: false,
+    };
+    let index = match new_index(&options) {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!(error = %e, "HNSW incremental: new_index failed → full rebuild");
+            return Ok(false);
+        }
+    };
+
+    let path_str = hnsw_path
+        .to_str()
+        .context("HNSW path contains non-UTF-8 characters")?;
+    if let Err(e) = index.load(path_str) {
+        tracing::warn!(
+            path = %hnsw_path.display(),
+            error = %e,
+            "HNSW incremental: usearch load failed → full rebuild"
+        );
+        return Ok(false);
+    }
+
+    // Reserve up-front for the post-mutation size so usearch doesn't
+    // re-grow its arena mid-loop. `to_add_indices.len() + old_size`
+    // is the upper bound; once we remove the orphans the real size is
+    // `new_vectors.len()`, but over-reserving is cheap and avoids the
+    // off-by-one of computing it before `remove()` runs.
+    let post_capacity = old_hashes.len() + to_add_indices.len();
+    if let Err(e) = index.reserve(post_capacity) {
+        tracing::warn!(error = %e, "HNSW incremental: reserve failed → full rebuild");
+        return Ok(false);
+    }
+
+    let removed_count = to_remove.len();
+    for h in &to_remove {
+        // `remove` returns the count of points removed. Zero is the
+        // "key not present" path — defensive but expected if the
+        // sidecar drifted from the HNSW. Swallow rather than bail; the
+        // worst case is a stale tombstone that the next compaction
+        // (full rebuild) sweeps.
+        if let Err(e) = index.remove(*h) {
+            tracing::debug!(hash = h, error = %e, "HNSW incremental: remove key error (ignored)");
+        }
+    }
+
+    let added_count = to_add_indices.len();
+    for &i in &to_add_indices {
+        if let Err(e) = index.add(new_hashes[i], &new_vectors[i]) {
+            // `index.save` has not run yet at this point, so the on-disk
+            // HNSW is still the original pre-load snapshot. Safe to ask
+            // caller to do a full rebuild — it will overwrite cleanly.
+            tracing::warn!(
+                sym_idx = i,
+                hash = new_hashes[i],
+                error = %e,
+                "HNSW incremental: add failed mid-batch → full rebuild"
+            );
+            return Ok(false);
+        }
+    }
+
+    if let Err(e) = index.save(path_str) {
+        tracing::warn!(
+            path = %hnsw_path.display(),
+            error = %e,
+            "HNSW incremental: save failed → full rebuild"
+        );
+        return Ok(false);
+    }
+
+    // Rewrite the hash-index sidecar with the new sym_idx-ordered
+    // hashes. The HNSW itself is keyed by hash (order-independent),
+    // but the sidecar's ordering encodes the sym_idx mapping.
+    if let Err(e) = crate::search::hash_index::save(hash_index_path, new_hashes) {
+        // HNSW is already saved; the sidecar is what `HnswHandle::open`
+        // needs to materialise the hash→sym_idx map. A failure here
+        // means semantic search degrades to brute force until the next
+        // successful index/update. Return Err so the orchestrator can
+        // log it loudly (this is the only path that bubbles up).
+        return Err(e).context("HNSW incremental: hash-index sidecar save failed after HNSW save");
+    }
+
+    tracing::info!(
+        added = added_count,
+        removed = removed_count,
+        new_size = new_vectors.len(),
+        old_size = old_hashes.len(),
+        "HNSW incremental update applied"
+    );
+
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -837,5 +1106,205 @@ mod tests {
         let (sym_idx, sim) = results[0];
         assert_eq!(sym_idx, 0, "top-1 must resolve to sym_idx 0 via hash map");
         assert!(sim > 0.99, "self-similarity should be ~1.0, got {sim}");
+    }
+
+    // ---- v1.15.0 B1.2 incremental HNSW tests ----
+
+    /// Build a fixture HNSW with two synthetic vectors, then add/remove
+    /// via the incremental path and verify the query still works. The
+    /// helper returns the temp dir handle so the caller's drop closes
+    /// it cleanly at scope exit.
+    fn make_seed_hnsw(
+        tmp: &tempfile::TempDir,
+        hashes: &[u64],
+        vectors: &[Vec<f32>],
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let hnsw_path = tmp.path().join("index.hnsw");
+        let hash_index_path = tmp.path().join("index.hashes");
+        build_hnsw_at(&hnsw_path, &hash_index_path, vectors, hashes).expect("seed build_hnsw_at");
+        (hnsw_path, hash_index_path)
+    }
+
+    #[test]
+    fn incremental_returns_false_when_no_prior_hnsw() {
+        // Cold-start path: no prior HNSW means the caller must do a
+        // full rebuild. The fallback contract is `Ok(false)`, not Err.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hnsw_path = tmp.path().join("index.hnsw");
+        let hash_index_path = tmp.path().join("index.hashes");
+        let dim = MINILM_DIM as usize;
+        let v = vec![vec![1.0_f32; dim]];
+        let h = vec![0xAA_u64];
+        let applied = build_hnsw_incremental_at(&hnsw_path, &hash_index_path, &v, &h).unwrap();
+        assert!(!applied, "no prior HNSW → fall back");
+    }
+
+    #[test]
+    fn incremental_returns_false_when_no_prior_sidecar() {
+        // HNSW present but sidecar gone → can't diff against old
+        // hashes → fall back. Mimics a partial-cleanup state on disk.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dim = MINILM_DIM as usize;
+        let v_seed = vec![vec![1.0_f32; dim]];
+        let h_seed = vec![0xAA_u64];
+        let (hnsw_path, hash_index_path) = make_seed_hnsw(&tmp, &h_seed, &v_seed);
+
+        std::fs::remove_file(&hash_index_path).unwrap();
+
+        let v_new = vec![vec![1.0_f32; dim]];
+        let h_new = vec![0xAA_u64];
+        let applied =
+            build_hnsw_incremental_at(&hnsw_path, &hash_index_path, &v_new, &h_new).unwrap();
+        assert!(!applied, "missing sidecar → fall back");
+    }
+
+    #[test]
+    fn incremental_returns_false_on_empty_corpus() {
+        // The orchestrator separately drops both files when corpus is
+        // empty; the incremental path must NOT touch disk in that case.
+        // Use a tempdir to ensure the bail happens before any file open.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hnsw_path = tmp.path().join("index.hnsw");
+        let hash_index_path = tmp.path().join("index.hashes");
+        let applied = build_hnsw_incremental_at(&hnsw_path, &hash_index_path, &[], &[]).unwrap();
+        assert!(!applied, "empty vectors → caller handles cleanup");
+    }
+
+    #[test]
+    fn incremental_returns_false_when_tombstone_threshold_exceeded() {
+        // 4 old hashes, 3 removed = 75% removal → far past the 25%
+        // threshold. The incremental code must bail BEFORE opening the
+        // HNSW so the caller's full-rebuild path runs against fresh
+        // data instead of a half-mutated index.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dim = MINILM_DIM as usize;
+        let mut v_seed = Vec::new();
+        let mut h_seed = Vec::new();
+        for i in 0..4 {
+            let mut v = vec![0.0_f32; dim];
+            v[i] = 1.0;
+            v_seed.push(v);
+            h_seed.push(0x100_u64 + i as u64);
+        }
+        let (hnsw_path, hash_index_path) = make_seed_hnsw(&tmp, &h_seed, &v_seed);
+
+        // New corpus keeps only the first vector + adds two new ones —
+        // that's 3 removes vs old=4, well above threshold.
+        let mut v_new = vec![v_seed[0].clone()];
+        let mut h_new = vec![h_seed[0]];
+        for i in 0..2 {
+            let mut v = vec![0.0_f32; dim];
+            v[10 + i] = 1.0;
+            v_new.push(v);
+            h_new.push(0x200_u64 + i as u64);
+        }
+        let applied =
+            build_hnsw_incremental_at(&hnsw_path, &hash_index_path, &v_new, &h_new).unwrap();
+        assert!(!applied, "75% removal must exceed 25% tombstone threshold");
+    }
+
+    #[test]
+    fn incremental_applies_small_add_and_remove_and_keeps_search_correct() {
+        // Build a 3-symbol HNSW, then remove one and add one (delta of
+        // 1 remove + 1 add against old_size 3 = 33% remove → just over
+        // the 25% line. Bump old_size to 5 so we're at 1/5 = 20% and
+        // the incremental path applies. Then query for the surviving
+        // vectors — both pre-existing and new — and verify the
+        // sidecar's new sym_idx mapping is correct.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dim = MINILM_DIM as usize;
+        let mut v_seed = Vec::new();
+        let mut h_seed = Vec::new();
+        for i in 0..5 {
+            let mut v = vec![0.0_f32; dim];
+            v[i] = 1.0;
+            v_seed.push(v);
+            h_seed.push(0x1000_u64 + i as u64);
+        }
+        let (hnsw_path, hash_index_path) = make_seed_hnsw(&tmp, &h_seed, &v_seed);
+
+        // New corpus: keep entries 0..4, drop entry 4, add a new
+        // distinct vector. sym_idx layout (5 entries):
+        //   0..=3 = old entries (hashes 0x1000..0x1003)
+        //   4 = new entry (hash 0x2000)
+        let mut v_new = v_seed[0..4].to_vec();
+        let mut h_new = h_seed[0..4].to_vec();
+        let mut v_added = vec![0.0_f32; dim];
+        v_added[20] = 1.0;
+        v_new.push(v_added.clone());
+        h_new.push(0x2000_u64);
+
+        let applied =
+            build_hnsw_incremental_at(&hnsw_path, &hash_index_path, &v_new, &h_new).unwrap();
+        assert!(
+            applied,
+            "1-remove-1-add at old_size=5 must apply incrementally"
+        );
+
+        // Sidecar must reflect the new sym_idx ordering.
+        let loaded = crate::search::hash_index::load(&hash_index_path).unwrap();
+        assert_eq!(loaded, h_new);
+
+        // Query for the surviving old vector at sym_idx 1: top-1 must
+        // be sym_idx 1 (sidecar position of h_seed[1]).
+        let handle = crate::search::semantic::HnswHandle::open(&hnsw_path, dim, h_new.len())
+            .expect("open handle");
+        let results = handle.search(&v_seed[1], 1).expect("search v_seed[1]");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, 1, "surviving old vector at new sym_idx 1");
+
+        // Query for the freshly-added vector: top-1 must be sym_idx 4.
+        let results = handle.search(&v_added, 1).expect("search v_added");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, 4, "freshly-added vector at new sym_idx 4");
+    }
+
+    #[test]
+    fn incremental_at_exact_25_percent_threshold_does_not_fall_back() {
+        // Pins the strict-GT semantics of the tombstone check: at old=4
+        // / removed=1 (exactly 25%), the incremental path MUST apply.
+        // A future refactor that flips `>` to `>=` would silently
+        // regress this boundary; this test catches it before commit.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dim = MINILM_DIM as usize;
+        let mut v_seed = Vec::new();
+        let mut h_seed = Vec::new();
+        for i in 0..4 {
+            let mut v = vec![0.0_f32; dim];
+            v[i] = 1.0;
+            v_seed.push(v);
+            h_seed.push(0x5000_u64 + i as u64);
+        }
+        let (hnsw_path, hash_index_path) = make_seed_hnsw(&tmp, &h_seed, &v_seed);
+
+        // Drop entry 3, keep 0..=2 — that's 1 remove out of 4 = 25%.
+        let v_new = v_seed[0..3].to_vec();
+        let h_new = h_seed[0..3].to_vec();
+        let applied =
+            build_hnsw_incremental_at(&hnsw_path, &hash_index_path, &v_new, &h_new).unwrap();
+        assert!(
+            applied,
+            "exactly 25% removal must NOT trigger fallback (strict-GT)"
+        );
+    }
+
+    #[test]
+    fn incremental_returns_false_on_corrupt_sidecar() {
+        // A crafted bad-magic sidecar must trigger the fallback path,
+        // not bubble up an error. The caller's full-rebuild will
+        // overwrite the bad sidecar with a fresh one.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dim = MINILM_DIM as usize;
+        let v_seed = vec![vec![1.0_f32; dim]];
+        let h_seed = vec![0xAA_u64];
+        let (hnsw_path, hash_index_path) = make_seed_hnsw(&tmp, &h_seed, &v_seed);
+
+        std::fs::write(&hash_index_path, b"GARBAGE").unwrap();
+
+        let v_new = vec![vec![1.0_f32; dim]];
+        let h_new = vec![0xAA_u64];
+        let applied =
+            build_hnsw_incremental_at(&hnsw_path, &hash_index_path, &v_new, &h_new).unwrap();
+        assert!(!applied, "corrupt sidecar → graceful fallback");
     }
 }
