@@ -43,7 +43,43 @@ const MAX_COUNT: u32 = 10_000_000;
 /// Atomic save: write to `.tmp`, then rename. Matches the convention
 /// used by `embed::cache::EmbedCache::save` and `store::writer` —
 /// half-written sidecars can't be mistaken for valid ones.
+///
+/// **Note (v1.15.0 C):** the production hot path
+/// (`pipeline::output::commit_hnsw_and_sidecar`) no longer calls this
+/// wrapper — it uses [`save_to_tmp`] directly so the HNSW and sidecar
+/// renames can be batched two-phase. `save` is retained as the
+/// convenience entry point for any future caller that wants a single-
+/// file atomic write without the two-phase orchestration. Unit tests
+/// in this module exercise both `save` and the split form.
+#[allow(dead_code)]
 pub fn save(path: &Path, hashes: &[u64]) -> Result<()> {
+    let tmp = path.with_extension("hashes.tmp");
+    save_to_tmp(&tmp, hashes)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        // Best-effort cleanup if the rename failed (partial cross-FS
+        // moves on Linux can leave the tmp behind).
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("rename {} → {}", tmp.display(), path.display()));
+    }
+    Ok(())
+}
+
+/// v1.15.0 C — split out the "write tmp" half of [`save`] so the
+/// orchestrator in `pipeline::output` can do a two-phase atomic
+/// commit of the HNSW + sidecar pair: write both `.tmp` files,
+/// fsync, then rename both back-to-back. The inconsistency window
+/// (one renamed, one not) shrinks from "between two file-content
+/// writes" (~ms on a large sidecar) to "between two rename syscalls"
+/// (~μs) — small enough that `HnswHandle::open`'s size-check
+/// fallback rarely fires in practice.
+///
+/// `tmp_path` is the destination of the tmp write; the caller picks
+/// the path (typically `final_path.with_extension("hashes.tmp")`).
+/// On success the tmp file exists, is fsync'd, and is ready to be
+/// renamed to the final path via plain `std::fs::rename`. On
+/// failure the tmp file may exist in a partial state; callers
+/// should treat any error as a "tmp leak" they need to clean up.
+pub fn save_to_tmp(tmp_path: &Path, hashes: &[u64]) -> Result<()> {
     // Match the read-side `MAX_COUNT` guard so a truncating `as u32` cast
     // can't silently write a wrong count for an index past 10M symbols —
     // the cast would otherwise produce a sidecar that `load` accepts as
@@ -54,25 +90,22 @@ pub fn save(path: &Path, hashes: &[u64]) -> Result<()> {
         hashes.len(),
         MAX_COUNT,
     );
-    let tmp = path.with_extension("hashes.tmp");
-    {
-        let mut file =
-            std::fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
-        file.write_all(MAGIC).context("write magic")?;
-        file.write_all(&VERSION.to_le_bytes())
-            .context("write version")?;
-        file.write_all(&(hashes.len() as u32).to_le_bytes())
-            .context("write count")?;
-        for h in hashes {
-            file.write_all(&h.to_le_bytes()).context("write hash")?;
-        }
+    let mut file = std::fs::File::create(tmp_path)
+        .with_context(|| format!("create {}", tmp_path.display()))?;
+    file.write_all(MAGIC).context("write magic")?;
+    file.write_all(&VERSION.to_le_bytes())
+        .context("write version")?;
+    file.write_all(&(hashes.len() as u32).to_le_bytes())
+        .context("write count")?;
+    for h in hashes {
+        file.write_all(&h.to_le_bytes()).context("write hash")?;
     }
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        // Best-effort cleanup if the rename failed (partial cross-FS
-        // moves on Linux can leave the tmp behind).
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e).with_context(|| format!("rename {} → {}", tmp.display(), path.display()));
-    }
+    // fsync so the bytes are durable on disk before the caller's
+    // rename — matches the `store::writer` convention (see comment
+    // at writer.rs:732 — "without sync_all() between flush and
+    // rename, a crash can leave the renamed path pointing at an
+    // empty file").
+    file.sync_all().context("fsync hash-index tmp")?;
     Ok(())
 }
 

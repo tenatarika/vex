@@ -671,6 +671,88 @@ pub(super) fn build_hnsw(root: &Path, vectors: &[Vec<f32>], hashes: &[u64]) -> R
 // `__fuzz_*` doc-hidden exports — keeps the user-facing public
 // surface minimal while letting bench/test/fuzz reach the real impl.
 
+/// v1.15.0 C — two-phase atomic commit for the HNSW + hash-index
+/// sidecar pair. Both files are written to their `.tmp` siblings
+/// (with fsync after each write so the bytes are durable on disk),
+/// then renamed back-to-back. A process kill between the two rename
+/// syscalls leaves the on-disk state in a "HNSW new, sidecar old"
+/// configuration that `HnswHandle::open`'s size-check catches and
+/// falls back to brute force — same self-heal path the v1.14.1 build
+/// had, but the inconsistency window shrinks from ~ms (between two
+/// content writes for an MB-sized HNSW + sidecar) to ~μs (between
+/// two adjacent `rename` syscalls).
+///
+/// Ordering: HNSW renames first, sidecar last. The intermediate state
+/// (HNSW new, sidecar old) is handled by `HnswHandle::open` already;
+/// inverting the order would leave a window where the sidecar
+/// references hashes that aren't in the HNSW yet, which could produce
+/// wrong (empty) search results instead of a clean brute-force
+/// fallback. Last-rename-wins is the safe direction.
+///
+/// On HNSW rename failure: the sidecar tmp is left in place (best-
+/// effort cleanup) — the previous build's files remain untouched.
+/// On sidecar rename failure after HNSW rename succeeded: HNSW is
+/// already in the new state on disk; the error bubbles up to the
+/// orchestrator so the user sees it loudly. (Same `Err`-propagates-
+/// loudly contract as the inline form had.)
+fn commit_hnsw_and_sidecar(
+    index: &usearch::Index,
+    hnsw_path: &Path,
+    hash_index_path: &Path,
+    hashes: &[u64],
+) -> Result<()> {
+    let hnsw_tmp = hnsw_path.with_extension("hnsw.tmp");
+    let hash_tmp = hash_index_path.with_extension("hashes.tmp");
+
+    // Phase 1: write both tmps (durable on disk after fsync). usearch
+    // doesn't expose an fsync hook on its save path, but a buggy or
+    // crashed write would manifest as a partial tmp file that the
+    // subsequent rename can't fix — the read path's size-check still
+    // catches it, falling back to brute force.
+    let hnsw_tmp_str = hnsw_tmp
+        .to_str()
+        .context("HNSW tmp path contains non-UTF-8 characters")?;
+    index
+        .save(hnsw_tmp_str)
+        .with_context(|| format!("save HNSW to {}", hnsw_tmp.display()))?;
+    if let Err(e) = crate::search::hash_index::save_to_tmp(&hash_tmp, hashes) {
+        // Sidecar tmp failed → HNSW tmp leaked; clean it up before
+        // returning so the next run starts from a clean state.
+        let _ = std::fs::remove_file(&hnsw_tmp);
+        return Err(e.context("save hash-index sidecar to tmp"));
+    }
+
+    // Phase 2: atomic renames back-to-back. The inconsistency window
+    // here is the smallest the kernel allows — two adjacent rename
+    // syscalls on local FS take ~μs each.
+    if let Err(e) = std::fs::rename(&hnsw_tmp, hnsw_path) {
+        // HNSW rename failed → both tmps still present, both finals
+        // unchanged. Clean both tmps so the next run isn't confused
+        // by stale fixtures.
+        let _ = std::fs::remove_file(&hnsw_tmp);
+        let _ = std::fs::remove_file(&hash_tmp);
+        return Err(e)
+            .with_context(|| format!("rename {} → {}", hnsw_tmp.display(), hnsw_path.display()));
+    }
+    if let Err(e) = std::fs::rename(&hash_tmp, hash_index_path) {
+        // HNSW rename succeeded but sidecar rename failed — disk is
+        // now in the "HNSW new, sidecar old" state. `HnswHandle::open`
+        // size-check will catch this and brute-force; next successful
+        // update self-heals. Surface the error loudly so the user
+        // knows to re-run.
+        let _ = std::fs::remove_file(&hash_tmp);
+        return Err(e).with_context(|| {
+            format!(
+                "rename {} → {} (HNSW already committed; next update self-heals)",
+                hash_tmp.display(),
+                hash_index_path.display()
+            )
+        });
+    }
+
+    Ok(())
+}
+
 /// Core HNSW + sidecar builder with explicit paths. The `build_hnsw`
 /// wrapper above resolves them via `config::hnsw_path` /
 /// `config::hash_index_path`; this layer is split out so unit tests can
@@ -714,15 +796,10 @@ pub fn build_hnsw_at(
         index.add(h, vec).context("add vector to HNSW index")?;
     }
 
-    let path_str = hnsw_path
-        .to_str()
-        .context("HNSW path contains non-UTF-8 characters")?;
-    index.save(path_str).context("save HNSW index")?;
-
-    // Sidecar: paired sym_idx-ordered hash list. Without this the query
-    // path can't materialise the hash→sym_idx mapping HnswHandle needs.
-    crate::search::hash_index::save(hash_index_path, hashes)
-        .context("save HNSW hash-index sidecar")?;
+    // v1.15.0 C — two-phase atomic commit. Write both files to .tmp
+    // paths, fsync, then rename both back-to-back. See
+    // `commit_hnsw_and_sidecar` for the full rationale.
+    commit_hnsw_and_sidecar(&index, hnsw_path, hash_index_path, hashes)?;
 
     tracing::info!(
         vectors = vectors.len(),
@@ -928,26 +1005,20 @@ pub fn build_hnsw_incremental_at(
         }
     }
 
-    if let Err(e) = index.save(path_str) {
-        tracing::warn!(
-            path = %hnsw_path.display(),
-            error = %e,
-            "HNSW incremental: save failed → full rebuild"
-        );
-        return Ok(false);
-    }
-
-    // Rewrite the hash-index sidecar with the new sym_idx-ordered
-    // hashes. The HNSW itself is keyed by hash (order-independent),
-    // but the sidecar's ordering encodes the sym_idx mapping.
-    if let Err(e) = crate::search::hash_index::save(hash_index_path, new_hashes) {
-        // HNSW is already saved; the sidecar is what `HnswHandle::open`
-        // needs to materialise the hash→sym_idx map. A failure here
-        // means semantic search degrades to brute force until the next
-        // successful index/update. Return Err so the orchestrator can
-        // log it loudly (this is the only path that bubbles up).
-        return Err(e).context("HNSW incremental: hash-index sidecar save failed after HNSW save");
-    }
+    // v1.15.0 C — two-phase atomic commit. Same `commit_hnsw_and_sidecar`
+    // helper the full-rebuild path uses; the incremental mutation is
+    // already in the `index` handle, so we just need to publish both
+    // files together. Pre-1.15.0 this was two separate calls
+    // (`index.save` then `hash_index::save`) with a ~ms gap between
+    // them where the on-disk state could be observed in a "HNSW new,
+    // sidecar old" mismatch. The two-phase commit shrinks that window
+    // to ~μs (two adjacent rename syscalls).
+    //
+    // `commit_hnsw_and_sidecar` returns Err iff one of the renames
+    // failed — that's the only path that bubbles up, matching the
+    // Err contract documented at the function head.
+    commit_hnsw_and_sidecar(&index, hnsw_path, hash_index_path, new_hashes)
+        .context("HNSW incremental: two-phase commit")?;
 
     tracing::info!(
         added = added_count,
@@ -1411,6 +1482,45 @@ mod tests {
         assert!(
             applied,
             "exactly 25% removal must NOT trigger fallback (strict-GT)"
+        );
+    }
+
+    #[test]
+    fn two_phase_commit_cleans_up_tmps_on_hnsw_rename_failure() {
+        // Pre-create a directory at the HNSW path so `rename(hnsw_tmp,
+        // hnsw_path)` fails (can't rename a file over a non-empty
+        // dir). Verifies the cleanup branch removes both tmps. The
+        // existing `index.hashes.tmp` from a prior aborted run would
+        // confuse the next iteration if left behind.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hnsw_path = tmp.path().join("index.hnsw");
+        let hash_index_path = tmp.path().join("index.hashes");
+        // Drop a non-empty dir at hnsw_path to wedge the rename.
+        std::fs::create_dir(&hnsw_path).unwrap();
+        std::fs::write(hnsw_path.join("blocker"), b"in-the-way").unwrap();
+
+        let dim = MINILM_DIM as usize;
+        let v = vec![vec![1.0_f32; dim]];
+        let h = vec![0xAA_u64];
+        let result = build_hnsw_at(&hnsw_path, &hash_index_path, &v, &h);
+        assert!(
+            result.is_err(),
+            "build_hnsw_at should fail when HNSW destination is wedged"
+        );
+
+        // Both tmps must be cleaned up — neither `.hnsw.tmp` nor
+        // `.hashes.tmp` should leak.
+        let hnsw_tmp = hnsw_path.with_extension("hnsw.tmp");
+        let hash_tmp = hash_index_path.with_extension("hashes.tmp");
+        assert!(
+            !hnsw_tmp.exists(),
+            "HNSW tmp leaked after rename failure: {}",
+            hnsw_tmp.display()
+        );
+        assert!(
+            !hash_tmp.exists(),
+            "sidecar tmp leaked after rename failure: {}",
+            hash_tmp.display()
         );
     }
 
