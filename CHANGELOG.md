@@ -71,6 +71,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   '.body_tokens_persisted'` works without unwrapping). 3 new unit
   tests in `manifest::tests` pin the back-compat round-trip pattern.
 
+- **`docs/SEMANTIC.md` — authoritative semantic-pipeline spec.**
+  Consolidates the parse → `build_context` → `context_hash` → embed
+  cache → HNSW build/incremental → search flow that was previously
+  scattered across CHANGELOG, inline comments, and `LIMITATIONS.md`.
+  Covers the v1.14.1 hash-keyed HNSW, the v1.15.0 body_tokens
+  persistence, the `Result<bool>` fallback contract on the incremental
+  path, the strict-GT 25% tombstone threshold, the per-corpus-size
+  performance table from `benches/perf_b12.rs`, the cold-start
+  migration story, and the disk-state recovery matrix for partial
+  writes. Cross-references every relevant source file
+  (`output.rs::build_hnsw_at`, `body_tokens.rs`, `hash_index.rs`,
+  `semantic::HnswHandle`, the bench / proptest / libFuzzer harness)
+  so a future maintainer extending the semantic side has one place
+  to start.
+
 ## [1.14.1] - 2026-06-06
 
 Follow-up release closing every cross-file `--strict` ref gap the v1.14.0 release left behind (Python / C# / TypeScript class member methods + C++ class methods + name_to_global index-space bug), reorganising HNSW around content-addressed keys (prerequisite for B1.2 incremental update), and parallelising the embed pipeline's context-string build. Also bumps `CACHE_FORMAT_VERSION` 1 → 2 retroactively for the v1.14.0 `ParsedFile.cpp_includes` field — pre-1.14.1 blob caches are silently invalidated on next `vex index` (no user action; a one-time re-parse).
