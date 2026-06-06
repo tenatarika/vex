@@ -1013,6 +1013,17 @@ pub fn __fuzz_incremental_hnsw_bytes(data: &[u8]) {
 
     // Per-iteration scratch — copy of the baseline so the mutation
     // path can't corrupt the fixture for subsequent iterations.
+    //
+    // Keyed by `process::id()`: libFuzzer is single-threaded per
+    // worker process, so iterations within one process serialise here
+    // and don't collide. `cargo fuzz run --jobs N` spawns N separate
+    // processes with different PIDs — they get distinct scratch dirs
+    // by construction. If a worker is killed mid-iteration (signal /
+    // OOM) the scratch dir leaks until the next process with the same
+    // PID (after OS PID recycling) hits the leading `remove_dir_all`
+    // below — that's the self-cleanup contract. Don't replace this
+    // with a `LazyLock`-scoped path: that would skip the per-iter
+    // wipe and the mutation would carry over.
     let scratch_dir =
         std::env::temp_dir().join(format!("__vex_fuzz_inc_hnsw_iter_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch_dir);
@@ -1044,8 +1055,11 @@ pub fn __fuzz_incremental_hnsw_bytes(data: &[u8]) {
     }
 
     // Matching synthetic vectors — deterministic one-hot at slot
-    // `i % dim`. usearch requires equal lengths; the shim's only
-    // job is "no panic", so vector quality is irrelevant.
+    // `i % dim`. With `n_hashes > FUZZ_DIM` multiple entries share
+    // the same vector by design; the shim's only job is "no panic",
+    // and vector-shape coverage of `add()` is exercised by the
+    // property test, not here. Don't "fix" this to use the bench's
+    // PRNG — wasted entropy on a path that doesn't care.
     let new_vectors: Vec<Vec<f32>> = (0..new_hashes.len())
         .map(|i| {
             let mut v = vec![0.0_f32; *dim];

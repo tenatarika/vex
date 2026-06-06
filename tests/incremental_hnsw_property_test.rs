@@ -11,17 +11,25 @@
 //! Equivalence assertions are intentionally robust to HNSW's stochastic
 //! graph topology (insertion order may produce different neighbour
 //! links). What we pin:
-//!   - both paths' `index.size()` agree
-//!   - both paths' `index.hashes` sidecar contains the same `{u64}` set
-//!     in sym_idx order (incremental rewrites in new sym_idx order on
-//!     `new_hashes`; full does the same)
-//!   - every member hash is `contains()`-able in both indexes
+//!   - both paths' `index.hashes` sidecar is bit-equal to the caller's
+//!     `new_hashes` (sym_idx order preservation). This subsumes
+//!     set-equality and length-equality — the stronger assertion.
 //!
-//! Not asserted (would be flaky):
-//!   - identical HNSW byte layout
-//!   - identical search() top-k beyond self-recovery
+//! Not asserted (would be flaky or out of scope):
+//!   - identical HNSW byte layout (insertion order changes graph)
+//!   - identical `search()` top-k beyond self-recovery (stochastic)
+//!   - **vector-to-hash binding correctness** — the test pins only the
+//!     hash set in the sidecar, not the (hash, vector) pair stored in
+//!     the HNSW graph. A bug that swapped two vectors while preserving
+//!     the hash set (e.g. an off-by-one in the add loop) would pass.
+//!     Catching that would require a search-based round-trip; left to
+//!     the integration test `cli_incremental_hnsw_test.rs`.
+//!   - **High-capacity edge cases** — proptest caps `old_seeds` at 40
+//!     entries × DIM=16 so usearch's `reserve()` is never stressed.
+//!     The unit test `incremental_at_exact_25_percent_threshold_does_not_fall_back`
+//!     covers boundary arithmetic; the bench covers large corpus.
 //!
-//! 256 cases × 2 builds per case ≈ 1-2 s on M1 — `proptest`-default
+//! 256 cases × 2 builds per case ≈ 500 ms on M1 — `proptest`-default
 //! sampling. Set `PROPTEST_CASES` to widen.
 
 use std::collections::HashSet;
@@ -37,10 +45,10 @@ use vex::search::hash_index;
 const DIM: usize = 16;
 
 /// Deterministic unit vector for `hash`. Same xorshift-style mixing
-/// pattern as `perf_b12.rs` so the two stay aligned. Each hash maps
-/// to a distinct vector with overwhelming probability (collisions
-/// only on identical hashes, which the property's input generation
-/// already excludes).
+/// pattern as `perf_b12.rs::prng_at` — `benches/perf_b12.rs` is the
+/// canonical source of these constants. Each hash maps to a distinct
+/// vector with overwhelming probability (collisions only on identical
+/// hashes, which the property's input generation already excludes).
 fn vector_for(hash: u64) -> Vec<f32> {
     let mut v = vec![0.0_f32; DIM];
     let mut norm_sq = 0.0_f32;
@@ -120,14 +128,6 @@ fn assemble(
     Some((old_hashes, new_hashes, removed_set))
 }
 
-/// Read the `index.hashes` sidecar into a set + ordered Vec — both
-/// forms are checked against the parallel full-rebuild output.
-fn load_sidecar(path: &std::path::Path) -> (Vec<u64>, HashSet<u64>) {
-    let v = hash_index::load(path).expect("hash-index load");
-    let set: HashSet<u64> = v.iter().copied().collect();
-    (v, set)
-}
-
 proptest! {
     /// Drive both paths over the same target hash set and verify
     /// equivalence. Fails fast if a regression makes the incremental
@@ -145,6 +145,15 @@ proptest! {
             // entries after dedupe) — skip rather than fail.
             return Ok(());
         };
+
+        // Explicit guard against the empty-new-hashes case so the
+        // property's "incremental applies" expectation can't be
+        // accidentally satisfied by `build_hnsw_incremental_at`'s
+        // empty-corpus `Ok(false)` early-return. The tombstone-cap
+        // arithmetic in `assemble()` already makes this unreachable
+        // in practice; the explicit assume future-proofs the property
+        // against threshold-policy changes.
+        prop_assume!(!new_hashes.is_empty());
 
         let old_vectors: Vec<Vec<f32>> = old_hashes.iter().map(|h| vector_for(*h)).collect();
         let new_vectors: Vec<Vec<f32>> = new_hashes.iter().map(|h| vector_for(*h)).collect();
@@ -171,29 +180,25 @@ proptest! {
         build_hnsw_at(&full_hnsw, &full_hash, &new_vectors, &new_hashes)
             .expect("full build_hnsw_at");
 
-        // Property 1: sidecar hash-sets equal.
-        let (inc_vec, inc_set) = load_sidecar(&inc_hash);
-        let (full_vec, full_set) = load_sidecar(&full_hash);
+        // Single strongest assertion: both sidecars are bit-equal to
+        // `new_hashes`. Subsumes set-equality (caller's `new_hashes`
+        // has no duplicates by construction) AND length-equality (Vec
+        // equality implies len equality) AND sym_idx ordering.
+        // Earlier revisions of this test had three separate assertions;
+        // they were collapsed to one to reduce noise.
+        let inc_vec = hash_index::load(&inc_hash);
+        let full_vec = hash_index::load(&full_hash);
+        prop_assert!(inc_vec.is_ok(), "incremental sidecar must load: {:?}", inc_vec.err());
+        prop_assert!(full_vec.is_ok(), "full sidecar must load: {:?}", full_vec.err());
+        let inc_vec = inc_vec.unwrap();
+        let full_vec = full_vec.unwrap();
         prop_assert_eq!(
-            inc_set, full_set,
-            "incremental and full sidecars must encode the same hash set"
-        );
-        // Property 2: sidecar lengths equal (cardinality).
-        prop_assert_eq!(
-            inc_vec.len(), full_vec.len(),
-            "sidecar length mismatch — duplicate or missing entry on one path"
-        );
-        // Property 3: incremental sidecar is in sym_idx order of `new_hashes`
-        // (incremental REWRITES the sidecar after each mutation; full
-        // writes in the order it was given). Both must reflect the
-        // caller's `new_hashes` order, so they're bit-equal here.
-        prop_assert_eq!(
-            inc_vec.clone(), new_hashes.clone(),
-            "incremental sidecar must preserve caller's sym_idx order"
+            &inc_vec, &new_hashes,
+            "incremental sidecar must be bit-equal to caller's new_hashes"
         );
         prop_assert_eq!(
-            full_vec.clone(), new_hashes.clone(),
-            "full sidecar must preserve caller's sym_idx order"
+            &full_vec, &new_hashes,
+            "full sidecar must be bit-equal to caller's new_hashes"
         );
     }
 }

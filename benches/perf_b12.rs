@@ -79,7 +79,9 @@ fn prng_at(i: usize, j: usize) -> f32 {
     let mut s = (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
     s ^= (j as u64).wrapping_mul(0xBF58476D1CE4E5B9);
     s = s.wrapping_mul(0x94D049BB133111EB);
-    // Map u64 → [-1, 1] via top-24 bits to keep f32 precision useful.
+    // Map u64 → [-1, 1] via the high-order 24 bits of the mixed value
+    // (shift right by 40, cast to u32). 24 bits matches f32's mantissa
+    // precision — using more wouldn't add usable entropy.
     let bits = (s >> 40) as u32;
     let unit = bits as f32 / ((1u32 << 24) - 1) as f32;
     unit * 2.0 - 1.0
@@ -364,7 +366,11 @@ fn bench_b12(c: &mut Criterion) {
             |(tmp, hnsw_path, hash_path)| {
                 let applied = build_hnsw_incremental_at(&hnsw_path, &hash_path, &v_over, &h_over)
                     .expect("incremental_apply");
-                assert!(!applied);
+                assert!(
+                    !applied,
+                    "fallback_then_full_rebuild scenario assumes the incremental \
+                     path bails — over-threshold churn should return Ok(false)"
+                );
                 // Mirror what `pipeline::update` does on Ok(false): call
                 // build_hnsw_at over the new corpus to overwrite the
                 // stale HNSW + sidecar pair in one shot.

@@ -15,6 +15,21 @@
 //! Same survival-as-success contract as the v1.12.0 bloom / v1.13.0
 //! marker / v1.14.1 hash-index harnesses: any byte sequence must be
 //! handled without panic.
+//!
+//! **Out of scope.** The shim does NOT exercise:
+//!   - `HnswHandle::open` / `search` (query path; no probe is issued
+//!     after the mutation)
+//!   - `build_hnsw_at` (full rebuild path; only the incremental path)
+//!   - the embed pipeline (`generate_embeddings`, ONNX, fastembed) —
+//!     the shim feeds synthetic `new_hashes` straight in, bypassing
+//!     `compute_hashes_for` and the cache lookup logic
+//!   - `index.bodytokens` parsing — covered separately by
+//!     `body_tokens::tests` and not in the incremental hot path
+//!
+//! Coverage of the diff / HashSet / tombstone / usearch mutation
+//! surfaces is the explicit goal. Property test
+//! `tests/incremental_hnsw_property_test.rs` covers equivalence; this
+//! shim covers panic-resistance.
 
 use libfuzzer_sys::fuzz_target;
 

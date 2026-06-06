@@ -358,8 +358,14 @@ $ vex status
 Body tokens: yes (incremental HNSW update enabled)
 ```
 
-`no` here means the next semantic update will be a full rebuild. The
-status field is also surfaced in `vex status --format json` as
+When the sidecar is absent the status line is:
+
+```
+Body tokens: no (run `vex index` to enable incremental HNSW update)
+```
+
+That means the next semantic update will be a full rebuild. The status
+field is also surfaced in `vex status --format json` as
 `body_tokens_persisted: bool`.
 
 **Cold-start applies per-index, not globally.** Each project's index
@@ -371,6 +377,10 @@ HNSW path. The structural (FST), BM25, and call-graph sections were
 already rebuilt incrementally and continue to work as before — the
 body_tokens persistence side-effect closes the legacy "BM25 recall
 drops for unchanged symbols after `vex update`" warning.
+
+**See also:** `docs/SEMANTIC.md` for the full pipeline spec (file
+layout, hash-keyed HNSW, incremental contract, performance, disk-state
+recovery matrix).
 
 ---
 

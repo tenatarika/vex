@@ -20,23 +20,27 @@ LIMITATIONS.md.
 ## File layout
 
 ```text
-<cache-dir>/<project-hash>/
-├── index.vex             ← binary index (symbols, FST, BM25, call graph, refs)
-├── index.hnsw            ← usearch HNSW graph, KEYED BY context_hash
-├── index.hashes          ← v1.14.1 — sym_idx → context_hash sidecar (VEXH magic)
-├── index.bodytokens      ← v1.15.0 — sym_idx → body_tokens sidecar (VEXT magic)
-├── index.bloom           ← v1.12.0 — bloom prefilter for `vex check`
-├── manifest.json         ← file hashes + version markers
-└── <cache-dir>/embeddings/                              ← shared across projects
-    └── …model files (ONNX, tokenizer)…
-└── <cache-dir>/<project-hash>/embed_cache_<id>.bin      ← v1.13 E2b persistent embed cache
+<cache-dir>/
+├── embeddings/                          ← shared across projects (~86 MB MiniLM)
+│   └── …ONNX model files, tokenizer…
+└── <project-hash>/
+    ├── index.vex                         ← binary index (symbols, FST, BM25, call graph, refs)
+    ├── index.hnsw                        ← usearch HNSW graph, KEYED BY context_hash
+    ├── index.hashes                      ← v1.14.1 — sym_idx → context_hash sidecar (VEXH magic)
+    ├── index.bodytokens                  ← v1.15.0 — sym_idx → body_tokens sidecar (VEXT magic)
+    ├── index.bloom                       ← v1.12.0 — bloom prefilter for `vex check` (structural)
+    ├── embed_cache_<embedder_id>.bin     ← v1.13 E2b persistent embed cache (VEXE magic)
+    └── manifest.json                     ← file hashes + version markers
 ```
 
-Three semantic-specific sidecars (`hnsw`, `hashes`, `bodytokens`) live
-next to `index.vex`; the embed cache is per-(project, embedder); the
-ONNX model files are shared across all projects on the machine. Every
-sidecar is **independently optional** — absence falls back to a slower
-but correct path (brute-force search, full rebuild, full re-embed).
+Semantic-specific sidecars are `index.hnsw`, `index.hashes` (VEXH), and
+`index.bodytokens` (VEXT). `index.bloom` (VEXB) is the **structural**
+prefilter for `vex check` and unrelated to the semantic pipeline —
+listed here only for layout completeness. The embed cache is
+per-(project, embedder); the ONNX model files are shared across all
+projects on the machine. Every sidecar is **independently optional** —
+absence falls back to a slower but correct path (brute-force search,
+full rebuild, full re-embed).
 
 ### Versioning policy
 
@@ -46,9 +50,10 @@ but correct path (brute-force search, full rebuild, full re-embed).
 - **`index.hnsw`** is opaque usearch state; no version field of our own.
   Compatibility is whatever usearch promises (currently stable across
   the 2.25.x line we pin).
-- **Sidecar versions** are per-file: `VEXH v1`, `VEXT v1`, `VEXB v1`.
-  Each sidecar carries its own magic + version + count + guard against
-  MAX_COUNT (≤ 10M entries) to prevent crafted-input OOM during load.
+- **Semantic-pipeline sidecar versions**: `VEXH v1` (`index.hashes`) and
+  `VEXT v1` (`index.bodytokens`). Each carries its own magic + version
+  + count + guard against `MAX_COUNT` (≤ 10M entries) to prevent
+  crafted-input OOM during load.
 - **Manifest markers** (`vectors_normalized`, `cpp_includes_processed`,
   `body_tokens_persisted`) are `Option<bool>` — `None` means "pre-this
   version" with conservative fallback semantics, `Some(true)` is the
@@ -274,8 +279,14 @@ $ vex status
 Body tokens: yes (incremental HNSW update enabled)
 ```
 
-`Body tokens: no` means the next semantic update will be a full rebuild.
-JSON envelope: `body_tokens_persisted: bool`.
+The full string when the sidecar is absent or its write failed is:
+
+```
+Body tokens: no (run `vex index` to enable incremental HNSW update)
+```
+
+— that means the next semantic update will be a full rebuild. JSON
+envelope: `body_tokens_persisted: bool`.
 
 Cold-start applies **per-index**, not globally — each project needs
 its own priming run.
@@ -339,11 +350,14 @@ case, so the user sees the error and re-runs.
   contract.
 - **docs/CONCURRENCY.md** — index lock and herd-fix details that apply
   to the semantic write path too.
-- **`src/index/pipeline/output.rs`** — `build_hnsw_at`,
-  `build_hnsw_incremental_at`, `generate_embeddings`,
-  `compute_hashes_for`, `prune_embed_cache`. All `pub fn` under
-  `#[doc(hidden)] pub use` re-export at `vex::index::pipeline` so the
-  bench and integration test reach them.
+- **`src/index/pipeline/output.rs`** — the pipeline orchestration core.
+  - Re-exported via `#[doc(hidden)] pub use` at `vex::index::pipeline`
+    (visible to bench / integration test / fuzz harness, hidden from
+    rustdoc + SemVer): `build_hnsw_at`, `build_hnsw_incremental_at`,
+    `__fuzz_incremental_hnsw_bytes`.
+  - `pub(super)` (internal to the pipeline module, not re-exported):
+    `generate_embeddings`, `compute_hashes_for`, `prune_embed_cache`,
+    `write_output_locked`, `build_hnsw`.
 - **`src/store/body_tokens.rs`** — `VEXT` sidecar I/O.
 - **`src/search/hash_index.rs`** — `VEXH` sidecar I/O.
 - **`src/search/semantic.rs`** — `HnswHandle::open` / `search`.

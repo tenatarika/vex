@@ -71,6 +71,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   '.body_tokens_persisted'` works without unwrapping). 3 new unit
   tests in `manifest::tests` pin the back-compat round-trip pattern.
 
+### Documentation
+
 - **`docs/SEMANTIC.md` — authoritative semantic-pipeline spec.**
   Consolidates the parse → `build_context` → `context_hash` → embed
   cache → HNSW build/incremental → search flow that was previously

@@ -23,9 +23,14 @@ use output::{
 // `#[doc(hidden)]` keeps them out of rustdoc and out of the user-facing
 // API contract; SemVer treats them as private.
 //
-// `#[allow(unused_imports)]` because the re-export is consumed by
-// external crates (bench / integration test) and the bin target's
-// `lib`-feature compile doesn't itself reference these names.
+// `#[allow(unused_imports)]` is load-bearing: rustc's dead-code
+// analysis for the lib target cannot see the bench / integration test
+// / fuzz crate's consumption of these names, so without the allow it
+// flags the `pub use` as unused. The alternative — making `output` a
+// `pub mod` — would leak every other `pub(super)` item in that
+// module (`generate_embeddings`, `compute_hashes_for`, etc.) into the
+// crate's public surface, breaking the visibility contract for the
+// whole pipeline. The `#[allow]` here is the narrowest escape valve.
 #[doc(hidden)]
 #[allow(unused_imports)]
 pub use output::{__fuzz_incremental_hnsw_bytes, build_hnsw_at, build_hnsw_incremental_at};
