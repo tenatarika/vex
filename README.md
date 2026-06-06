@@ -742,6 +742,10 @@ The same `vex-mcp` binary works with any MCP-compatible client. The binary insta
 
 Per-agent caveats (auto-approve flags, timeout overrides, agent-mode requirements) are documented in [`integrations/README.md`](integrations/README.md).
 
+### Agent Recipes & Workflows
+
+Once vex-mcp is wired into your agent, the next question is *what to ask the agent so it picks the right tools in the right order*. [`docs/COOKBOOK.md`](docs/COOKBOOK.md) is a recipe collection for the common chains — code archaeology, cross-file refactor with `usages --strict` verification, PR-impact analysis via `bundle(mode="pr-impact")`, dead-code & duplicate cleanup, and multi-repo orchestration. Each recipe shows the tool sequence, the *why* of the ordering, and a phrase that reliably triggers the chain in agent prompts.
+
 ### Shell Integration
 
 ```bash

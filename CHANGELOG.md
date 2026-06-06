@@ -73,6 +73,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
+- **`docs/COOKBOOK.md` — agent workflow recipes.** Five end-to-end
+  chains for the common vex MCP-tool sequences: code archaeology
+  (`find_symbol` → `bundle(mode="symbol")`), cross-file refactor with
+  `usages --strict` verification gate (the load-bearing flag pattern),
+  PR-impact analysis via `bundle(mode="pr-impact")` with transitive
+  caller depth tuning, dead-code & near-duplicate cleanup using
+  `duplicates(explain=true)` + `usages --strict` cross-check, and
+  multi-codebase orchestration (one `vex-mcp` server per `VEX_ROOT`).
+  Each recipe leads with a "phrase the agent like this" prompt
+  template so a user can trigger the chain without naming individual
+  tools; the recipe body shows the explicit tool sequence + why the
+  ordering matters + when to deviate. Also adds a tool-selection cheat
+  sheet table covering the 13 most-common "I want to X, reach for Y"
+  decisions. Cross-linked from `README.md` (new H3 "Agent Recipes &
+  Workflows" in the Integration section) and `integrations/README.md`.
+  Complements `integrations/` (which solves *connect the server* —
+  the cookbook solves *now what do I ask the agent*).
+
 - **`integrations/` folder — per-agent MCP setup for Cursor / Codex
   CLI / Windsurf / Cline / Continue.dev / Zed (plus Claude Code for
   completeness).** The same `vex-mcp` binary already shipped with

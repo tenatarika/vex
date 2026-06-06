@@ -34,5 +34,6 @@ Ready-to-paste MCP-server configs for every editor or coding agent that speaks t
 ## See also
 
 - [`README.md` → Integration](../README.md#integration) — full setup walkthrough including the prebuilt-binary download URLs and the Claude Code variant.
+- [`docs/COOKBOOK.md`](../docs/COOKBOOK.md) — recipes for chaining vex's MCP tools end-to-end (refactor, PR-impact, code archaeology, dead-code cleanup, multi-repo orchestration).
 - [`docs/MCP-SCHEMA.md`](../docs/MCP-SCHEMA.md) — canonical MCP parameter vocabulary (v1.7+).
 - [`CONTRIBUTING.md` → Adding an MCP tool](../CONTRIBUTING.md#adding-an-mcp-tool) — for contributors extending the server.
