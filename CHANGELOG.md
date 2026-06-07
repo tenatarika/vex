@@ -8,6 +8,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`vex history <Symbol>` — query-time git-log walker.** Returns
+  every historical version of the named symbol reachable from the
+  chosen tip (`HEAD` by default, or `--branch <REV>`). No indexing
+  required: shells out to `git grep` (whole-word probe to locate
+  candidate files), then `git log --follow` per file, fetches each
+  blob via `git ls-tree` + `git cat-file`, parses with the same
+  `extract_symbols_and_imports` vex uses at index time, and keeps
+  only matches whose `name == query`. Blob-SHA dedup collapses
+  consecutive commits with identical file content into one entry,
+  so a "touch — recommit" round trip doesn't bloat the result set.
+  `--depth N` caps per-file walk; `--limit N` caps the total
+  result set (the walker stops early). Three output formats:
+  default text, `--format compact` (tab-separated for grep/awk in
+  agent shells), `--format json` (v1 envelope matching
+  `vex search --format json` / bundle output). Limitations
+  documented inline in [`src/history/mod.rs`](src/history/mod.rs):
+  symbols whose current name has been fully removed are invisible
+  (the `git grep` probe runs against the chosen tip); symbol-level
+  renames inside a file split into two queries (old name + new
+  name). 7 unit tests pin the two-version walk, blob-SHA dedup
+  across no-op recommits, empty result for never-existed symbol,
+  `--limit` cutoff, non-git-dir rejection, empty-name rejection,
+  and the `--word-regexp` substring filter (`parse` not matching
+  `parse_payment`). Smoke-tested against vex's own history.
+
 - **`vex mcp install / uninstall / list` — auto-configure MCP-compatible
   agents.** Adds (or removes) the `vex-mcp` entry in your agent's MCP
   config file without hand-editing JSON / TOML / YAML.

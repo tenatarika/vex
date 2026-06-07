@@ -6,6 +6,7 @@ pub(crate) mod cmd_diff;
 pub(crate) mod cmd_duplicates;
 pub(crate) mod cmd_eval;
 pub(crate) mod cmd_grep;
+pub(crate) mod cmd_history;
 pub(crate) mod cmd_implementations;
 pub(crate) mod cmd_index;
 pub(crate) mod cmd_mcp;
@@ -426,6 +427,14 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             agents_md_only,
         } => cmd_trivial::init(agents_md, agents_md_only),
         Commands::Capabilities => cmd_trivial::capabilities(),
+
+        Commands::History {
+            symbol,
+            path,
+            depth,
+            branch,
+            limit,
+        } => cmd_history::history(&ctx, symbol, path, depth, branch, limit),
 
         Commands::Mcp { action } => match action {
             args::McpAction::Install {

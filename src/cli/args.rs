@@ -894,6 +894,38 @@ pub enum Commands {
     /// Print machine-readable capabilities matrix (Phase 13.0).
     Capabilities,
 
+    /// v1.16 — `vex history <Symbol>`: walk git log and return every
+    /// historical version of the named symbol. Query-time (no
+    /// indexing) — works on any repo `vex` hasn't yet indexed.
+    /// Dedups by blob SHA so consecutive commits with identical file
+    /// content surface as one entry.
+    History {
+        /// Symbol name to walk through history. Matched whole-word
+        /// against file contents via `git grep --word-regexp`, then
+        /// filtered post-parse to exact `name == query`.
+        symbol: String,
+
+        /// Project root (defaults to cwd). Must be inside a git
+        /// worktree.
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Max commits to walk per file. Unbounded by default — bump
+        /// down on long-lived repos to keep latency in check.
+        #[arg(long, value_name = "N")]
+        depth: Option<usize>,
+
+        /// Restrict log walk to this revision (`refs/heads/foo`,
+        /// `origin/main`, a SHA). Defaults to `HEAD`.
+        #[arg(long, value_name = "REV")]
+        branch: Option<String>,
+
+        /// Cap the total result set. The walker stops as soon as the
+        /// limit is reached.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+    },
+
     /// v1.15.0 — manage the `vex-mcp` server entry in your coding
     /// agent's config. `install` adds the entry idempotently;
     /// `uninstall` removes it; `list` shows current entries.

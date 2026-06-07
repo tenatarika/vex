@@ -9,6 +9,7 @@ mod embed;
 mod eval;
 mod grep;
 mod hierarchy;
+mod history;
 mod index;
 mod integrations;
 mod parse;

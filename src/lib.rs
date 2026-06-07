@@ -5,6 +5,7 @@ pub mod embed;
 pub mod eval;
 pub mod grep;
 pub mod hierarchy;
+pub mod history;
 pub mod index;
 pub mod integrations;
 pub mod parse;
