@@ -10,6 +10,7 @@ mod eval;
 mod grep;
 mod hierarchy;
 mod index;
+mod integrations;
 mod parse;
 mod pattern;
 mod protocol;

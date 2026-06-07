@@ -873,8 +873,23 @@ pub enum Commands {
         shell: Shell,
     },
 
-    /// Create a default .vex.toml config file in the current directory
-    Init,
+    /// Create a default .vex.toml config file in the current directory.
+    /// With `--agents-md`, also writes a community-convention AGENTS.md
+    /// next to it (readable by Cursor / Codex CLI / Aider / Cline / etc.
+    /// as a fallback to their own per-tool config files).
+    Init {
+        /// Also write an AGENTS.md template next to `.vex.toml`. Refuses
+        /// to overwrite an existing AGENTS.md.
+        #[arg(long)]
+        agents_md: bool,
+
+        /// Skip the `.vex.toml` write — only emit AGENTS.md. Useful for
+        /// projects that already have a `.vex.toml` but want the agent
+        /// instruction file too. Mutually exclusive with the default
+        /// behaviour; ignored without `--agents-md`.
+        #[arg(long, requires = "agents_md")]
+        agents_md_only: bool,
+    },
 
     /// Print machine-readable capabilities matrix (Phase 13.0).
     Capabilities,

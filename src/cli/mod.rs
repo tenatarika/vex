@@ -420,7 +420,10 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
         ),
 
         Commands::Completions { shell } => cmd_trivial::completions(shell),
-        Commands::Init => cmd_trivial::init(),
+        Commands::Init {
+            agents_md,
+            agents_md_only,
+        } => cmd_trivial::init(agents_md, agents_md_only),
         Commands::Capabilities => cmd_trivial::capabilities(),
 
         Commands::Eval {

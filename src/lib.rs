@@ -6,6 +6,7 @@ pub mod eval;
 pub mod grep;
 pub mod hierarchy;
 pub mod index;
+pub mod integrations;
 pub mod parse;
 pub mod pattern;
 pub mod protocol;

@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use clap::CommandFactory;
 
 use super::args::Cli;
+use crate::integrations::agents_md;
 use crate::util::config;
 
 /// `vex completions <shell>` — emit a shell-completion script.
@@ -18,16 +19,30 @@ pub(crate) fn completions(shell: clap_complete::Shell) -> Result<()> {
 }
 
 /// `vex init` — drop a default `.vex.toml` into the current directory.
-pub(crate) fn init() -> Result<()> {
-    let path = std::env::current_dir()
-        .context("get working directory")?
-        .join(".vex.toml");
-    if path.exists() {
-        bail!(".vex.toml already exists at {}", path.display());
+///
+/// `agents_md` adds a generic AGENTS.md (community-convention agent
+/// instruction file) next to the config. `agents_md_only` skips the
+/// `.vex.toml` write — useful when the project already has one but
+/// hasn't yet adopted the AGENTS.md convention. The flag combination
+/// is enforced at the clap layer (`requires = "agents_md"`).
+pub(crate) fn init(agents_md: bool, agents_md_only: bool) -> Result<()> {
+    let cwd = std::env::current_dir().context("get working directory")?;
+
+    if !agents_md_only {
+        let path = cwd.join(".vex.toml");
+        if path.exists() {
+            bail!(".vex.toml already exists at {}", path.display());
+        }
+        std::fs::write(&path, config::DEFAULT_CONFIG)
+            .with_context(|| format!("write {}", path.display()))?;
+        println!("Created {}", path.display());
     }
-    std::fs::write(&path, config::DEFAULT_CONFIG)
-        .with_context(|| format!("write {}", path.display()))?;
-    println!("Created {}", path.display());
+
+    if agents_md {
+        let path = agents_md::write_template(&cwd)?;
+        println!("Created {}", path.display());
+    }
+
     Ok(())
 }
 

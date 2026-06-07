@@ -8,6 +8,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`vex init --agents-md` — emit an AGENTS.md template.** The
+  community-convention `AGENTS.md` file is read as a fallback to
+  per-tool configs by Cursor / Codex CLI / Aider / Cline / Windsurf
+  and most non-Claude agents; v1.15.0's `vex init` gains an
+  `--agents-md` flag that drops a generic vex-aware AGENTS.md (load-
+  bearing rules + tool-selection table + MCP-setup pointer) next to
+  the `.vex.toml`. `--agents-md-only` is the variant for projects
+  that already have `.vex.toml` but want the agent file too.
+  Refuses to overwrite an existing AGENTS.md (same idempotent
+  behaviour as `.vex.toml`). 4 unit tests pin the template marker
+  (`# AGENTS.md\n` first line, used by downstream linters), the
+  load-bearing-flag advertisement (`--strict` must appear), and the
+  refuse-on-conflict path.
+
 - **B1.2 — incremental HNSW update on `vex update --semantic`.** `vex
   update` now tries `usearch::Index::load() → remove() → add() → save()`
   on the existing HNSW instead of rebuilding it from scratch on every
