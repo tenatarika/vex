@@ -4,6 +4,18 @@ Ready-to-paste MCP-server configs for every editor or coding agent that speaks t
 
 ## Quick start
 
+The fastest path (v1.15.0+) is `vex mcp install --agent <id>` — it reads your existing agent config, merges a `vex` server entry without disturbing siblings, and writes back atomically:
+
+```bash
+vex mcp install --agent cursor               # or: claude-code, codex-cli, windsurf, cline, continue, zed
+vex mcp install --agent all                  # configure every supported agent
+vex mcp install --agent cursor --dry-run     # preview without writing
+vex mcp uninstall --agent cursor             # remove the entry
+vex mcp list                                 # show current entries per agent
+```
+
+The snippets in this folder are still useful for **manual edits**, **agents the auto-installer doesn't know yet**, and **inspection** (the install command writes the same shapes you see here). To use them by hand:
+
 1. Install the `vex-mcp` binary (download from a release, or `cargo build --release -p vex-mcp`).
 2. Pick your agent's folder below.
 3. Copy the contents into the listed config path.

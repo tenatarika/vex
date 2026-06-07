@@ -47,7 +47,14 @@ This repository is indexed by [vex](https://github.com/tenatarika/vex). Prefer `
 
 ## MCP-capable agents
 
-For Claude Code / Cursor / Codex CLI / Windsurf / Cline / Continue.dev / Zed, the same surface is available via the `vex-mcp` server. Ready-to-paste config snippets per agent live in [`integrations/`](https://github.com/tenatarika/vex/tree/main/integrations) in the vex repo.
+For Claude Code / Cursor / Codex CLI / Windsurf / Cline / Continue.dev / Zed, the same surface is available via the `vex-mcp` server. One-line setup:
+
+```bash
+vex mcp install --agent cursor       # or any of: claude-code, codex-cli, windsurf, cline, continue, zed
+vex mcp install --agent all          # configure every supported agent
+```
+
+`vex mcp install` is idempotent — re-running is a no-op skip. Use `--dry-run` to preview, `--force` to overwrite an existing entry. Manual config-file snippets live in [`integrations/`](https://github.com/tenatarika/vex/tree/main/integrations) for agents the auto-installer doesn't yet know.
 
 ## Further reading
 

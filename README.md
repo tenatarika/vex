@@ -728,7 +728,19 @@ For other MCP-compatible clients (Cursor, Codex CLI, Windsurf, Cline, Continue.d
 
 ### Other MCP Clients
 
-The same `vex-mcp` binary works with any MCP-compatible client. The binary install is identical to the Claude Code section above; only the per-client config file location and format differ. Copy-pasteable snippets for the most common ones live under [`integrations/`](integrations/):
+The same `vex-mcp` binary works with any MCP-compatible client. The binary install is identical to the Claude Code section above; only the per-client config file location and format differ.
+
+**One-line setup (v1.15.0+)**:
+
+```bash
+vex mcp install --agent cursor       # or any of: claude-code, codex-cli, windsurf, cline, continue, zed
+vex mcp install --agent all          # fan out across every supported agent
+vex mcp install --agent cursor --dry-run   # preview the post-merge config without writing
+```
+
+`vex mcp install` reads your existing agent config, merges a single `vex` server entry without disturbing siblings, and writes back atomically. Idempotent — re-running on a matching entry is a no-op skip (`--force` overrides). `vex mcp uninstall --agent <X>` removes the entry; `vex mcp list` enumerates current entries per agent. The same seven config files documented below are exactly what `vex mcp install` writes — keep [`integrations/`](integrations/) handy for manual edits, agents the auto-installer doesn't know yet, or anything more exotic than the default shape.
+
+Copy-pasteable snippets for the most common ones live under [`integrations/`](integrations/):
 
 | Agent              | Snippet                                                                            | Target file on disk                                                  |
 | ------------------ | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
