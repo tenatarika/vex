@@ -14,3 +14,4 @@
 //!   under [`integrations/`](../../integrations/).
 
 pub mod agents_md;
+pub mod mcp;

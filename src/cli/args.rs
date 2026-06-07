@@ -894,6 +894,19 @@ pub enum Commands {
     /// Print machine-readable capabilities matrix (Phase 13.0).
     Capabilities,
 
+    /// v1.15.0 — manage the `vex-mcp` server entry in your coding
+    /// agent's config. `install` adds the entry idempotently;
+    /// `uninstall` removes it; `list` shows current entries.
+    /// `--agent all` fans out across every supported agent.
+    ///
+    /// Supported agents: `claude-code`, `cursor`. More land in the
+    /// follow-up commits — `codex-cli`, `windsurf`, `cline`,
+    /// `continue`, `zed`.
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+
     /// Phase 13.2 — unified multi-source bundle primitive. One command,
     /// three modes (`symbol`, `pr-impact`, `project`) that assemble a
     /// structured response from existing v6 index sections. Replaces the
@@ -1013,5 +1026,65 @@ pub enum Commands {
         /// Skip the interactive confirmation prompt.
         #[arg(short = 'y', long)]
         yes: bool,
+    },
+}
+
+/// Sub-action for `vex mcp ...`. Each variant maps 1:1 to a function
+/// in [`crate::cli::cmd_mcp`].
+#[derive(Subcommand)]
+pub enum McpAction {
+    /// Register the `vex-mcp` server entry in the agent's MCP config.
+    /// Idempotent: skips writes when an entry already matches the
+    /// intended shape unless `--force` is set.
+    Install {
+        /// Target agent. Use `all` to install into every supported
+        /// agent at once. See `vex mcp install --help` for the list.
+        #[arg(long, value_name = "ID")]
+        agent: String,
+
+        /// Name registered in the agent's MCP server table. Defaults
+        /// to `vex`. Use distinct names per `VEX_ROOT` for multi-repo
+        /// setups (`vex-api` / `vex-client`).
+        #[arg(long, value_name = "NAME")]
+        server_name: Option<String>,
+
+        /// Absolute path to the `vex-mcp` binary. Defaults to the
+        /// sibling of the currently-running `vex` binary; falls back
+        /// to bare `vex-mcp` (PATH lookup) otherwise.
+        #[arg(long, value_name = "PATH")]
+        binary_path: Option<PathBuf>,
+
+        /// Project root passed to the server via `VEX_ROOT`. Defaults
+        /// to the current working directory.
+        #[arg(long, value_name = "PATH")]
+        project_root: Option<PathBuf>,
+
+        /// Don't touch any files — print what *would* be written.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Overwrite an existing entry with the same `--server-name`.
+        /// Without this, install on an existing matching entry is a
+        /// no-op skip; install on an existing *differing* entry also
+        /// requires `--force` (deliberate — protects hand-tuned configs).
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Remove the named server entry from the agent's MCP config.
+    /// Idempotent: no error if the entry was already absent.
+    Uninstall {
+        #[arg(long, value_name = "ID")]
+        agent: String,
+
+        #[arg(long, value_name = "NAME")]
+        server_name: Option<String>,
+    },
+
+    /// Print the MCP server entries currently configured for one
+    /// agent (with `--agent <id>`) or all supported agents (default).
+    List {
+        #[arg(long, value_name = "ID")]
+        agent: Option<String>,
     },
 }

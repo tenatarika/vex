@@ -8,6 +8,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`vex mcp install / uninstall / list` — auto-configure MCP-compatible
+  agents.** Adds (or removes) the `vex-mcp` entry in your agent's MCP
+  config file without hand-editing JSON / TOML / YAML.
+  `vex mcp install --agent claude-code` writes
+  `~/.claude/claude_desktop_config.json`; `--agent cursor` writes
+  `~/.cursor/mcp.json` with the `"type": "stdio"` quirk Cursor
+  requires. Idempotent — re-running the command on a matching entry
+  is a no-op skip (`--force` overrides). `--dry-run` prints the
+  post-merge config without touching files so the user can diff
+  before committing. Atomic writes (`.tmp` + fsync + rename) so a
+  crash mid-write can never leave a half-rendered config. `--agent
+  all` fans out across every supported agent; `vex mcp uninstall`
+  removes the named entry; `vex mcp list` enumerates current entries.
+  This commit ships **Claude Code** + **Cursor**; the follow-up
+  commits add Windsurf / Cline / Zed (JSON profiles), Codex CLI
+  (TOML), and Continue.dev (YAML, drops a dedicated
+  `.continue/mcpServers/vex.yaml` rather than merging). Architecture:
+  `McpAgentHandler` trait + shared `JsonProfile`-driven install /
+  uninstall / list primitives in [`src/integrations/mcp.rs`]; each
+  agent contributes a handler with a one-line profile and a
+  `config_path()` resolver. 12 unit tests pin idempotence, preserve-
+  other-servers, dry-run-no-write, force-overwrite, Cursor's
+  `type: stdio` profile, and uninstall-only-targeted-entry.
+
 - **`vex init --agents-md` — emit an AGENTS.md template.** The
   community-convention `AGENTS.md` file is read as a fallback to
   per-tool configs by Cursor / Codex CLI / Aider / Cline / Windsurf

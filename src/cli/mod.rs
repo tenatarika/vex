@@ -8,6 +8,7 @@ pub(crate) mod cmd_eval;
 pub(crate) mod cmd_grep;
 pub(crate) mod cmd_implementations;
 pub(crate) mod cmd_index;
+pub(crate) mod cmd_mcp;
 pub(crate) mod cmd_outline;
 pub(crate) mod cmd_pattern;
 pub(crate) mod cmd_search;
@@ -425,6 +426,28 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             agents_md_only,
         } => cmd_trivial::init(agents_md, agents_md_only),
         Commands::Capabilities => cmd_trivial::capabilities(),
+
+        Commands::Mcp { action } => match action {
+            args::McpAction::Install {
+                agent,
+                server_name,
+                binary_path,
+                project_root,
+                dry_run,
+                force,
+            } => cmd_mcp::install(
+                &agent,
+                server_name,
+                binary_path,
+                project_root,
+                dry_run,
+                force,
+            ),
+            args::McpAction::Uninstall { agent, server_name } => {
+                cmd_mcp::uninstall(&agent, server_name)
+            }
+            args::McpAction::List { agent } => cmd_mcp::list(agent.as_deref()),
+        },
 
         Commands::Eval {
             bench,
