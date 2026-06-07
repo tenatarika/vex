@@ -171,7 +171,11 @@ struct CommitMeta {
 /// pattern in [`crate::util::git_diff::ensure_git_worktree`]. We don't
 /// reuse that helper because it's `pub(crate)` *inside* util and
 /// surfaces a `--since` / `--changed-only` error message.
-fn ensure_git_worktree(repo_root: &Path) -> Result<()> {
+///
+/// Promoted to `pub(crate)` so the v1.17 Phase 14.8
+/// `history_builder` module can reuse it without duplicating the
+/// shellout (rust-reviewer SHOULD-FIX #11).
+pub(crate) fn ensure_git_worktree(repo_root: &Path) -> Result<()> {
     let out = Command::new("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(repo_root)
