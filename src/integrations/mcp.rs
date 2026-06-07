@@ -118,7 +118,13 @@ pub trait McpAgentHandler: Send + Sync + std::fmt::Debug {
 /// `integrations/README.md` so `vex mcp install --agent all` produces
 /// deterministic output across runs.
 pub fn known_agents() -> Vec<Box<dyn McpAgentHandler>> {
-    vec![Box::new(ClaudeCodeHandler), Box::new(CursorHandler)]
+    vec![
+        Box::new(ClaudeCodeHandler),
+        Box::new(CursorHandler),
+        Box::new(WindsurfHandler),
+        Box::new(ClineHandler),
+        Box::new(ZedHandler),
+    ]
 }
 
 /// Look up an agent by its `--agent <id>` value.
@@ -388,6 +394,111 @@ impl McpAgentHandler for CursorHandler {
     }
 }
 
+/// Windsurf (Codeium) — `~/.codeium/windsurf/mcp_config.json`. Same
+/// canonical JSON profile as Claude Code; only the config path differs.
+#[derive(Debug)]
+pub struct WindsurfHandler;
+
+const WINDSURF_PROFILE: JsonProfile = JsonProfile {
+    root_key: "mcpServers",
+    emit_type_stdio: false,
+    emit_cline_extras: false,
+};
+
+impl McpAgentHandler for WindsurfHandler {
+    fn id(&self) -> &'static str {
+        "windsurf"
+    }
+    fn display_name(&self) -> &'static str {
+        "Windsurf"
+    }
+    fn config_path(&self) -> Result<PathBuf> {
+        Ok(home_dir()?
+            .join(".codeium")
+            .join("windsurf")
+            .join("mcp_config.json"))
+    }
+    fn install(&self, ctx: &InstallContext) -> Result<InstallOutcome> {
+        install_json(&WINDSURF_PROFILE, &self.config_path()?, ctx)
+    }
+    fn uninstall(&self, server_name: &str) -> Result<UninstallOutcome> {
+        uninstall_json(&WINDSURF_PROFILE, &self.config_path()?, server_name)
+    }
+    fn list_servers(&self) -> Result<Vec<String>> {
+        list_json(&WINDSURF_PROFILE, &self.config_path()?)
+    }
+}
+
+/// Cline — `~/.cline/mcp.json` (the standalone CLI variant; VS Code
+/// extension users normally edit via the panel UI). Same `mcpServers`
+/// root as the other JSON agents but tacks on `disabled: false` +
+/// `autoApprove: []` per entry.
+#[derive(Debug)]
+pub struct ClineHandler;
+
+const CLINE_PROFILE: JsonProfile = JsonProfile {
+    root_key: "mcpServers",
+    emit_type_stdio: false,
+    emit_cline_extras: true,
+};
+
+impl McpAgentHandler for ClineHandler {
+    fn id(&self) -> &'static str {
+        "cline"
+    }
+    fn display_name(&self) -> &'static str {
+        "Cline"
+    }
+    fn config_path(&self) -> Result<PathBuf> {
+        Ok(home_dir()?.join(".cline").join("mcp.json"))
+    }
+    fn install(&self, ctx: &InstallContext) -> Result<InstallOutcome> {
+        install_json(&CLINE_PROFILE, &self.config_path()?, ctx)
+    }
+    fn uninstall(&self, server_name: &str) -> Result<UninstallOutcome> {
+        uninstall_json(&CLINE_PROFILE, &self.config_path()?, server_name)
+    }
+    fn list_servers(&self) -> Result<Vec<String>> {
+        list_json(&CLINE_PROFILE, &self.config_path()?)
+    }
+}
+
+/// Zed — `~/.config/zed/settings.json`. Differs from the others in
+/// the root key (`context_servers` not `mcpServers`); otherwise the
+/// JSON shape is the same.
+#[derive(Debug)]
+pub struct ZedHandler;
+
+const ZED_PROFILE: JsonProfile = JsonProfile {
+    root_key: "context_servers",
+    emit_type_stdio: false,
+    emit_cline_extras: false,
+};
+
+impl McpAgentHandler for ZedHandler {
+    fn id(&self) -> &'static str {
+        "zed"
+    }
+    fn display_name(&self) -> &'static str {
+        "Zed"
+    }
+    fn config_path(&self) -> Result<PathBuf> {
+        Ok(home_dir()?
+            .join(".config")
+            .join("zed")
+            .join("settings.json"))
+    }
+    fn install(&self, ctx: &InstallContext) -> Result<InstallOutcome> {
+        install_json(&ZED_PROFILE, &self.config_path()?, ctx)
+    }
+    fn uninstall(&self, server_name: &str) -> Result<UninstallOutcome> {
+        uninstall_json(&ZED_PROFILE, &self.config_path()?, server_name)
+    }
+    fn list_servers(&self) -> Result<Vec<String>> {
+        list_json(&ZED_PROFILE, &self.config_path()?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +641,48 @@ mod tests {
             v["mcpServers"]["vex"]["type"],
             serde_json::json!("stdio"),
             "Cursor profile must emit `type: stdio` — it is the only client that requires it"
+        );
+    }
+
+    #[test]
+    fn cline_profile_emits_disabled_and_autoapprove() {
+        // Cline-specific keys: `disabled: false` + `autoApprove: []`.
+        // Without these the entry still parses but Cline's UI doesn't
+        // recognise it as "enabled" — a silent broken-install class
+        // of bug that's worth pinning.
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("mcp.json");
+        let ctx = make_ctx("vex", tmp.path());
+
+        install_json(&CLINE_PROFILE, &cfg, &ctx).unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let entry = &v["mcpServers"]["vex"];
+        assert_eq!(entry["disabled"], serde_json::json!(false));
+        assert_eq!(entry["autoApprove"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn zed_profile_uses_context_servers_root_not_mcp_servers() {
+        // Zed is the lone outlier on the root key. Pinning catches a
+        // typo regression that would write `mcpServers` and have Zed
+        // silently ignore the entry.
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("settings.json");
+        let ctx = make_ctx("vex", tmp.path());
+
+        install_json(&ZED_PROFILE, &cfg, &ctx).unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert!(
+            v.get("context_servers").is_some(),
+            "Zed must write under `context_servers`, got: {v}"
+        );
+        assert!(
+            v.get("mcpServers").is_none(),
+            "Zed must NOT write under `mcpServers` — that key is for the other clients"
         );
     }
 

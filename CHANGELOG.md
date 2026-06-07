@@ -21,10 +21,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   crash mid-write can never leave a half-rendered config. `--agent
   all` fans out across every supported agent; `vex mcp uninstall`
   removes the named entry; `vex mcp list` enumerates current entries.
-  This commit ships **Claude Code** + **Cursor**; the follow-up
-  commits add Windsurf / Cline / Zed (JSON profiles), Codex CLI
-  (TOML), and Continue.dev (YAML, drops a dedicated
-  `.continue/mcpServers/vex.yaml` rather than merging). Architecture:
+  The scaffolding commit shipped Claude Code + Cursor; this commit
+  adds **Windsurf** (`~/.codeium/windsurf/mcp_config.json`), **Cline**
+  (`~/.cline/mcp.json` with the `disabled` + `autoApprove` quirks), and
+  **Zed** (`~/.config/zed/settings.json`, `context_servers` root key
+  instead of `mcpServers`). Codex CLI (TOML) and Continue.dev (YAML)
+  follow. Architecture:
   `McpAgentHandler` trait + shared `JsonProfile`-driven install /
   uninstall / list primitives in [`src/integrations/mcp.rs`]; each
   agent contributes a handler with a one-line profile and a
