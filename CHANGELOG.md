@@ -21,12 +21,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   crash mid-write can never leave a half-rendered config. `--agent
   all` fans out across every supported agent; `vex mcp uninstall`
   removes the named entry; `vex mcp list` enumerates current entries.
-  The scaffolding commit shipped Claude Code + Cursor; this commit
-  adds **Windsurf** (`~/.codeium/windsurf/mcp_config.json`), **Cline**
-  (`~/.cline/mcp.json` with the `disabled` + `autoApprove` quirks), and
-  **Zed** (`~/.config/zed/settings.json`, `context_servers` root key
-  instead of `mcpServers`). Codex CLI (TOML) and Continue.dev (YAML)
-  follow. Architecture:
+  v1.15.0 ships all seven handlers: **Claude Code** + **Cursor** +
+  **Windsurf** + **Cline** + **Zed** (JSON with per-agent quirks),
+  **Codex CLI** (TOML, `[mcp_servers.<name>]` table-of-tables; same
+  preserve-other-keys discipline as the JSON path — bench-tested
+  against a real `~/.codex/config.toml` carrying unrelated
+  `personality`/`hooks` keys), and **Continue.dev** (YAML, drops a
+  dedicated `<project>/.continue/mcpServers/<server_name>.yaml`
+  rather than merging into a shared file, matching Continue's
+  documented one-server-per-file convention and side-stepping the
+  need to pull in a YAML library). 5 additional unit tests pin the
+  TOML/YAML paths (top-level-key preservation, surgical uninstall,
+  idempotent re-install, Continue YAML exact-shape regression guard). Architecture:
   `McpAgentHandler` trait + shared `JsonProfile`-driven install /
   uninstall / list primitives in [`src/integrations/mcp.rs`]; each
   agent contributes a handler with a one-line profile and a

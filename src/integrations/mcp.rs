@@ -121,8 +121,10 @@ pub fn known_agents() -> Vec<Box<dyn McpAgentHandler>> {
     vec![
         Box::new(ClaudeCodeHandler),
         Box::new(CursorHandler),
+        Box::new(CodexCliHandler),
         Box::new(WindsurfHandler),
         Box::new(ClineHandler),
+        Box::new(ContinueDevHandler),
         Box::new(ZedHandler),
     ]
 }
@@ -325,6 +327,117 @@ fn build_json_entry(profile: &JsonProfile, ctx: &InstallContext) -> serde_json::
 }
 
 // ────────────────────────────────────────────────────────────────────
+// TOML merge primitives (Codex CLI)
+// ────────────────────────────────────────────────────────────────────
+
+/// Build the `[mcp_servers.<name>]` table value: `command` + `env`
+/// (matching the documented Codex CLI MCP schema). Other optional
+/// fields (timeouts, enabled_tools) are left to the user — vex
+/// install seeds only the minimum.
+fn build_toml_entry(ctx: &InstallContext) -> toml::Value {
+    let mut entry = toml::map::Map::new();
+    entry.insert(
+        "command".to_string(),
+        toml::Value::String(ctx.binary_path.to_string_lossy().to_string()),
+    );
+    let mut env = toml::map::Map::new();
+    env.insert(
+        "VEX_ROOT".to_string(),
+        toml::Value::String(ctx.project_root.to_string_lossy().to_string()),
+    );
+    entry.insert("env".to_string(), toml::Value::Table(env));
+    toml::Value::Table(entry)
+}
+
+pub(crate) fn install_toml(config_path: &Path, ctx: &InstallContext) -> Result<InstallOutcome> {
+    let mut doc = read_or_empty_toml_table(config_path)?;
+    let mcp_servers = doc
+        .entry("mcp_servers".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("`mcp_servers` is not a TOML table")?;
+
+    let desired = build_toml_entry(ctx);
+
+    if let Some(existing) = mcp_servers.get(&ctx.server_name) {
+        if existing == &desired && !ctx.force {
+            return Ok(InstallOutcome::AlreadyExists {
+                config_path: config_path.to_path_buf(),
+            });
+        }
+    }
+
+    mcp_servers.insert(ctx.server_name.clone(), desired);
+
+    let rendered = toml::to_string_pretty(&toml::Value::Table(doc))
+        .context("serialize Codex config to TOML")?;
+
+    if ctx.dry_run {
+        return Ok(InstallOutcome::WouldInstall {
+            config_path: config_path.to_path_buf(),
+            preview: rendered,
+        });
+    }
+    atomic_write(config_path, &rendered)?;
+    Ok(InstallOutcome::Installed {
+        config_path: config_path.to_path_buf(),
+    })
+}
+
+pub(crate) fn uninstall_toml(config_path: &Path, server_name: &str) -> Result<UninstallOutcome> {
+    if !config_path.exists() {
+        return Ok(UninstallOutcome::NotFound {
+            config_path: config_path.to_path_buf(),
+        });
+    }
+    let mut doc = read_or_empty_toml_table(config_path)?;
+    let removed = doc
+        .get_mut("mcp_servers")
+        .and_then(|v| v.as_table_mut())
+        .and_then(|t| t.remove(server_name))
+        .is_some();
+    if !removed {
+        return Ok(UninstallOutcome::NotFound {
+            config_path: config_path.to_path_buf(),
+        });
+    }
+    let rendered = toml::to_string_pretty(&toml::Value::Table(doc))?;
+    atomic_write(config_path, &rendered)?;
+    Ok(UninstallOutcome::Removed {
+        config_path: config_path.to_path_buf(),
+    })
+}
+
+pub(crate) fn list_toml(config_path: &Path) -> Result<Vec<String>> {
+    if !config_path.exists() {
+        return Ok(Vec::new());
+    }
+    let doc = read_or_empty_toml_table(config_path)?;
+    Ok(doc
+        .get("mcp_servers")
+        .and_then(|v| v.as_table())
+        .map(|t| t.keys().cloned().collect())
+        .unwrap_or_default())
+}
+
+fn read_or_empty_toml_table(path: &Path) -> Result<toml::map::Map<String, toml::Value>> {
+    if !path.exists() {
+        return Ok(toml::map::Map::new());
+    }
+    let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(toml::map::Map::new());
+    }
+    let value: toml::Value =
+        toml::from_str(trimmed).with_context(|| format!("parse {} as TOML", path.display()))?;
+    match value {
+        toml::Value::Table(t) => Ok(t),
+        _ => bail!("{} must be a TOML table at the top level", path.display()),
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
 // Concrete handlers
 // ────────────────────────────────────────────────────────────────────
 
@@ -461,6 +574,134 @@ impl McpAgentHandler for ClineHandler {
     fn list_servers(&self) -> Result<Vec<String>> {
         list_json(&CLINE_PROFILE, &self.config_path()?)
     }
+}
+
+/// Codex CLI (OpenAI) — `~/.codex/config.toml`. TOML format
+/// (`[mcp_servers.<name>]` table). Uses the dedicated install_toml /
+/// uninstall_toml / list_toml primitives instead of the JSON path.
+#[derive(Debug)]
+pub struct CodexCliHandler;
+
+impl McpAgentHandler for CodexCliHandler {
+    fn id(&self) -> &'static str {
+        "codex-cli"
+    }
+    fn display_name(&self) -> &'static str {
+        "Codex CLI"
+    }
+    fn config_path(&self) -> Result<PathBuf> {
+        Ok(home_dir()?.join(".codex").join("config.toml"))
+    }
+    fn install(&self, ctx: &InstallContext) -> Result<InstallOutcome> {
+        install_toml(&self.config_path()?, ctx)
+    }
+    fn uninstall(&self, server_name: &str) -> Result<UninstallOutcome> {
+        uninstall_toml(&self.config_path()?, server_name)
+    }
+    fn list_servers(&self) -> Result<Vec<String>> {
+        list_toml(&self.config_path()?)
+    }
+}
+
+/// Continue.dev — drops a per-server YAML file at
+/// `<project>/.continue/mcpServers/<server_name>.yaml` rather than
+/// merging into a shared file. This matches Continue's documented
+/// "one server per file in the mcpServers/ directory" convention and
+/// neatly side-steps needing a YAML library — the file is small
+/// enough to render from a format string.
+///
+/// `config_path()` returns the *directory*, not a file — install
+/// resolves the per-server filename internally. Uninstall + list
+/// operate on the same directory.
+#[derive(Debug)]
+pub struct ContinueDevHandler;
+
+impl ContinueDevHandler {
+    /// Project-scoped — Continue looks for the directory relative to
+    /// the workspace root, which at `vex mcp install` time is the
+    /// current working directory.
+    fn dir(&self) -> Result<PathBuf> {
+        Ok(std::env::current_dir()
+            .context("get working directory")?
+            .join(".continue")
+            .join("mcpServers"))
+    }
+}
+
+impl McpAgentHandler for ContinueDevHandler {
+    fn id(&self) -> &'static str {
+        "continue"
+    }
+    fn display_name(&self) -> &'static str {
+        "Continue.dev"
+    }
+    fn config_path(&self) -> Result<PathBuf> {
+        self.dir()
+    }
+    fn install(&self, ctx: &InstallContext) -> Result<InstallOutcome> {
+        let file = self.dir()?.join(format!("{}.yaml", ctx.server_name));
+        let yaml = render_continue_yaml(ctx);
+
+        if file.exists() && !ctx.force {
+            let existing = std::fs::read_to_string(&file)
+                .with_context(|| format!("read {}", file.display()))?;
+            if existing == yaml {
+                return Ok(InstallOutcome::AlreadyExists { config_path: file });
+            }
+            // Differs but no --force — surface AlreadyExists so the
+            // user gets the "use --force" hint instead of a surprise
+            // overwrite of a hand-edited file.
+            return Ok(InstallOutcome::AlreadyExists { config_path: file });
+        }
+
+        if ctx.dry_run {
+            return Ok(InstallOutcome::WouldInstall {
+                config_path: file,
+                preview: yaml,
+            });
+        }
+        atomic_write(&file, &yaml)?;
+        Ok(InstallOutcome::Installed { config_path: file })
+    }
+    fn uninstall(&self, server_name: &str) -> Result<UninstallOutcome> {
+        let file = self.dir()?.join(format!("{server_name}.yaml"));
+        if !file.exists() {
+            return Ok(UninstallOutcome::NotFound { config_path: file });
+        }
+        std::fs::remove_file(&file).with_context(|| format!("remove {}", file.display()))?;
+        Ok(UninstallOutcome::Removed { config_path: file })
+    }
+    fn list_servers(&self) -> Result<Vec<String>> {
+        let dir = self.dir()?;
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .with_context(|| format!("read dir {}", dir.display()))?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("yaml"))
+            .filter_map(|e| {
+                e.path()
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(String::from)
+            })
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+}
+
+/// Render the Continue per-server YAML body. Hand-formatted (no YAML
+/// dep) — the file is small enough that string formatting is faster,
+/// smaller, and easier to audit than a serde_yaml round-trip.
+fn render_continue_yaml(ctx: &InstallContext) -> String {
+    format!(
+        "mcpServers:\n  - name: {}\n    type: stdio\n    command: {}\n    env:\n      VEX_ROOT: {}\n",
+        ctx.server_name,
+        ctx.binary_path.to_string_lossy(),
+        ctx.project_root.to_string_lossy(),
+    )
 }
 
 /// Zed — `~/.config/zed/settings.json`. Differs from the others in
@@ -684,6 +925,119 @@ mod tests {
             v.get("mcpServers").is_none(),
             "Zed must NOT write under `mcpServers` — that key is for the other clients"
         );
+    }
+
+    #[test]
+    fn toml_install_creates_mcp_servers_section() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.toml");
+        let ctx = make_ctx("vex", tmp.path());
+
+        install_toml(&cfg, &ctx).unwrap();
+
+        let raw = std::fs::read_to_string(&cfg).unwrap();
+        let parsed: toml::Value = toml::from_str(&raw).unwrap();
+        assert_eq!(
+            parsed["mcp_servers"]["vex"]["command"],
+            toml::Value::String("/path/to/vex-mcp".into())
+        );
+        assert_eq!(
+            parsed["mcp_servers"]["vex"]["env"]["VEX_ROOT"],
+            toml::Value::String(tmp.path().to_string_lossy().into_owned())
+        );
+    }
+
+    #[test]
+    fn toml_install_preserves_existing_top_level_keys() {
+        // Codex's config.toml carries plenty of unrelated keys (model
+        // selection, hook config, etc). Install must surgically add
+        // the [mcp_servers.vex] entry without disturbing anything else.
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.toml");
+        std::fs::write(
+            &cfg,
+            "model = \"o1-pro\"\nallow_managed_hooks_only = true\n",
+        )
+        .unwrap();
+
+        let ctx = make_ctx("vex", tmp.path());
+        install_toml(&cfg, &ctx).unwrap();
+
+        let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(parsed["model"], toml::Value::String("o1-pro".into()));
+        assert_eq!(
+            parsed["allow_managed_hooks_only"],
+            toml::Value::Boolean(true)
+        );
+        assert!(parsed["mcp_servers"]["vex"]["command"].is_str());
+    }
+
+    #[test]
+    fn toml_install_is_idempotent_when_entry_matches() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.toml");
+        let ctx = make_ctx("vex", tmp.path());
+
+        install_toml(&cfg, &ctx).unwrap();
+        let second = install_toml(&cfg, &ctx).unwrap();
+        assert!(matches!(second, InstallOutcome::AlreadyExists { .. }));
+    }
+
+    #[test]
+    fn toml_uninstall_removes_only_target_entry() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.toml");
+        std::fs::write(
+            &cfg,
+            r#"
+[mcp_servers.vex]
+command = "/vex-mcp"
+env = { VEX_ROOT = "/root" }
+
+[mcp_servers.other]
+command = "/other"
+env = { FOO = "bar" }
+
+[other_section]
+key = "value"
+"#,
+        )
+        .unwrap();
+
+        let out = uninstall_toml(&cfg, "vex").unwrap();
+        assert!(matches!(out, UninstallOutcome::Removed { .. }));
+
+        let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert!(parsed["mcp_servers"].get("vex").is_none());
+        assert_eq!(
+            parsed["mcp_servers"]["other"]["command"],
+            toml::Value::String("/other".into())
+        );
+        assert_eq!(
+            parsed["other_section"]["key"],
+            toml::Value::String("value".into())
+        );
+    }
+
+    #[test]
+    fn continue_dev_yaml_renders_with_expected_shape() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = InstallContext {
+            server_name: "vex".into(),
+            binary_path: PathBuf::from("/opt/vex-mcp"),
+            project_root: tmp.path().to_path_buf(),
+            dry_run: false,
+            force: false,
+        };
+        let yaml = render_continue_yaml(&ctx);
+        // Pin the exact Continue.dev MCP server YAML shape — drift
+        // here would silently produce files that Continue parses but
+        // doesn't recognise as a server entry.
+        assert!(yaml.starts_with("mcpServers:\n"));
+        assert!(yaml.contains("name: vex"));
+        assert!(yaml.contains("type: stdio"));
+        assert!(yaml.contains("command: /opt/vex-mcp"));
+        assert!(yaml.contains("VEX_ROOT:"));
     }
 
     #[test]
