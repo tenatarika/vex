@@ -1125,8 +1125,51 @@ pub fn build_hnsw_at(
         .reserve(vectors.len())
         .context("reserve HNSW capacity")?;
 
-    for (vec, &h) in vectors.iter().zip(hashes.iter()) {
-        index.add(h, vec).context("add vector to HNSW index")?;
+    // v1.15.1: dedup on hash key before HNSW insert ONLY. `context_hash`
+    // collapses (kind, name, path, signature, doc, body_tokens) into a
+    // u64 without a byte-offset disambiguator (see `compute_hashes_for`
+    // above), so two C++ symbols with identical signatures in the same
+    // file (forward decl + def, overloads, anonymous-namespace clones)
+    // produce the same key. usearch's high-level `Index::add` opens
+    // with `multi: false` and treats a duplicate key as a hard error,
+    // which — pre-fix — aborted the whole index build mid-corpus and
+    // left no on-disk HNSW. We keep the first occurrence (skip-and-warn)
+    // so a single collision can't bring down the semantic channel.
+    //
+    // The on-disk hash sidecar stays sym_idx-aligned (full `hashes`
+    // slice, duplicates and all) — `src/search/semantic.rs:156` checks
+    // `hashes.len() == expected_symbols` at query open and bails to
+    // brute force if they disagree. The reader at the same site already
+    // dedups duplicate hashes via `entry().or_insert` (keeps first
+    // sym_idx, logs `collisions` count), so the duplicate-symbol case
+    // is handled end-to-end without dropping any record from the index.
+    // Single `first_idx: HashMap<u64, usize>` maps each hash to the
+    // sym_idx of its FIRST occurrence — `entry().or_insert(i)` collapses
+    // the "have we seen this hash?" check and the "what was the first
+    // sym_idx?" lookup into one operation, so the warn log never needs
+    // a fallback for a missing key.
+    let mut first_idx: std::collections::HashMap<u64, usize> =
+        std::collections::HashMap::with_capacity(hashes.len());
+    let mut inserted: usize = 0;
+    let mut skipped: usize = 0;
+    for (i, (vec, &h)) in vectors.iter().zip(hashes.iter()).enumerate() {
+        use std::collections::hash_map::Entry;
+        match first_idx.entry(h) {
+            Entry::Occupied(o) => {
+                tracing::warn!(
+                    hash = format_args!("0x{h:016x}"),
+                    first_sym_idx = *o.get(),
+                    duplicate_sym_idx = i,
+                    "HNSW build: duplicate context_hash — skipping second occurrence"
+                );
+                skipped += 1;
+            }
+            Entry::Vacant(v) => {
+                v.insert(i);
+                index.add(h, vec).context("add vector to HNSW index")?;
+                inserted += 1;
+            }
+        }
     }
 
     // v1.15.0 C — two-phase atomic commit. Write both files to .tmp
@@ -1134,8 +1177,18 @@ pub fn build_hnsw_at(
     // `commit_hnsw_and_sidecar` for the full rationale.
     commit_hnsw_and_sidecar(&index, hnsw_path, hash_index_path, hashes)?;
 
+    if skipped > 0 {
+        tracing::warn!(
+            skipped_duplicates = skipped,
+            inserted,
+            input = hashes.len(),
+            "HNSW build: completed with duplicate-hash skips (v1.15.1 dedup)"
+        );
+    }
+
     tracing::info!(
-        vectors = vectors.len(),
+        vectors = inserted,
+        sidecar_entries = hashes.len(),
         path = %hnsw_path.display(),
         sidecar = %hash_index_path.display(),
         "HNSW index built"
@@ -1322,19 +1375,48 @@ pub fn build_hnsw_incremental_at(
         }
     }
 
-    let added_count = to_add_indices.len();
+    // v1.15.1: dedup add-candidates so duplicates inside the new batch
+    // (two C++ symbols with the same context_hash) don't trip usearch's
+    // `multi: false` duplicate-key error. Two collision sources exist;
+    // `to_add_indices` is built from `.filter(|h| !old_set.contains(h))`
+    // above, which handles the new-vs-existing case — leaving only the
+    // new-vs-new case for this loop to guard. The `entry()` dance
+    // mirrors the full-rebuild path so the warn log always has a
+    // first-occurrence sym_idx.
+    let mut add_first: std::collections::HashMap<u64, usize> =
+        std::collections::HashMap::with_capacity(to_add_indices.len());
+    let mut add_skipped: usize = 0;
+    let mut added_count: usize = 0;
     for &i in &to_add_indices {
-        if let Err(e) = index.add(new_hashes[i], &new_vectors[i]) {
-            // `index.save` has not run yet at this point, so the on-disk
-            // HNSW is still the original pre-load snapshot. Safe to ask
-            // caller to do a full rebuild — it will overwrite cleanly.
-            tracing::warn!(
-                sym_idx = i,
-                hash = new_hashes[i],
-                error = %e,
-                "HNSW incremental: add failed mid-batch → full rebuild"
-            );
-            return Ok(false);
+        let h = new_hashes[i];
+        use std::collections::hash_map::Entry;
+        match add_first.entry(h) {
+            Entry::Occupied(o) => {
+                tracing::warn!(
+                    hash = format_args!("0x{h:016x}"),
+                    first_sym_idx = *o.get(),
+                    duplicate_sym_idx = i,
+                    "HNSW incremental: duplicate context_hash in new batch — skipping"
+                );
+                add_skipped += 1;
+            }
+            Entry::Vacant(v) => {
+                v.insert(i);
+                if let Err(e) = index.add(h, &new_vectors[i]) {
+                    // `index.save` has not run yet at this point, so the
+                    // on-disk HNSW is still the original pre-load
+                    // snapshot. Safe to ask caller to do a full rebuild
+                    // — it will overwrite cleanly.
+                    tracing::warn!(
+                        sym_idx = i,
+                        hash = h,
+                        error = %e,
+                        "HNSW incremental: add failed mid-batch → full rebuild"
+                    );
+                    return Ok(false);
+                }
+                added_count += 1;
+            }
         }
     }
 
@@ -1352,6 +1434,14 @@ pub fn build_hnsw_incremental_at(
     // Err contract documented at the function head.
     commit_hnsw_and_sidecar(&index, hnsw_path, hash_index_path, new_hashes)
         .context("HNSW incremental: two-phase commit")?;
+
+    if add_skipped > 0 {
+        tracing::warn!(
+            skipped_duplicates = add_skipped,
+            added = added_count,
+            "HNSW incremental: completed with duplicate-hash skips in new batch (v1.15.1 dedup)"
+        );
+    }
 
     tracing::info!(
         added = added_count,
