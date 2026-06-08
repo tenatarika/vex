@@ -47,6 +47,7 @@ pub(crate) fn cmd_callgraph(
     is_callers: bool,
     auto_update: bool,
     no_stale_check: bool,
+    include_stdlib: bool,
     path_scope: &scope::PathScope,
     diff: &args::DiffFilterArgs,
 ) -> Result<()> {
@@ -127,11 +128,22 @@ pub(crate) fn cmd_callgraph(
             }
         }
     };
+    // v1.15.1: default-on stdlib/macro filter for `vex callees`. Field-
+    // test report (`.claude/Task/v1.15.1-amics-field-test-fixes.md`)
+    // showed that on a real C++ codebase the result list was swamped
+    // by `std::move`, `c_str`, `_T`, etc. — drowning the real edges.
+    // The filter only applies to callees (`is_callers == false`), and
+    // only when the user did NOT pass `--include-stdlib`. Callers are
+    // by construction user-defined functions, so the filter is a no-op
+    // there even though the parameter is plumbed for API symmetry.
+    let apply_stdlib_filter = !is_callers && !include_stdlib;
     let matches: Vec<_> = matches
         .into_iter()
         .filter(|m| {
             path_scope.accept(&m.path)
                 && changed_paths.as_ref().is_none_or(|cp| cp.contains(&m.path))
+                && (!apply_stdlib_filter
+                    || !crate::callgraph::stdlib_filter::is_likely_stdlib_or_macro(&m.name))
         })
         .take(limit)
         .collect();

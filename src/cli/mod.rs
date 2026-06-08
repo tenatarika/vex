@@ -27,6 +27,7 @@ pub(crate) mod index_management;
 pub mod output;
 pub mod scope;
 pub mod show_truncate;
+pub(crate) mod stale_signal;
 pub(crate) mod status_coverage;
 pub mod trace;
 
@@ -88,6 +89,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             path,
             semantic,
             no_semantic,
+            drop_semantic,
             embedder,
             jobs,
             no_call_graph,
@@ -101,6 +103,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             path,
             semantic,
             no_semantic,
+            drop_semantic,
             embedder,
             jobs,
             no_call_graph,
@@ -299,6 +302,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
                 true,
                 auto_update,
                 no_stale_check,
+                true, // include_stdlib: irrelevant for callers (filter is callees-only)
                 &path_scope,
                 &diff,
             )
@@ -309,6 +313,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             limit,
             auto_update,
             no_stale_check,
+            include_stdlib,
             scope,
             diff,
         } => {
@@ -321,6 +326,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
                 false,
                 auto_update,
                 no_stale_check,
+                include_stdlib,
                 &path_scope,
                 &diff,
             )

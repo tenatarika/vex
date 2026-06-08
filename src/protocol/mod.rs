@@ -68,6 +68,35 @@ pub struct MetaEnvelope {
         skip_serializing_if = "Option::is_none"
     )]
     pub diff_filter: Option<serde_json::Value>,
+    /// v1.15.1 HIGH: set to `Some(true)` when the on-disk index is stale
+    /// AND an auto-update attempt failed during this request. The
+    /// envelope still carries `results` against the existing (stale)
+    /// index — the caller should treat the data as a best-effort
+    /// snapshot, not a fresh refresh.
+    ///
+    /// Pre-v1.15.1 a failed `pipeline::update` bubbled up as a non-zero
+    /// CLI exit → the MCP wrapper surfaced an error or, in one observed
+    /// case for `vex usages`, an empty `{results: []}` wrapped in an
+    /// MCP error string. Agents trusted the "0 results" answer and made
+    /// wrong decisions. This field is the explicit "the answer you got
+    /// is stale, here's why" signal.
+    #[serde(rename = "vex.dev/stale", skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
+    /// Human-readable reason the auto-update failed when [`Self::stale`]
+    /// is set. Verbatim from `pipeline::update`'s formatted error chain
+    /// (`{e:#}`). Typically short enough to log directly.
+    #[serde(
+        rename = "vex.dev/stale_reason",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stale_reason: Option<String>,
+    /// v1.15.1: trace data from `--why`-eligible commands (currently
+    /// `vex usages --strict --why`). Pre-v1.15.1 the trace was only
+    /// emitted on stderr (`VEX_WHY:` prefix) and never attached to the
+    /// success envelope — JSON consumers couldn't observe it. The same
+    /// `vex.dev/` namespace as the other observability fields.
+    #[serde(rename = "vex.dev/why_trace", skip_serializing_if = "Option::is_none")]
+    pub why_trace: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Clone, Debug)]

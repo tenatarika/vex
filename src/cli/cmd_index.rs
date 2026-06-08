@@ -20,6 +20,7 @@ pub(crate) fn index(
     path: Option<std::path::PathBuf>,
     semantic: bool,
     no_semantic: bool,
+    drop_semantic: bool,
     embedder: Option<String>,
     _jobs: Option<usize>,
     no_call_graph: bool,
@@ -40,7 +41,7 @@ pub(crate) fn index(
     }
     // Fresh `vex index` ignores any prior manifest (it's about to be
     // overwritten). CLI flag > .vex.toml > default(true).
-    let opts = build_index_options(
+    let mut opts = build_index_options(
         with_semantic,
         no_call_graph,
         no_bm25,
@@ -51,6 +52,10 @@ pub(crate) fn index(
         ctx.cfg,
         None,
     );
+    // v1.15.1: `--drop-semantic` requires `--no-semantic` (clap-enforced),
+    // so `with_semantic` is guaranteed false here when `drop_semantic` is
+    // true. The flag is request-scoped — never persisted into the manifest.
+    opts.drop_semantic = drop_semantic;
     let outcome = if no_wait {
         pipeline::run_or_busy(&root, opts, &embedder_id, ctx.excludes)?
     } else {

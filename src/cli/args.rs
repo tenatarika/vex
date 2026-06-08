@@ -155,9 +155,21 @@ pub enum Commands {
         #[arg(long)]
         semantic: bool,
 
-        /// Disable semantic embeddings (overrides .vex.toml)
+        /// Disable semantic embeddings for this rebuild (overrides .vex.toml).
+        /// Existing HNSW + embed cache are preserved on disk so a future
+        /// `--semantic` build can reuse them; semantic search falls back to
+        /// brute-force on size mismatch in the meantime. Pass `--drop-semantic`
+        /// to also delete them.
         #[arg(long, conflicts_with = "semantic")]
         no_semantic: bool,
+
+        /// v1.15.1: explicitly delete the on-disk semantic channel
+        /// (HNSW + hash-index sidecar + embedder cache). Without this
+        /// `--no-semantic` only skips the rebuild; with it, all semantic
+        /// artifacts are wiped and the next `--semantic` build re-embeds
+        /// from scratch. Requires `--no-semantic`.
+        #[arg(long, requires = "no_semantic")]
+        drop_semantic: bool,
 
         /// Embedder ID for semantic indexing (default: minilm-l6-v2)
         #[arg(long)]
@@ -701,6 +713,16 @@ pub enum Commands {
         /// Skip staleness check entirely
         #[arg(long)]
         no_stale_check: bool,
+
+        /// v1.15.1: include stdlib / macro callees that the default
+        /// post-filter drops. Without this flag, names matching
+        /// `std::*`, `__*`, common stdlib container methods (`c_str`,
+        /// `push_back`, ...), and short all-uppercase macro-style
+        /// identifiers are suppressed so the real callgraph edges
+        /// surface. Pass to see the unfiltered list. C/C++ idiom only —
+        /// other languages already produce mostly-clean callee sets.
+        #[arg(long)]
+        include_stdlib: bool,
 
         #[command(flatten)]
         scope: ScopeArgs,

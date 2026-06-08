@@ -9,7 +9,7 @@ use super::args::{DiffFilterArgs, OutputFormat, ScopeArgs};
 use super::common::{diff_filter_meta, resolve_diff_filter, resolve_root, CmdCtx};
 use super::output::print_envelope;
 use super::scope;
-use crate::protocol::{capabilities, MetaEnvelope};
+use crate::protocol::capabilities;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pattern(
@@ -111,15 +111,10 @@ pub(crate) fn pattern(
                     obj
                 })
                 .collect();
-            let meta = MetaEnvelope {
-                diff_filter: diff_filter_meta(
-                    &diff,
-                    changed_paths.as_ref(),
-                    diff_retained,
-                    diff_dropped,
-                ),
-                ..MetaEnvelope::default()
-            };
+            // v1.15.1: pull the stale signal in via `default_meta_for`.
+            let mut meta = super::output::default_meta_for(&root);
+            meta.diff_filter =
+                diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped);
             print_envelope(&json, capabilities::current(), meta);
         }
         OutputFormat::Text | OutputFormat::Compact => {

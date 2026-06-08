@@ -70,6 +70,21 @@ pub struct IndexOptions {
     /// `with_history`; clap enforces this at the CLI boundary
     /// (`conflicts_with = "history"`).
     pub drop_history: bool,
+    /// v1.15.1 MEDIUM — opt-in destructive teardown of the semantic
+    /// channel. When `true`, `run` deletes `index.hnsw`,
+    /// `index.hashes`, and the embedder's `embed_cache_*.bin` even
+    /// after a `--no-semantic` build. Default `false`: a
+    /// `--no-semantic` rebuild now PRESERVES prior HNSW + sidecar +
+    /// cache so a future `--semantic` build can reuse them.
+    ///
+    /// Pre-fix, `--no-semantic` unconditionally removed the HNSW +
+    /// sidecar and orphaned the embed cache. Re-attaching required a
+    /// fresh `--semantic` rebuild that re-ran every embedding from
+    /// scratch (~minutes per 10k symbols). The field-test report at
+    /// `.claude/Task/v1.15.1-amics-field-test-fixes.md` flagged this
+    /// as "easy way to lose semantic search permanently without
+    /// realizing", especially while the critical HNSW bug stood.
+    pub drop_semantic: bool,
 }
 
 impl Default for IndexOptions {
@@ -82,6 +97,7 @@ impl Default for IndexOptions {
             with_history: false,
             history_depth: None,
             drop_history: false,
+            drop_semantic: false,
         }
     }
 }
@@ -303,20 +319,37 @@ fn run_with_lock(
         // the previous build.
         let dim = vector_dim_for(embedder_id, &vectors);
         let _ = prune_embed_cache(root, embedder_id, dim, &hashes);
-    } else {
-        // Remove stale HNSW + hash-index sidecar from a previous
-        // --semantic run to prevent wrong results when the user
-        // re-runs without `--semantic`. Both files come and go as a
-        // pair (v1.14.1 B1.1).
+    } else if opts.drop_semantic {
+        // v1.15.1 MEDIUM: opt-in destructive teardown. Only when the
+        // caller explicitly passed `--drop-semantic` do we wipe the
+        // HNSW + sidecar + embed cache. Pre-fix this branch ran on
+        // every `--no-semantic` invocation and silently orphaned a
+        // 200+ MB embed cache, forcing a full re-embed on the next
+        // `--semantic` rebuild.
+        //
+        // Without `--drop-semantic`, a `--no-semantic` rebuild leaves
+        // the prior HNSW + sidecar in place. They become stale
+        // relative to the new symbol set — but the query path at
+        // `src/search/semantic.rs:156` catches the size mismatch
+        // (`hashes.len() != expected_symbols`) and bails to brute-
+        // force semantic search. No wrong results, just slower
+        // until the next `--semantic` build.
         let hnsw_path = config::hnsw_path(root);
         if hnsw_path.exists() {
-            std::fs::remove_file(&hnsw_path).context("remove stale HNSW index")?;
+            std::fs::remove_file(&hnsw_path).context("remove HNSW index")?;
         }
         let hash_index_path = config::hash_index_path(root);
         if hash_index_path.exists() {
-            std::fs::remove_file(&hash_index_path)
-                .context("remove stale HNSW hash-index sidecar")?;
+            std::fs::remove_file(&hash_index_path).context("remove HNSW hash-index sidecar")?;
         }
+        let embed_cache_path = config::embed_cache_path(root, embedder_id);
+        if embed_cache_path.exists() {
+            std::fs::remove_file(&embed_cache_path).context("remove embed cache")?;
+        }
+        tracing::info!(
+            embedder = embedder_id,
+            "semantic channel dropped (--drop-semantic): HNSW + sidecar + embed cache removed"
+        );
     }
 
     tracing::info!(

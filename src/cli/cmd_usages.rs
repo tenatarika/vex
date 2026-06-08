@@ -9,7 +9,7 @@ use super::common::{diff_filter_meta, resolve_diff_filter, resolve_root, CmdCtx}
 use super::index_management::ensure_index_ready;
 use super::output::print_envelope;
 use super::scope;
-use crate::protocol::{capabilities, MetaEnvelope};
+use crate::protocol::capabilities;
 use crate::store::reader::IndexReader;
 
 #[allow(clippy::too_many_arguments)]
@@ -126,6 +126,27 @@ pub(crate) fn usages(
         crate::cli::exit_code::signal_no_results();
     }
 
+    // Build the `--why` trace up-front so the JSON envelope (below) can
+    // attach it to `_meta.vex.dev/why_trace`. Pre-v1.15.1 this was only
+    // emitted on stderr (`VEX_WHY:` prefix) and never reached the JSON
+    // consumer — agents that piped `--format json | jq` couldn't see it.
+    let why_trace = if why {
+        Some(crate::cli::trace::UsagesTrace {
+            mode: trace_mode,
+            mode_legacy: trace_mode_legacy,
+            hits_before_filter,
+            hits_after_filter: total,
+            prefix_suggestions: prefix_suggestions.as_ref().map(|v| v.len()),
+            filter_applied: crate::cli::trace::FilterSnapshot {
+                filter: filter_path.clone(),
+                include: scope.include.clone(),
+                exclude: scope.exclude.clone(),
+            },
+        })
+    } else {
+        None
+    };
+
     match ctx.format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = entries
@@ -141,15 +162,18 @@ pub(crate) fn usages(
                     })
                 })
                 .collect();
-            let meta = MetaEnvelope {
-                diff_filter: diff_filter_meta(
-                    &diff,
-                    changed_paths.as_ref(),
-                    diff_retained,
-                    diff_dropped,
-                ),
-                ..MetaEnvelope::default()
-            };
+            // v1.15.1: thread `_meta` through `default_meta_for` so the
+            // stale-fallback signal (`vex.dev/stale` + `stale_reason`)
+            // populates here too. Pre-fix this used `MetaEnvelope::default()`
+            // which always returned None — `usages` was one of the
+            // commands the field-test report flagged for the
+            // "successful-looking empty result set" trap.
+            let mut meta = super::output::default_meta_for(&root);
+            meta.diff_filter =
+                diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped);
+            if let Some(ref t) = why_trace {
+                meta.why_trace = serde_json::to_value(t).ok();
+            }
             print_envelope(&json, capabilities::current(), meta);
         }
         OutputFormat::Text | OutputFormat::Compact => {
@@ -178,21 +202,11 @@ pub(crate) fn usages(
     }
 
     // 11.10: structured trace on stderr for `--why`. Captured
-    // post-print so stdout stays a pure result list.
-    if why {
-        let trace = crate::cli::trace::UsagesTrace {
-            mode: trace_mode,
-            mode_legacy: trace_mode_legacy,
-            hits_before_filter,
-            hits_after_filter: total,
-            prefix_suggestions: prefix_suggestions.as_ref().map(|v| v.len()),
-            filter_applied: crate::cli::trace::FilterSnapshot {
-                filter: filter_path.clone(),
-                include: scope.include.clone(),
-                exclude: scope.exclude.clone(),
-            },
-        };
-        crate::cli::trace::emit_why_trace(&trace)?;
+    // post-print so stdout stays a pure result list. Retained alongside
+    // the v1.15.1 envelope attachment so existing scripts that grep for
+    // `VEX_WHY:` on stderr keep working.
+    if let Some(trace) = why_trace.as_ref() {
+        crate::cli::trace::emit_why_trace(trace)?;
         if let Some(df) =
             diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped)
         {

@@ -67,6 +67,8 @@ struct SearchResultWithSignals<'a> {
 /// propagate one from an inbound JSON-RPC request's `_meta.traceparent`.
 pub fn build_search_meta(manifest_path: &Path) -> MetaEnvelope {
     let index_age_ms = compute_index_age_ms(manifest_path);
+    let stale_reason = super::stale_signal::current();
+    let stale = stale_reason.as_ref().map(|_| true);
     MetaEnvelope {
         index_age_ms,
         traceparent: None,
@@ -75,6 +77,9 @@ pub fn build_search_meta(manifest_path: &Path) -> MetaEnvelope {
         // Phase 13.7-D3 diff-filter observability: caller mutates this
         // field when a `--since*` / `--changed-only` flag was passed.
         diff_filter: None,
+        stale,
+        stale_reason,
+        why_trace: None,
     }
 }
 
@@ -103,12 +108,17 @@ fn compute_index_age_ms(manifest_path: &Path) -> Option<u64> {
 /// `vex index` writing the manifest.
 pub(crate) fn default_meta_for(root: &Path) -> MetaEnvelope {
     let manifest_path = crate::util::config::manifest_path(root);
+    let stale_reason = super::stale_signal::current();
+    let stale = stale_reason.as_ref().map(|_| true);
     MetaEnvelope {
         index_age_ms: compute_index_age_ms(&manifest_path),
         traceparent: None,
         ttl_ms: Some(30_000),
         cache_scope: Some("project".into()),
         diff_filter: None,
+        stale,
+        stale_reason,
+        why_trace: None,
     }
 }
 

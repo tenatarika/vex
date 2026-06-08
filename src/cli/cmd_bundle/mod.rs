@@ -19,7 +19,7 @@ use crate::cli::args::ScopeArgs;
 use crate::cli::common::CmdCtx;
 use crate::cli::index_management::ensure_index_ready;
 use crate::cli::output::print_envelope;
-use crate::protocol::{capabilities, MetaEnvelope, Signals};
+use crate::protocol::{capabilities, Signals};
 use crate::store::reader::IndexReader;
 use crate::util::config;
 
@@ -179,10 +179,11 @@ pub fn cmd_bundle(args: BundleArgs<'_>, ctx: BundleCtx<'_>) -> Result<()> {
         BundleModeFlag::Project => project::assemble_project(&args, &ctx)?,
     };
 
-    let meta = MetaEnvelope {
-        diff_filter: mode_meta.diff_filter,
-        ..MetaEnvelope::default()
-    };
+    // v1.15.1: propagate the stale-fallback signal via `default_meta_for`
+    // so `_meta.vex.dev/stale` / `stale_reason` populate when an
+    // auto-update attempt failed earlier in this CLI invocation.
+    let mut meta = crate::cli::output::default_meta_for(&ctx.root);
+    meta.diff_filter = mode_meta.diff_filter;
 
     // v1.12.0 S8.2 — extends exit-code contract to `vex bundle`. The
     // envelope always carries `mode_hints` (even on empty), so we gate

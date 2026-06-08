@@ -46,15 +46,27 @@ pub(crate) fn handle_staleness(
                 // would produce silently-wrong results for previously cached
                 // queries. Force them to run `vex index --semantic` so the
                 // intent is explicit.
+                //
+                // v1.15.1: previously this bailed with `Err`, propagating
+                // up to a non-zero CLI exit. That defeated the wider
+                // stale-fallback contract (the MCP wrapper would surface
+                // the bail as an error rather than serving the existing
+                // stale index). Now: record the reason via
+                // `stale_signal::set` and skip the rebuild attempt
+                // entirely; the existing index continues to serve, and
+                // the response envelope's `_meta.vex.dev/stale` flag
+                // tells the caller the data is stale + why.
                 if semantic {
                     if let Some(stored) = manifest.embedder_id.as_deref() {
                         if stored != embedder_id {
-                            bail!(
-                                "auto-update would switch embedder from `{stored}` (manifest at {}) \
-                                 to `{embedder_id}` (current config). Refusing — run \
-                                 `vex index --semantic --embedder {embedder_id}` explicitly.",
-                                manifest_path.display()
+                            let reason = format!(
+                                "auto-update refused: would switch embedder from `{stored}` to \
+                                 `{embedder_id}`. Run `vex index --semantic --embedder \
+                                 {embedder_id}` explicitly to refresh."
                             );
+                            eprintln!("Warning: {reason} Serving stale index.");
+                            super::stale_signal::set(reason);
+                            return Ok(());
                         }
                     } else if embedder_id != crate::embed::DEFAULT_EMBEDDER {
                         // Manifest lost or pre-9.1 with no recorded embedder.
@@ -90,13 +102,35 @@ pub(crate) fn handle_staleness(
                     with_history: manifest.history_indexed_at.is_some(),
                     history_depth: manifest.history_depth,
                     drop_history: false,
+                    // v1.15.1: auto-update never drops the semantic
+                    // channel — a failed semantic rebuild keeps prior
+                    // vectors on disk for the next attempt.
+                    drop_semantic: false,
                 };
-                let (total, changed, deleted) =
-                    pipeline::update(root, opts, &embedder_id, &cfg.exclude)?;
-                if changed > 0 || deleted > 0 {
-                    eprintln!(
-                        "Updated: {changed} changed, {deleted} deleted, {total} total symbols"
-                    );
+                // v1.15.1 HIGH: degrade-don't-abort. Pre-fix, an error
+                // here bubbled up → CLI exited non-zero → the MCP
+                // wrapper surfaced `exit code 2` or (worse) wrapped an
+                // empty `{results: []}` envelope in an MCP error string,
+                // which agents trusted as "0 results found". Now we
+                // record the failure via `stale_signal::set` so the
+                // response envelope advertises `_meta.vex.dev/stale =
+                // true` + `stale_reason`, and continue serving the
+                // existing (stale) index.
+                match pipeline::update(root, opts, &embedder_id, &cfg.exclude) {
+                    Ok((total, changed, deleted)) => {
+                        if changed > 0 || deleted > 0 {
+                            eprintln!(
+                                "Updated: {changed} changed, {deleted} deleted, {total} total symbols"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        let reason = format!("{e:#}");
+                        eprintln!(
+                            "Warning: index auto-update failed ({reason}). Serving stale index."
+                        );
+                        super::stale_signal::set(reason);
+                    }
                 }
             } else if let Some(n) = changed_count {
                 eprintln!("Warning: ~{n} file(s) changed since last index. Run `vex update`.");
@@ -186,6 +220,7 @@ pub(crate) fn ensure_index_exists(
         with_history: false,
         history_depth: None,
         drop_history: false,
+        drop_semantic: false,
     };
     let (count, _rebuilt) = pipeline::run(root, opts, &embedder_id, &cfg.exclude)
         .with_context(|| format!("bootstrap index for {}", root.display()))?;

@@ -284,6 +284,13 @@ pub(crate) fn build_index_options(
         // drop. Setting the flag without a prior section is harmless
         // (the pipeline checks for the sidecar before deleting).
         drop_history: no_history && history_was_indexed,
+        // v1.15.1: callers that go through this helper (today: `vex
+        // index`, `vex update`, MCP auto-update) default to preserving
+        // the semantic channel. `vex index` overrides via
+        // `opts.drop_semantic = true` when the user passed
+        // `--drop-semantic`. Auto-update never drops — failed semantic
+        // rebuilds keep prior vectors on disk for the next attempt.
+        drop_semantic: false,
     }
 }
 
