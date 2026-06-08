@@ -94,6 +94,8 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_bm25,
             no_pattern_index,
             no_wait,
+            history,
+            history_depth,
         } => cmd_index::index(
             &ctx,
             path,
@@ -105,6 +107,8 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_bm25,
             no_pattern_index,
             no_wait,
+            history,
+            history_depth,
         ),
         Commands::Search {
             query,
@@ -179,6 +183,8 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_bm25,
             no_pattern_index,
             no_wait,
+            history,
+            no_history,
         } => cmd_update::update(
             &ctx,
             path,
@@ -190,6 +196,8 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_bm25,
             no_pattern_index,
             no_wait,
+            history,
+            no_history,
         ),
         Commands::Outline { file, kind } => {
             cmd_outline::cmd_outline(&file, kind.as_deref(), &ctx.format)
@@ -434,7 +442,8 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             depth,
             branch,
             limit,
-        } => cmd_history::history(&ctx, symbol, path, depth, branch, limit),
+            no_index,
+        } => cmd_history::history(&ctx, symbol, path, depth, branch, limit, no_index),
 
         Commands::Mcp { action } => match action {
             args::McpAction::Install {

@@ -298,6 +298,190 @@ pub(super) fn write_output_locked(
         );
     }
 
+    // Phase 14.8 — git_history sidecar with three branches:
+    //   1. `drop_history`: delete sidecar + null manifest fields
+    //      (`vex update --no-history` sticky-drop).
+    //   2. `with_history` + tip unchanged + sidecar present: fast path
+    //      — skip rebuild, reuse stats, refresh `indexed_at`. Pins the
+    //      "no-op `vex update` is fast" contract (acceptance C of
+    //      `.claude/Task/PHASE14.8-history-index.md`).
+    //   3. `with_history`: full rebuild via builder + sidecar write.
+    //      Force-push (prior_tip exists but isn't ancestor of HEAD)
+    //      triggers a warning + full rebuild (architect H3).
+    //
+    // Outcome captured in `history_manifest_fields` — the manifest
+    // block below records fields ONLY on a successful write or
+    // fast-path reuse. The drop branch leaves `history_manifest_fields
+    // = None`, which the manifest construction propagates as Nones
+    // across all four `history_*` fields → next `vex update` sees a
+    // clean slate.
+    let history_path = config::git_history_path(root);
+    let prior_manifest_for_history = if opts.with_history || opts.drop_history {
+        crate::index::manifest::Manifest::load(&config::manifest_path(root)).ok()
+    } else {
+        None
+    };
+    let mut history_manifest_fields: Option<HistoryManifestFields> = None;
+    if opts.drop_history {
+        // Best-effort: missing file is fine (idempotent); permission
+        // errors warn but don't block the rest of the index write.
+        if history_path.exists() {
+            if let Err(e) = std::fs::remove_file(&history_path) {
+                tracing::warn!(
+                    path = %history_path.display(),
+                    error = %e,
+                    "failed to drop git_history sidecar; manifest will still null \
+                     the fields so cmd_history falls back to walker"
+                );
+            } else {
+                tracing::info!(
+                    path = %history_path.display(),
+                    "dropped git_history sidecar per --no-history"
+                );
+            }
+        }
+        // history_manifest_fields stays None — manifest serialises all
+        // four `history_*` fields as None.
+    } else if opts.with_history {
+        let prior_tip = prior_manifest_for_history
+            .as_ref()
+            .and_then(|m| m.history_tip_sha.clone());
+        let prior_stats = prior_manifest_for_history
+            .as_ref()
+            .and_then(|m| m.history.clone());
+        let prior_depth = prior_manifest_for_history
+            .as_ref()
+            .and_then(|m| m.history_depth);
+        let current_tip = rev_parse_head(root);
+
+        // Branch 2: no-op fast path. Requires (sidecar present) AND
+        // (prior_tip == current_tip) AND (depth opt didn't change).
+        // The depth check is important: a user who re-runs with
+        // `--history-depth N` (different from prior) MUST get a full
+        // rebuild — fast-path reuse would silently honour the old cap.
+        let depth_unchanged = opts.history_depth == prior_depth;
+        let tip_unchanged = matches!(
+            (&prior_tip, &current_tip),
+            (Some(a), Some(b)) if a == b
+        );
+        let sidecar_present = history_path.exists();
+
+        if sidecar_present && tip_unchanged && depth_unchanged {
+            tracing::debug!(
+                path = %history_path.display(),
+                tip = ?current_tip,
+                "git_history fast-path: tip + depth unchanged, reusing existing sidecar"
+            );
+            history_manifest_fields = Some(HistoryManifestFields {
+                indexed_at: today_iso_date(),
+                tip_sha: current_tip,
+                depth: opts.history_depth.or(prior_depth),
+                stats: prior_stats.unwrap_or_default(),
+            });
+        } else {
+            // Phase 14.8 Step 5c — three sub-branches for the
+            // "rebuild" case, picking the cheapest viable path:
+            //
+            //   3a. Force-push detected (prior_tip exists but is
+            //       NOT an ancestor of HEAD): full rebuild, warn.
+            //   3b. Linear history with new commits (prior_tip
+            //       exists, IS an ancestor of HEAD, sidecar
+            //       present): INCREMENTAL — walk only
+            //       <prior_tip>..HEAD and merge into the prior
+            //       section. Avoids re-walking the entire history
+            //       for every commit added.
+            //   3c. Otherwise (no prior tip, depth change, sidecar
+            //       missing): full rebuild via the from-scratch
+            //       builder. The cleanest semantic — no merge
+            //       state to honour.
+            let force_push = matches!(
+                (&prior_tip, &current_tip),
+                (Some(p), Some(c)) if p != c && !is_ancestor(root, p, c)
+            );
+            let can_incremental = !force_push
+                && sidecar_present
+                && depth_unchanged
+                && matches!(
+                    (&prior_tip, &current_tip),
+                    (Some(p), Some(c)) if p != c
+                );
+
+            if force_push {
+                if let (Some(prior), Some(current)) = (&prior_tip, &current_tip) {
+                    tracing::warn!(
+                        prior_tip = %prior,
+                        current_tip = %current,
+                        "phase 14.8: prior history tip is not an ancestor of HEAD \
+                         (force-push or rebase detected). Full git_history rebuild forced."
+                    );
+                }
+            }
+
+            let build_result = if can_incremental {
+                // Branch 3b: load prior + walk delta + merge.
+                let prior_tip_sha = prior_tip
+                    .as_deref()
+                    .expect("can_incremental implies prior_tip Some");
+                build_incremental(root, prior_tip_sha, opts.history_depth, &history_path)
+            } else {
+                // Branch 3a or 3c: from-scratch full rebuild.
+                crate::index::history_builder::build_history_section_with_names(
+                    &crate::index::history_builder::BuildConfig {
+                        repo_root: root.to_path_buf(),
+                        tip: "HEAD".to_string(),
+                        depth: opts.history_depth,
+                    },
+                )
+            };
+
+            match build_result {
+                Ok((section, entry_names)) => {
+                    let input = crate::store::git_history::WriterInput {
+                        section: &section,
+                        entry_names: &entry_names,
+                    };
+                    if let Err(e) = crate::store::git_history::write_sidecar(&history_path, input) {
+                        tracing::warn!(
+                            path = %history_path.display(),
+                            error = %e,
+                            "failed to persist git_history sidecar; \
+                             vex history will fall back to query-time walker"
+                        );
+                    } else {
+                        tracing::debug!(
+                            path = %history_path.display(),
+                            entries = section.entries.len(),
+                            commits = section.commits.len(),
+                            blobs = section.blobs.len(),
+                            depth_capped = section.was_depth_capped,
+                            mode = if can_incremental { "incremental" } else { "full" },
+                            "wrote git_history sidecar"
+                        );
+                        history_manifest_fields = Some(HistoryManifestFields {
+                            indexed_at: today_iso_date(),
+                            tip_sha: current_tip,
+                            depth: opts.history_depth,
+                            stats: crate::index::manifest::HistoryStats {
+                                commit_count: section.commits.len() as u32,
+                                blob_count: section.blobs.len() as u32,
+                                entry_count: section.entries.len() as u32,
+                                depth_capped: Some(section.was_depth_capped),
+                            },
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        root = %root.display(),
+                        error = %e,
+                        "git_history builder failed; sidecar not written. \
+                         vex history will use the query-time walker."
+                    );
+                }
+            }
+        }
+    }
+
     // v1.15.0 B1.2 — persist body_tokens sidecar in sym_idx order so a
     // subsequent `vex update` can restore body_tokens for unchanged
     // symbols (`reconstruct_unchanged`). Without this, reconstructed
@@ -373,9 +557,158 @@ pub(super) fn write_output_locked(
         // body_tokens as `None`, embed cache misses for unchanged
         // symbols, full HNSW rebuild.
         body_tokens_persisted: Some(body_tokens_saved),
+        // Phase 14.8 — populated only on successful sidecar write
+        // (gated by `history_manifest_fields.is_some()`). Sticky
+        // sentinel: `history_indexed_at.is_some()` IS the predicate
+        // `vex status` / `vex update` use to decide "section present
+        // and usable" (architect L3).
+        history_indexed_at: history_manifest_fields
+            .as_ref()
+            .map(|f| f.indexed_at.clone()),
+        history_tip_sha: history_manifest_fields
+            .as_ref()
+            .and_then(|f| f.tip_sha.clone()),
+        history_depth: history_manifest_fields.as_ref().and_then(|f| f.depth),
+        history: history_manifest_fields.as_ref().map(|f| f.stats.clone()),
     };
     manifest.save(&manifest_path)?;
     Ok(())
+}
+
+/// Manifest fields populated only on successful Phase 14.8 sidecar
+/// write. Grouped so the `Manifest { … }` literal below stays
+/// readable instead of carrying four parallel `if let Some()` ladders.
+struct HistoryManifestFields {
+    indexed_at: String,
+    tip_sha: Option<String>,
+    depth: Option<usize>,
+    stats: crate::index::manifest::HistoryStats,
+}
+
+/// Today's UTC date in ISO `YYYY-MM-DD`. Same Howard Hinnant
+/// civil-date arithmetic as `cmd_history::unix_seconds_to_iso_date` —
+/// kept inline here to avoid a `pub use` from a CLI module into the
+/// pipeline layer.
+fn today_iso_date() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as u32)
+        .unwrap_or(0);
+    let days = (now / 86_400) as i64;
+    let z = days + 719_468;
+    let era = if z >= 0 {
+        z / 146_097
+    } else {
+        (z - 146_096) / 146_097
+    };
+    let doe = z - era * 146_097; // already i64
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y_civil = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = (if m <= 2 { y_civil + 1 } else { y_civil }) as i32;
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+fn rev_parse_head(repo: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .current_dir(repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if sha.is_empty() {
+        None
+    } else {
+        Some(sha)
+    }
+}
+
+/// Phase 14.8 Step 5c — incremental sidecar rebuild on linear
+/// history. Loads the existing sidecar, walks ONLY
+/// `<prior_tip>..HEAD`, merges via [`merge_history_sections`]. Falls
+/// back to a from-scratch full rebuild on any error (sidecar
+/// corruption, range-walk failure) so the caller never sees a missing
+/// section as a result of incremental failure.
+fn build_incremental(
+    root: &Path,
+    prior_tip: &str,
+    depth: Option<usize>,
+    history_path: &Path,
+) -> Result<(crate::index::history_builder::HistorySection, Vec<String>)> {
+    use crate::index::history_builder::{
+        build_history_section_for_range, build_history_section_with_names, merge_history_sections,
+        BuildConfig,
+    };
+    use crate::store::git_history::HistoryReader;
+
+    let cfg = BuildConfig {
+        repo_root: root.to_path_buf(),
+        tip: "HEAD".to_string(),
+        depth,
+    };
+
+    // Defensive: any failure to load prior section → fall back to
+    // full rebuild. The on-disk format hasn't changed under us today
+    // (HISTORY_SECTION_VERSION = 1) but a future-version sidecar
+    // we don't understand should still degrade cleanly.
+    let prior = match HistoryReader::open(history_path) {
+        Ok(Some(r)) => match r.extract_owned() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "incremental: failed to load prior section, full rebuild");
+                return build_history_section_with_names(&cfg);
+            }
+        },
+        _ => {
+            tracing::warn!("incremental: sidecar missing/unreadable, full rebuild");
+            return build_history_section_with_names(&cfg);
+        }
+    };
+
+    // Walk only the delta. Empty delta (no new commits) reaches
+    // this path only if `prior_tip != current_tip` but the range is
+    // semantically empty (e.g. only merge commits filtered out); in
+    // that case we return prior section as-is.
+    let (delta_section, delta_names) = build_history_section_for_range(&cfg, prior_tip)?;
+    if delta_section.entries.is_empty() && delta_section.commits.is_empty() {
+        tracing::debug!("incremental: delta range produced no new commits; reusing prior section");
+        return Ok(prior);
+    }
+
+    let prior_commit_count = prior.0.commits.len();
+    let delta_commit_count = delta_section.commits.len();
+    let merged = merge_history_sections(prior.0, prior.1, delta_section, delta_names);
+    tracing::info!(
+        prior_commits = prior_commit_count,
+        delta_commits = delta_commit_count,
+        merged_commits = merged.0.commits.len(),
+        "phase 14.8: incremental git_history update"
+    );
+    Ok(merged)
+}
+
+/// Architect H3 force-push detector. Returns `true` when `prior` is
+/// an ancestor of `current` (linear history, incremental update would
+/// be safe). Returns `false` when `prior` was rewritten out of the
+/// reachable history (force-push / rebase / cherry-pick).
+///
+/// `git merge-base --is-ancestor <A> <B>` exits 0 when A is an
+/// ancestor of B, 1 otherwise. We treat any non-zero (incl. "object
+/// not found", which happens after a hard reset) as non-ancestor.
+fn is_ancestor(repo: &Path, prior: &str, current: &str) -> bool {
+    std::process::Command::new("git")
+        .current_dir(repo)
+        .args(["merge-base", "--is-ancestor", prior, current])
+        .status()
+        .ok()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// v1.13 E2b: persistent embedding cache. Contexts whose

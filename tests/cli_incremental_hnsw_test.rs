@@ -175,6 +175,10 @@ fn bake_v115_index(dir: &Path) -> PathBuf {
         vectors_normalized: Some(true),
         cpp_includes_processed: Some(true),
         body_tokens_persisted: Some(true),
+        history_indexed_at: None,
+        history_tip_sha: None,
+        history_depth: None,
+        history: None,
     };
     manifest
         .save(&cache_root.join("manifest.json"))

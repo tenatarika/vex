@@ -91,6 +91,61 @@ pub struct Manifest {
     /// sidecar write is unconditional.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_tokens_persisted: Option<bool>,
+
+    /// v1.17 Phase 14.8 — ISO-date sentinel: `Some(<YYYY-MM-DD>)` when
+    /// this index was built with the `index.git_history` sidecar
+    /// present, `None` otherwise. Used by `vex update --history`'s
+    /// sticky-rebuild logic and by `vex status` to surface "history
+    /// indexed at X". Architect L3 (sticky-via-sentinel): no separate
+    /// boolean — `history_indexed_at.is_some()` IS the predicate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_indexed_at: Option<String>,
+
+    /// v1.17 Phase 14.8 — full SHA of the commit the history section
+    /// was indexed at (typically `HEAD` at build time). Required by
+    /// Step 5+ incremental update for `git merge-base --is-ancestor
+    /// <prior_tip> <new_tip>` force-push detection (architect H3) and
+    /// for `<prior_tip>..<new_tip>` range walking. `None` on pre-14.8
+    /// manifests or when `--no-history` was passed. Not surfaced in
+    /// `vex status` — it's an internal-state field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_tip_sha: Option<String>,
+
+    /// v1.17 Phase 14.8 — sticky cap from `--history-depth N`. Read
+    /// by `vex update --history` so the user doesn't have to repeat
+    /// the flag on every incremental rebuild. `None` = unbounded
+    /// walk (or pre-14.8 manifest).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_depth: Option<usize>,
+
+    /// v1.17 Phase 14.8 — populated counts for the section, surfaced
+    /// by `vex status` (text + JSON) so users + agents can see at a
+    /// glance whether the section is non-trivial. Mirrors the build-
+    /// time `HistorySection` shape. `None` on pre-14.8 manifests or
+    /// when `--history` was not opted into.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<HistoryStats>,
+}
+
+/// Counts surfaced from the `git_history` section into the manifest
+/// so `vex status` and `--history-depth` integration tests can
+/// observe them without parsing the binary sidecar.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryStats {
+    /// Number of `Commit` rows in the sidecar — also the count of
+    /// distinct commits the walker visited under any `--history-depth`
+    /// cap (architect M3 global cap).
+    pub commit_count: u32,
+    /// Number of `Blob` rows (unique blob SHAs reachable from `tip`).
+    pub blob_count: u32,
+    /// Number of `HistoryEntry` rows — one per (parsed symbol, blob,
+    /// path) tuple.
+    pub entry_count: u32,
+    /// `Some(true)` when the walker hit the `--history-depth` cap
+    /// before reaching the root commit. Surfaced so `vex status` can
+    /// warn that the section is partial.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth_capped: Option<bool>,
 }
 
 impl Manifest {
@@ -270,5 +325,65 @@ mod tests {
             !json.contains("body_tokens_persisted"),
             "expected key absent for None, got: {json}"
         );
+    }
+
+    #[test]
+    fn history_fields_round_trip() {
+        let m = Manifest {
+            history_indexed_at: Some("2026-06-08".to_string()),
+            history_tip_sha: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            history_depth: Some(500),
+            history: Some(HistoryStats {
+                commit_count: 378,
+                blob_count: 1498,
+                entry_count: 38_999,
+                depth_capped: Some(false),
+            }),
+            ..Manifest::default()
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("\"history_indexed_at\":\"2026-06-08\""));
+        assert!(json.contains("\"history_tip_sha\""));
+        assert!(json.contains("\"history_depth\":500"));
+        assert!(json.contains("\"commit_count\":378"));
+        let back: Manifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.history_indexed_at.as_deref(), Some("2026-06-08"));
+        assert_eq!(back.history_depth, Some(500));
+        let stats = back.history.expect("history sub-object present");
+        assert_eq!(stats.commit_count, 378);
+        assert_eq!(stats.blob_count, 1498);
+        assert_eq!(stats.entry_count, 38_999);
+        assert_eq!(stats.depth_capped, Some(false));
+    }
+
+    #[test]
+    fn history_fields_default_none_on_pre_v17_manifest() {
+        // Pre-Phase 14.8 manifests have no `history_*` keys. All four
+        // must deserialise as None.
+        let pre_json = r#"{"files":{},"cpp_includes_processed":true}"#;
+        let m: Manifest = serde_json::from_str(pre_json).unwrap();
+        assert_eq!(m.history_indexed_at, None);
+        assert_eq!(m.history_tip_sha, None);
+        assert_eq!(m.history_depth, None);
+        assert!(m.history.is_none());
+    }
+
+    #[test]
+    fn history_fields_omitted_when_none() {
+        let m = Manifest::default();
+        let json = serde_json::to_string(&m).unwrap();
+        for key in [
+            "history_indexed_at",
+            "history_tip_sha",
+            "history_depth",
+            // `history` (the stats sub-object) is also omitted via
+            // skip_serializing_if when None.
+            "\"history\":",
+        ] {
+            assert!(
+                !json.contains(key),
+                "expected key {key} absent for default Manifest, got: {json}"
+            );
+        }
     }
 }

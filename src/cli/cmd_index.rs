@@ -26,6 +26,8 @@ pub(crate) fn index(
     no_bm25: bool,
     no_pattern_index: bool,
     no_wait: bool,
+    history: bool,
+    history_depth: Option<usize>,
 ) -> Result<()> {
     let root = resolve_root(path)?;
     let start = Instant::now();
@@ -43,6 +45,9 @@ pub(crate) fn index(
         no_call_graph,
         no_bm25,
         no_pattern_index,
+        history,
+        history_depth,
+        false, // `vex index` is a clean rebuild — no `--no-history` semantics
         ctx.cfg,
         None,
     );

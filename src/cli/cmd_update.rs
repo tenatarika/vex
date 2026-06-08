@@ -26,6 +26,8 @@ pub(crate) fn update(
     no_bm25: bool,
     no_pattern_index: bool,
     no_wait: bool,
+    history: bool,
+    no_history: bool,
 ) -> Result<()> {
     // Canonicalize once at the top so `prior_manifest`'s lookup
     // path matches the one `pipeline::update` uses internally —
@@ -48,6 +50,9 @@ pub(crate) fn update(
         no_call_graph,
         no_bm25,
         no_pattern_index,
+        history,
+        None, // --history-depth is index-only; update inherits via manifest
+        no_history,
         ctx.cfg,
         Some(&prior_manifest),
     );

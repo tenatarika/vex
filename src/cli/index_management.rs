@@ -84,6 +84,12 @@ pub(crate) fn handle_staleness(
                         cfg.pattern_index,
                         manifest.pattern_index,
                     ),
+                    // Phase 14.8 sticky-via-manifest: inherit the prior
+                    // section decision so auto-update on a history-
+                    // enabled project doesn't silently drop it.
+                    with_history: manifest.history_indexed_at.is_some(),
+                    history_depth: manifest.history_depth,
+                    drop_history: false,
                 };
                 let (total, changed, deleted) =
                     pipeline::update(root, opts, &embedder_id, &cfg.exclude)?;
@@ -177,6 +183,9 @@ pub(crate) fn ensure_index_exists(
         with_call_graph: resolve_section_enabled(false, cfg.call_graph, None),
         with_bm25: resolve_section_enabled(false, cfg.bm25, None),
         with_pattern_index: resolve_section_enabled(false, cfg.pattern_index, None),
+        with_history: false,
+        history_depth: None,
+        drop_history: false,
     };
     let (count, _rebuilt) = pipeline::run(root, opts, &embedder_id, &cfg.exclude)
         .with_context(|| format!("bootstrap index for {}", root.display()))?;

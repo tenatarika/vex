@@ -236,14 +236,35 @@ pub(crate) fn build_metadata_filter(
 /// Centralising this in one place keeps the Index / Update / Watch arms
 /// (S1 Group C) from duplicating the 3-line `with_call_graph: ...,
 /// with_bm25: ..., with_pattern_index: ...` construction.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_index_options(
     with_semantic: bool,
     no_call_graph: bool,
     no_bm25: bool,
     no_pattern_index: bool,
+    with_history: bool,
+    history_depth: Option<usize>,
+    no_history: bool,
     cfg: &config::VexConfig,
     manifest: Option<&Manifest>,
 ) -> pipeline::IndexOptions {
+    // Phase 14.8 Step 5b sticky-via-sentinel: `vex update` without an
+    // explicit flag inherits the prior manifest's history decision.
+    // `--history` always wins; `--no-history` always wins.
+    // Otherwise: prior `history_indexed_at = Some(_)` → with_history=true.
+    let history_was_indexed = manifest
+        .and_then(|m| m.history_indexed_at.as_ref())
+        .is_some();
+    let resolved_with_history = if no_history {
+        false
+    } else if with_history {
+        true
+    } else {
+        history_was_indexed
+    };
+    // Sticky depth: inherit from manifest if user didn't pass --history-depth.
+    let resolved_history_depth = history_depth.or_else(|| manifest.and_then(|m| m.history_depth));
+
     pipeline::IndexOptions {
         with_embeddings: with_semantic,
         with_call_graph: resolve_section_enabled(
@@ -257,6 +278,12 @@ pub(crate) fn build_index_options(
             cfg.pattern_index,
             manifest.and_then(|m| m.pattern_index),
         ),
+        with_history: resolved_with_history,
+        history_depth: resolved_history_depth,
+        // `--no-history` is only meaningful when there's something to
+        // drop. Setting the flag without a prior section is harmless
+        // (the pipeline checks for the sidecar before deleting).
+        drop_history: no_history && history_was_indexed,
     }
 }
 

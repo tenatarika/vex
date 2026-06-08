@@ -2,6 +2,7 @@ pub mod bm25;
 pub mod body_tokens;
 pub mod call_graph;
 pub mod format;
+pub mod git_history;
 pub mod include_resolver;
 pub mod inverted;
 pub mod pattern_skeletons;

@@ -445,6 +445,24 @@ pub fn bloom_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("index.bloom")
 }
 
+/// v1.17 / Phase 14.8: git_history sidecar. Stores the persistent
+/// historical symbol index — every `(symbol, blob)` pair reachable
+/// from the indexed tip with first-seen / last-seen commit spans.
+/// Lives next to `index.vex`; absence is the valid "user didn't opt
+/// in to `--history`" state (the v1.16 query-time walker in
+/// `crate::history` is the fallback).
+///
+/// Step 4a deviation: the architect-locked design called for an
+/// inline section in `index.vex` (v6→v7 sub-header chain). To keep
+/// Step 4a tractable we ship as a sidecar first (mirrors
+/// `index.hashes`/`index.bodytokens`/`index.bloom` precedent). The
+/// on-disk schema (28B HistoryEntry / 32B Commit / 24B Blob / FST /
+/// postings) is byte-identical to what an inline section would
+/// emit; promotion is a mechanical relocation of bytes.
+pub fn git_history_path(project_root: &std::path::Path) -> PathBuf {
+    index_dir(project_root).join("index.git_history")
+}
+
 /// Full path to the manifest file (tracks file hashes for incremental updates).
 pub fn manifest_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("manifest.json")

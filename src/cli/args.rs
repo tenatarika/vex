@@ -194,6 +194,27 @@ pub enum Commands {
         /// `{"status":"busy",...}` so scripts can branch on outcome.
         #[arg(long)]
         no_wait: bool,
+
+        /// Build the Phase 14.8 `git_history` section. Walks the repo's
+        /// commit history, dedups blobs by SHA, parses each unique
+        /// (path, blob) pair through the 14.7 cache, and persists a
+        /// per-symbol historical index so `vex history <Symbol>` runs in
+        /// FST-lookup time (~ms) instead of shelling out to `git log` per
+        /// query (~seconds). Opt-in — adds 5-30s to cold index and ~10%
+        /// to index.vex size on long-lived repos.
+        ///
+        /// Phase 14.8 Step 3 scaffold — flag is parsed but the builder
+        /// lands in Step 4b. Today `--history` is a no-op.
+        #[arg(long)]
+        history: bool,
+
+        /// Cap history walk at N newest commits (global, NOT per-file).
+        /// Mirrors `git log -nN` semantics. Implies `--history`. Bump
+        /// down on multi-thousand-commit repos to keep build time in
+        /// check; unbounded by default (full history reachable from
+        /// `HEAD`).
+        #[arg(long, value_name = "N", requires = "history")]
+        history_depth: Option<usize>,
     },
 
     /// Search symbols by name or semantics
@@ -396,6 +417,31 @@ pub enum Commands {
         /// shape.
         #[arg(long)]
         no_wait: bool,
+
+        /// Re-build the Phase 14.8 `git_history` section incrementally
+        /// against the new tip. Detects force-push / rebase via
+        /// `git merge-base --is-ancestor` and falls back to full rebuild
+        /// when the previous tip is unreachable. Has no effect if no
+        /// `git_history` section is present in the prior manifest
+        /// (run `vex index --history` first to enable).
+        ///
+        /// Phase 14.8 Step 3 scaffold — flag is parsed but the
+        /// incremental walker lands in Step 5. Today `--history` is a
+        /// no-op.
+        #[arg(long)]
+        history: bool,
+
+        /// Drop the `git_history` section on this update. Mirrors the
+        /// `--no-call-graph` / `--no-bm25` sticky-opt-out pattern: once
+        /// the manifest records `history_indexed_at = Some(_)`,
+        /// subsequent `vex update` runs rebuild the section by default;
+        /// `--no-history` is the way to drop it. Conflicts with
+        /// `--history`.
+        ///
+        /// Phase 14.8 Step 3 scaffold — flag is parsed but the drop
+        /// path lands in Step 5. Today `--no-history` is a no-op.
+        #[arg(long, conflicts_with = "history")]
+        no_history: bool,
     },
 
     /// Show structure of a file (symbols, kinds, lines)
@@ -924,6 +970,19 @@ pub enum Commands {
         /// limit is reached.
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
+
+        /// Force the v1.16 query-time walker even if a `git_history`
+        /// section is present in the index. Default (Phase 14.8
+        /// `HistoryMode::Auto`) picks the indexed path when available
+        /// and falls back to the walker otherwise. Use this for
+        /// debugging or regression-checking the walker against the
+        /// indexed path.
+        ///
+        /// Phase 14.8 Step 3 scaffold — flag is parsed but the indexed
+        /// reader lands in Step 4c. Today `--no-index` is a no-op
+        /// because no index path exists yet.
+        #[arg(long)]
+        no_index: bool,
     },
 
     /// v1.15.0 — manage the `vex-mcp` server entry in your coding

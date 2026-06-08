@@ -39,6 +39,9 @@ pub(crate) fn watch(
         no_call_graph,
         no_bm25,
         no_pattern_index,
+        false, // watch doesn't surface --history (uses sticky-via-manifest only)
+        None,
+        false, // --no-history not surfaced on watch
         ctx.cfg,
         Some(&prior_manifest),
     );

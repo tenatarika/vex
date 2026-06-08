@@ -70,6 +70,12 @@ pub(crate) fn status(
                 // `vex update` will fall back to full HNSW rebuild.
                 // Same `jq`-friendly bool projection.
                 "body_tokens_persisted": manifest.body_tokens_persisted.unwrap_or(false),
+                // v1.17 Phase 14.8 — sticky sentinel + counts. ISO date
+                // when section is present, null otherwise. Agents can
+                // `jq '.history_indexed_at // empty'` to branch on
+                // section presence without unwrapping.
+                "history_indexed_at": manifest.history_indexed_at,
+                "history": manifest.history,
             });
             if let Some(c) = &coverage_report {
                 json["coverage"] = serde_json::to_value(c)?;
@@ -113,6 +119,38 @@ pub(crate) fn status(
                 Some(true) => println!("Body tokens: yes (incremental HNSW update enabled)"),
                 Some(false) | None => {
                     println!("Body tokens: no (run `vex index` to enable incremental HNSW update)")
+                }
+            }
+            // v1.17 Phase 14.8 — git_history section surface. Three
+            // shapes: present + stats (the typical post-build case),
+            // present-but-no-stats (defensive — should not happen
+            // since Step 5 always pairs them), and absent.
+            match (&manifest.history_indexed_at, &manifest.history) {
+                (Some(date), Some(stats)) => {
+                    println!(
+                        "History:    indexed at {date} ({} commits, {} blobs, {} entries)",
+                        stats.commit_count, stats.blob_count, stats.entry_count
+                    );
+                    if stats.depth_capped == Some(true) {
+                        // Step 6 polish: depth-capped is non-obvious
+                        // and impacts which symbols `vex history`
+                        // can find — surface on its own line so it's
+                        // hard to miss.
+                        println!(
+                            "            ⚠ section is partial: --history-depth cap stopped \
+                             walking before the root commit. Symbols introduced before the cap \
+                             are NOT indexed; re-run `vex index --history` without the cap to \
+                             cover full history."
+                        );
+                    }
+                }
+                (Some(date), None) => {
+                    println!("History:    indexed at {date}");
+                }
+                (None, _) => {
+                    println!(
+                        "History:    no (run `vex index --history` to enable indexed `vex history`)"
+                    );
                 }
             }
             if let Some(c) = &coverage_report {

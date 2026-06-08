@@ -56,6 +56,20 @@ pub struct IndexOptions {
     /// section is written empty and `vex pattern` keeps using its
     /// live-scan path (today's behaviour). Default `true`. 11.4 Inc 4.
     pub with_pattern_index: bool,
+    /// Phase 14.8 — build the `git_history` sidecar
+    /// (`<index_dir>/index.git_history`) carrying every historical
+    /// symbol reachable from `HEAD`. Default `false`: opt-in only.
+    /// Triggered by `vex index --history` / `vex update --history`.
+    pub with_history: bool,
+    /// Phase 14.8 — cap the history walk at N newest commits (global,
+    /// not per-file). `None` = unbounded.
+    pub history_depth: Option<usize>,
+    /// Phase 14.8 — drop the `git_history` sidecar + null out the
+    /// manifest's `history_*` fields. Triggered by
+    /// `vex update --no-history`. Mutually exclusive with
+    /// `with_history`; clap enforces this at the CLI boundary
+    /// (`conflicts_with = "history"`).
+    pub drop_history: bool,
 }
 
 impl Default for IndexOptions {
@@ -65,6 +79,9 @@ impl Default for IndexOptions {
             with_call_graph: true,
             with_bm25: true,
             with_pattern_index: true,
+            with_history: false,
+            history_depth: None,
+            drop_history: false,
         }
     }
 }
@@ -91,6 +108,25 @@ fn manifest_options_cover(manifest: &Manifest, opts: IndexOptions, embedder_id: 
             Some(id) if id == embedder_id => {}
             _ => return false,
         }
+    }
+    // Phase 14.8 Step 5b: history coverage gates the skip path so a
+    // `vex update --no-history` actually drops the sidecar instead of
+    // short-circuiting before write_output_locked even runs.
+    if opts.drop_history && manifest.history_indexed_at.is_some() {
+        // We owe a drop — section still on disk. Don't skip.
+        return false;
+    }
+    if opts.with_history && manifest.history_indexed_at.is_none() {
+        // User wants history but the prior index has no section. Don't
+        // skip — write_output_locked needs to build it.
+        return false;
+    }
+    if opts.with_history && opts.history_depth != manifest.history_depth {
+        // Explicit cap changed (e.g. `--history-depth 50` after a prior
+        // unbounded build). The fast-path inside write_output_locked
+        // would also reject this; rejecting here avoids the skip path
+        // skipping the rebuild entirely.
+        return false;
     }
     true
 }
