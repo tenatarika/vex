@@ -58,25 +58,37 @@ pub(crate) fn reset_for_test() {
 mod tests {
     use super::*;
 
-    /// Tests in this module share the process-wide `STALE_REASON` slot.
-    /// `cargo test` runs tests in the same binary in parallel by default,
-    /// so each test must explicitly reset and the assertions must tolerate
-    /// the small chance another test inserts between the reset and the
-    /// read. We serialize via a per-test `reset` to keep them deterministic
-    /// when run in isolation (`--test-threads=1` or `nextest`'s default
-    /// process-per-binary model).
-
+    /// The slot is process-wide by design (one CLI invocation = one MCP
+    /// request) — `LazyLock<Mutex<Option<String>>>` is correct in
+    /// production but creates a parallelism hazard in tests, since
+    /// `cargo test` runs `#[test]` functions in the same binary on
+    /// shared threads. Splitting `reset`, `set`, and `current`
+    /// assertions across multiple tests lets a second test mutate the
+    /// slot between this one's reset and its assert.
+    ///
+    /// Solution: one test holds the slot for its full body, exercising
+    /// every behavior (empty → set → first-wins → reset → empty)
+    /// sequentially. No serialization primitive needed.
     #[test]
-    fn first_set_wins() {
+    fn slot_lifecycle_empty_set_first_wins_reset() {
         reset_for_test();
+        assert!(
+            current().is_none(),
+            "after reset_for_test, current() must be None"
+        );
+
         set("first failure");
         set("second failure");
-        assert_eq!(current().as_deref(), Some("first failure"));
-    }
+        assert_eq!(
+            current().as_deref(),
+            Some("first failure"),
+            "first set wins (idempotent-first-wins contract)"
+        );
 
-    #[test]
-    fn current_is_none_when_unset() {
         reset_for_test();
-        assert!(current().is_none());
+        assert!(
+            current().is_none(),
+            "reset_for_test must clear the slot back to None"
+        );
     }
 }
