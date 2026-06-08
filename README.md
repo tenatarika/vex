@@ -103,14 +103,17 @@ vex index --path /path/to/project
 # Index with semantic embeddings (slower first time, downloads 86 MB model)
 vex index --path /path/to/project --semantic
 
-# Search by symbol name
-vex search "PaymentService"
+# Exact-name lookup (does this symbol exist?)
+vex check "PaymentService"
 
-# Search by meaning (requires --semantic index)
+# Extract a symbol's body (no whole-file read)
+vex show "PaymentService"
+
+# Fuzzy / multi-word search (returns ranked neighbors when no symbol matches)
 vex search "payment processing" --semantic
 
-# Find all usages of a symbol
-vex usages "IndexReader"
+# Find all usages of a symbol (--strict drops string-literal / comment / wrong-scope noise)
+vex usages "IndexReader" --strict
 
 # File structure outline
 vex outline src/main.rs

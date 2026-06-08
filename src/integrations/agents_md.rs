@@ -28,16 +28,19 @@ This repository is indexed by [vex](https://github.com/tenatarika/vex). Prefer `
 
 | Task                                | Reach for                          |
 |-------------------------------------|------------------------------------|
+| Locate a specific symbol by name    | `vex check <Symbol>`               |
 | Extract a specific function/class   | `vex show <Symbol>`                |
-| Find a symbol by name               | `vex search <Symbol>`              |
 | Find all references                 | `vex usages <Symbol> --strict`     |
+| Who calls / who do I call           | `vex callers <Name>` / `callees`   |
+| Fuzzy / multi-word keyword search   | `vex search "<phrase>"`            |
 | Regex content search                | `vex grep <pattern>`               |
 | AST pattern match                   | `vex pattern '<pat>' --lang <X>`   |
-| Who calls / who do I call           | `vex callers <Name>` / `callees`   |
 | Symbol-level diff vs base           | `vex diff --base origin/main`      |
 | Near-duplicate / similar symbols    | `vex similar <Symbol>`             |
 
-**`--strict`** is the load-bearing flag for refactor work — it reads the persistent scope-binder reference edges and drops string-literal / comment / wrong-scope false hits. Cross-file imports resolved for Rust, TypeScript, Python, C#, C++ (other languages fall back to text-scan and signal it in the response).
+**`vex check` vs `vex search`** is the most common mistake. `vex check <Symbol>` is the exact-name probe — fastest, returns a clean hit/miss with `path:line` and bypasses the ranker. `vex search <query>` is a ranked blend (FST + BM25 + semantic) that returns NEIGHBORS (callers / imports) when no symbol literally matches the query — great for "find me something about retries", wrong for "does `Foo` exist". v1.15.0 prints a stderr hint when an identifier-shaped `vex search` returns 0 FST hits.
+
+**`--strict`** is the load-bearing flag for refactor work on `vex usages` — it reads the persistent scope-binder reference edges and drops string-literal / comment / wrong-scope false hits. Cross-file imports resolved for Rust, TypeScript, Python, C#, C++ (other languages fall back to text-scan and signal it in the response).
 
 ## Re-indexing
 
@@ -114,6 +117,15 @@ mod tests {
         assert!(
             contents.contains("vex show"),
             "template must mention `vex show` as the Read-replacement"
+        );
+        // v1.15.1: pin the `vex check` recommendation. Pre-fix the
+        // template recommended `vex search <Symbol>` for exact-name
+        // lookup, which surfaces ranked NEIGHBORS instead of the
+        // symbol itself when no local definition exists. Future
+        // template refactors must keep the `check` first-class.
+        assert!(
+            contents.contains("vex check"),
+            "template must recommend `vex check` for exact-name lookup"
         );
     }
 
