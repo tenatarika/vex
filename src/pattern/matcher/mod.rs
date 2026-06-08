@@ -411,11 +411,7 @@ fn try_match(text: &str, segments: &[Segment]) -> Option<Vec<(String, String)>> 
                 // Uses `find_at_depth_zero` so a needle like `}` matches the
                 // *balancing* closer of an outer `{`, not the first inner `}`.
                 if let Some(next_lit) = find_next_literal(&segments[i + 1..]) {
-                    if let Some(idx) = find_at_depth_zero(&text[pos..], next_lit.trim()) {
-                        pos += idx;
-                    } else {
-                        return None;
-                    }
+                    pos += find_at_depth_zero(&text[pos..], next_lit.trim())?;
                 } else {
                     // No more segments — $$$ matches the rest
                     pos = text.len();
@@ -428,11 +424,7 @@ fn try_match(text: &str, segments: &[Segment]) -> Option<Vec<(String, String)>> 
                 // `Capture`, just over a multi-token / multi-line span).
                 let start = pos;
                 if let Some(next_lit) = find_next_literal(&segments[i + 1..]) {
-                    if let Some(idx) = find_at_depth_zero(&text[pos..], next_lit.trim()) {
-                        pos += idx;
-                    } else {
-                        return None;
-                    }
+                    pos += find_at_depth_zero(&text[pos..], next_lit.trim())?;
                 } else {
                     pos = text.len();
                 }
