@@ -21,6 +21,19 @@ path = "src/main.rs"
 name = "vex"
 path = "src/lib.rs"
 
+# v1.15.2 CI fix: test binaries with full `debug = 2` info pushed the
+# GitHub ubuntu-latest runner past its ~14 GB disk budget during
+# `cargo test --workspace` (30+ integration test binaries, each
+# statically linked against the full tree-sitter + ONNX dep graph).
+# `line-tables-only` keeps file:line in backtraces — the load-bearing
+# signal for a test failure — while dropping variable / type / symbol
+# debug-info that ballooned each binary 3-5×. Local `cargo test`
+# backtraces still resolve to the source line; only LLDB-style
+# variable inspection on a test crash is lost (rare; bench profile
+# is unaffected).
+[profile.test]
+debug = "line-tables-only"
+
 [dependencies]
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
