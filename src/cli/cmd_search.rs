@@ -14,6 +14,25 @@ use crate::search::{fusion, semantic, structural};
 use crate::store::reader::IndexReader;
 use crate::util::config;
 
+/// v1.17 — query looks like a single bare identifier (eg. `compile_query`,
+/// `Foo`, `_internal`, `my_fn`). Used by the search-drift hint: when
+/// the user types a name expecting an exact-symbol lookup but the
+/// structural FST finds nothing, we suggest the precise tools.
+///
+/// Conservative: requires the first char to be ASCII letter or
+/// underscore and every subsequent char to be ASCII alphanumeric or
+/// underscore. Multi-word queries ("payment processor"), prefixed
+/// patterns ("Foo::*"), and anything with punctuation falls through
+/// — those are clearly relevance queries, not exact-symbol lookups.
+fn is_identifier_shaped(query: &str) -> bool {
+    let mut bytes = query.bytes();
+    match bytes.next() {
+        Some(b) if b.is_ascii_alphabetic() || b == b'_' => {}
+        _ => return false,
+    }
+    bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn search(
     ctx: &CmdCtx<'_>,
@@ -66,6 +85,27 @@ pub(crate) fn search(
     };
 
     let structural_results = structural::search_with_fuzzy(&reader, &query, fetch_limit);
+
+    // v1.17 — search-drift hint. When the query is identifier-shaped
+    // (a single bare symbol name, no spaces / punctuation) AND the
+    // structural FST channel returned zero matches, the user almost
+    // certainly meant "find the definition of X". RRF will still
+    // surface BM25 + semantic neighbours (callers, imports), which is
+    // correct behaviour but the typical UX failure that prompted this
+    // hint: imported-from-dependency symbols look like they "didn't
+    // find anything useful". Suggest the precise-lookup tools.
+    //
+    // Hint goes to stderr — doesn't pollute stdout JSON envelope or
+    // text result list. See `docs/COOKBOOK.md#faq--vex-search-foo-returned-the-wrong-things`.
+    if structural_results.is_empty() && is_identifier_shaped(&query) {
+        eprintln!(
+            "hint: `vex search {query}` found no symbol named `{query}` in this index. \
+             Hybrid ranking may surface callers / imports instead. For exact-symbol \
+             lookup try `vex check {query}` (existence), `vex show {query}` \
+             (definition body), or `vex usages {query} --strict` (every reference). \
+             See `docs/COOKBOOK.md` FAQ for the full decision rule."
+        );
+    }
 
     // BM25 channel: auto-on when the index has BM25 data, opt-out
     // with `--no-bm25`. Returns empty for short queries or when no
@@ -230,4 +270,47 @@ pub(crate) fn search(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_identifier_shaped;
+
+    #[test]
+    fn identifier_shaped_accepts_typical_symbols() {
+        for q in [
+            "compile_query",
+            "Foo",
+            "_internal",
+            "my_fn",
+            "PaymentProcessor",
+            "X",
+            "_",
+            "snake_case_name",
+            "CamelCaseName",
+            "fn123",
+        ] {
+            assert!(is_identifier_shaped(q), "should accept {q:?}");
+        }
+    }
+
+    #[test]
+    fn identifier_shaped_rejects_relevance_queries() {
+        for q in [
+            "payment processor", // multi-word
+            "Foo::bar",          // qualified path
+            "Foo.bar",           // member access
+            "Foo<T>",            // generic
+            "1Foo",              // starts with digit
+            "",                  // empty
+            "пример",            // non-ASCII identifier (precision-preserving — non-ASCII
+            // names exist but rg-style symbol lookup is rare)
+            "Foo-bar", // hyphen
+            "Foo Bar", // space
+            "*foo*",   // glob
+            "/regex/", // regex
+        ] {
+            assert!(!is_identifier_shaped(q), "should reject {q:?}");
+        }
+    }
 }
