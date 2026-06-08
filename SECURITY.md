@@ -7,9 +7,9 @@ are not patched — please upgrade to the latest release before reporting.
 
 | Version | Supported |
 |---------|-----------|
+| 1.15.x  | yes       |
 | 1.14.x  | yes       |
-| 1.13.x  | yes       |
-| < 1.13  | no — upgrade first |
+| < 1.14  | no — upgrade first |
 
 `vex self-update` will fetch the latest GitHub release on Linux, macOS,
 and Windows.
@@ -61,6 +61,14 @@ These are the surfaces we treat as security-relevant:
     positions; `MAX_COUNT` guard on both save + load paths after a
     parallel-reviewer audit. 3M-iter focused + 5.8M-iter system-wide
     runs (2026-06-05) clean.
+  - `index.hnsw` incremental update (`build_hnsw_incremental_at`,
+    `fuzz_incremental_hnsw`, v1.15.0) — drives the B1.2 update path
+    with adversarial `new_hashes` slices (duplicate-heavy batches,
+    tombstone-threshold boundary inputs, usearch `add`/`remove`
+    corner cases, sidecar-rewrite error paths). Pre-v1.15.1 the
+    `usearch::Index::add` collision was a hard abort; v1.15.1
+    dedup-and-skip is exercised here in addition to integration
+    tests.
 
   See README §Fuzz Testing for the full target list and historical
   defects.
@@ -100,13 +108,17 @@ These are the surfaces we treat as security-relevant:
 If you're embedding vex into a multi-tenant environment:
 
 - Treat `.vex` index files **and every sidecar in the cache directory**
-  (`index.hnsw`, `index.bloom`, `index.hashes`, `manifest.json`,
-  `embed_cache_<id>.bin`, `<onnx>.sha256.marker`) as **untrusted input**
-  even when you wrote them yourself — they're consumed via mmap or
-  parsed without prior validation. The fuzz harness covers each
-  binary-input parser, but defence in depth helps. The most recent
-  system-wide audit (v1.14.1, 2026-06-05) ran ~5.8M iterations across
-  all 9 targets with zero crashes.
+  (`index.hnsw`, `index.bloom`, `index.hashes`, `index.git_history`,
+  `manifest.json`, `embed_cache_<id>.bin`, `<onnx>.sha256.marker`) as
+  **untrusted input** even when you wrote them yourself — they're
+  consumed via mmap or parsed without prior validation. The fuzz
+  harness covers each binary-input parser, but defence in depth
+  helps. The most recent v1.15.1 release-gate audit (2026-06-08) ran
+  ~853k executions across the four highest-signal targets
+  (`fuzz_incremental_hnsw`, `fuzz_hash_index_load`, `fuzz_bloom_load`,
+  `fuzz_index_reader`) with zero crashes; the v1.14.1 system-wide
+  audit (2026-06-05) ran ~5.8M iterations across all then-9 targets
+  with zero crashes — historical baseline retained for comparison.
 - The MCP server reads `VEX_ROOT` from the environment and rejects paths
   that escape it. Don't pass user-controlled values into `VEX_ROOT`.
 - `vex self-update` verifies release archives via zipsign signatures —
