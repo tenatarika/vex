@@ -6,7 +6,63 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-06-08
+
+Bundled release: **B1.2 incremental HNSW** (the headline `vex update --semantic` perf win), **Phase 14.8 persistent git-history index** (`vex history` ~10 ms vs walker's ~6-16 s, **675-1640× speedup**), **`vex mcp install`** for seven MCP-compatible agents (Claude Code / Cursor / Codex CLI / Windsurf / Cline / Continue.dev / Zed) + `vex init --agents-md`, a **search-drift stderr hint** for the "imported-from-dependency" lookup case, plus a documentation pass (COOKBOOK + integrations folder + `/vex` skill + `SEMANTIC.md` + `HISTORY-INDEX.md` + LIMITATIONS update). A1 parallelises `vex duplicates`; C tightens the HNSW + hash-index sidecar atomic-commit window from ms to μs.
+
 ### Added
+
+- **Phase 14.8 — persistent history-symbol index sidecar (`vex index --history`).**
+  Built on top of the v1.15.0 query-time walker (below).
+  `vex index --history [--history-depth N]` walks `git log --raw
+  --no-abbrev --no-renames` once at index time, parses every blob
+  through the v1.14 Phase 14.7 content-addressed cache (warm hits
+  short-circuit tree-sitter), and writes
+  `<index_dir>/index.git_history` — a separate sidecar (NOT inline
+  in `index.vex`, byte-identical schema reserved for a future
+  promotion) carrying an FST `symbol_name → Vec<HistoricalSymbol>`
+  plus 28-byte mmap-friendly entries, 32-byte commits, and 24-byte
+  blobs. `vex history <Symbol>` then auto-picks the indexed path:
+  ~10 ms FST lookup vs the walker's seconds. Measured speedup
+  **~675× on vex self-repo**, **~1640× on tokio**. Indexed mode
+  also finds symbols whose name has been **deleted from HEAD** —
+  the walker can't (its `git grep` probe runs against the chosen
+  tip). `vex update` is sticky via the manifest with a 4-branch
+  refresh: no-op fast path (sidecar mtime preserved on tip
+  unchanged), incremental walker (linear `<prior_tip>..HEAD` +
+  in-place merge with the prior section), force-push detect
+  (`git merge-base --is-ancestor` → warn + full rebuild),
+  `--no-history` drop (delete sidecar + null manifest fields).
+  Manifest gains `history_indexed_at`, `history_tip_sha`,
+  `history_depth`, and `history: { commit_count, blob_count,
+  entry_count, depth_capped }`. `vex status` surfaces section
+  presence + counts + a depth-capped warning on its own line.
+  Reader auto-canonicalises the project path before computing the
+  cache subdir hash (fixes macOS `/tmp → /private/tmp` symlink
+  mismatch that previously fell back to walker silently). 12
+  integration + 22 unit tests. Bounds-check truncation bug (count
+  ≥134 M → OOB via `read_unaligned`) caught by parallel rust-
+  reviewer + code-reviewer, fixed via `(u32, u32) → u64` closure
+  widening before the section format shipped. See
+  `docs/HISTORY-INDEX.md` for the full pipeline + cost-benefit and
+  `docs/LIMITATIONS.md` §4c for the index limits.
+
+- **Search-drift hint on `vex search <identifier>`.** When the
+  query is identifier-shaped (`compile_query`, `Foo`, `_internal`
+  — single bare name, no punctuation / spaces) AND the structural
+  FST channel returns zero matches, vex prints a one-line stderr
+  hint suggesting `vex check` / `vex show` / `vex usages --strict`
+  for exact-symbol lookup. Covers the "imported from a dependency,
+  not defined locally" case where BM25 would otherwise rank callers
+  / imports as if they were the definition — confusing for LLM
+  agents asking "where is `Foo` defined?". Hint goes to stderr so
+  it doesn't pollute stdout JSON envelopes; 4 integration tests
+  pin the trigger matrix (defined symbol → no hint, multi-word
+  query → no hint, JSON mode → hint stays on stderr,
+  identifier-shaped + 0 FST hits → hint fires). External-feedback
+  driven (`vex search "compile_query"` surfaced callers on a
+  codebase where the symbol was imported from `chili_pg_utils`).
+  See `docs/COOKBOOK.md` FAQ for the full decision rule.
 
 - **`vex history <Symbol>` — query-time git-log walker.** Returns
   every historical version of the named symbol reachable from the
@@ -142,6 +198,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   '.body_tokens_persisted'` works without unwrapping). 3 new unit
   tests in `manifest::tests` pin the back-compat round-trip pattern.
 
+### Performance
+
+- **A1 — `vex duplicates` outer loop parallelised via rayon.**
+  Replaces the sequential `for sym_idx in 0..reader.symbol_count()`
+  scan in `find_duplicates` with `into_par_iter().flat_map_iter(…)
+  .collect()` over a new `per_symbol_duplicate_candidates` helper.
+  Each iteration's `HnswHandle::search` is independent (reader /
+  body_lines / hnsw are `&` borrows; usearch carries `unsafe impl
+  Send + Sync` upstream). The sequential `HashSet` dedup phase
+  stays — it's the cheap part; HNSW search at 1k+ symbols dominates
+  wall time. Per-symbol pair ordering and final tiebreak
+  determinism preserved via rayon's ordered `flat_map_iter` +
+  `collect`. Expected 2-3× on dense corpora (architect-bounded —
+  usearch's internal OpenMP threads can contend with rayon workers
+  at high core counts).
+
+### Fixed
+
+- **C — two-phase atomic commit for HNSW + hash-index sidecar
+  pair.** `hash_index::save` is now split into `save_to_tmp`
+  (writes `.tmp` + fsync) plus caller-managed `rename`; both
+  `build_hnsw_at` and `build_hnsw_incremental_at` go through a new
+  `commit_hnsw_and_sidecar` helper that writes both files to `.tmp`
+  siblings (usearch's `index.save(tmp_path)` writes directly to
+  the tmp), then renames both back-to-back. The on-disk
+  inconsistency window — during which `HnswHandle::open`'s
+  size-check has to fall back to brute force — shrinks from ~ms
+  (the time to write the sidecar after the HNSW completes) to ~μs
+  (two adjacent `rename` syscalls). Same self-heal contract on
+  partial commit: HNSW-new / sidecar-old triggers brute-force
+  fallback, next successful update fixes both. New unit test
+  `two_phase_commit_cleans_up_tmps_on_hnsw_rename_failure` pins
+  the cleanup-on-error branch (both tmps removed when the
+  destination rename can't complete) so a leaked tmp can't confuse
+  the next run.
+
 ### Documentation
 
 - **`docs/COOKBOOK.md` — agent workflow recipes.** Five end-to-end
@@ -193,6 +285,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   load-bearing rules and a pointer to the skill. Mirror to
   `~/.claude/skills/vex/SKILL.md` for global cross-project availability
   (`cp` after edits — there is no auto-sync).
+
+- **`docs/HISTORY-INDEX.md` — full Phase 14.8 pipeline spec.**
+  Mirrors the structure of `SEMANTIC.md`: end-to-end pipeline
+  (git-log enumeration → blob-cache-backed parse → entry/commit/
+  blob tables → FST + private string sub-section → atomic temp-
+  rename write), on-disk format (`VXGH` magic, 64-byte header, fixed-
+  size records with compile-time `SIZE` asserts), 4-branch update
+  state machine (no-op fast path / incremental / force-push / drop),
+  the canonicalize-symmetry contract every cache-keyed sidecar
+  must follow, deviation note (sidecar over inline section — saves
+  ~2/3 of a v6→v7 format bump, schema byte-identical for future
+  promotion), benchmark numbers from the Step 7 perf bench, and
+  the cold-start migration story. Also extends `docs/LIMITATIONS.md`
+  with §4c history-index limits (convex-hull spans, no per-branch
+  indexing, no rename tracking) and §5 tool-selection pitfall (the
+  search-drift case the v1.15.0 hint addresses).
 
 - **`docs/SEMANTIC.md` — authoritative semantic-pipeline spec.**
   Consolidates the parse → `build_context` → `context_hash` → embed

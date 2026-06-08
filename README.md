@@ -41,6 +41,7 @@ $ vex bundle --mode symbol --symbol Foo    # NEW (v1.9): body + callers + callee
 vex is a **static-analysis indexing tool**, not a language server. Set expectations honestly:
 
 - **Not an LSP replacement.** No go-to-definition into third-party packages, no rename refactoring, no type-checking, no hover docs. For those, keep your LSP.
+- **`vex search` is a ranked blend, not an exact-name lookup.** Structural FST + BM25 + semantic fused via RRF return *relevance-ordered* results — when no symbol literally named `Foo` lives in the index (imported from a dependency, deleted, typo), BM25 may surface callers / imports as if they were the definition. For exact-symbol questions ("does it exist?", "show me the body", "who calls it?") use `vex check Foo` / `vex show Foo` / `vex usages Foo --strict` — they bypass the ranker. **v1.15.0** prints a one-line stderr hint when an identifier-shaped query gets zero FST hits.
 - **No dynamic-dispatch visibility.** Decorator routing (`@router.get("/path")`), string-resolved factories (`uvicorn.run("main:app")`), reflection (`getattr(obj, name)()`), and macro-expanded references are all invisible to every vex command. `vex grep '\bname\b'` is the textual escape hatch.
 - **`vex callers` has uneven coverage outside function scope.** Module-level expressions like `app = create_app()` are reported via synthetic `<module:path>` callers (Phase 14.1). Python + Java function/method decorators (Phase 14.2), Kotlin annotations + C# method/constructor attributes (Phase 14.2.2), and TypeScript method decorators + Rust outer attributes on fns/methods (Phase 14.2.1) emit forward edges — `vex callers GetMapping` lists every Spring handler, `vex callers HttpGet` every ASP.NET action, `vex callers test` every `#[tokio::test]`. Class-level decorators (14.6) remain on the roadmap.
 - **`vex usages` quality varies by language.** 5 binder-supported languages get refactor-grade `--strict` refs; the other 14 use an identifier scanner with a higher false-positive rate.
@@ -149,6 +150,10 @@ vex search "Repository" --since-branched                  # only files changed s
 vex usages "Config" --since HEAD~3                        # refs within the last 3 commits
 vex callers "Foo" --changed-only                          # working-tree changes only
 
+# Extract just a symbol's body — replaces Read for a specific function/class
+vex show "PaymentService"                                 # full body of the class / fn
+vex show "Foo" "Bar" "Baz"                                # multiple symbols in one call
+
 # Smart show truncation for token efficiency (v1.9, Phase 13.3)
 vex show "BigClass" --signature-only                      # just the signature line
 vex show "PaymentService" --head 20                       # first 20 lines of the body
@@ -181,8 +186,8 @@ vex completions zsh > ~/.zfunc/_vex
 
 | Command | Description |
 |---------|-------------|
-| `vex index [--path .] [--semantic] [--embedder ID]` | Build full index. `--semantic` generates embeddings + HNSW + BM25. `--embedder` selects embedding model (default `minilm-l6-v2`). |
-| `vex search <query> [--semantic] [--no-bm25] [--limit N] [--kind def,fn,…] [--visibility V] [--async-only] [--why]` | Hybrid search: structural + BM25 + semantic (when `--semantic`). 3-way RRF fusion. Multi-value `--kind` (canonical names + meta-selectors `def`/`comment`/`test`/`ref`). Metadata post-filters narrow by signature keywords. `--why` appends a JSON trace to stderr. |
+| `vex index [--path .] [--semantic] [--embedder ID] [--history [--history-depth N]]` | Build full index. `--semantic` generates embeddings + HNSW + BM25. `--embedder` selects embedding model (default `minilm-l6-v2`). **`--history` (v1.15.0)** builds the Phase 14.8 persistent history-symbol section (`<index_dir>/index.git_history`) so `vex history <Symbol>` runs in FST-lookup time. `--history-depth N` caps the walk at N newest commits (global, not per-file). |
+| `vex search <query> [--semantic] [--no-bm25] [--limit N] [--kind def,fn,…] [--visibility V] [--async-only] [--why]` | Hybrid search: structural + BM25 + semantic (when `--semantic`). 3-way RRF fusion. Multi-value `--kind` (canonical names + meta-selectors `def`/`comment`/`test`/`ref`). Metadata post-filters narrow by signature keywords. `--why` appends a JSON trace to stderr. **v1.15.0 search-drift hint**: when the query is identifier-shaped (`compile_query`, `Foo`, `_internal`) and the structural FST finds zero matches, vex prints a one-line stderr hint pointing at `vex check` / `vex show` / `vex usages --strict` — the typical "imported-from-dependency" case where BM25 would otherwise surface callers as if they were the definition. See [`docs/COOKBOOK.md`](docs/COOKBOOK.md) FAQ. |
 | `vex show <symbol> [--limit N] [--context N] [--kind fn] [--visibility V] [--async-only] [--signature-only \| --head N \| --no-body]` | Extract symbol body from source (saves tokens vs full file read). Same metadata + kind filters as `search`. **v1.9 (Phase 13.3):** smart truncation flags — `--signature-only` keeps only the declaration line, `--head N` keeps the first N body lines, `--no-body` returns signature + docstring only. Mutually exclusive. |
 | `vex similar <name> [--limit N] [--min-score T] [--explain]` | Find symbols semantically close to an existing one (HNSW nearest neighbors). `--explain` adds identifier-Jaccard + truncated unified diff per match. `--min-score` is an alias for `--threshold`. |
 | `vex duplicates [--min-score T] [--min-body-lines N] [--explain]` | List near-duplicate symbol pairs by embedding similarity. `--explain` shows what's actually different between the bodies. |
@@ -198,13 +203,14 @@ vex completions zsh > ~/.zfunc/_vex
 | **`vex bundle --mode <symbol\|pr-impact\|project> [...]`** | **NEW (v1.9, Phase 13.2).** Unified multi-source bundle — replaces 4 round-trips (`show → callers → callees → similar`) with one. `--mode symbol --symbol Foo` returns body + callers + callees + semantic similar. `--mode pr-impact --base origin/main` returns changed symbols + transitive callers (depth=2 default) + tests. `--mode project [--top-n 30]` returns top-N by reverse call-graph indegree (experimental — see `docs/MCP-SCHEMA.md#bundle-modes-v19` for the response shape and `mode_hints` per-mode keys). Always emits the v1 envelope `{ protocol_version, capabilities, _meta, results }`. |
 | `vex check <name> [name...]` | Fast existence check — which symbols exist in the index? |
 | `vex grep <pattern> [--filter path/]` | Regex content search (no index needed). |
-| `vex update [--path .] [--semantic] [--embedder ID]` | Incremental update — re-parse only changed files, reuse unchanged symbols from existing index. |
+| `vex update [--path .] [--semantic] [--embedder ID] [--history \| --no-history]` | Incremental update — re-parse only changed files, reuse unchanged symbols from existing index. **`--history` (v1.15.0)** is sticky via the manifest: if the prior build had a history section, `vex update` keeps it fresh via a 3-branch walker (fast-path skip on no-new-commits, incremental on linear history, full rebuild on force-push). `--no-history` drops the section + nulls the manifest fields. |
 | `vex watch [--path .] [--semantic] [--embedder ID]` | Watch filesystem, auto re-index on changes. |
 | `vex status [--path .]` | Show index stats: symbol count, size, embeddings, call graph, BM25. |
 | `vex completions <shell>` | Generate shell completions (bash, zsh, fish). |
 | `vex init` | Create a default `.vex.toml` config file in the project root. |
 | **`vex capabilities`** | **NEW (v1.9, Phase 13.0).** Print the machine-readable capability matrix (`protocol_version`, `signals`, `why`, `scope_filters`, `metadata_filters`, `empty_reason`, `bundle_modes`, `auto_update`). MCP / agent clients probe this once at startup instead of re-reading help text. |
 | **`vex eval [--bench PATH] [--min-ndcg F] [--json]`** | **NEW (v1.9, Phase 13.12).** Run the ranking-evaluation harness against a hand-curated golden query set; reports nDCG@10 / recall@10 / MRR per query and aggregated. CI regression guard — fails when mean nDCG drops below `--min-ndcg`. Default golden set: `benches/ranking_golden/queries.toml`. |
+| **`vex history <Symbol> [--depth N] [--limit N] [--branch REV] [--no-index]`** | **NEW (v1.15.0).** Every historical version of a symbol reachable from a chosen tip. With `vex index --history` previously run, queries hit a persistent FST sidecar (~10 ms — 1640× faster on tokio-scale repos than the walker). Without the section, shells out to `git log` (~seconds). Indexed mode also finds symbols whose name has been **deleted** from HEAD — the walker can't. See `docs/HISTORY-INDEX.md` for the full pipeline + cost-benefit. |
 | `vex self-update [--check] [--yes]` | Update vex to the latest GitHub release. Replaces the running binary in place. Works on Linux, macOS, and Windows. |
 
 ### Per-query filters (every search-shaped command)
