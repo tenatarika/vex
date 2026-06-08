@@ -8,8 +8,8 @@ All snippets use the MCP tool surface (`usages(...)`, `bundle(mode=..., ...)`) a
 
 | You want to…                                 | Reach for                                          | Not                                |
 | -------------------------------------------- | -------------------------------------------------- | ---------------------------------- |
-| Locate a specific named symbol               | `find_symbol(symbol="X")`                          | `grep`, `Read`                     |
-| Search by name / signature / partial         | `search(query="X")`                                | `Grep`                             |
+| Locate a specific named symbol (exact name)  | `find_symbol(symbol="X")` or `check(symbols=["X"])` | `search` (ranked — surfaces neighbors when no local def), `grep`, `Read` |
+| Fuzzy / partial / signature snippet          | `search(query="X")`                                | `find_symbol` (exact only)         |
 | Search by meaning / description              | `find_similar(query="…description…")`              | `search` (lexical only)            |
 | Get the body of a known symbol               | `show(symbols=["X"])`                              | `Read` on the whole file           |
 | Find every reference to a symbol             | `usages(symbol="X", strict=true)`                  | `grep` (false hits in strings)     |
@@ -49,7 +49,7 @@ This is by design — `vex search` is the **ranked-relevance** surface, not the 
 - "Find symbols similar to a known X" → `similar` (post-`show` on a known seed)
 - "Find code relevant to topic Y" → `search`
 
-`vex search` also emits a stderr hint (v1.17+) when the query is identifier-shaped AND structural FST returned zero — it explicitly suggests the precise-lookup tools above. The hint is non-fatal and doesn't appear in the JSON envelope.
+`vex search` also emits a stderr hint (v1.15.0+) when the query is identifier-shaped AND structural FST returned zero — it explicitly suggests the precise-lookup tools above. The hint is non-fatal and doesn't appear in the JSON envelope.
 
 ## Recipe 1 — Code archaeology
 
@@ -63,7 +63,7 @@ This is by design — `vex search` is the **ranked-relevance** surface, not the 
 1. `find_symbol(symbol="process_payment")` — confirm it exists and locate definition. Returns one or more matches if overloaded.
 2. `bundle(mode="symbol", symbol="process_payment", callers_max=10, callees_max=10, similar_max=5)` — one call returns the body, the top callers, the top callees, and semantically-similar symbols. Defaults give an LLM-sized context (~3-5k tokens).
 
-**Tool sequence (historical, v1.17+)**:
+**Tool sequence (historical, v1.15.0+)**:
 
 3. `history(symbol="process_payment", limit=10)` — every commit that touched a blob containing this symbol, oldest first. With an indexed section (Phase 14.8 `vex index --history`), this is a ~10ms FST lookup; without, it shells out to `git log` (~seconds).
 4. For each interesting commit in the history list, the SHA is shown — pair with `git show <sha> -- <file>` to inspect that revision's body if you need the exact diff.

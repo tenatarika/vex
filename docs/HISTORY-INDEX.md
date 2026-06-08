@@ -2,7 +2,7 @@
 
 How `vex` builds and updates the persistent historical-symbol index —
 the path from a git commit to a hit in `vex history <Symbol>`. Written
-after the v1.17 Phase 14.8 incremental walker landed; consolidates
+after the v1.15.0 Phase 14.8 incremental walker landed; consolidates
 pipeline knowledge that would otherwise spread across CHANGELOG,
 inline comments, and LIMITATIONS.md.
 
@@ -13,7 +13,7 @@ inline comments, and LIMITATIONS.md.
 > mapping every symbol name to every commit that touched a blob
 > containing it. `vex history <Symbol>` auto-picks the indexed path
 > (~10ms FST lookup) when the sidecar is present and falls back to
-> the v1.16 query-time walker (~seconds, shells out to `git log`)
+> the v1.15.0 query-time walker (~seconds, shells out to `git log`)
 > when it's not.
 
 ---
@@ -255,7 +255,7 @@ fourth branch:
 - Sidecar deleted (best-effort: permission errors warn but don't
   block the rest of the index write).
 - All four `history_*` manifest fields set to `None`.
-- `cmd_history` next call falls back to the v1.16 walker; JSON
+- `cmd_history` next call falls back to the query-time walker; JSON
   envelope advertises `_meta.vex.dev/history_mode = "walker"`.
 
 The skip-path gate `manifest_options_cover` is extended so

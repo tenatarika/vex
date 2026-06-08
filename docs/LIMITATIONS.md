@@ -384,11 +384,11 @@ recovery matrix).
 
 ---
 
-## 4c. `vex history` index — known limits (v1.17 Phase 14.8)
+## 4c. `vex history` index — known limits (v1.15.0, Phase 14.8)
 
 **What works:** opt in via `vex index --history` and `vex history
-<Symbol>` returns ~10ms FST lookups (~675-1640× faster than the v1.16
-query-time walker). Includes symbols whose name has been removed from
+<Symbol>` returns ~10ms FST lookups (~675-1640× faster than the
+v1.15.0 query-time walker that ships in the same release). Includes symbols whose name has been removed from
 HEAD (the walker can't find these). `vex update` keeps the section
 fresh: incremental walker on linear history, force-push detect with
 warning, fast-path skip on no-new-commits, sticky-via-manifest. See
@@ -405,8 +405,8 @@ requested branch. The CLI surfaces this via `tracing::warn!`:
 
 ```
 WARN: phase 14.8: --branch is ignored by the indexed path (section
-reflects HEAD at index time). Pass --no-index to query the v1.16
-walker against the requested branch.
+reflects HEAD at index time). Pass --no-index to query the walker
+against the requested branch.
 ```
 
 `--no-index` falls back to the walker, which DOES honour `--branch`.
@@ -442,7 +442,7 @@ exact-presence requires a per-entry bitmap (~1.2 KB per entry on a
 
 ### Section size scales with history depth, not current symbols
 
-Realistic ratios from v1.17 perf bench:
+Realistic ratios from the v1.15.0 perf bench:
 
 ```
                   index.vex   index.git_history   ratio
@@ -495,7 +495,7 @@ guidance for agents:
 > ranked-relevance surface working as designed; the gap is in tool
 > choice. For exact-symbol lookup use **`vex check`** (existence
 > probe), **`vex show`** (definition body), or **`vex usages --strict`**
-> (every reference). v1.17+ `vex search` emits a stderr hint
+> (every reference). v1.15.0+ `vex search` emits a stderr hint
 > suggesting these when it detects an identifier-shaped query with
 > zero structural hits. See [COOKBOOK FAQ](COOKBOOK.md#faq--vex-search-foo-returned-the-wrong-things)
 > for the full decision rule.
