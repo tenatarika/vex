@@ -6,6 +6,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-06-08
+
+Field-test fix bundle responding to an external report against a real C++ codebase (~4 022 files, 82.3k symbols). One critical bug took the semantic channel offline on any corpus with hash-colliding symbols; one high-severity bug turned a failed MCP auto-update into a self-perpetuating stale loop where agents trusted "0 results" as a real answer. Four UX polish items round out the bundle.
+
+### Fixed
+
+- **CRITICAL — `vex index --semantic` no longer aborts on duplicate HNSW keys.** Two C++ symbols with identical signatures in the same file (forward decl + definition, overloads, anonymous-namespace clones) hash to the same `context_hash`, and usearch's `multi: false` high-level index rejected the second `add` as fatal — aborting the whole build mid-corpus and leaving no `index.hnsw` on disk. Pre-fix this meant `vex index --semantic` returned exit 2 on every run for affected corpora; the on-disk graph silently went stale (one user reported a 3-day-old vector index serving semantic search). Both `build_hnsw_at` (full rebuild) and `build_hnsw_incremental_at` (incremental update) now dedup at the insert boundary, skip-and-warn on the duplicate hash with the offender's first / duplicate sym_idx, and continue. The on-disk hash sidecar stays sym_idx-aligned (full length, duplicates preserved) — `src/search/semantic.rs:156` requires `hashes.len() == expected_symbols` at query open, and the reader at the same site already dedups via `entry().or_insert` keeping the first sym_idx per hash. 6 regression tests cover all-unique / all-dup / partial-dup / incremental-with-new-dup / incremental-collision-with-existing.
+
+- **HIGH — MCP failed auto-update no longer returns exit code 2 or empty `{results:[]}` envelopes.** When the on-disk index was stale and `auto_update` triggered a rebuild that failed (e.g. the critical HNSW bug above, but also future failure modes: disk full, embedder model unavailable, corrupted manifest), `handle_staleness` bubbled the `pipeline::update` error up → the CLI exited non-zero → the MCP wrapper either surfaced `exit code 2` to the caller or, in one observed case for `vex usages`, wrapped a valid `{results: []}` envelope inside an MCP error string. Agents read "0 usages" and trusted it. Now `handle_staleness` catches the error, records the reason via a per-request `stale_signal` slot, logs to stderr, and returns `Ok` — the command serves the existing (stale) index and the JSON envelope's `_meta.vex.dev/stale = true` + `_meta.vex.dev/stale_reason` advertise the degradation. Same path also fixes the embedder-mismatch bail that previously bypassed auto-update with a non-zero exit. `MetaEnvelope` gains 3 optional fields (`stale`, `stale_reason`, `why_trace`) — wire-compatible additions guarded by `skip_serializing_if = "Option::is_none"`. The MCP-side in-process single-flight remains a follow-up (the cross-process `IndexLock` already serializes rebuilds, and the herd's failure mode resolves once the critical HNSW bug is fixed).
+
+- **`vex capabilities` no longer returns `{}` through the MCP wrapper.** Pre-fix the CLI emitted only `{ protocol_version, capabilities }` — a "half envelope" that the MCP wrapper's `is_envelope` heuristic at `crates/vex-mcp/src/main.rs:480` accepted (both required fields present) but populated `structuredContent.results` with an empty object because the `results` key was absent. The CLI now emits a full `ResponseEnvelope` with `results: null` (an explicit "no per-query payload" signal — the capability matrix lives at `capabilities`, not echoed into `results`).
+
+- **`vex usages --strict --why` now surfaces the `--why` trace in the success envelope.** Pre-fix the trace was emitted only on stderr (`VEX_WHY:` prefix) and never reached JSON consumers — agents that piped `--format json | jq` couldn't observe it; it only appeared embedded in the *error* payload. The trace now also populates `_meta.vex.dev/why_trace` on success, alongside the existing stderr emission for back-compat with scripts that grep the stream.
+
+### Added
+
+- **`--drop-semantic` flag on `vex index`.** Pre-fix, `vex index --no-semantic` unconditionally deleted `index.hnsw` + `index.hashes` and orphaned the embedder cache (often hundreds of MB on real corpora) — reattaching semantic search required a full re-embed of every symbol. `--no-semantic` now PRESERVES the prior semantic artifacts (the query path at `src/search/semantic.rs:156` catches the size mismatch and degrades to brute-force semantic search until the next `--semantic` build); pass `--drop-semantic` to opt into the destructive teardown.
+
+- **`vex callees` default-on stdlib / macro filter for C++ readability.** Pre-fix, `vex callees WriteFrameFile` on a real C++ codebase returned `std::move`×4, `c_str`×3, `_T` (MFC macro), and a handful of method-chain artifacts — drowning the real edges. The new `src/callgraph/stdlib_filter.rs` module drops names matching `std::*`, `__*`, common stdlib container/string methods (`c_str`, `push_back`, `begin`, etc.), and short all-uppercase macro-style identifiers. Generic names like `get` / `data` / `clear` / `reset` are deliberately NOT filtered (they're extremely common in user-defined domain code). `--include-stdlib` bypasses the filter when the user wants the raw list. C++ idiom only — other languages already produce mostly-clean callee sets.
+
+### Breaking
+
+- **`vex index --no-semantic` no longer deletes `index.hnsw` + `index.hashes` + the embedder cache by default.** Scripts that relied on `--no-semantic` to free disk space must now pass `--drop-semantic` too. The previous behavior was a usability footgun — one user lost semantic search permanently to a `--no-semantic` rebuild without realizing the embed cache had been orphaned.
+
 ## [1.15.0] - 2026-06-08
 
 Bundled release: **B1.2 incremental HNSW** (the headline `vex update --semantic` perf win), **Phase 14.8 persistent git-history index** (`vex history` ~10 ms vs walker's ~6-16 s, **675-1640× speedup**), **`vex mcp install`** for seven MCP-compatible agents (Claude Code / Cursor / Codex CLI / Windsurf / Cline / Continue.dev / Zed) + `vex init --agents-md`, a **search-drift stderr hint** for the "imported-from-dependency" lookup case, plus a documentation pass (COOKBOOK + integrations folder + `/vex` skill + `SEMANTIC.md` + `HISTORY-INDEX.md` + LIMITATIONS update). A1 parallelises `vex duplicates`; C tightens the HNSW + hash-index sidecar atomic-commit window from ms to μs.
@@ -2709,7 +2733,9 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.15.1...HEAD
+[1.15.1]: https://github.com/tenatarika/vex/compare/v1.15.0...v1.15.1
+[1.15.0]: https://github.com/tenatarika/vex/compare/v1.14.1...v1.15.0
 [1.5.0]: https://github.com/tenatarika/vex/compare/v1.4.3...v1.5.0
 [1.4.3]: https://github.com/tenatarika/vex/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/tenatarika/vex/compare/v1.4.1...v1.4.2
