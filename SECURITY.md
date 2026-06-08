@@ -113,7 +113,7 @@ If you're embedding vex into a multi-tenant environment:
   **untrusted input** even when you wrote them yourself — they're
   consumed via mmap or parsed without prior validation. The fuzz
   harness covers each binary-input parser, but defence in depth
-  helps. The most recent v1.15.1 release-gate audit (2026-06-08) ran
+  helps. The most recent v1.15.2 release-gate audit (2026-06-08) ran
   ~853k executions across the four highest-signal targets
   (`fuzz_incremental_hnsw`, `fuzz_hash_index_load`, `fuzz_bloom_load`,
   `fuzz_index_reader`) with zero crashes; the v1.14.1 system-wide

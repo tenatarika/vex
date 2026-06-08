@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.15.2] - 2026-06-08
+
+Documentation pass: across every agent-facing surface (README, `/vex` skill, COOKBOOK, LIMITATIONS, AGENTS.md template, SECURITY.md, parent `CLAUDE.md`), the recommended tool for "find a specific symbol by exact name" is now `vex check` first, with `vex search` explicitly reframed as the fuzzy / keyword / multi-word surface that returns ranked NEIGHBORS when no symbol literally matches. The change addresses the field-test observation that the prior `vex search <Symbol>` guidance led agents to act on caller/import noise as if it were the definition. No code paths changed; the v1.15.0 search-drift stderr hint already existed and is now properly cross-referenced. Also bundled: a SECURITY.md fuzz-attestation update covering the v1.15.2 release-gate run (~853k executions across four highest-signal libFuzzer targets, zero crashes), and version-slip cleanup in docs that pre-emptively attributed Phase 14.8 / `vex history` walker to v1.16/v1.17 — both shipped in v1.15.0.
+
+### Changed
+
+- **`vex check` is now the recommended first tool for exact-name symbol lookup** across all agent-facing documentation surfaces. `vex search` documentation reframed to make the ranked-blend / neighbors behavior explicit. Affects `README.md` Quick Start + "What Vex isn't" section, `.claude/skills/vex/SKILL.md`, `docs/COOKBOOK.md` cheat sheet, `src/integrations/agents_md.rs` (the `vex init --agents-md` template — propagates to every project that runs it). A new unit-test pin guards against future template refactors silently dropping the `vex check` recommendation.
+
+### Fixed
+
+- `docs/COOKBOOK.md`, `docs/LIMITATIONS.md`, `docs/HISTORY-INDEX.md`: forward-looking version stamps (`v1.16` walker, `v1.17` Phase 14.8 history index, `v1.17+` search-drift hint) updated to `v1.15.0` to match the actual ship vehicle.
+
+### Security
+
+- `SECURITY.md`: v1.15.2 release-gate fuzz attestation (~853k executions across `fuzz_incremental_hnsw`, `fuzz_hash_index_load`, `fuzz_bloom_load`, `fuzz_index_reader`, zero crashes). The `fuzz_incremental_hnsw` target — added in v1.15.0 for the B1.2 incremental update path — is now documented in the in-scope coverage map.
+
 ## [1.15.1] - 2026-06-08
 
 Field-test fix bundle responding to an external report against a real C++ codebase (~4 022 files, 82.3k symbols). One critical bug took the semantic channel offline on any corpus with hash-colliding symbols; one high-severity bug turned a failed MCP auto-update into a self-perpetuating stale loop where agents trusted "0 results" as a real answer. Four UX polish items round out the bundle.
@@ -2733,7 +2749,8 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.15.1...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.15.2...HEAD
+[1.15.2]: https://github.com/tenatarika/vex/compare/v1.15.1...v1.15.2
 [1.15.1]: https://github.com/tenatarika/vex/compare/v1.15.0...v1.15.1
 [1.15.0]: https://github.com/tenatarika/vex/compare/v1.14.1...v1.15.0
 [1.5.0]: https://github.com/tenatarika/vex/compare/v1.4.3...v1.5.0
