@@ -11,15 +11,19 @@ description: Reference for the `vex` code-search CLI — symbol search, usages (
 
 ## Core Commands
 
-- `vex search "SymbolName"` — find symbol definitions (FST + BM25 + semantic fusion)
-- `vex show "SymbolName"` — extract symbol body (**use INSTEAD of `Read` for specific symbols**)
-- `vex show "A" "B" "C"` — extract multiple symbols in one call
-- `vex usages "SymbolName"` — find all references (text-scan baseline)
+### Exact symbol lookup (you know the name)
+
+- `vex check "SymbolName"` — **does it exist?** Fast yes/no + locations, no ranker noise. Always reach here FIRST when you have a literal name to find. `vex check "A" "B" "C"` for batch.
+- `vex show "SymbolName"` — extract the symbol body (**use INSTEAD of `Read` for specific symbols**). `vex show "A" "B" "C"` for multiple in one call.
 - `vex usages "SymbolName" --strict` — **type-aware refs from the scope binder**; drops string-literal / comment / wrong-scope noise. Cross-file imports resolved for Rust, TypeScript, Python, C#, C++ (others fall back to text-scan).
-- `vex grep "pattern"` — regex content search (use when you need text, not symbols)
-- `vex search "description" --semantic` — search by meaning (requires `--semantic` index)
-- `vex outline path/to/file.py` — file structure overview
-- `vex check "A" "B" "C"` — fast symbol existence check
+- `vex usages "SymbolName"` — same lookup without the binder; text-scan baseline.
+
+### Fuzzy / keyword exploration (you don't know the exact name)
+
+- `vex search "timeout retry"` — multi-word / keyword search via FST + BM25 + semantic RRF fusion. Use for "find me something about X". **Returns ranked NEIGHBORS** when no symbol literally matches — that's the design, not a bug. For "I know the name, just find it" use `vex check` instead.
+- `vex search "handle alert" --semantic` — search by meaning (requires `--semantic` index).
+- `vex grep "pattern"` — regex content search; use when you need TEXT (string literals, comments, config values), not symbols.
+- `vex outline path/to/file.py` — file structure overview.
 
 ## Structural Patterns (AST)
 
@@ -59,11 +63,12 @@ Apply to most search-shaped commands:
 
 ## Rules of Thumb
 
-- **`vex show` instead of `Read`** when you need a specific function or class
-- **`vex search` instead of `Grep`** when looking for symbol definitions
-- **`vex grep` instead of `Grep`** when searching string literals, comments, or config values
-- **`vex usages --strict` for refactor work** — text-scan refs lie about scope; `--strict` reads the persistent reference-edges section built from the scope binder
-- **Re-index after a format-version bump**: `vex update` is incremental but won't recover from a bump; run `vex index` after upgrading the binary
+- **`vex check <Symbol>` instead of `Grep <Symbol>`** when you know the exact name. Bypasses the ranker; gives an honest hit/miss + path:line. `vex search` may surface neighbors (callers, imports) if the symbol isn't defined locally — fine for fuzzy exploration, wrong for "does it exist".
+- **`vex show` instead of `Read`** when you need a specific function or class.
+- **`vex grep` instead of `Grep`** when searching string literals, comments, or config values (text, not symbols).
+- **`vex usages --strict` for refactor work** — text-scan refs lie about scope; `--strict` reads the persistent reference-edges section built from the scope binder.
+- **`vex search "keyword phrase"`** is for FUZZY / multi-word / "find me something about X" — not for exact identifier lookup. v1.15.0 prints a stderr drift hint when an identifier-shaped query returns 0 FST hits, suggesting `check`/`show`/`usages --strict`.
+- **Re-index after a format-version bump**: `vex update` is incremental but won't recover from a bump; run `vex index` after upgrading the binary.
 
 ## Indexing
 

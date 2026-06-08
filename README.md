@@ -12,19 +12,20 @@ Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 [Why Vex?](#why-vex) · [How It Compares](#how-it-compares) · [Installation](#installation) · [Quick Start](#quick-start) · [Commands](#commands) · [Configuration](#configuration) · [How Search Works](#how-search-works) · [Benchmarks](#benchmarks) · [Supported Languages](#supported-languages) · [Integration](#integration) · [Testing](#testing) · [Architecture](#architecture)
 
 ```
-$ vex search "TelemetryProcessor"          # 4ms — find symbol definitions
-$ vex search "timeout retry"               # BM25 finds rare body terms
-$ vex show "TelemetryProcessor"            # extract just the class body (not the whole file)
+$ vex check "TelemetryProcessor"           # 4ms — does it exist? where? (exact name)
+$ vex show "TelemetryProcessor"            # extract the class body (not the whole file)
+$ vex usages "Config" --strict             # who references this symbol? (binder-resolved, no noise)
+$ vex callers "process_event"              # who calls this function? (~4ms; covers module-scope + Python/Java decorators)
+$ vex implementations "BaseService"        # who extends/implements this?
+$ vex search "timeout retry"               # fuzzy / multi-word — BM25 finds rare body terms
 $ vex search "handle alert" --semantic     # find by meaning, not just name
 $ vex pattern 'fn $NAME($$$) -> Result'    # AST pattern matching (like ast-grep)
-$ vex usages "Config"                      # who references this symbol? (+ --strict on Rust/TS/Python/C#/C++)
-$ vex implementations "BaseService"        # who extends/implements this?
-$ vex callers "process_event"              # who calls this function? (~4ms; covers module-scope + Python/Java decorators)
 $ vex similar "PaymentService"             # semantically close symbols
 $ vex duplicates --threshold 0.95          # near-duplicate pairs
-$ vex check "Foo" "Bar" "Baz"              # fast existence check
-$ vex bundle --mode symbol --symbol Foo    # NEW (v1.9): body + callers + callees + similar in 1 call
+$ vex bundle --mode symbol --symbol Foo    # body + callers + callees + similar in 1 call
 ```
+
+**Pick the right tool**: `vex check` for "does `Foo` exist?", `vex search` for "find me something about retries". `search` is a *ranked blend* — it surfaces neighbors (callers / imports) when no symbol literally matches, which is great for exploration and wrong for exact-name lookup. v1.15.0 prints a stderr hint when an identifier-shaped `search` returns 0 FST hits.
 
 ## Why Vex?
 
@@ -34,7 +35,7 @@ $ vex bundle --mode symbol --symbol Foo    # NEW (v1.9): body + callers + callee
 - **Pluggable embedder** — `Embedder` trait + registry; swap MiniLM-L6-v2 for future code-specific models (BGE, CodeBERT) without touching call sites
 - **Token-efficient** — compact output saves typically 6-10x fewer tokens than grep on average lookups (up to 88x on minified JS/CSS); `vex show` extracts just the symbol body instead of the whole file
 - **19 languages** indexed via tree-sitter, with three coverage tiers: **type-aware `--strict usages`** on 5 binder languages (Rust / TypeScript / Python / C# / C++); **indexed pattern prefilter** on 12 T1+T2a languages; baseline structural + semantic search on all 19 (see [Supported Languages](#supported-languages) for the matrix)
-- **Single binary, zero config** — no LSP servers, no databases, no Docker. Just `vex index && vex search`
+- **Single binary, zero config** — no LSP servers, no databases, no Docker. Just `vex index && vex check Foo`
 
 ## What Vex isn't
 
