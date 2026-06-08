@@ -1029,7 +1029,7 @@ pub(super) fn build_hnsw(root: &Path, vectors: &[Vec<f32>], hashes: &[u64]) -> R
 /// orchestrator so the user sees it loudly. (Same `Err`-propagates-
 /// loudly contract as the inline form had.)
 fn commit_hnsw_and_sidecar(
-    index: &usearch::Index,
+    index: usearch::Index,
     hnsw_path: &Path,
     hash_index_path: &Path,
     hashes: &[u64],
@@ -1054,6 +1054,20 @@ fn commit_hnsw_and_sidecar(
         let _ = std::fs::remove_file(&hnsw_tmp);
         return Err(e.context("save hash-index sidecar to tmp"));
     }
+
+    // v1.15.1 Windows fix: drop the usearch handle BEFORE the rename
+    // over `hnsw_path`. The incremental path calls `index.load(hnsw_path)`
+    // earlier, which on Windows holds an exclusive file handle on the
+    // loaded file. `std::fs::rename` cannot replace a file that another
+    // handle in the same process has open (`ERROR_ACCESS_DENIED` /
+    // os error 5) — Linux tolerates this via the unix unlink-while-open
+    // semantics. Taking `index` by value lets us release it here, after
+    // the tmp save (which only writes to `hnsw_tmp`, a different path)
+    // and before the rename targets `hnsw_path`. The full-rebuild path
+    // through `build_hnsw_at` is also safe: it constructs `index` with
+    // `new_index()` and never loads from disk, so the drop just
+    // releases process memory there.
+    drop(index);
 
     // Phase 2: atomic renames back-to-back. The inconsistency window
     // here is the smallest the kernel allows — two adjacent rename
@@ -1174,8 +1188,10 @@ pub fn build_hnsw_at(
 
     // v1.15.0 C — two-phase atomic commit. Write both files to .tmp
     // paths, fsync, then rename both back-to-back. See
-    // `commit_hnsw_and_sidecar` for the full rationale.
-    commit_hnsw_and_sidecar(&index, hnsw_path, hash_index_path, hashes)?;
+    // `commit_hnsw_and_sidecar` for the full rationale. `index` is
+    // moved (v1.15.1 Windows fix — released before rename targets the
+    // loaded file).
+    commit_hnsw_and_sidecar(index, hnsw_path, hash_index_path, hashes)?;
 
     if skipped > 0 {
         tracing::warn!(
@@ -1432,7 +1448,7 @@ pub fn build_hnsw_incremental_at(
     // `commit_hnsw_and_sidecar` returns Err iff one of the renames
     // failed — that's the only path that bubbles up, matching the
     // Err contract documented at the function head.
-    commit_hnsw_and_sidecar(&index, hnsw_path, hash_index_path, new_hashes)
+    commit_hnsw_and_sidecar(index, hnsw_path, hash_index_path, new_hashes)
         .context("HNSW incremental: two-phase commit")?;
 
     if add_skipped > 0 {
