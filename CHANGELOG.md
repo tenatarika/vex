@@ -16,6 +16,7 @@ Documentation pass: across every agent-facing surface (README, `/vex` skill, COO
 
 ### Fixed
 
+- **Windows: HNSW commit-rename retries transient `ERROR_SHARING_VIOLATION` / `ERROR_ACCESS_DENIED`.** v1.15.1 fixed the in-process file-handle race by dropping the `usearch::Index` before `std::fs::rename`; on Windows that's necessary but not sufficient, because (a) usearch's C++ FFI close + the OS-level handle release are not synchronous, and (b) Windows Defender / search-indexer real-time scans grab a brief read handle on freshly-saved files. Both windows close out fast; a short retry with linear backoff (up to ~1.1 s across 10 attempts, 20 ms → 200 ms) on `os error 5` / `os error 32` only on Windows masks them. Linux / macOS still get a single rename and a hard error on real failure.
 - `docs/COOKBOOK.md`, `docs/LIMITATIONS.md`, `docs/HISTORY-INDEX.md`: forward-looking version stamps (`v1.16` walker, `v1.17` Phase 14.8 history index, `v1.17+` search-drift hint) updated to `v1.15.0` to match the actual ship vehicle.
 
 ### Security

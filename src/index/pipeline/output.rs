@@ -1071,8 +1071,13 @@ fn commit_hnsw_and_sidecar(
 
     // Phase 2: atomic renames back-to-back. The inconsistency window
     // here is the smallest the kernel allows — two adjacent rename
-    // syscalls on local FS take ~μs each.
-    if let Err(e) = std::fs::rename(&hnsw_tmp, hnsw_path) {
+    // syscalls on local FS take ~μs each. On Windows we retry briefly
+    // (see [`rename_with_windows_retry`]) because Windows surfaces
+    // transient `ERROR_SHARING_VIOLATION` after `index.save()` until
+    // the usearch C++ FFI's file handle is fully released and
+    // antivirus / search-indexer real-time scans relinquish their own
+    // brief read locks.
+    if let Err(e) = rename_with_windows_retry(&hnsw_tmp, hnsw_path) {
         // HNSW rename failed → both tmps still present, both finals
         // unchanged. Clean both tmps so the next run isn't confused
         // by stale fixtures.
@@ -1081,7 +1086,7 @@ fn commit_hnsw_and_sidecar(
         return Err(e)
             .with_context(|| format!("rename {} → {}", hnsw_tmp.display(), hnsw_path.display()));
     }
-    if let Err(e) = std::fs::rename(&hash_tmp, hash_index_path) {
+    if let Err(e) = rename_with_windows_retry(&hash_tmp, hash_index_path) {
         // HNSW rename succeeded but sidecar rename failed — disk is
         // now in the "HNSW new, sidecar old" state. `HnswHandle::open`
         // size-check will catch this and brute-force; next successful
@@ -1098,6 +1103,47 @@ fn commit_hnsw_and_sidecar(
     }
 
     Ok(())
+}
+
+/// v1.15.2 Windows hardening: `std::fs::rename` on Windows fails with
+/// `ERROR_ACCESS_DENIED` (os error 5) or `ERROR_SHARING_VIOLATION`
+/// (os error 32) when any process — including antivirus / Windows
+/// Defender / the search indexer — holds a handle on either the source
+/// or destination file. The v1.15.1 `drop(index)` fix above releases
+/// usearch's own handle on the loaded file, but the underlying C++ FFI
+/// close + the OS-level handle release are not synchronous, and on a
+/// freshly-written file Defender can grab a read handle for content
+/// scanning within microseconds of `save()`. Both windows close out
+/// quickly; a short retry with backoff masks them without changing
+/// semantics on Linux/macOS (those targets get a single rename and a
+/// hard error on real failure).
+///
+/// Total budget: up to ~1.1s across 10 attempts (20ms, 40ms, …,
+/// 200ms). The first 4 attempts cost <200ms and cover ~all observed
+/// races; the rest is paranoia for slow CI runners.
+fn rename_with_windows_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    if !cfg!(windows) {
+        return std::fs::rename(from, to);
+    }
+    const MAX_ATTEMPTS: u32 = 10;
+    let mut last_err: Option<std::io::Error> = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let retryable = matches!(e.raw_os_error(), Some(5) | Some(32));
+                if !retryable || attempt + 1 == MAX_ATTEMPTS {
+                    return Err(e);
+                }
+                last_err = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(20 * (attempt as u64 + 1)));
+            }
+        }
+    }
+    // Unreachable in practice — the loop above returns on every path.
+    // Keep an explicit fallback so a future refactor that drops the
+    // `attempt + 1 == MAX_ATTEMPTS` guard doesn't silently loop.
+    Err(last_err.unwrap_or_else(|| std::io::Error::other("rename retry exhausted")))
 }
 
 /// Core HNSW + sidecar builder with explicit paths. The `build_hnsw`
