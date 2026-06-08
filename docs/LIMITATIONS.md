@@ -384,12 +384,122 @@ recovery matrix).
 
 ---
 
+## 4c. `vex history` index — known limits (v1.17 Phase 14.8)
+
+**What works:** opt in via `vex index --history` and `vex history
+<Symbol>` returns ~10ms FST lookups (~675-1640× faster than the v1.16
+query-time walker). Includes symbols whose name has been removed from
+HEAD (the walker can't find these). `vex update` keeps the section
+fresh: incremental walker on linear history, force-push detect with
+warning, fast-path skip on no-new-commits, sticky-via-manifest. See
+`docs/HISTORY-INDEX.md` for the full spec.
+
+The list below is what the indexed path **does not** cover.
+
+### Single ref only — indexed reflects HEAD at index time
+
+The section is built from `HEAD` at the time of `vex index --history`.
+A `vex history <Symbol> --branch origin/feature` request on the
+indexed path is honoured against the HEAD-time section, NOT the
+requested branch. The CLI surfaces this via `tracing::warn!`:
+
+```
+WARN: phase 14.8: --branch is ignored by the indexed path (section
+reflects HEAD at index time). Pass --no-index to query the v1.16
+walker against the requested branch.
+```
+
+`--no-index` falls back to the walker, which DOES honour `--branch`.
+A future phase could index multiple refs; not in v1.
+
+### No symbol-rename tracking
+
+A function renamed `foo` → `bar` surfaces as two separate symbols.
+`vex history foo` returns history up to the rename; `vex history bar`
+returns history from the rename onward. Two-query workflow.
+
+Requires content-similarity matching at index time (embeddings or
+AST diff) to collapse renames into a single symbol. Out of scope for
+v1.
+
+### No per-commit time-travel
+
+`vex callers <Symbol> @<sha>` and similar historical structural
+queries are NOT supported. The history index is symbol-only — it
+records when each symbol existed, not what called it at that commit.
+A "historical call graph" would multiply storage by `commit_count`;
+deferred until evidence demonstrates need.
+
+### Convex-hull commit spans (architect H1 — accepted lossy)
+
+If blob X appears at commits A → C and a DIFFERENT blob lives at B
+in between (revert / cherry-pick), the entry's
+`[first_commit_idx=A, last_commit_idx=C]` overstates continuity.
+The "X existed at some point in [first, last]" sense is preserved;
+exact-presence requires a per-entry bitmap (~1.2 KB per entry on a
+10k-commit repo, blowing the storage budget). Documented; a future
+`--exact-presence` flag could materialise the bitmap on request.
+
+### Section size scales with history depth, not current symbols
+
+Realistic ratios from v1.17 perf bench:
+
+```
+                  index.vex   index.git_history   ratio
+vex self-repo     1.8 MB      1.5 MB              84%
+tokio             5.6 MB      19.5 MB             346%
+```
+
+Long-lived repos (tokio: 4346 commits, 586k history entries) produce
+sections 3.5× the size of the main index. The Step 2 design napkin
+"≤10% of index.vex" target was wrong. This is correct behaviour given
+the per-(symbol, blob) row layout, not a bug. Use `--history-depth N`
+to cap the walk if storage is constrained; `vex status` warns when a
+cap was hit.
+
+### Submodule history is silently skipped
+
+Mirrors the Phase 14.7 blob cache behaviour: submodule blobs aren't
+in the main repo's git database, so `git cat-file --batch` reports
+them missing and the builder drops them silently. Not flagged in
+`vex status`. Use `vex history` inside each submodule's own checkout
+for per-submodule history.
+
+### No back-fill from the walker's `git grep` probe
+
+The walker can find symbols that `git grep --word-regexp` matches at
+the chosen tip. The indexed path matches FST exactly (lowercased
+symbol name). Case differences are normalised; word-boundary
+differences are not. `vex history Parse_Payment` and `vex history
+parse_payment` both succeed (lowercased FST match); `vex history
+parse` does NOT match `parse_payment` (no substring fallback in the
+indexed path). The walker DOES match `parse` via word-regexp — so
+`--no-index` is the right escape hatch for partial-name queries.
+
+**See also:** `docs/HISTORY-INDEX.md` for the full pipeline spec.
+
+---
+
 ## 5. `vex grep` is the right fallback
 
 Whenever vex's indexed surface misses something the user can see in the
 source, `vex grep <pattern>` is the textual-content escape hatch. It's
 slower (~50 ms per query vs ~4 ms FST lookup) but exhaustive. The
 guidance for agents:
+
+> **Tool-selection pitfall: `vex search Foo` for an undefined symbol.**
+> When `Foo` is imported from a dependency (no local definition), `vex
+> search` returns NEIGHBOURS — callers + import sites — not "the
+> definition of Foo". Reason: structural FST gets 0 hits, BM25 +
+> semantic both rank up files that mention the token. This is the
+> ranked-relevance surface working as designed; the gap is in tool
+> choice. For exact-symbol lookup use **`vex check`** (existence
+> probe), **`vex show`** (definition body), or **`vex usages --strict`**
+> (every reference). v1.17+ `vex search` emits a stderr hint
+> suggesting these when it detects an identifier-shaped query with
+> zero structural hits. See [COOKBOOK FAQ](COOKBOOK.md#faq--vex-search-foo-returned-the-wrong-things)
+> for the full decision rule.
+
 
 > If `vex callers` returns an empty list AND you have reason to believe
 > the symbol is called somewhere, run `vex grep '\b<name>\b'` before

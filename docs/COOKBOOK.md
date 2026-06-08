@@ -25,24 +25,59 @@ All snippets use the MCP tool surface (`usages(...)`, `bundle(mode=..., ...)`) a
 
 **Guideline**: prefer one tool with the right args over many tool calls. `bundle` exists specifically to collapse 4-round-trip "show + callers + callees + similar" chains into one call.
 
+## FAQ — `vex search Foo` returned the wrong things
+
+**Symptom**: `vex search compile_query` ranks callers (functions that USE `compile_query`) above the symbol itself. The user expected "find the definition of `compile_query`"; got "files most relevant to the string `compile_query`".
+
+**Why**: `vex search` is a 3-way RRF fusion over (structural FST, BM25, semantic). When the queried name has **no local definition** in the index (typical for symbols imported from external crates — `use chili_pg_utils::compile_query`), all three channels converge on "files that mention the name":
+- Structural FST: 0 hits (no symbol with that name is defined locally).
+- BM25: ranks up files where the name appears as a token — the callers + import statements.
+- Semantic: drifts to caller-shaped contexts whose embeddings are close to the query.
+
+This is by design — `vex search` is the **ranked-relevance** surface, not the **exact-lookup** surface. The output is correct given the inputs; the gap is in tool choice.
+
+**Fix (in order of precision)**:
+1. **`vex check <name>`** — fastest existence probe (bloom prefilter, ~10 µs); answers "is this defined here?" yes/no.
+2. **`vex show <name>`** — extract definition body; returns nothing if undefined.
+3. **`vex usages <name> --strict`** — every reference site, scope-bound. Returns callers + imports when the name is external.
+4. **`vex outline <file>`** — list every symbol defined in one file when you suspect the symbol's location.
+5. **`vex search <query>`** — only when you want ranked relevance, not exact lookup.
+
+**Decision rule for agents**:
+- "Find the definition of X" → `check` → `show`
+- "Find all references to X" → `usages --strict`
+- "Find symbols similar to a known X" → `similar` (post-`show` on a known seed)
+- "Find code relevant to topic Y" → `search`
+
+`vex search` also emits a stderr hint (v1.17+) when the query is identifier-shaped AND structural FST returned zero — it explicitly suggests the precise-lookup tools above. The hint is non-fatal and doesn't appear in the JSON envelope.
+
 ## Recipe 1 — Code archaeology
 
-**Goal**: understand an unfamiliar feature well enough to safely change it.
+**Goal**: understand an unfamiliar feature well enough to safely change it. With Phase 14.8 (`vex index --history`), this extends from "what does the code look like now" to "how did it get this way".
 
 **Ask the agent like**:
-> "What does `process_payment` do, who calls it, and what does it depend on?"
+> "What does `process_payment` do, who calls it, and how has it evolved?"
 
-**Tool sequence**:
+**Tool sequence (present-state)**:
 
 1. `find_symbol(symbol="process_payment")` — confirm it exists and locate definition. Returns one or more matches if overloaded.
 2. `bundle(mode="symbol", symbol="process_payment", callers_max=10, callees_max=10, similar_max=5)` — one call returns the body, the top callers, the top callees, and semantically-similar symbols. Defaults give an LLM-sized context (~3-5k tokens).
 
-**Why one `bundle` call**: each of `show`, `callers`, `callees`, `similar` separately costs an MCP round trip (network + agent token budget for the response envelope). The Phase 13 bundle exists to coalesce them; `mode="symbol"` is exactly the archaeology shape.
+**Tool sequence (historical, v1.17+)**:
+
+3. `history(symbol="process_payment", limit=10)` — every commit that touched a blob containing this symbol, oldest first. With an indexed section (Phase 14.8 `vex index --history`), this is a ~10ms FST lookup; without, it shells out to `git log` (~seconds).
+4. For each interesting commit in the history list, the SHA is shown — pair with `git show <sha> -- <file>` to inspect that revision's body if you need the exact diff.
+
+**Why one `bundle` call**: each of `show`, `callers`, `callees`, `similar` separately costs an MCP round trip (network + agent token budget for the response envelope). The Phase 13 bundle exists to coalesce them; `mode="symbol"` is exactly the archaeology shape. The `history` call is a separate MCP tool because the result set scales with `commit_count`, not with current-symbol-count — wrapping it into bundle would bloat the typical `bundle(mode="symbol")` response for users who don't need history.
+
+**Why enable `--history`**: without it, `vex history` shells out to git per query (seconds-scale latency on long-lived repos). With it, queries are ~ms — composable in agent loops without blocking. Cost: one-time `vex index --history` adds 10s-2min depending on repo size; storage adds 50-350% of `index.vex` size (scales with history depth, not current symbols). See `docs/HISTORY-INDEX.md` for the cost-benefit table.
 
 **When to deviate**:
-- If you only need the body (no relations), `show(symbols=["process_payment"], head=40)` is cheaper.
+- If you only need the body (no relations or history), `show(symbols=["process_payment"], head=40)` is cheapest.
 - If the symbol is overloaded across files, follow up with `find_symbol` and disambiguate by `path`.
 - For a transitive reachability check (who eventually calls this), add `reachable(symbol="process_payment")` — but expect a wider set than `callers`.
+- If `history` returns empty but you know the symbol existed: try `--no-index` (forces the walker, which may have a different match policy) or check `vex status` for a `History: no` line meaning the section isn't built.
+- For symbols whose name has been **deleted** from HEAD: the indexed path finds them (NEW capability vs walker); the walker can't because its `git grep` probe runs at HEAD and finds nothing.
 
 ## Recipe 2 — Refactor across cross-file boundaries
 
