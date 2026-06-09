@@ -5,6 +5,7 @@ pub(crate) mod cmd_check;
 pub(crate) mod cmd_diff;
 pub(crate) mod cmd_duplicates;
 pub(crate) mod cmd_eval;
+pub(crate) mod cmd_gpu;
 pub(crate) mod cmd_grep;
 pub(crate) mod cmd_history;
 pub(crate) mod cmd_implementations;
@@ -270,6 +271,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             scope,
         ),
         Commands::Status { path, coverage } => cmd_status::status(&ctx, path, coverage),
+        Commands::Gpu { enable } => cmd_gpu::gpu(enable),
         Commands::Grep {
             pattern,
             limit,

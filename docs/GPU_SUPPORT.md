@@ -80,7 +80,7 @@ time*, whether that compiled-in EP is actually used.
 | EP | Builder | Cargo gate | Sidecar lib? | User SDK? | Shippable prebuilt? |
 |---|---|---|---|---|---|
 | **CoreML** (macOS arm64) | `ort::ep::CoreML::default().build()` | `ort/coreml` | No — linked as Apple framework | None (OS) | **Yes** (builds on `macos-latest`, no GPU runner) |
-| **DirectML** (Windows, any GPU) | `ort::ep::DirectML::default().build()` | `fastembed/directml` (→ `ort/directml`) | No — pyke "none" binary statically folds in the DML provider; `DirectML.dll` is an OS component on Win10+ | None | **Yes** (builds on `windows-latest`) — but see ⚠ below |
+| **DirectML** (Windows, any GPU) | `ort::ep::DirectML::default().build()` | `fastembed/directml` (→ `ort/directml`) | **Yes** — the DML *provider* is statically folded into the core, but the redist `DirectML.dll` (~17.7 MB) must ship next to the exe; the in-box `System32\DirectML.dll` is too old (see §11.1) | None (driver only) | **Yes** (builds on `windows-latest`; bundle the DLL — §6) |
 | **CUDA** (Linux/Win NVIDIA) | `ort::ep::CUDA::default().build()` | `ort/cuda` | **Yes** — `onnxruntime_providers_cuda.{so,dll}` + pulls cu12/cu13 CDN binary | CUDA 12/13 + cuDNN 9 | **No** — opt-in source build only |
 
 The EP structs (`ort::ep::{CUDA,DirectML,CoreML}`) derive `Default` and expose
@@ -507,6 +507,19 @@ matrix:
 - run: cargo build --release --workspace --target ${{ matrix.target }} ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
 ```
 
+**Windows must also bundle `DirectML.dll`** (§11.1): ORT downloads the modern
+redist DLL into its binary cache during `cargo build` but does *not* copy it
+beside the exe, and the in-box `System32` copy is too old. `release.yml` adds a
+*Stage DirectML.dll* step that finds the cached DLL (largest match in
+`%LOCALAPPDATA%\ort.pyke.io`) and copies it into the release dir, then packs it
+**into the `vex` tarball only** (`vex.exe DirectML.dll`) — not `vex-mcp` (it
+spawns `vex` as a subprocess and never loads ORT). A smoke-test asserts the DLL
+is in the archive. **Self-update caveat:** `vex self-update` extracts only the
+named `vex` binary, so the bundled DLL reaches fresh installs (manual untar /
+brew) but **not** self-update; a self-updating user without the DLL keeps working
+on CPU (graceful fallback). macOS CoreML needs no sidecar (system framework);
+Linux is CPU-only.
+
 `release.yml` Homebrew `install` block — the `--HEAD` (source) branch currently
 passes no features (`release.yml:298-304`), so `brew install vex --HEAD` would
 be CPU-only while the bottle is GPU. Match them on macOS:
@@ -582,9 +595,11 @@ Win/macOS legs for size/time regressions. Linux is unaffected.
   && cargo tree -i ort` and confirm a single `ort` node at one version. Two
   versions ⇒ vex's `=` pin drifted from fastembed's internal pin — bump vex's
   `ort` to match so they re-unify to one ONNX Runtime build.
-- **Follow-up (not in scope):** true "is GPU actually engaged?" reporting needs
-  ort session introspection (no `is_available()` in `=2.0.0-rc.12`). `vex
-  status` reports compiled support + the baseline default only.
+- **"Is GPU actually engaged?"** — `vex gpu` answers this directly: it builds a
+  MiniLM session on the compiled EP with strict registration and runs one
+  inference, reporting OK/FAILED + targeted remediation (it cannot use ort's
+  absent `is_available()`, so it probes by actually loading). `vex status` still
+  reports only compiled support + the baseline default.
 
 ## 8. Pre-release validation (manual — CI can't do this)
 
@@ -617,39 +632,71 @@ dep. Do not pursue.
 
 ## 11. Real-world validation (deep-source, RTX 3080) — supersedes earlier estimates
 
-Benchmarked on a Windows RTX 3080 against a large C++ codebase. **The earlier
-plan's DirectML-as-default assumption (§6) is wrong in practice — read this
-section first.**
+Benchmarked on a Windows **console** session (RTX 3080, current driver) against a
+large C++ codebase. This section **corrects two wrong conclusions from earlier
+drafts** (flagged inline); the §6 decision to bake DirectML into the Windows
+prebuilt is **confirmed**.
 
-### 11.1 DirectML does not work in this environment
+### 11.1 DirectML works — the earlier "doesn't work here" was a stale DLL, not RDP
 
-With strict registration (`VEX_GPU_STRICT=1`) the DirectML EP hard-errors:
+An earlier draft reported the DirectML EP hard-erroring under `VEX_GPU_STRICT=1`:
 
 ```
 dml_provider_factory.cc 887A0004 (DXGI_ERROR_UNSUPPORTED)
 "device interface or feature level not supported on this system"
 ```
 
-DirectML can't create a D3D12 device here (common on discrete cards over
-RDP/headless sessions, or a DirectML.dll/feature-level mismatch). By default
-ORT swallows this and **silently runs on CPU** — every "DirectML" run matched
-CPU exactly (~70 sym/s). **`VEX_GPU_STRICT` was added so this is detectable**
-instead of a silent no-op. ⇒ **Do not bake DirectML into prebuilt Windows
-binaries by default** (revisit §6); ship it opt-in and rely on the strict flag /
-benchmarking to confirm it engages on a given machine.
+and blamed it on no D3D12 device (RDP/headless). **That was misdiagnosed.** The
+session is a local console with the 3080 as the active adapter; the real cause is
+a **DirectML version mismatch**. ORT downloads a modern redistributable
+`DirectML.dll` (~17.7 MB) into its binary cache, but its `copy-dylibs` step does
+**not** place it next to the exe — so vex loaded the stale **in-box
+`C:\Windows\System32\DirectML.dll`** (~1.2 MB, DirectML 1.0-era from Win10 1903),
+whose feature level is too old for current ORT → `DMLCreateDevice` fails
+`887A0004` and ORT silently falls back to CPU.
 
-### 11.2 CUDA is the real win on NVIDIA
+**Fix:** ship the redist `DirectML.dll` next to `vex.exe`. With it present,
+DirectML engages on the 3080 (verified with `VEX_GPU_STRICT=1`, exit 0). The
+release pipeline now stages this DLL from the ort cache into the Windows `vex`
+tarball (§6). `VEX_GPU_STRICT` remains the way to confirm engagement, and the
+new `vex gpu` doctor command productizes it — it probes the compiled EP and
+prints exactly this remediation on failure.
 
-| Workload | CPU | DirectML | **CUDA (RTX 3080)** |
-|---|---|---|---|
-| CommonLib, 27,997 syms — embed | 425.8s | 437.7s (CPU fallback) | **17.6s (~24×)** |
-| Full repo, 80,269 syms — embed | (proj.) ~20 min | — | **29.3s** |
-| jina-code (768-d code model), 2,485 syms | (proj.) ~230s | — | **5.4s** |
+### 11.2 Benchmark: CPU vs DirectML vs CUDA (CommonLib, 27,997 symbols)
 
-CUDA setup (one-time): the cu12 ORT provider DLLs
-(`onnxruntime_providers_{shared,cuda}.dll`) must sit next to the binary, and
-**cuDNN 9 for CUDA 12 must be on PATH** (`pip install nvidia-cudnn-cu12` is the
-quickest source). The CUDA EP needs `cudart64_12` / `cublas64_12` / `cudnn64_9`.
+Embed time (the device-dependent part; GPU engagement strict-verified, fresh
+embed cache so every symbol is a real miss):
+
+| Model | CPU | DirectML | CUDA | DirectML/CPU | CUDA/CPU |
+|---|---|---|---|---|---|
+| `minilm-l6-v2` (384-d, default) | 473 s | 16.2 s | 9.2 s | **29×** | **51×** |
+| `jina-code` (768-d code model) | ~30–60 min *(proj.)* | 54.2 s | 30.9 s | ~40–70× | ~60–120× |
+
+Throughput (sym/s): minilm — CPU 59 · DirectML 1,728 · CUDA 3,043 | jina —
+DirectML 517 · CUDA 906 · CPU ~8–12. One-time model-load warm-up: minilm ~10 s,
+jina ~31–38 s. (`jina/cpu` not run — >30 min on 28k symbols; projected.)
+
+Two findings:
+
+- **GPU helps even the default MiniLM on a full/cold index** — 51× (CUDA) / 29×
+  (DirectML) on embed. An earlier claim that "MiniLM is too small to benefit from
+  GPU" is true **only for tiny incremental updates**, where the ~10 s warm-up
+  dominates — which the §3.4 miss-gate already handles (MiniLM gate is now 512
+  misses, ≈ the measured CPU-vs-GPU break-even). For a full index, GPU is a large
+  win for every model.
+- **DirectML is a consistent ~57% of CUDA throughput** (1,728/3,043 = 0.57;
+  517/906 = 0.57) — CUDA is ~1.75× faster, but DirectML is **driver-only** (no
+  NVIDIA SDK, any DX12 GPU vendor). This is precisely why the Windows prebuilt
+  bakes DirectML (broad, zero-install GPU) and CUDA stays the source-build
+  power-user path for the extra 1.75×.
+
+CUDA setup (one-time, source build): the cu12 ORT provider DLLs
+(`onnxruntime_providers_{shared,cuda}.dll`) must sit next to the binary, and the
+CUDA 12 runtime + **cuDNN 9** must be on PATH — `cudart64_12` / `cublas64_12` /
+`cufft64_11` / `cudnn64_9` (`pip install nvidia-cudnn-cu12` is the quickest cuDNN
+source). The NVIDIA *driver alone is insufficient*: it ships only `nvcuda.dll`
+(the driver API), not the CUDA runtime or cuDNN — which is another reason
+DirectML (driver-only) is the better zero-install default.
 
 ### 11.3 The full-repo slowness was padding waste — fixed by length-aware batching
 
@@ -683,7 +730,11 @@ scope for now.
 
 ### 11.5 Diagnostics shipped
 
+- **`vex gpu`** — doctor command: probes the compiled EP (strict, one real
+  inference), reports OK/FAILED + EP-specific remediation, and `--enable` pins
+  `VEX_DEVICE`. The supported way to confirm GPU engagement.
 - `VEX_GPU_STRICT=1` — turn ORT's silent EP-registration fallback into a hard
-  error (proves whether the GPU actually engaged).
+  error (proves whether the GPU actually engaged); what `vex gpu` sets internally.
 - `tracing` `device=…` line at model load shows the selected device.
-- `VEX_GPU_MEM_LIMIT`, `VEX_GPU_ATTN_BUDGET`, `VEX_DEVICE` env overrides.
+- `VEX_GPU_MEM_LIMIT`, `VEX_GPU_ATTN_BUDGET`, `VEX_DEVICE`, `VEX_EMBEDDER` env
+  overrides.

@@ -57,6 +57,25 @@ pub const fn gpu_support_str() -> &'static str {
     }
 }
 
+/// GPU devices whose execution provider is compiled into THIS binary, in the
+/// same priority order [`Device::Auto`] would try them. Empty on a CPU-only
+/// build. Used by `vex gpu` to probe each compiled EP individually (a shipped
+/// binary has exactly one; the dev `gpu-cuda,gpu-directml` build has two).
+// The `#[cfg]`-gated pushes can't collapse into a `vec![]` literal (their
+// presence is per-feature), and the CPU-only build leaves `v` unmutated — both
+// lints are expected for this conditional-assembly pattern.
+#[allow(clippy::vec_init_then_push, unused_mut)]
+pub fn compiled_devices() -> Vec<Device> {
+    let mut v = Vec::new();
+    #[cfg(feature = "gpu-cuda")]
+    v.push(Device::Cuda);
+    #[cfg(feature = "gpu-directml")]
+    v.push(Device::DirectMl);
+    #[cfg(feature = "gpu-coreml")]
+    v.push(Device::CoreMl);
+    v
+}
+
 impl Device {
     /// Lowercase canonical name, the inverse of [`Device::parse`].
     pub fn as_str(&self) -> &'static str {

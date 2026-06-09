@@ -154,10 +154,10 @@ mod tests {
             assert!(s.dim > 0, "{} has zero dim", s.id);
             assert!(s.char_budget > 0, "{} has zero budget", s.id);
             // Every additional model is heavier than MiniLM, so its GPU gate
-            // must be below MiniLM's (256) and never zero (CUDA warm-up always
+            // must be below MiniLM's (512) and never zero (CUDA warm-up always
             // costs *something* — a 1-symbol update isn't worth it).
             assert!(
-                s.gpu_auto_min_misses > 0 && s.gpu_auto_min_misses < 256,
+                s.gpu_auto_min_misses > 0 && s.gpu_auto_min_misses < 512,
                 "{} threshold {} out of (0, 256)",
                 s.id,
                 s.gpu_auto_min_misses

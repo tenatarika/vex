@@ -71,6 +71,28 @@ jobs:
         # shell-agnostic (works on the bash and pwsh legs without pinning).
         run: cargo build --release --workspace --target ${{ matrix.target }} ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
 
+      # The DirectML EP needs the modern redistributable DirectML.dll beside the
+      # exe. ORT downloads it into its binary cache during `cargo build`, but
+      # `copy-dylibs` does NOT place it next to the binary (it only copies the
+      # CUDA-style provider dylibs). Without this, the exe loads the stale in-box
+      # C:\Windows\System32\DirectML.dll (DirectML 1.0-era), whose feature level
+      # is too old for current ORT → DMLCreateDevice fails 887A0004 and the EP
+      # silently falls back to CPU. We locate the cached redist DLL (largest
+      # match wins) and stage it for packaging. See docs/GPU_SUPPORT.md §6.
+      - name: Stage DirectML.dll (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $dest = "target/${{ matrix.target }}/release"
+          $dll = Get-ChildItem -Path "$env:LOCALAPPDATA\ort.pyke.io", $dest -Recurse -Filter DirectML.dll -ErrorAction SilentlyContinue |
+                 Sort-Object Length -Descending | Select-Object -First 1
+          if (-not $dll) {
+            Write-Error "DirectML.dll not found in ort cache — the DirectML EP would silently fall back to CPU. Aborting release."
+            exit 1
+          }
+          Copy-Item $dll.FullName (Join-Path $dest "DirectML.dll") -Force
+          Write-Host ("staged DirectML.dll {0:N1} MB from {1}" -f ($dll.Length / 1MB), $dll.FullName)
+
       - name: Package (unix)
         if: matrix.os != 'windows-latest'
         # Each binary ships as a separate tarball. `vex self-update` only
@@ -122,7 +144,14 @@ jobs:
         # rustup and `cargo build --release -p vex-mcp` themselves.
         run: |
           Push-Location target/${{ matrix.target }}/release
-          tar -czf "../../../vex-${{ matrix.target }}.tar.gz" vex.exe
+          # vex.exe ships with DirectML.dll (the GPU EP's runtime dep, staged
+          # above). vex-mcp.exe spawns the `vex` CLI as a subprocess and never
+          # loads ORT itself, so it needs no DLL. Note: `vex self-update` only
+          # extracts the named `vex` binary from the archive, so the bundled
+          # DirectML.dll reaches fresh installs (manual untar / brew) but NOT
+          # self-update — a self-updating user without the DLL keeps working on
+          # CPU (graceful fallback), which is acceptable. See GPU_SUPPORT.md §6.
+          tar -czf "../../../vex-${{ matrix.target }}.tar.gz" vex.exe DirectML.dll
           tar -czf "../../../vex-mcp-${{ matrix.target }}.tar.gz" vex-mcp.exe
           Pop-Location
 
@@ -149,6 +178,13 @@ jobs:
             }
             Write-Host "OK: $tar extracts cleanly"
           }
+          # The GPU EP's DirectML.dll must ride along in the vex archive, or
+          # every fresh Windows install silently runs on CPU.
+          if (-not (Test-Path "smoke-vex/DirectML.dll")) {
+            Write-Error "FAIL: DirectML.dll missing from vex archive — DirectML EP would not load"
+            exit 1
+          }
+          Write-Host "OK: DirectML.dll present in vex archive"
 
       - uses: actions/upload-artifact@v4
         with:

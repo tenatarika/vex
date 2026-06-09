@@ -75,3 +75,19 @@ fn status_reports_gpu_support_line() {
         // Default CPU build: "GPU: no (none compiled) · default cpu".
         .stdout(predicates::str::contains("GPU:"));
 }
+
+#[test]
+fn gpu_doctor_runs_without_index() {
+    // `vex gpu` is a pure diagnostic — no index, no .vex.toml, no cwd setup.
+    let tmp = TempDir::new().unwrap();
+    vex_in(tmp.path())
+        .arg("gpu")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("GPU diagnostics"))
+        // The default CPU build (what CI compiles) has no EP baked in, so the
+        // doctor takes the "how to get a GPU build" branch instead of probing.
+        .stdout(predicates::str::contains(
+            "no GPU execution provider compiled in",
+        ));
+}

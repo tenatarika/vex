@@ -657,6 +657,16 @@ pub enum Commands {
         coverage: bool,
     },
 
+    /// Diagnose GPU acceleration: show the execution provider compiled into
+    /// this binary, actively probe whether it engages on this machine, and
+    /// print targeted setup help if it does not. No index needed.
+    Gpu {
+        /// If a GPU engages, persist it to the VEX_DEVICE environment variable
+        /// (user-level) so every project uses it. Applies to new shells.
+        #[arg(long)]
+        enable: bool,
+    },
+
     /// Find all types that inherit from / implement a base class, trait, or interface (no index needed)
     Implementations {
         /// Base class, trait, or interface name to search for

@@ -20,10 +20,15 @@ pub const MINILM_CHAR_BUDGET: usize = 1100;
 
 /// Miss-count threshold below which `Device::Auto` stays on CPU for MiniLM —
 /// the GPU warm-up isn't worth it for a tiny `vex update`. MiniLM (~22M) has a
-/// low per-symbol CPU cost, so its GPU break-even is high (~one batch). Heavier
-/// models override this with smaller values (see [`crate::embed::extra::Spec`]).
-/// See `docs/GPU_SUPPORT.md` §3.4.
-pub const MINILM_GPU_AUTO_MIN_MISSES: usize = 256;
+/// low per-symbol CPU cost, so its GPU break-even is high. Measured on an RTX
+/// 3080 / CommonLib (27,997 symbols, docs/GPU_SUPPORT.md §11): MiniLM CPU embed
+/// ≈ 59 sym/s vs CUDA ≈ 3043 sym/s with a ~10 s model-load warm-up, putting the
+/// CPU-vs-GPU break-even at ≈ 600 misses; 512 sits just under that. (Above the
+/// gate, GPU is a large win even for MiniLM — 51× CUDA / 29× DirectML on embed —
+/// so this gate only protects small incremental updates, not full indexes.)
+/// Heavier models override this with smaller values (see
+/// [`crate::embed::extra::Spec`]).
+pub const MINILM_GPU_AUTO_MIN_MISSES: usize = 512;
 
 pub struct MiniLMEmbedder {
     model: TextEmbedding,
