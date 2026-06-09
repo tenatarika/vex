@@ -650,7 +650,9 @@ fn push_auto_update(extra: &mut Vec<String>, args: &Value) -> Result<()> {
 /// Tri-state on purpose: an absent `gpu` forwards nothing (so `.vex.toml gpu` /
 /// `$VEX_DEVICE` win via the CLI's `Device::resolve`), `gpu: false` forwards
 /// `--no-gpu` (overriding config `gpu = true`), and `gpu: true` forwards
-/// `--gpu`. `device` (advanced) overrides the boolean. See docs/GPU_SUPPORT.md.
+/// `--gpu`. `device` (advanced) is mutually exclusive with the `gpu` boolean —
+/// passing both forwards conflicting flags that the CLI rejects (clap
+/// `conflicts_with`), mirroring `vex index --gpu --device`. See docs/GPU_SUPPORT.md.
 fn push_gpu(extra: &mut Vec<String>, args: &Value) -> Result<()> {
     match opt_bool_some(args, "gpu")? {
         Some(true) => extra.push("--gpu".into()),
@@ -1409,7 +1411,7 @@ fn tool_descriptors() -> Value {
                     "project_root": { "type": "string", "description": "Absolute path to the project root to index" },
                     "semantic": { "type": "boolean", "description": "Also generate per-symbol embeddings (enables semantic search / similar / duplicates; adds ~30-90s on a medium repo)", "default": false },
                     "gpu": { "type": "boolean", "description": "Use the GPU for embedding generation if this vex build supports it (DirectML on Windows / CoreML on macOS prebuilts; CUDA via source build), with silent CPU fallback. Only speeds up cold/large semantic builds. Omit to let .vex.toml gpu/device or $VEX_DEVICE decide; pass false to force CPU even when config enables GPU." },
-                    "device": { "type": "string", "description": "Advanced: pin a specific embedding execution provider (cpu | auto | cuda | directml | coreml). Overrides `gpu`." }
+                    "device": { "type": "string", "description": "Advanced: pin a specific embedding execution provider (cpu | auto | cuda | directml | coreml). Mutually exclusive with `gpu`." }
                 },
                 "required": ["project_root"]
             }
@@ -1423,7 +1425,7 @@ fn tool_descriptors() -> Value {
                     "project_root": { "type": "string", "description": "Absolute path to the project root whose index should be refreshed" },
                     "semantic": { "type": "boolean", "description": "Also refresh embeddings for changed files", "default": false },
                     "gpu": { "type": "boolean", "description": "Use the GPU for embedding generation if this vex build supports it, with silent CPU fallback. Mostly a no-op for incremental updates (few/zero embeddings recomputed). Omit to let .vex.toml gpu/device or $VEX_DEVICE decide; pass false to force CPU." },
-                    "device": { "type": "string", "description": "Advanced: pin a specific embedding execution provider (cpu | auto | cuda | directml | coreml). Overrides `gpu`." }
+                    "device": { "type": "string", "description": "Advanced: pin a specific embedding execution provider (cpu | auto | cuda | directml | coreml). Mutually exclusive with `gpu`." }
                 },
                 "required": ["project_root"]
             }

@@ -239,7 +239,7 @@ pub enum Commands {
         no_gpu: bool,
 
         /// Advanced: pick a specific embedding execution provider
-        /// (cpu | auto | cuda | directml | coreml). Overrides --gpu/--no-gpu.
+        /// (cpu | auto | cuda | directml | coreml). Mutually exclusive with --gpu/--no-gpu.
         #[arg(long, value_name = "DEVICE", conflicts_with_all = ["gpu", "no_gpu"])]
         device: Option<String>,
     },
@@ -481,7 +481,7 @@ pub enum Commands {
         no_gpu: bool,
 
         /// Advanced: pick a specific embedding execution provider
-        /// (cpu | auto | cuda | directml | coreml). Overrides --gpu/--no-gpu.
+        /// (cpu | auto | cuda | directml | coreml). Mutually exclusive with --gpu/--no-gpu.
         #[arg(long, value_name = "DEVICE", conflicts_with_all = ["gpu", "no_gpu"])]
         device: Option<String>,
     },

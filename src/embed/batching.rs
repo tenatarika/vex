@@ -18,8 +18,8 @@
 use anyhow::Result;
 use fastembed::TextEmbedding;
 
-/// Budget on `batch_count × max_len²` (length in chars — a monotonic proxy for
-/// token count). Tuned so a worst-case batch peaks ~2 GB on MiniLM-L6-v2, which
+/// Budget on `batch_count × max_len²` (`max_len` in UTF-8 bytes — a monotonic,
+/// conservative proxy for token count: bytes ≥ chars ≥ tokens). Tuned so a worst-case batch peaks ~2 GB on MiniLM-L6-v2, which
 /// keeps vex from monopolising a shared GPU. Overridable via the
 /// `VEX_GPU_ATTN_BUDGET` env var for tuning; the default needs no config.
 const DEFAULT_ATTN_BUDGET: usize = 40_000_000;
@@ -74,8 +74,10 @@ pub fn embed_length_aware(model: &mut TextEmbedding, texts: &[String]) -> Result
         // `Some(n)` forces a single fastembed inference batch of exactly this
         // size — we've already chosen it; don't let fastembed re-chunk.
         let vectors = model.embed(batch, Some(n))?;
-        for (k, &i) in batch_idx.iter().enumerate() {
-            out[i] = vectors[k].clone();
+        // Move each vector into its original slot (no clone): `vectors` and
+        // `batch_idx` are equal length — we forced a single batch of exactly `n`.
+        for (vec, &i) in vectors.into_iter().zip(batch_idx) {
+            out[i] = vec;
         }
         start = end;
     }

@@ -132,9 +132,39 @@ impl Device {
         if let Some(g) = cfg_gpu {
             return Ok(if g { Device::Auto } else { Device::Cpu });
         }
+        // `VEX_DEVICE` is a sticky GLOBAL default (lowest precedence), not a
+        // fresh request. If it names a specific GPU EP this binary wasn't built
+        // with — e.g. `vex gpu --enable` pinned `directml`, then vex was
+        // reinstalled CPU-only — degrade to the compile-time default instead of
+        // hard-erroring every `index`/`update`. An EXPLICIT `--device` / config
+        // `device` for an uncompiled EP still errors in `execution_providers`
+        // (the user asked for it right now); a stale env default should fall
+        // back gracefully, mirroring `Auto`'s silent CPU fallback.
         match std::env::var("VEX_DEVICE") {
-            Ok(v) => Device::parse(&v),
+            Ok(v) => Ok(downgrade_uncompiled_env_device(Device::parse(&v)?)),
             Err(_) => Ok(default_device()),
+        }
+    }
+}
+
+/// Soften a `VEX_DEVICE`-sourced device: a specific GPU EP not compiled into
+/// this binary falls back to [`default_device`], so a stale global pin (e.g.
+/// left by `vex gpu --enable` before a CPU-only reinstall) degrades to the
+/// compile-time default instead of hard-erroring every index. `Cpu`, `Auto`,
+/// and any compiled-in EP pass through unchanged. Explicit `--device` / config
+/// requests bypass this and still error in [`execution_providers`].
+fn downgrade_uncompiled_env_device(dev: Device) -> Device {
+    match dev {
+        Device::Cpu | Device::Auto => dev,
+        _ if compiled_devices().contains(&dev) => dev,
+        uncompiled => {
+            tracing::warn!(
+                pinned = uncompiled.as_str(),
+                fallback = default_device().as_str(),
+                "VEX_DEVICE pins a GPU execution provider not compiled into this vex build; \
+                 falling back (set VEX_DEVICE=cpu or auto, or install a gpu-* build to silence)"
+            );
+            default_device()
         }
     }
 }
@@ -285,6 +315,33 @@ mod tests {
             Device::resolve(None, None, None, Some(false)).unwrap(),
             Device::Cpu
         );
+    }
+
+    #[test]
+    fn resolve_env_uncompiled_gpu_falls_back_not_errors() {
+        // `VEX_DEVICE` is a sticky global default, not a fresh request: a GPU
+        // EP this binary lacks must degrade to the compile-time default, never
+        // hard-error (otherwise a stale `vex gpu --enable` pin bricks every
+        // `index` after a CPU-only reinstall). `resolve` reads the env only on
+        // the all-None fallthrough, so this is the sole test that touches it.
+        std::env::set_var("VEX_DEVICE", "cuda");
+        assert_eq!(
+            Device::resolve(None, None, None, None).unwrap(),
+            default_device(),
+            "an uncompiled env-pinned GPU EP must fall back, not error"
+        );
+        // cpu / auto always pass through verbatim, on any build.
+        std::env::set_var("VEX_DEVICE", "cpu");
+        assert_eq!(
+            Device::resolve(None, None, None, None).unwrap(),
+            Device::Cpu
+        );
+        std::env::set_var("VEX_DEVICE", "auto");
+        assert_eq!(
+            Device::resolve(None, None, None, None).unwrap(),
+            Device::Auto
+        );
+        std::env::remove_var("VEX_DEVICE");
     }
 
     #[test]

@@ -247,7 +247,7 @@ expression: descriptors
     "inputSchema": {
       "properties": {
         "device": {
-          "description": "Advanced: pin a specific embedding execution provider (cpu | auto | cuda | directml | coreml). Overrides `gpu`.",
+          "description": "Advanced: pin a specific embedding execution provider (cpu | auto | cuda | directml | coreml). Mutually exclusive with `gpu`.",
           "type": "string"
         },
         "gpu": {
@@ -276,7 +276,7 @@ expression: descriptors
     "inputSchema": {
       "properties": {
         "device": {
-          "description": "Advanced: pin a specific embedding execution provider (cpu | auto | cuda | directml | coreml). Overrides `gpu`.",
+          "description": "Advanced: pin a specific embedding execution provider (cpu | auto | cuda | directml | coreml). Mutually exclusive with `gpu`.",
           "type": "string"
         },
         "gpu": {

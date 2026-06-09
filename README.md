@@ -212,7 +212,7 @@ vex completions zsh > ~/.zfunc/_vex
 | `vex update [--path .] [--semantic] [--embedder ID] [--history \| --no-history]` | Incremental update — re-parse only changed files, reuse unchanged symbols from existing index. **`--history` (v1.15.0)** is sticky via the manifest: if the prior build had a history section, `vex update` keeps it fresh via a 3-branch walker (fast-path skip on no-new-commits, incremental on linear history, full rebuild on force-push). `--no-history` drops the section + nulls the manifest fields. |
 | `vex watch [--path .] [--semantic] [--embedder ID]` | Watch filesystem, auto re-index on changes. |
 | `vex status [--path .]` | Show index stats: symbol count, size, embeddings, call graph, BM25, GPU support. |
-| **`vex gpu [device] [--enable]`** | Diagnose GPU acceleration: prints the execution provider compiled into this binary and **actively probes** whether it engages on this machine (a silent CPU fallback shows as `FAILED` with setup remediation). `vex gpu cuda` probes one EP; `--enable` pins `VEX_DEVICE` when a GPU engages. See [GPU Acceleration](#gpu-acceleration). |
+| **`vex gpu [device] [--enable]`** | Diagnose GPU acceleration: prints the execution provider compiled into this binary and **actively probes** whether it engages on this machine (a silent CPU fallback shows as `FAILED` with setup remediation). `vex gpu cuda` probes one EP; `--enable` persists the working device to `VEX_DEVICE` (user env via `setx` on Windows; prints the `export` line to add on macOS/Linux) when a GPU engages. See [GPU Acceleration](#gpu-acceleration). |
 | `vex completions <shell>` | Generate shell completions (bash, zsh, fish). |
 | `vex init` | Create a default `.vex.toml` config file in the project root. |
 | **`vex capabilities`** | **NEW (v1.9, Phase 13.0).** Print the machine-readable capability matrix (`protocol_version`, `signals`, `why`, `scope_filters`, `metadata_filters`, `empty_reason`, `bundle_modes`, `auto_update`). MCP / agent clients probe this once at startup instead of re-reading help text. |
@@ -321,7 +321,7 @@ Semantic indexing (`--semantic`) can run the embedding model on a GPU — a larg
 - Default is **Auto**: use the compiled-in EP when it initializes, else silently fall back to CPU. On a CUDA-enabled binary Auto prefers **CUDA → DirectML → CoreML**; on the standard Windows prebuilt only DirectML is compiled in, so Auto uses DirectML regardless of whether the PC could do CUDA.
 - A tiny incremental `vex update` stays on CPU (the GPU warm-up isn't worth a handful of symbols); cold/large `--semantic` builds use the GPU.
 
-**Is the GPU actually being used?** Run **`vex gpu`** — it reports the compiled EP and *actively probes* it, so a silent CPU fallback shows as `FAILED` with targeted setup remediation. `vex gpu cuda` probes a single EP; `vex gpu --enable` pins the working device to `VEX_DEVICE`.
+**Is the GPU actually being used?** Run **`vex gpu`** — it reports the compiled EP and *actively probes* it, so a silent CPU fallback shows as `FAILED` with targeted setup remediation. `vex gpu cuda` probes a single EP; `vex gpu --enable` persists the working device to `VEX_DEVICE` (user env via `setx` on Windows; prints the `export` line to add on macOS/Linux). A stale `VEX_DEVICE` pinned to a GPU EP that a later (e.g. CPU-only) build lacks degrades to CPU rather than erroring.
 
 ### Environment variables
 
