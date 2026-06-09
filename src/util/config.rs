@@ -131,8 +131,10 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 # Automatically run `vex update` before search if the index is stale
 # auto_update = false
 
-# Embedder used for semantic indexing. Known IDs: minilm-l6-v2 (default).
-# Changing the embedder requires a full reindex.
+# Embedder used for semantic indexing. IDs: minilm-l6-v2 (default, CPU-fast),
+# jina-code (code-specialized, GPU-worthy), bge-base-en-v1.5, bge-large-en-v1.5,
+# mxbai-large. Changing the embedder requires a full reindex.
+# Set globally across projects with the VEX_EMBEDDER env var (this file wins).
 # embedder = "minilm-l6-v2"
 
 # Use the GPU for embedding generation, if this vex build was compiled with a

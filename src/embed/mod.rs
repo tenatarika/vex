@@ -137,12 +137,25 @@ pub fn known_embedders() -> Vec<&'static str> {
 /// Resolve the embedder ID to use for an operation.
 ///
 /// Priority: `cli` (e.g. `--embedder` flag) > `config` (`.vex.toml`) >
-/// [`DEFAULT_EMBEDDER`]. Returns an owned `String` since CLI/config sources
-/// supply distinct lifetimes.
+/// `VEX_EMBEDDER` env > [`DEFAULT_EMBEDDER`]. The env var is a low-precedence
+/// fallback (any project can still override it), so it serves as a *global*
+/// default embedder across all projects — mirroring `VEX_DEVICE` for the
+/// compute device. Returns an owned `String` since the sources supply distinct
+/// lifetimes.
 pub fn resolve_embedder(cli: Option<&str>, config: Option<&str>) -> String {
-    cli.or(config)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| DEFAULT_EMBEDDER.to_string())
+    if let Some(id) = cli {
+        return id.to_string();
+    }
+    if let Some(id) = config {
+        return id.to_string();
+    }
+    if let Ok(env) = std::env::var("VEX_EMBEDDER") {
+        let trimmed = env.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    DEFAULT_EMBEDDER.to_string()
 }
 
 /// Verify that the embedder the caller intends to use matches the one
@@ -210,5 +223,28 @@ mod tests {
         );
         // Unknown ids fall back to the MiniLM threshold (conservative).
         assert_eq!(embedder_gpu_auto_min_misses("nope"), minilm);
+    }
+
+    #[test]
+    fn resolve_embedder_precedence() {
+        // `VEX_EMBEDDER` is the only env var this test touches, so the
+        // set/remove below doesn't race other tests.
+        std::env::remove_var("VEX_EMBEDDER");
+        // CLI flag wins over everything.
+        assert_eq!(resolve_embedder(Some("cli-id"), Some("cfg-id")), "cli-id");
+        // .vex.toml wins over env + default.
+        assert_eq!(resolve_embedder(None, Some("cfg-id")), "cfg-id");
+        // No CLI/config + no env → default.
+        assert_eq!(resolve_embedder(None, None), DEFAULT_EMBEDDER);
+        // Env is the global fallback when CLI/config are absent...
+        std::env::set_var("VEX_EMBEDDER", "env-id");
+        assert_eq!(resolve_embedder(None, None), "env-id");
+        // ...but CLI/config still override it.
+        assert_eq!(resolve_embedder(Some("cli-id"), None), "cli-id");
+        assert_eq!(resolve_embedder(None, Some("cfg-id")), "cfg-id");
+        // Blank env is ignored (falls through to default).
+        std::env::set_var("VEX_EMBEDDER", "   ");
+        assert_eq!(resolve_embedder(None, None), DEFAULT_EMBEDDER);
+        std::env::remove_var("VEX_EMBEDDER");
     }
 }
