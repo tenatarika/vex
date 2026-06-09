@@ -30,7 +30,8 @@ use crate::cli::args::OutputFormat;
 use crate::cli::common::CmdCtx;
 use crate::cli::output;
 use crate::history::{
-    find_symbol_history, parse_iso_date, HistoricalSymbol, HistoryFilter, HistoryOpts,
+    find_symbol_history, parse_iso_date, resolve_exact_presence, EntryPresence, HistoricalSymbol,
+    HistoryFilter, HistoryOpts,
 };
 use crate::store::git_history::HistoryReader;
 use crate::util::config;
@@ -53,6 +54,8 @@ pub struct HistoryArgs {
     pub author: Option<String>,
     pub kind: Option<String>,
     pub diff: bool,
+    pub exact_presence: bool,
+    pub exact_presence_max_commits: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +86,8 @@ pub(crate) fn history(ctx: &CmdCtx, args: HistoryArgs) -> Result<()> {
         author,
         kind,
         diff,
+        exact_presence,
+        exact_presence_max_commits,
     } = args;
 
     let raw_root = match path {
@@ -157,9 +162,23 @@ pub(crate) fn history(ctx: &CmdCtx, args: HistoryArgs) -> Result<()> {
         }
     }
 
+    // Phase 14.9 Tier B.7 — resolve exact presence after filter +
+    // limit so we only walk for rows the user will actually see.
+    let presence: Option<Vec<EntryPresence>> = if exact_presence {
+        Some(resolve_exact_presence(
+            &root,
+            &results,
+            exact_presence_max_commits,
+        )?)
+    } else {
+        None
+    };
+
     match ctx.format {
-        OutputFormat::Text => render_text(&symbol, &results, diff),
-        OutputFormat::Json => render_json(&root, &symbol, &results, mode, diff)?,
+        OutputFormat::Text => render_text(&symbol, &results, presence.as_deref(), diff),
+        OutputFormat::Json => {
+            render_json(&root, &symbol, &results, presence.as_deref(), mode, diff)?
+        }
         OutputFormat::Compact => render_compact(&results),
     }
 
@@ -319,7 +338,12 @@ fn kind_label(kind_byte: u8) -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-fn render_text(symbol: &str, results: &[HistoricalSymbol], diff: bool) {
+fn render_text(
+    symbol: &str,
+    results: &[HistoricalSymbol],
+    presence: Option<&[EntryPresence]>,
+    diff: bool,
+) {
     if results.is_empty() {
         println!("No history found for `{symbol}` — not in any indexed file at the chosen tip.");
         return;
@@ -353,12 +377,26 @@ fn render_text(symbol: &str, results: &[HistoricalSymbol], diff: bool) {
         return;
     }
 
-    for r in results {
+    for (i, r) in results.iter().enumerate() {
         print_entry_header(r);
         if !r.signature.is_empty() {
             println!("    {}", r.signature);
         }
         println!("    blob {}", r.blob_sha);
+        if let Some(p) = presence.and_then(|p| p.get(i)) {
+            if p.truncated {
+                println!(
+                    "    present: walk truncated at cap (walked {}, exceeds --exact-presence-max-commits)",
+                    p.walked
+                );
+            } else {
+                println!(
+                    "    present: {} / {} commits in walked range",
+                    p.commits.len(),
+                    p.walked
+                );
+            }
+        }
         println!();
     }
 }
@@ -391,13 +429,14 @@ fn render_json(
     root: &std::path::Path,
     symbol: &str,
     results: &[HistoricalSymbol],
+    presence: Option<&[EntryPresence]>,
     mode: HistoryMode,
     diff: bool,
 ) -> Result<()> {
     // Phase 14.9 Tier A.5: port from the hand-rolled `json!({...})`
     // wrapper to the standard Phase 13 envelope. BREAKING for any MCP
     // consumer that read `results.items[*]` instead of `results[*]`.
-    let items: Vec<serde_json::Value> = if diff {
+    let mut items: Vec<serde_json::Value> = if diff {
         crate::history::diff::render_json_items(results)
     } else {
         results
@@ -416,6 +455,22 @@ fn render_json(
             })
             .collect()
     };
+
+    // Phase 14.9 Tier B.7: attach presence per item when --exact-presence
+    // was set. The diff path's grouping reorders items relative to
+    // `results`, so when --diff + --exact-presence are combined the
+    // mapping breaks — we only attach when !diff. Document this in
+    // the --diff flag help text.
+    if !diff {
+        if let Some(p) = presence {
+            for (item, ep) in items.iter_mut().zip(p.iter()) {
+                item["presence"] = serde_json::to_value(ep).unwrap_or(serde_json::Value::Null);
+                if ep.truncated {
+                    item["presence_truncated"] = serde_json::Value::Bool(true);
+                }
+            }
+        }
+    }
 
     let _ = symbol; // The symbol used to live in `vex.dev/query_symbol`; dropped in the port (caller already knows what it queried).
 

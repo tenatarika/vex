@@ -1043,6 +1043,22 @@ pub enum Commands {
         /// `history_diff: true`.
         #[arg(long)]
         diff: bool,
+
+        /// Phase 14.9 Tier B.7 — for each entry, list the exact set
+        /// of commits where its blob existed in the file. Defeats
+        /// the convex-hull span representation (LIMITATIONS §4c #4).
+        /// Adds latency: each unique file_path triggers one
+        /// `git log` walk + one batched `git cat-file --batch-check`.
+        /// Walk depth is capped by `--exact-presence-max-commits`.
+        #[arg(long)]
+        exact_presence: bool,
+
+        /// Phase 14.9 Tier B.7 — cap on the `git log` walk per file
+        /// during `--exact-presence`. Beyond the cap, the entry
+        /// falls back to the convex-hull span and signals
+        /// `presence_truncated: true` in JSON output. Default 500.
+        #[arg(long, value_name = "N", default_value_t = 500)]
+        exact_presence_max_commits: usize,
     },
 
     /// v1.15.0 — manage the `vex-mcp` server entry in your coding

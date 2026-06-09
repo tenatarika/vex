@@ -50,8 +50,10 @@ use crate::parse::language::Language;
 
 pub mod diff;
 pub mod filter;
+pub mod presence;
 
 pub use filter::{parse_iso_date, HistoryFilter};
+pub use presence::{resolve as resolve_exact_presence, EntryPresence};
 
 /// One historical occurrence of the requested symbol.
 #[derive(Debug, Clone, PartialEq, Eq)]

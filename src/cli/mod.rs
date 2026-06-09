@@ -454,6 +454,8 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             author,
             kind,
             diff,
+            exact_presence,
+            exact_presence_max_commits,
         } => cmd_history::history(
             &ctx,
             cmd_history::HistoryArgs {
@@ -468,6 +470,8 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
                 author,
                 kind,
                 diff,
+                exact_presence,
+                exact_presence_max_commits,
             },
         ),
 
