@@ -1040,8 +1040,11 @@ pub enum Commands {
         /// for each entry. Cuts output noise dramatically on deep
         /// histories. JSON consumers see `body_diff` in place of
         /// `body`; advertised in the `capabilities` matrix as
-        /// `history_diff: true`.
-        #[arg(long)]
+        /// `history_diff: true`. Mutually exclusive with
+        /// `--exact-presence` — the diff path groups entries by
+        /// `(symbol, kind)`, which would break the per-row presence
+        /// mapping.
+        #[arg(long, conflicts_with = "exact_presence")]
         diff: bool,
 
         /// Phase 14.9 Tier B.7 — for each entry, list the exact set

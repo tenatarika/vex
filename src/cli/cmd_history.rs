@@ -23,7 +23,7 @@
 //! `results: { items: [...] }` nesting is gone (breaking change for
 //! MCP consumers — documented in v1.16.0 release notes).
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use std::path::PathBuf;
 
 use crate::cli::args::OutputFormat;
@@ -160,6 +160,22 @@ pub(crate) fn history(ctx: &CmdCtx, args: HistoryArgs) -> Result<()> {
         if let Some(cap) = limit {
             results.truncate(cap);
         }
+    }
+
+    // Round-2 final review HIGH-1: `--diff` reorders entries into
+    // `(symbol, kind)` groups, so the parallel `presence` vector
+    // built against the un-grouped `results` slice can't be reliably
+    // attached. Rather than silently dropping the (expensive) walk,
+    // reject the combination at dispatch time.
+    if diff && exact_presence {
+        eprintln!(
+            "error: `vex history --diff` and `--exact-presence` cannot be combined — \
+             --diff groups entries by (symbol, kind) which breaks the per-row mapping \
+             that --exact-presence depends on. Pick one."
+        );
+        return Err(anyhow!(
+            "--diff and --exact-presence are mutually exclusive"
+        ));
     }
 
     // Phase 14.9 Tier B.7 — resolve exact presence after filter +
@@ -456,18 +472,15 @@ fn render_json(
             .collect()
     };
 
-    // Phase 14.9 Tier B.7: attach presence per item when --exact-presence
-    // was set. The diff path's grouping reorders items relative to
-    // `results`, so when --diff + --exact-presence are combined the
-    // mapping breaks — we only attach when !diff. Document this in
-    // the --diff flag help text.
-    if !diff {
-        if let Some(p) = presence {
-            for (item, ep) in items.iter_mut().zip(p.iter()) {
-                item["presence"] = serde_json::to_value(ep).unwrap_or(serde_json::Value::Null);
-                if ep.truncated {
-                    item["presence_truncated"] = serde_json::Value::Bool(true);
-                }
+    // Phase 14.9 Tier B.7: attach presence per item. The `diff +
+    // exact_presence` combination is rejected at dispatch time
+    // (above), so when `presence` is `Some` we know `diff` is
+    // `false` and the parallel mapping is safe.
+    if let Some(p) = presence {
+        for (item, ep) in items.iter_mut().zip(p.iter()) {
+            item["presence"] = serde_json::to_value(ep).context("serialize EntryPresence")?;
+            if ep.truncated {
+                item["presence_truncated"] = serde_json::Value::Bool(true);
             }
         }
     }

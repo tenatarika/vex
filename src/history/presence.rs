@@ -83,23 +83,26 @@ pub fn resolve(
 
     let mut out: Vec<EntryPresence> = vec![EntryPresence::default(); rows.len()];
 
-    for (file_path, row_indices) in &by_file {
-        // 1. List commits + dates from HEAD, cap+1 so we can detect
-        //    overflow without a second probe.
-        let (commits, truncated) = match git_log_with_dates(root, max_commits) {
-            Ok(v) => v,
-            Err(_) => continue, // partial failure — leave defaults for these rows
-        };
-        let walked = commits.len();
+    // 1. List commits + dates from HEAD ONCE, cap+1 so we can detect
+    //    overflow without a second probe. `git log` here takes no
+    //    path filter — the commit list is shared across every
+    //    file_path in the result set (round-2 review fix; previously
+    //    this ran inside the loop and spawned N identical processes).
+    let (commits, truncated) = match git_log_with_dates(root, max_commits) {
+        Ok(v) => v,
+        Err(_) => return Ok(out), // partial failure — leave defaults everywhere
+    };
+    let walked = commits.len();
 
-        if truncated {
-            for &i in row_indices {
-                out[i].truncated = true;
-                out[i].walked = walked;
-            }
-            continue;
+    if truncated {
+        for ep in &mut out {
+            ep.truncated = true;
+            ep.walked = walked;
         }
+        return Ok(out);
+    }
 
+    for (file_path, row_indices) in &by_file {
         // 2. Batched cat-file --batch-check to resolve each commit's
         //    blob at file_path. Missing entries (file deleted/renamed)
         //    drop out of the map.
