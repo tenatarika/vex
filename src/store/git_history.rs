@@ -534,6 +534,56 @@ impl HistoryReader {
         }
     }
 
+    /// Phase 14.9 Tier B.8 — exact lookup with FST prefix-walk
+    /// fallback. When [`Self::find_by_name`] misses AND the query is
+    /// identifier-shaped (see [`crate::util::ident::is_identifier_shaped`])
+    /// AND `query.len() >= 3`, walk the FST for keys starting with the
+    /// lowercased query and union their posting lists. `name_cap`
+    /// limits how many distinct FST keys contribute (default `50` from
+    /// the CLI — bounds worst-case work).
+    ///
+    /// Ordering caveat: `fst::Streamer` walks lexicographically, NOT
+    /// by relevance — `vex history parse --no-index` will hit the
+    /// `parse_a*` neighbourhood before `parse_payment`. Use exact
+    /// lookup when you know the name; this is a discovery aid.
+    pub fn find_by_name_or_prefix(&self, query: &str, name_cap: usize) -> Vec<u32> {
+        let exact = self.find_by_name(query);
+        if !exact.is_empty() {
+            return exact;
+        }
+        if query.len() < 3 || !crate::util::ident::is_identifier_shaped(query) {
+            return Vec::new();
+        }
+        let fst_slice = self.fst_slice();
+        let fst_map = match fst::Map::new(fst_slice) {
+            Ok(m) => m,
+            Err(_) => return Vec::new(),
+        };
+
+        use fst::automaton::{Automaton, Str};
+        use fst::{IntoStreamer, Streamer};
+
+        let key_lower = query.to_lowercase();
+        let automaton = Str::new(&key_lower).starts_with();
+        let mut stream = fst_map.search(automaton).into_stream();
+
+        let mut seen = std::collections::HashSet::new();
+        let mut hits: Vec<u32> = Vec::new();
+        let mut names_processed = 0usize;
+        while let Some((_, offset)) = stream.next() {
+            if names_processed >= name_cap {
+                break;
+            }
+            names_processed += 1;
+            for idx in self.read_posting_list(offset as usize) {
+                if seen.insert(idx) {
+                    hits.push(idx);
+                }
+            }
+        }
+        hits
+    }
+
     pub fn entry(&self, idx: u32) -> Option<HistoryEntry> {
         if idx >= self.header.entry_count {
             return None;

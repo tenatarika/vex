@@ -229,7 +229,11 @@ fn run_indexed(
     let reader = HistoryReader::open(&sidecar_path)?
         .ok_or_else(|| anyhow!("history sidecar disappeared between mode probe and run"))?;
 
-    let entry_idxs = reader.find_by_name(symbol);
+    // Phase 14.9 Tier B.8: prefix-FST fallback when exact lookup
+    // misses on an identifier-shaped query. Cap at 50 distinct FST
+    // keys to bound worst-case work; lexicographic order, not
+    // relevance.
+    let entry_idxs = reader.find_by_name_or_prefix(symbol, 50);
     let mut out = Vec::with_capacity(entry_idxs.len());
     for entry_idx in entry_idxs {
         let entry = match reader.entry(entry_idx) {

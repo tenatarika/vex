@@ -39,6 +39,14 @@ pub(crate) fn status(
 
     let meta = std::fs::metadata(&index_path)?;
     let reader = IndexReader::open(&index_path)?;
+    // Phase 14.9 Tier B.6: detect submodule presence + git_history
+    // size ratio so the text output can surface §4c #5 and #6 from
+    // LIMITATIONS without changing the manifest schema. Both checks
+    // are best-effort reads — failures fall through silently.
+    let has_submodules = root.join(".gitmodules").is_file();
+    let git_history_size_bytes = std::fs::metadata(config::git_history_path(&root))
+        .ok()
+        .map(|m| m.len());
     // Manifest load is best-effort — a missing/corrupt JSON sidecar must
     // not block `vex status` (the index header alone covers core fields).
     // `Manifest::load` already returns `Manifest::default()` for absent
@@ -76,6 +84,11 @@ pub(crate) fn status(
                 // section presence without unwrapping.
                 "history_indexed_at": manifest.history_indexed_at,
                 "history": manifest.history,
+                // Phase 14.9 Tier B.6 — surface submodule presence and
+                // git_history sidecar size so JSON consumers can
+                // compute the §4c #5 ratio themselves.
+                "has_submodules": has_submodules,
+                "git_history_size_bytes": git_history_size_bytes,
             });
             if let Some(c) = &coverage_report {
                 json["coverage"] = serde_json::to_value(c)?;
@@ -151,6 +164,33 @@ pub(crate) fn status(
                     println!(
                         "History:    no (run `vex index --history` to enable indexed `vex history`)"
                     );
+                }
+            }
+            // Phase 14.9 Tier B.6 — submodule + size-ratio warnings,
+            // gated on history being indexed (these are facts about
+            // the indexed snapshot, not the project at large).
+            if manifest.history_indexed_at.is_some() {
+                if has_submodules {
+                    println!(
+                        "            ⚠ this repo has submodules — their history is NOT \
+                         in `index.git_history`. Submodule blobs aren't in the parent \
+                         repo's git db, so `vex history` against them returns nothing. \
+                         Run `vex history` inside each submodule's checkout for \
+                         per-submodule history. (LIMITATIONS §4c #6)"
+                    );
+                }
+                if let Some(gh_bytes) = git_history_size_bytes {
+                    let ratio = gh_bytes as f64 / meta.len() as f64;
+                    if ratio > 2.0 {
+                        println!(
+                            "            ℹ git_history sidecar is {:.1}× index.vex \
+                             ({:.1} KB) — long-lived repos scale by history depth, not \
+                             current-symbol-count. Cap with `vex index --history --history-depth N` \
+                             if storage is tight. (LIMITATIONS §4c #5)",
+                            ratio,
+                            gh_bytes as f64 / 1024.0,
+                        );
+                    }
                 }
             }
             if let Some(c) = &coverage_report {
