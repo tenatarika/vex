@@ -94,6 +94,8 @@ Pre-built `vex.exe` ships in every GitHub Release.
 
 To update, run `vex self-update` — it fetches the latest release, picks the right archive for your platform, and replaces the binary in-place. Same command works on macOS and Linux too.
 
+> **GPU acceleration is built into the prebuilt binaries** — Windows ships with DirectML (any DX12 GPU, driver-only; the redist `DirectML.dll` is bundled in the archive) and macOS arm64 with CoreML. NVIDIA CUDA is a source-build opt-in. Run `vex gpu` to check, and see [GPU Acceleration](#gpu-acceleration).
+
 ## Quick Start
 
 ```bash
@@ -209,7 +211,8 @@ vex completions zsh > ~/.zfunc/_vex
 | `vex grep <pattern> [--filter path/]` | Regex content search (no index needed). |
 | `vex update [--path .] [--semantic] [--embedder ID] [--history \| --no-history]` | Incremental update — re-parse only changed files, reuse unchanged symbols from existing index. **`--history` (v1.15.0)** is sticky via the manifest: if the prior build had a history section, `vex update` keeps it fresh via a 3-branch walker (fast-path skip on no-new-commits, incremental on linear history, full rebuild on force-push). `--no-history` drops the section + nulls the manifest fields. |
 | `vex watch [--path .] [--semantic] [--embedder ID]` | Watch filesystem, auto re-index on changes. |
-| `vex status [--path .]` | Show index stats: symbol count, size, embeddings, call graph, BM25. |
+| `vex status [--path .]` | Show index stats: symbol count, size, embeddings, call graph, BM25, GPU support. |
+| **`vex gpu [device] [--enable]`** | Diagnose GPU acceleration: prints the execution provider compiled into this binary and **actively probes** whether it engages on this machine (a silent CPU fallback shows as `FAILED` with setup remediation). `vex gpu cuda` probes one EP; `--enable` pins `VEX_DEVICE` when a GPU engages. See [GPU Acceleration](#gpu-acceleration). |
 | `vex completions <shell>` | Generate shell completions (bash, zsh, fish). |
 | `vex init` | Create a default `.vex.toml` config file in the project root. |
 | **`vex capabilities`** | **NEW (v1.9, Phase 13.0).** Print the machine-readable capability matrix (`protocol_version`, `signals`, `why`, `scope_filters`, `metadata_filters`, `empty_reason`, `bundle_modes`, `auto_update`). MCP / agent clients probe this once at startup instead of re-reading help text. |
@@ -263,9 +266,20 @@ semantic = true
 
 # Automatically update index before search if stale
 # auto_update = false
+
+# GPU device for semantic indexing (GPU-enabled builds only). "auto" uses the
+# compiled-in GPU EP when it initializes, else CPU; or "cpu"/"cuda"/"directml"/
+# "coreml". `gpu = true/false` is shorthand for auto/cpu. See GPU Acceleration.
+# device = "auto"
+# gpu = true
+
+# Embedder model: minilm-l6-v2 (default), jina-code, bge-base-en-v1.5,
+# bge-large-en-v1.5, mxbai-large. Changing it requires a reindex.
+# Set globally across projects with the VEX_EMBEDDER env var (this file wins).
+# embedder = "minilm-l6-v2"
 ```
 
-CLI flags always override config values. Use `--no-semantic` to explicitly disable semantic mode when the config enables it.
+CLI flags always override config values. Use `--no-semantic` to explicitly disable semantic mode when the config enables it. The `VEX_DEVICE` and `VEX_EMBEDDER` environment variables act as **global defaults across all projects** (lowest precedence, below `.vex.toml`) — see [GPU Acceleration](#gpu-acceleration).
 
 ### Staleness Detection
 
@@ -290,6 +304,36 @@ auto_update = true
 # Disable staleness check entirely
 vex search "Config" --no-stale-check
 ```
+
+## GPU Acceleration
+
+Semantic indexing (`--semantic`) can run the embedding model on a GPU — a large win on a full/cold index. On an RTX 3080 over a 28k-symbol C++ module, embedding the default MiniLM model was **51× faster on CUDA and 29× on DirectML** vs CPU (full benchmark + design notes in [`docs/GPU_SUPPORT.md`](docs/GPU_SUPPORT.md)).
+
+**Two layers — the binary, and the device:**
+
+- **Prebuilt binaries bake in a driver-only GPU EP:** Windows → **DirectML** (any DX12 GPU — NVIDIA/AMD/Intel; the redist `DirectML.dll` is bundled in the archive), macOS arm64 → **CoreML**. No SDK, no extra install. The Linux prebuilt is CPU-only.
+- **CUDA is a source-build opt-in** (fastest on NVIDIA — ~1.75× DirectML): `cargo install vex --features gpu-cuda`. Needs the CUDA 12 runtime + cuDNN 9 on `PATH` (the NVIDIA *driver alone* is not enough — it ships only `nvcuda.dll`, not the runtime/cuDNN). Source builds for the others: `--features gpu-coreml` / `gpu-directml`.
+
+**Selecting the device** (`vex index` / `vex update`):
+
+- `--gpu` / `--no-gpu` — force GPU (Auto) or CPU.
+- `--device cpu|auto|cuda|directml|coreml` — pick a specific execution provider.
+- Default is **Auto**: use the compiled-in EP when it initializes, else silently fall back to CPU. On a CUDA-enabled binary Auto prefers **CUDA → DirectML → CoreML**; on the standard Windows prebuilt only DirectML is compiled in, so Auto uses DirectML regardless of whether the PC could do CUDA.
+- A tiny incremental `vex update` stays on CPU (the GPU warm-up isn't worth a handful of symbols); cold/large `--semantic` builds use the GPU.
+
+**Is the GPU actually being used?** Run **`vex gpu`** — it reports the compiled EP and *actively probes* it, so a silent CPU fallback shows as `FAILED` with targeted setup remediation. `vex gpu cuda` probes a single EP; `vex gpu --enable` pins the working device to `VEX_DEVICE`.
+
+### Environment variables
+
+| Variable | Effect |
+|----------|--------|
+| `VEX_DEVICE` | Global default device (`cpu`/`auto`/`cuda`/`directml`/`coreml`) for all projects. Below `--device`/`--gpu` and `.vex.toml` in precedence. |
+| `VEX_EMBEDDER` | Global default embedder id (e.g. `jina-code`). Below `--embedder` and `.vex.toml`. |
+| `VEX_GPU_STRICT=1` | Turn ORT's silent CPU fallback into a hard error — proves whether the GPU engaged. (`vex gpu` sets this internally.) |
+| `VEX_GPU_MEM_LIMIT=<bytes>` | Advanced: hard cap on the GPU arena VRAM. Set it generously (≥ working set) or it OOMs on long-context batches. |
+| `VEX_GPU_ATTN_BUDGET=<n>` | Advanced: tune length-aware batch sizing (the `count × max_len²` budget). |
+
+**Embedder models** (`--embedder` / `.vex.toml embedder` / `VEX_EMBEDDER`): `minilm-l6-v2` (default, 384-d, CPU-fast), `jina-code` (768-d, code-specialized, GPU-worthy), `bge-base-en-v1.5`, `bge-large-en-v1.5`, `mxbai-large`. Changing the embedder requires a reindex.
 
 ## Output Formats
 
