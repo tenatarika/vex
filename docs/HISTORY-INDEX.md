@@ -349,11 +349,76 @@ walker (indexed reflects HEAD at index time; passing `--branch other`
 on the indexed path logs a `tracing::warn!` suggesting `--no-index`
 for branch-specific queries).
 
+**Phase 14.9 v1.16.0 flags (Tier A + B):**
+
+- `--since YYYY-MM-DD` / `--until YYYY-MM-DD` — inclusive date
+  window. Lex-compared against `commit_date` (fixed-width ISO is
+  lex-equivalent to chronological order). Works on both paths.
+- `--author <SUBSTR>` — case-insensitive substring on commit author.
+  **Walker-only** — the sidecar drops author info; passing on the
+  indexed path emits an `eprintln!` and exits non-zero with a hint
+  pointing at `--no-index`.
+- `--kind <KIND>` — exact lowercase match against `kind`
+  (`function` / `struct` / `impl` / …). Suppresses partner rows like
+  the `impl` that pairs with every `struct` hit.
+- `--diff` — render unified diffs between consecutive entries of the
+  same `(symbol, kind)` group via `similar::TextDiff::from_lines`.
+  Head of each group carries the full signature; non-head entries
+  carry `--- @prev_sha\n+++ @curr_sha\n…` lines (text mode) or
+  `body_diff: { from, to, hunks }` (JSON). Advertised in
+  `capabilities.history_diff = true`.
+- `--exact-presence` — enumerate the exact set of commits where the
+  entry's blob lived in its file (defeats the §4c #4 convex-hull
+  lossy span). Walks `git log` from HEAD capped by
+  `--exact-presence-max-commits N` (default 500); resolves each
+  commit's blob at `file_path` via batched `git cat-file
+  --batch-check`. Above the cap, falls back to the convex-hull span
+  with `presence_truncated: true` in JSON and an `eprintln!` notice
+  in text mode. **File-blob equality, not symbol-body equality** —
+  a sibling-symbol change in the same file produces a new file blob
+  and narrows presence.
+
+**JSON envelope (v1.16.0 BREAKING):** ported from the hand-rolled
+`json!({...})` literal to the typed `ResponseEnvelope<T>` via
+`output::print_envelope`. `results.items[*]` → `results[*]` (array,
+not object). Legacy `vex.dev/query_symbol` and `vex.dev/result_count`
+fields drop in favour of `MetaEnvelope`'s canonical
+`vex.dev/index_age_ms` / `ttlMs` / `cacheScope`. New observability
+field `vex.dev/history_mode = "indexed" | "walker"` indicates which
+path served the query.
+
+**Cookbook**
+
+```bash
+# Default — every historical version of a symbol, newest first
+vex history IndexReader
+
+# Time-windowed — only entries from a specific quarter
+vex history IndexReader --since 2026-04-01 --until 2026-06-30
+
+# Author + kind narrowing on the walker
+vex history IndexReader --no-index --author furcas --kind struct
+
+# Diff mode — what actually changed between versions
+vex history IndexReader --diff
+
+# Discovery: prefix fallback when you forget the exact name
+vex history inde --limit 20
+
+# Revert-aware presence (Phase 14.9 Tier B.7)
+vex history IndexReader --exact-presence --limit 5
+
+# Combined: diff + filter + JSON for an MCP agent
+vex history IndexReader --since 2026-01-01 --kind struct --diff \
+  --format json
+```
+
 ### `vex status`
 
 JSON: `history_indexed_at` (top-level, ISO date or null) +
 `history` sub-object with `commit_count`/`blob_count`/`entry_count`/
-`depth_capped`.
+`depth_capped`. Phase 14.9 Tier B.6 additions: top-level
+`has_submodules: bool` and `git_history_size_bytes: u64 | null`.
 
 Text:
 ```
@@ -361,6 +426,18 @@ History:    indexed at 2026-06-08 (4346 commits, 18922 blobs, 586136 entries)
             ⚠ section is partial: --history-depth cap stopped walking before the root commit.
               Symbols introduced before the cap are NOT indexed; re-run `vex index --history`
               without the cap to cover full history.
+```
+
+Phase 14.9 Tier B.6 — two additional warnings fire when history is
+indexed:
+```
+            ⚠ this repo has submodules — their history is NOT in
+              index.git_history. Submodule blobs aren't in the parent
+              repo's git db. (LIMITATIONS §4c #6)
+            ℹ git_history sidecar is 3.5× index.vex (19500.0 KB) —
+              long-lived repos scale by history depth, not
+              current-symbol-count. Cap with --history-depth N.
+              (LIMITATIONS §4c #5)
 ```
 
 Or, on a non-history-indexed project:

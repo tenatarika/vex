@@ -435,10 +435,26 @@ deferred until evidence demonstrates need.
 If blob X appears at commits A → C and a DIFFERENT blob lives at B
 in between (revert / cherry-pick), the entry's
 `[first_commit_idx=A, last_commit_idx=C]` overstates continuity.
-The "X existed at some point in [first, last]" sense is preserved;
-exact-presence requires a per-entry bitmap (~1.2 KB per entry on a
-10k-commit repo, blowing the storage budget). Documented; a future
-`--exact-presence` flag could materialise the bitmap on request.
+The "X existed at some point in [first, last]" sense is preserved.
+
+**v1.16.0 Phase 14.9 Tier B.7:** pass `--exact-presence` to enumerate
+the exact set of commits where the entry's blob lived in its file.
+Implementation walks `git log` from HEAD (capped by
+`--exact-presence-max-commits N`, default 500) and resolves blob SHAs
+via batched `git cat-file --batch-check`; in-process result cache per
+`(file_path, blob_sha)`. JSON output adds
+`presence: { commits, walked, truncated }`; text mode adds a
+`present: K / N commits in walked range` line per entry. Above the
+cap, the entry falls back to the convex-hull span with
+`presence_truncated: true` in JSON.
+
+**Caveat — file-blob, not symbol-body equality.** Presence is
+file-blob equality (`entry.blob_sha == git_cat_file(commit:path)`).
+A commit where the symbol body is unchanged but a sibling symbol in
+the same file moved will produce a different file blob → presence
+narrows. True symbol-body presence would require per-commit
+re-parsing of every blob (expensive); deferred. The current contract
+matches the sidecar's `(symbol, blob)` row identity.
 
 ### Section size scales with history depth, not current symbols
 
@@ -457,24 +473,43 @@ the per-(symbol, blob) row layout, not a bug. Use `--history-depth N`
 to cap the walk if storage is constrained; `vex status` warns when a
 cap was hit.
 
+**v1.16.0 Phase 14.9 Tier B.6:** `vex status` now also emits an
+informational line when `index.git_history > 2× index.vex`, naming
+the ratio in absolute KB and suggesting `--history-depth N`. JSON
+adds `git_history_size_bytes` so consumers can compute the ratio
+themselves without re-statting.
+
 ### Submodule history is silently skipped
 
 Mirrors the Phase 14.7 blob cache behaviour: submodule blobs aren't
 in the main repo's git database, so `git cat-file --batch` reports
-them missing and the builder drops them silently. Not flagged in
-`vex status`. Use `vex history` inside each submodule's own checkout
-for per-submodule history.
+them missing and the builder drops them silently.
+
+**v1.16.0 Phase 14.9 Tier B.6:** the silent-skip behaviour is
+unchanged (architecturally required — submodule blobs cannot be
+parsed without a separate `vex index` against the submodule's own
+checkout), but `vex status` now warns when history is indexed AND
+the project root has a `.gitmodules` file. JSON output adds
+`has_submodules: bool`. Use `vex history` inside each submodule's
+own checkout for per-submodule history.
 
 ### No back-fill from the walker's `git grep` probe
 
 The walker can find symbols that `git grep --word-regexp` matches at
 the chosen tip. The indexed path matches FST exactly (lowercased
-symbol name). Case differences are normalised; word-boundary
-differences are not. `vex history Parse_Payment` and `vex history
-parse_payment` both succeed (lowercased FST match); `vex history
-parse` does NOT match `parse_payment` (no substring fallback in the
-indexed path). The walker DOES match `parse` via word-regexp — so
-`--no-index` is the right escape hatch for partial-name queries.
+symbol name); case differences are normalised, word-boundary
+differences are not.
+
+**v1.16.0 Phase 14.9 Tier B.8 (partial close):** when exact FST
+lookup misses AND the query is identifier-shaped AND length ≥ 3,
+the indexed path now walks the FST for keys starting with the
+lowercased query and unions their posting lists (capped at 50
+distinct names — `vex history inde` will surface `index`, `IndexReader`,
+`index_path`, etc.). **Order is lexicographic, not relevance** — for
+discovery-style queries on common prefixes, fall back to the walker
+via `--no-index` which honours the full `git grep --word-regexp`
+match set. The walker remains the authoritative escape hatch for
+sub-3-char or non-identifier queries.
 
 **See also:** `docs/HISTORY-INDEX.md` for the full pipeline spec.
 
