@@ -271,7 +271,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             scope,
         ),
         Commands::Status { path, coverage } => cmd_status::status(&ctx, path, coverage),
-        Commands::Gpu { enable } => cmd_gpu::gpu(enable),
+        Commands::Gpu { device, enable } => cmd_gpu::gpu(device, enable),
         Commands::Grep {
             pattern,
             limit,

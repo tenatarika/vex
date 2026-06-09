@@ -661,8 +661,13 @@ pub enum Commands {
     /// this binary, actively probe whether it engages on this machine, and
     /// print targeted setup help if it does not. No index needed.
     Gpu {
+        /// Probe only this device (cuda|directml|coreml; `auto` = all). Default:
+        /// every execution provider compiled into this binary.
+        device: Option<String>,
+
         /// If a GPU engages, persist it to the VEX_DEVICE environment variable
-        /// (user-level) so every project uses it. Applies to new shells.
+        /// (user-level) so every project uses it. Applies to new shells. If no
+        /// GPU engages, nothing is pinned and the command says so.
         #[arg(long)]
         enable: bool,
     },

@@ -4,8 +4,11 @@
 //! each compiled EP — forcing strict registration (`VEX_GPU_STRICT`) so a
 //! silent CPU fallback is reported as a failure rather than hidden — and prints
 //! targeted remediation for the common setup problems (a stale/missing
-//! DirectML.dll, a missing CUDA/cuDNN runtime, etc.). With `--enable`, persists
-//! the working device to the `VEX_DEVICE` environment variable for future runs.
+//! DirectML.dll, a missing CUDA/cuDNN runtime, etc.). `vex gpu <device>` narrows
+//! the probe to a single EP (and reports clearly if it isn't in this build).
+//! With `--enable`, persists the working device to the `VEX_DEVICE` environment
+//! variable for future runs — and when nothing engages, says so instead of
+//! silently doing nothing.
 //!
 //! This exists because the index path falls back to CPU *silently* when an EP
 //! cannot register (so a misconfigured GPU just looks "slow"). `vex gpu` is the
@@ -20,22 +23,57 @@ use anyhow::Result;
 use crate::embed::device::{compiled_devices, default_device, gpu_support_str, Device};
 use crate::embed::{make_embedder_with_device, MINILM_ID};
 
-pub(crate) fn gpu(enable: bool) -> Result<()> {
+pub(crate) fn gpu(device: Option<String>, enable: bool) -> Result<()> {
     println!("vex GPU diagnostics");
     println!("  build:          {}", gpu_support_str());
     println!("  default device: {}", default_device().as_str());
 
-    let devices = compiled_devices();
-    if devices.is_empty() {
+    let compiled = compiled_devices();
+
+    // Decide which EP(s) to probe. `vex gpu <device>` narrows to one (and
+    // reports clearly when that EP isn't in this build); otherwise probe every
+    // compiled-in EP, in the same priority order `Auto` would try them.
+    let targets: Vec<Device> = match device.as_deref() {
+        None => compiled.clone(),
+        Some(name) => match Device::parse(name)? {
+            Device::Auto => compiled.clone(),
+            Device::Cpu => {
+                println!();
+                println!("`cpu` has no execution provider to probe.");
+                return Ok(());
+            }
+            requested if compiled.contains(&requested) => vec![requested],
+            requested => {
+                // A specific GPU EP this binary wasn't built with — the index
+                // path would hard-error on `--device {requested}`; say so here.
+                println!();
+                println!(
+                    "This binary was not built with {} support.",
+                    requested.as_str()
+                );
+                print_install_help();
+                if enable {
+                    println!();
+                    println!(
+                        "  --enable: nothing to pin — {} isn't compiled into this build.",
+                        requested.as_str()
+                    );
+                }
+                return Ok(());
+            }
+        },
+    };
+
+    if targets.is_empty() {
         println!();
         println!("This build has no GPU execution provider compiled in — embedding runs on CPU.");
-        println!("To get GPU acceleration:");
-        println!(
-            "  • NVIDIA (CUDA):    cargo install vex --features gpu-cuda  \
-             (needs CUDA Toolkit 12 + cuDNN 9 on PATH)"
-        );
-        println!("  • Any Windows GPU:  use the prebuilt Windows binary (DirectML, driver-only)");
-        println!("  • Apple Silicon:    cargo install vex --features gpu-coreml");
+        print_install_help();
+        if enable {
+            println!();
+            println!(
+                "  --enable: no GPU support in this build to pin — install a gpu-* build first."
+            );
+        }
         return Ok(());
     }
 
@@ -45,47 +83,68 @@ pub(crate) fn gpu(enable: bool) -> Result<()> {
 
     println!();
     let mut first_ok: Option<Device> = None;
-    for device in &devices {
-        print!("  probing {:<9} ... ", device.as_str());
+    for d in &targets {
+        print!("  probing {:<9} ... ", d.as_str());
         let _ = std::io::stdout().flush();
-        match probe(*device) {
+        match probe(*d) {
             Ok(warmup_ms) => {
                 println!("OK — engaged ({warmup_ms} ms warm-up)");
                 if first_ok.is_none() {
-                    first_ok = Some(*device);
+                    first_ok = Some(*d);
                 }
             }
             Err(e) => {
                 println!("FAILED");
-                remediation(*device, &e.to_string());
+                remediation(*d, &e.to_string());
             }
         }
     }
 
     println!();
     match first_ok {
-        Some(device) => {
-            println!("\u{2714} GPU available via {}.", device.as_str());
+        Some(d) => {
+            println!("\u{2714} GPU available via {}.", d.as_str());
             if enable {
-                persist_device(device);
+                persist_device(d);
             } else {
                 println!(
                     "  It engages automatically (default device is `{}`). \
                      Run `vex gpu --enable` to pin VEX_DEVICE={} for all projects.",
                     default_device().as_str(),
-                    device.as_str()
+                    d.as_str()
                 );
             }
         }
         None => {
             println!("\u{2718} No GPU execution provider engaged — vex will embed on CPU.");
-            println!(
-                "  Resolve the issue(s) above, or set VEX_DEVICE=cpu / pass --no-gpu \
-                 to stop attempting GPU."
-            );
+            if enable {
+                // The user asked to pin a GPU but none engaged — say so
+                // explicitly instead of silently dropping --enable (pinning a
+                // dead device would just force a CPU fallback on every run).
+                println!(
+                    "  --enable: not pinning VEX_DEVICE — no GPU engaged. Fix the issue(s) \
+                     above, then re-run `vex gpu --enable`."
+                );
+            } else {
+                println!(
+                    "  Resolve the issue(s) above, or set VEX_DEVICE=cpu / pass --no-gpu \
+                     to stop attempting GPU."
+                );
+            }
         }
     }
     Ok(())
+}
+
+/// Shared install guidance for builds/devices without a usable GPU EP.
+fn print_install_help() {
+    println!("To get GPU acceleration:");
+    println!(
+        "  • NVIDIA (CUDA):    cargo install vex --features gpu-cuda  \
+         (needs CUDA Toolkit 12 + cuDNN 9 on PATH)"
+    );
+    println!("  • Any Windows GPU:  use the prebuilt Windows binary (DirectML, driver-only)");
+    println!("  • Apple Silicon:    cargo install vex --features gpu-coreml");
 }
 
 /// Build a MiniLM embedder on `device` (strict, via `VEX_GPU_STRICT`) and run

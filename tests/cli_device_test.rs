@@ -91,3 +91,29 @@ fn gpu_doctor_runs_without_index() {
             "no GPU execution provider compiled in",
         ));
 }
+
+#[test]
+fn gpu_doctor_enable_without_gpu_states_nothing_pinned() {
+    // On a CPU build, `vex gpu --enable` must explicitly say it pinned nothing
+    // rather than silently dropping --enable.
+    let tmp = TempDir::new().unwrap();
+    vex_in(tmp.path())
+        .args(["gpu", "--enable"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "no GPU support in this build to pin",
+        ));
+}
+
+#[test]
+fn gpu_doctor_specific_uncompiled_device_reports_clearly() {
+    // Asking for a specific EP the binary wasn't built with reports that
+    // plainly (mirrors the index path's hard error for `--device cuda`).
+    let tmp = TempDir::new().unwrap();
+    vex_in(tmp.path())
+        .args(["gpu", "cuda"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("was not built with cuda support"));
+}
