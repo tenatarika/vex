@@ -98,6 +98,9 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_wait,
             history,
             history_depth,
+            gpu,
+            no_gpu,
+            device,
         } => cmd_index::index(
             &ctx,
             path,
@@ -112,6 +115,9 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_wait,
             history,
             history_depth,
+            gpu,
+            no_gpu,
+            device,
         ),
         Commands::Search {
             query,
@@ -188,6 +194,9 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_wait,
             history,
             no_history,
+            gpu,
+            no_gpu,
+            device,
         } => cmd_update::update(
             &ctx,
             path,
@@ -201,6 +210,9 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_wait,
             history,
             no_history,
+            gpu,
+            no_gpu,
+            device,
         ),
         Commands::Outline { file, kind } => {
             cmd_outline::cmd_outline(&file, kind.as_deref(), &ctx.format)

@@ -1,4 +1,7 @@
+pub mod batching;
 pub mod cache;
+pub mod device;
+pub mod extra;
 pub mod integrity;
 pub mod minilm;
 pub mod model;
@@ -6,6 +9,7 @@ pub mod tokenizer;
 
 use anyhow::{bail, Result};
 
+pub use device::Device;
 pub use minilm::{MiniLMEmbedder, MINILM_CHAR_BUDGET, MINILM_DIM, MINILM_ID};
 pub use model::build_context;
 
@@ -53,12 +57,36 @@ pub trait Embedder: Send {
 /// Errors when `id` is not a known embedder. The error message lists all
 /// known IDs so callers can show them to the user.
 pub fn make_embedder(id: &str) -> Result<Box<dyn Embedder>> {
+    // CPU-neutral default — see docs/GPU_SUPPORT.md §3 principle 2b. Callers that
+    // want GPU (the index path) go through `make_embedder_with_device` with a
+    // device resolved by `Device::resolve`; bare callers (e.g. `vex search`
+    // query embedding) stay on CPU via `MiniLMEmbedder::new()`.
     match id {
         MINILM_ID => Ok(Box::new(MiniLMEmbedder::new()?)),
-        other => bail!(
-            "unknown embedder: `{other}`. Known embedders: {}",
-            known_embedders().join(", ")
-        ),
+        other => match extra::spec_for(other) {
+            Some(spec) => Ok(Box::new(extra::FastEmbedModel::new(spec, Device::Cpu)?)),
+            None => bail!(
+                "unknown embedder: `{other}`. Known embedders: {}",
+                known_embedders().join(", ")
+            ),
+        },
+    }
+}
+
+/// Construct an embedder by ID on a specific compute [`Device`]. Used by the
+/// index path, which resolves the device from CLI/config/env via
+/// [`Device::resolve`]. On a CPU-only build a non-CPU/Auto device errors (see
+/// [`device::execution_providers`]).
+pub fn make_embedder_with_device(id: &str, device: Device) -> Result<Box<dyn Embedder>> {
+    match id {
+        MINILM_ID => Ok(Box::new(MiniLMEmbedder::with_device(device)?)),
+        other => match extra::spec_for(other) {
+            Some(spec) => Ok(Box::new(extra::FastEmbedModel::new(spec, device)?)),
+            None => bail!(
+                "unknown embedder: `{other}`. Known embedders: {}",
+                known_embedders().join(", ")
+            ),
+        },
     }
 }
 
@@ -68,7 +96,7 @@ pub fn make_embedder(id: &str) -> Result<Box<dyn Embedder>> {
 pub fn embedder_dim(id: &str) -> Option<u32> {
     match id {
         MINILM_ID => Some(MINILM_DIM),
-        _ => None,
+        _ => extra::spec_for(id).map(|s| s.dim),
     }
 }
 
@@ -80,14 +108,30 @@ pub fn embedder_dim(id: &str) -> Option<u32> {
 pub fn embedder_char_budget(id: &str) -> Option<usize> {
     match id {
         MINILM_ID => Some(MINILM_CHAR_BUDGET),
-        _ => None,
+        _ => extra::spec_for(id).map(|s| s.char_budget),
+    }
+}
+
+/// Miss-count threshold below which `Device::Auto` stays on CPU for `id` — the
+/// GPU warm-up isn't worth it for a tiny `vex update`. Scales inversely with
+/// model size (heavier model → GPU pays off at fewer misses). Unknown ids fall
+/// back to the MiniLM value. Used by the index pipeline's device gate
+/// (`docs/GPU_SUPPORT.md` §3.4); an explicit `--gpu`/`--device` bypasses it.
+pub fn embedder_gpu_auto_min_misses(id: &str) -> usize {
+    match id {
+        MINILM_ID => minilm::MINILM_GPU_AUTO_MIN_MISSES,
+        _ => extra::spec_for(id)
+            .map(|s| s.gpu_auto_min_misses)
+            .unwrap_or(minilm::MINILM_GPU_AUTO_MIN_MISSES),
     }
 }
 
 /// List of known embedder IDs in registry order. Used in error messages and
 /// for the `--embedder` CLI help.
 pub fn known_embedders() -> Vec<&'static str> {
-    vec![MINILM_ID]
+    let mut ids = vec![MINILM_ID];
+    ids.extend(extra::SPECS.iter().map(|s| s.id));
+    ids
 }
 
 /// Resolve the embedder ID to use for an operation.
@@ -130,4 +174,41 @@ pub fn check_embedder_match(manifest_embedder: Option<&str>, requested: &str) ->
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_lookups_cover_minilm_and_extras() {
+        // MiniLM (default) is always known.
+        assert_eq!(embedder_dim(MINILM_ID), Some(MINILM_DIM));
+        assert_eq!(embedder_char_budget(MINILM_ID), Some(MINILM_CHAR_BUDGET));
+        // An added model resolves through the extra registry.
+        assert_eq!(embedder_dim("jina-code"), Some(768));
+        assert_eq!(embedder_char_budget("jina-code"), Some(1100));
+        // Unknown ids resolve to nothing for dim/budget.
+        assert_eq!(embedder_dim("nope"), None);
+        assert_eq!(embedder_char_budget("nope"), None);
+        // known_embedders lists MiniLM first, then the extras.
+        let known = known_embedders();
+        assert_eq!(known.first(), Some(&MINILM_ID));
+        assert!(known.contains(&"jina-code"));
+    }
+
+    #[test]
+    fn gpu_gate_threshold_is_model_aware() {
+        // MiniLM keeps the high (one-batch) threshold; heavier models break
+        // even at fewer misses, so their thresholds are lower.
+        let minilm = embedder_gpu_auto_min_misses(MINILM_ID);
+        let jina = embedder_gpu_auto_min_misses("jina-code");
+        assert_eq!(minilm, minilm::MINILM_GPU_AUTO_MIN_MISSES);
+        assert!(
+            jina < minilm,
+            "jina-code ({jina}) should gate below MiniLM ({minilm})"
+        );
+        // Unknown ids fall back to the MiniLM threshold (conservative).
+        assert_eq!(embedder_gpu_auto_min_misses("nope"), minilm);
+    }
 }

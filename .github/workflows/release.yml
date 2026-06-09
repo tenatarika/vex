@@ -33,13 +33,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `features` bakes a GPU execution provider into the shipped binary
+        # (docs/GPU_SUPPORT.md §6): CoreML on macOS, DirectML on Windows — both
+        # build on stock GPU-less runners and need no user SDK. Linux stays CPU
+        # (no vendor-agnostic EP; CUDA needs a host SDK → source build only).
+        # Runtime default is then Auto with silent CPU fallback.
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
+            features: gpu-coreml
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            features: ""
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            features: gpu-directml
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +65,11 @@ jobs:
         # root crate and `target/<triple>/release/vex-mcp` never exists —
         # which is exactly what the v1.11.2 release pipeline tripped on
         # when it tried to tar a non-existent vex-mcp binary.
-        run: cargo build --release --workspace --target ${{ matrix.target }}
+        # `matrix.features` is "" on the Linux leg; empty string is FALSY in GHA
+        # expressions, so the `|| ''` branch yields no --features there. The
+        # ${{ }} is substituted by the runner before any shell runs, so this is
+        # shell-agnostic (works on the bash and pwsh legs without pinning).
+        run: cargo build --release --workspace --target ${{ matrix.target }} ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
 
       - name: Package (unix)
         if: matrix.os != 'windows-latest'
@@ -297,7 +309,12 @@ jobs:
 
             def install
               if build.head?
-                system "cargo", "install", *std_cargo_args
+                # Match the prebuilt bottle: bake CoreML into macOS source
+                # builds. Linux --HEAD stays CPU (no vendor-agnostic EP; CUDA
+                # needs a host SDK). See docs/GPU_SUPPORT.md §6.
+                args = std_cargo_args
+                args += ["--features", "gpu-coreml"] if OS.mac?
+                system "cargo", "install", *args
               else
                 bin.install "vex"
               end

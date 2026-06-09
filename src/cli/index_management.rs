@@ -106,6 +106,16 @@ pub(crate) fn handle_staleness(
                     // channel — a failed semantic rebuild keeps prior
                     // vectors on disk for the next attempt.
                     drop_semantic: false,
+                    // Auto-update honours `.vex.toml gpu`/`device` but is never
+                    // an explicit request, so it stays subject to the
+                    // miss-count gate (incremental updates embed little).
+                    device: crate::embed::Device::resolve(
+                        None,
+                        None,
+                        cfg.device.as_deref(),
+                        cfg.gpu,
+                    )?,
+                    gpu_explicit: false,
                 };
                 // v1.15.1 HIGH: degrade-don't-abort. Pre-fix, an error
                 // here bubbled up → CLI exited non-zero → the MCP
@@ -221,6 +231,9 @@ pub(crate) fn ensure_index_exists(
         history_depth: None,
         drop_history: false,
         drop_semantic: false,
+        // Bootstrap honours `.vex.toml gpu`/`device`; not an explicit request.
+        device: crate::embed::Device::resolve(None, None, cfg.device.as_deref(), cfg.gpu)?,
+        gpu_explicit: false,
     };
     let (count, _rebuilt) = pipeline::run(root, opts, &embedder_id, &cfg.exclude)
         .with_context(|| format!("bootstrap index for {}", root.display()))?;

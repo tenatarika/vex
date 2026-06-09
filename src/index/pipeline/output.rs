@@ -24,7 +24,7 @@ use crate::parse::language::Language;
 use crate::store;
 use crate::util::config;
 
-use super::{IndexOptions, EMBED_BATCH_SIZE};
+use super::IndexOptions;
 
 /// Pick the `vector_dim` to record in the Header.
 ///
@@ -730,6 +730,8 @@ pub(super) fn generate_embeddings(
     parsed: &[ParsedFile],
     embedder_id: &str,
     root: &Path,
+    device: crate::embed::Device,
+    gpu_explicit: bool,
 ) -> Result<(Vec<Vec<f32>>, Vec<u64>)> {
     let total_start = Instant::now();
 
@@ -818,9 +820,29 @@ pub(super) fn generate_embeddings(
     }
 
     // Step 4: embed misses only.
+    //
+    // Miss-count gate (docs/GPU_SUPPORT.md §3.4): `Auto` that wasn't an
+    // explicit `--gpu`/`--device` request stays on CPU for tiny update sets,
+    // where per-run GPU/EP warm-up would dominate. The threshold is
+    // model-aware — a heavier model has a far higher per-symbol CPU cost, so
+    // its GPU break-even is at *fewer* misses (e.g. jina-code ~32 vs MiniLM
+    // ~256). An explicit request bypasses the gate;
+    // `Device::Cpu`/`Cuda`/`DirectMl`/`CoreMl` pass through unchanged. The
+    // 0-miss early return above already covers no-ops.
+    let gpu_auto_min_misses = crate::embed::embedder_gpu_auto_min_misses(embedder_id);
+    let effective_device =
+        if device == crate::embed::Device::Auto && !gpu_explicit && misses < gpu_auto_min_misses {
+            crate::embed::Device::Cpu
+        } else {
+            device
+        };
     let model_start = Instant::now();
-    tracing::info!(embedder = embedder_id, "loading embedding model");
-    let mut embedder = embed::make_embedder(embedder_id)?;
+    tracing::info!(
+        embedder = embedder_id,
+        device = ?effective_device,
+        "loading embedding model"
+    );
+    let mut embedder = embed::make_embedder_with_device(embedder_id, effective_device)?;
     tracing::info!(
         elapsed = ?model_start.elapsed(),
         model = embedder.id(),
@@ -829,16 +851,15 @@ pub(super) fn generate_embeddings(
     );
 
     let embed_start = Instant::now();
-    // Collect miss contexts as owned `String`s; embed_batch takes
-    // `&[String]`. Slice borrowing across the chunks would require a
-    // separate vec anyway, so just clone — cost is dominated by the
-    // embed call itself.
+    // Collect miss contexts as owned `String`s; `embed_batch` takes `&[String]`.
+    // Pass the WHOLE miss set in one call so the embedder can batch globally:
+    // the GPU path (`batching::embed_length_aware`) length-sorts across all
+    // misses to bound VRAM and minimise padding waste, while the CPU path falls
+    // back to fastembed's internal batching. (Previously this chunked at a flat
+    // `EMBED_BATCH_SIZE`, which on the GPU padded short contexts up to a mixed
+    // batch's longest and ballooned attention memory — see docs/GPU_SUPPORT.md.)
     let miss_contexts: Vec<String> = miss_indices.iter().map(|&i| contexts[i].clone()).collect();
-    let mut miss_vectors: Vec<Vec<f32>> = Vec::with_capacity(misses);
-    for batch in miss_contexts.chunks(EMBED_BATCH_SIZE) {
-        let vectors = embedder.embed_batch(batch)?;
-        miss_vectors.extend(vectors);
-    }
+    let miss_vectors: Vec<Vec<f32>> = embedder.embed_batch(&miss_contexts)?;
     tracing::info!(
         misses,
         elapsed = ?embed_start.elapsed(),
@@ -1714,7 +1735,8 @@ mod tests {
         // tmp). If the all-hit early-return ever regresses, the test
         // either hangs on download or panics in `make_embedder`.
         let (out, hashes) =
-            generate_embeddings(&parsed, MINILM_ID, root).expect("generate_embeddings");
+            generate_embeddings(&parsed, MINILM_ID, root, crate::embed::Device::Cpu, false)
+                .expect("generate_embeddings");
 
         assert_eq!(out.len(), 2);
         assert_eq!(out[0], v_foo, "foo position 0");

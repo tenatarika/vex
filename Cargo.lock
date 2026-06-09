@@ -4263,6 +4263,7 @@ dependencies = [
  "memmap2",
  "notify",
  "notify-debouncer-full",
+ "ort",
  "predicates",
  "proptest",
  "rayon",

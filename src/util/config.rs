@@ -26,6 +26,21 @@ pub struct VexConfig {
     /// when omitted. Use `vex --help` or the docs to list known IDs.
     pub embedder: Option<String>,
 
+    /// Use the GPU for embedding generation by default, if this vex build was
+    /// compiled with a `gpu-*` feature. `Some(true)` resolves to `Auto`
+    /// (best compiled-in execution provider, silent CPU fallback);
+    /// `Some(false)` forces CPU. Overridden by `--gpu`/`--no-gpu`/`--device`
+    /// and `$VEX_DEVICE`. A config-level `gpu = true` stays subject to the
+    /// miss-count gate (it is not treated as an explicit request). Default
+    /// (omitted): the compile-time default — `Auto` on a GPU build, `Cpu`
+    /// otherwise. See `docs/GPU_SUPPORT.md`.
+    pub gpu: Option<bool>,
+
+    /// Advanced: pin a specific embedding execution provider
+    /// (`cpu` | `auto` | `cuda` | `directml` | `coreml`). Takes precedence over
+    /// `gpu`. Overridden by the `--device` CLI flag.
+    pub device: Option<String>,
+
     /// Override the cache root used to store the index for this project.
     ///
     /// Accepts:
@@ -119,6 +134,18 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 # Embedder used for semantic indexing. Known IDs: minilm-l6-v2 (default).
 # Changing the embedder requires a full reindex.
 # embedder = "minilm-l6-v2"
+
+# Use the GPU for embedding generation, if this vex build was compiled with a
+# gpu-* feature (DirectML on Windows / CoreML on macOS prebuilts; CUDA via
+# `cargo install vex --features gpu-cuda`). `true` => best available provider
+# with silent CPU fallback; only speeds up cold/large semantic builds.
+# Per-invocation override: `vex index --gpu` / `--no-gpu`.
+# gpu = false
+
+# Advanced: pin a specific embedding execution provider. Takes precedence over
+# `gpu`. One of: "cpu", "auto", "cuda", "directml", "coreml".
+# Per-invocation override: `vex index --device <DEVICE>`.
+# device = "auto"
 
 # Cache directory override. Defaults to the platform cache location.
 #   macOS:   ~/Library/Caches/vex

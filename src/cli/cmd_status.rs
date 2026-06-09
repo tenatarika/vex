@@ -95,6 +95,15 @@ pub(crate) fn status(
                 "Embeddings: {}",
                 if reader.has_vectors() { "yes" } else { "no" }
             );
+            // GPU support is a compile-time property of THIS binary; the
+            // default device is what an unflagged `vex index` would use (the
+            // actual device per-run still depends on --gpu/--device/.vex.toml/
+            // $VEX_DEVICE). See docs/GPU_SUPPORT.md §5.7.
+            println!(
+                "GPU:        {} · default {}",
+                crate::embed::device::gpu_support_str(),
+                crate::embed::device::default_device().as_str()
+            );
             println!(
                 "Call graph: {}",
                 if reader.has_call_graph() { "yes" } else { "no" }

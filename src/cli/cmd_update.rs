@@ -28,6 +28,9 @@ pub(crate) fn update(
     no_wait: bool,
     history: bool,
     no_history: bool,
+    gpu: bool,
+    no_gpu: bool,
+    device: Option<String>,
 ) -> Result<()> {
     // Canonicalize once at the top so `prior_manifest`'s lookup
     // path matches the one `pipeline::update` uses internally —
@@ -45,7 +48,7 @@ pub(crate) fn update(
     // returns `Ok(default)` for the missing-file case, so any `Err`
     // here is a parse or IO failure we must not swallow.
     let prior_manifest = crate::index::manifest::Manifest::load(&config::manifest_path(&root))?;
-    let opts = build_index_options(
+    let mut opts = build_index_options(
         with_semantic,
         no_call_graph,
         no_bm25,
@@ -56,6 +59,17 @@ pub(crate) fn update(
         ctx.cfg,
         Some(&prior_manifest),
     );
+    // Resolve the embedding device (CLI > .vex.toml > VEX_DEVICE > compile-time
+    // default). `gpu_explicit` only for an explicit CLI request. Note: updates
+    // recompute few/zero embeddings, so this is usually a no-op in practice.
+    let cli_gpu = gpu.then_some(true).or(no_gpu.then_some(false));
+    opts.device = crate::embed::Device::resolve(
+        device.as_deref(),
+        cli_gpu,
+        ctx.cfg.device.as_deref(),
+        ctx.cfg.gpu,
+    )?;
+    opts.gpu_explicit = device.is_some() || matches!(cli_gpu, Some(true));
     let outcome = if no_wait {
         pipeline::update_or_busy(&root, opts, &embedder_id, ctx.excludes)?
     } else {

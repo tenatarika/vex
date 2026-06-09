@@ -90,3 +90,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: rui314/setup-mold@v1
       - run: cargo bench --workspace --no-run
+
+  # Compile-guard so an opt-in GPU execution-provider feature never bit-rots.
+  # Each EP only builds on its host OS (ort/coreml on Apple, ort/directml on
+  # Windows), so this mirrors the release `build` matrix rather than living as
+  # a step in `test`. `cargo check` only — CI runners have no GPU, so this
+  # verifies the feature COMPILES; it does not (and can't) measure GPU perf or
+  # exercise the runtime EP. CUDA is source-build-only (needs a host CUDA/cuDNN
+  # SDK absent from stock runners) → not checked here. See docs/GPU_SUPPORT.md.
+  check-gpu:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            features: gpu-coreml
+          - os: windows-latest
+            features: gpu-directml
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --features ${{ matrix.features }}

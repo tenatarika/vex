@@ -18,8 +18,18 @@ pub const MINILM_DIM: u32 = 384;
 /// MiniLM accepts ~256 wordpiece tokens (~4.5 chars/token → ~1100 chars).
 pub const MINILM_CHAR_BUDGET: usize = 1100;
 
+/// Miss-count threshold below which `Device::Auto` stays on CPU for MiniLM —
+/// the GPU warm-up isn't worth it for a tiny `vex update`. MiniLM (~22M) has a
+/// low per-symbol CPU cost, so its GPU break-even is high (~one batch). Heavier
+/// models override this with smaller values (see [`crate::embed::extra::Spec`]).
+/// See `docs/GPU_SUPPORT.md` §3.4.
+pub const MINILM_GPU_AUTO_MIN_MISSES: usize = 256;
+
 pub struct MiniLMEmbedder {
     model: TextEmbedding,
+    /// True when a GPU execution provider was registered, so `embed_batch`
+    /// uses length-aware micro-batching (bounds VRAM + avoids padding waste).
+    gpu: bool,
 }
 
 impl MiniLMEmbedder {
@@ -28,7 +38,20 @@ impl MiniLMEmbedder {
     /// explicit cache dir fastembed would drop `.fastembed_cache/` into
     /// the current working directory — that re-downloads the same model
     /// for every project and pollutes the project tree.
+    /// Construct on the default CPU device. Equivalent to
+    /// `with_device(Device::Cpu)` — the library floor. The GPU decision lives
+    /// in the index path (see [`crate::embed::make_embedder_with_device`]).
     pub fn new() -> Result<Self> {
+        Self::with_device(crate::embed::device::Device::Cpu)
+    }
+
+    /// Construct on a specific compute [`Device`](crate::embed::device::Device).
+    /// `Device::Cpu` (and `Auto` on a CPU-only build) yields an empty
+    /// execution-provider list — byte-for-byte the legacy CPU load. GPU
+    /// providers are chained via fastembed's `with_execution_providers`; the
+    /// downloaded ONNX bytes are identical regardless of EP, so the integrity
+    /// check below is unaffected.
+    pub fn with_device(device: crate::embed::device::Device) -> Result<Self> {
         let cache_dir = crate::util::config::embed_cache_dir();
         // Surface the cache-dir creation error explicitly. Without
         // context, a failure here would propagate up as the cryptic
@@ -40,10 +63,13 @@ impl MiniLMEmbedder {
                 cache_dir.display()
             )
         })?;
+        let execution_providers = crate::embed::device::execution_providers(device)?;
+        let gpu = !execution_providers.is_empty();
         let model = TextEmbedding::try_new(
             InitOptions::new(EmbeddingModel::AllMiniLML6V2)
                 .with_cache_dir(cache_dir.clone())
-                .with_show_download_progress(true),
+                .with_show_download_progress(true)
+                .with_execution_providers(execution_providers),
         )
         .context("failed to load MiniLM-L6-v2 embedding model")?;
 
@@ -76,7 +102,7 @@ impl MiniLMEmbedder {
             }
         }
 
-        Ok(Self { model })
+        Ok(Self { model, gpu })
     }
 }
 
@@ -102,6 +128,12 @@ impl Embedder for MiniLMEmbedder {
     }
 
     fn embed_batch(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if self.gpu {
+            // GPU: length-aware micro-batching bounds VRAM and avoids padding
+            // waste (see crate::embed::batching).
+            return crate::embed::batching::embed_length_aware(&mut self.model, texts);
+        }
+        // CPU: fastembed's internal batching (default 256) — unchanged.
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
         let results = self.model.embed(refs, None)?;
         Ok(results)
