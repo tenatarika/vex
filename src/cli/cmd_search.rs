@@ -13,25 +13,7 @@ use super::{output, scope};
 use crate::search::{fusion, semantic, structural};
 use crate::store::reader::IndexReader;
 use crate::util::config;
-
-/// v1.17 — query looks like a single bare identifier (eg. `compile_query`,
-/// `Foo`, `_internal`, `my_fn`). Used by the search-drift hint: when
-/// the user types a name expecting an exact-symbol lookup but the
-/// structural FST finds nothing, we suggest the precise tools.
-///
-/// Conservative: requires the first char to be ASCII letter or
-/// underscore and every subsequent char to be ASCII alphanumeric or
-/// underscore. Multi-word queries ("payment processor"), prefixed
-/// patterns ("Foo::*"), and anything with punctuation falls through
-/// — those are clearly relevance queries, not exact-symbol lookups.
-fn is_identifier_shaped(query: &str) -> bool {
-    let mut bytes = query.bytes();
-    match bytes.next() {
-        Some(b) if b.is_ascii_alphabetic() || b == b'_' => {}
-        _ => return false,
-    }
-    bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
-}
+use crate::util::ident::is_identifier_shaped;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn search(
@@ -274,7 +256,7 @@ pub(crate) fn search(
 
 #[cfg(test)]
 mod tests {
-    use super::is_identifier_shaped;
+    use crate::util::ident::is_identifier_shaped;
 
     #[test]
     fn identifier_shaped_accepts_typical_symbols() {
