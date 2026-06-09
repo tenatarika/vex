@@ -83,6 +83,18 @@ cargo build --release
 cp target/release/vex ~/.local/bin/
 ```
 
+### Linux
+
+Pre-built `vex` ships in every GitHub Release for `x86_64-unknown-linux-gnu`:
+
+```bash
+curl -L https://github.com/tenatarika/vex/releases/latest/download/vex-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+mv vex ~/.local/bin/      # or: sudo mv vex /usr/local/bin/
+vex --version
+```
+
+Built on the current `ubuntu-latest` GitHub runner (glibc-linked). For older glibc distros, musl-based distros (Alpine, NixOS without `nix-ld`), or `aarch64` Linux (Graviton, Pi 5, Ampere) — build from source via `cargo build --release`.
+
 ### Windows
 
 Pre-built `vex.exe` ships in every GitHub Release.
