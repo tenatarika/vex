@@ -118,8 +118,10 @@ pub(crate) fn history(ctx: &CmdCtx, args: HistoryArgs) -> Result<()> {
     // Pre-resolve mode so we can reject --author on the indexed path
     // BEFORE doing any walker work. Otherwise an --author query with a
     // populated sidecar would run, return rows, then error after the
-    // fact.
-    let mode = resolve_mode(no_index, &root)?;
+    // fact. `resolve_mode` returns the opened `HistoryReader` alongside
+    // the mode tag so we don't re-mmap inside `run_indexed` (round-2
+    // review MEDIUM: double `HistoryReader::open`).
+    let (mode, reader) = resolve_mode(no_index, &root)?;
 
     if mode == HistoryMode::Indexed && author.is_some() {
         eprintln!(
@@ -148,7 +150,12 @@ pub(crate) fn history(ctx: &CmdCtx, args: HistoryArgs) -> Result<()> {
                     );
                 }
             }
-            run_indexed(&root, &symbol, inner_limit)?
+            // Safe to expect: `resolve_mode` returns `Indexed` only
+            // when the open succeeded, so `reader` is `Some` here.
+            let r = reader
+                .as_ref()
+                .expect("resolve_mode invariant: Indexed implies Some(reader)");
+            run_indexed(r, &symbol, inner_limit)
         }
         HistoryMode::Walker => run_walker(&root, &symbol, depth, branch.as_deref(), inner_limit)?,
     };
@@ -201,17 +208,21 @@ pub(crate) fn history(ctx: &CmdCtx, args: HistoryArgs) -> Result<()> {
     Ok(())
 }
 
-/// Pick which path will service the query without doing the work.
-/// Probes the sidecar path with `HistoryReader::open` (cheap — mmap
-/// header read only) and returns `Walker` on absence.
-fn resolve_mode(no_index: bool, root: &std::path::Path) -> Result<HistoryMode> {
+/// Pick which path will service the query and, when the indexed path
+/// wins, hand back the already-opened `HistoryReader` so the caller
+/// doesn't re-mmap inside `run_indexed` (round-2 review MEDIUM).
+/// Returns `(Walker, None)` for `--no-index` or absent sidecar.
+fn resolve_mode(
+    no_index: bool,
+    root: &std::path::Path,
+) -> Result<(HistoryMode, Option<HistoryReader>)> {
     if no_index {
-        return Ok(HistoryMode::Walker);
+        return Ok((HistoryMode::Walker, None));
     }
     let sidecar_path = config::git_history_path(root);
     match HistoryReader::open(&sidecar_path)? {
-        Some(_) => Ok(HistoryMode::Indexed),
-        None => Ok(HistoryMode::Walker),
+        Some(reader) => Ok((HistoryMode::Indexed, Some(reader))),
+        None => Ok((HistoryMode::Walker, None)),
     }
 }
 
@@ -256,14 +267,10 @@ fn run_walker(
 }
 
 fn run_indexed(
-    root: &std::path::Path,
+    reader: &HistoryReader,
     symbol: &str,
     limit: Option<usize>,
-) -> Result<Vec<HistoricalSymbol>> {
-    let sidecar_path = config::git_history_path(root);
-    let reader = HistoryReader::open(&sidecar_path)?
-        .ok_or_else(|| anyhow!("history sidecar disappeared between mode probe and run"))?;
-
+) -> Vec<HistoricalSymbol> {
     // Phase 14.9 Tier B.8: prefix-FST fallback when exact lookup
     // misses on an identifier-shaped query. Cap at 50 distinct FST
     // keys to bound worst-case work; lexicographic order, not
@@ -307,7 +314,7 @@ fn run_indexed(
     if let Some(cap) = limit {
         out.truncate(cap);
     }
-    Ok(out)
+    out
 }
 
 fn hex_string(sha: &[u8; 20]) -> String {

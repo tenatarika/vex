@@ -85,10 +85,12 @@ impl HistoryFilter {
     }
 }
 
-/// Validate a `YYYY-MM-DD` date string. Returns the canonical
-/// representation on success (currently a passthrough, but normalising
-/// here gives the CLI surface a single chokepoint to reject `2024-1-1`
-/// or other malformed shapes before they reach the filter).
+/// Validate a `YYYY-MM-DD` date string. Checks structural shape AND
+/// calendar validity (month 01-12, day 01-`days_in_month` accounting
+/// for Gregorian leap years). Rejects `2026-13-99` and `2026-02-30`
+/// — both would otherwise lex-compare as legitimate but never match
+/// any real `commit_date` and produce silently-empty filter results
+/// (round-2 review MEDIUM-4).
 pub fn parse_iso_date(s: &str) -> Result<String, String> {
     let bytes = s.as_bytes();
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
@@ -102,7 +104,40 @@ pub fn parse_iso_date(s: &str) -> Result<String, String> {
             return Err(format!("expected date in YYYY-MM-DD form, got {s:?}"));
         }
     }
+    let year: u32 = s[0..4]
+        .parse()
+        .map_err(|_| format!("expected date in YYYY-MM-DD form (year not numeric), got {s:?}"))?;
+    let month: u32 = s[5..7]
+        .parse()
+        .map_err(|_| format!("expected date in YYYY-MM-DD form (month not numeric), got {s:?}"))?;
+    let day: u32 = s[8..10]
+        .parse()
+        .map_err(|_| format!("expected date in YYYY-MM-DD form (day not numeric), got {s:?}"))?;
+    if !is_valid_ymd(year, month, day) {
+        return Err(format!(
+            "calendar-invalid date {s:?}: month must be 01-12, day must be valid for that month"
+        ));
+    }
     Ok(s.to_string())
+}
+
+fn is_valid_ymd(year: u32, month: u32, day: u32) -> bool {
+    if !(1..=12).contains(&month) || day < 1 {
+        return false;
+    }
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => return false,
+    };
+    day <= max_day
 }
 
 #[cfg(test)]
@@ -249,5 +284,31 @@ mod tests {
         ] {
             assert!(parse_iso_date(bad).is_err(), "should reject {bad:?}");
         }
+    }
+
+    #[test]
+    fn parse_iso_date_rejects_calendar_invalid() {
+        for bad in [
+            "2026-00-15", // month 00
+            "2026-13-15", // month 13
+            "2026-99-99", // both invalid
+            "2026-02-30", // Feb 30 never exists
+            "2025-02-29", // 2025 not a leap year
+            "2026-04-31", // April only has 30
+            "2026-12-32", // day 32
+            "2026-06-00", // day 00
+        ] {
+            assert!(
+                parse_iso_date(bad).is_err(),
+                "should reject calendar-invalid {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_iso_date_accepts_leap_year_feb_29() {
+        assert!(parse_iso_date("2024-02-29").is_ok()); // 2024 is a leap year
+        assert!(parse_iso_date("2000-02-29").is_ok()); // century-but-quad-century leap year
+        assert!(parse_iso_date("1900-02-29").is_err()); // century non-leap
     }
 }
