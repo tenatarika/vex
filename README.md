@@ -333,8 +333,6 @@ Semantic indexing (`--semantic`) can run the embedding model on a GPU — a larg
 | `VEX_GPU_MEM_LIMIT=<bytes>` | Advanced: hard cap on the GPU arena VRAM. Set it generously (≥ working set) or it OOMs on long-context batches. |
 | `VEX_GPU_ATTN_BUDGET=<n>` | Advanced: tune length-aware batch sizing (the `count × max_len²` budget). |
 
-**Embedder models** (`--embedder` / `.vex.toml embedder` / `VEX_EMBEDDER`): `minilm-l6-v2` (default, 384-d, CPU-fast), `jina-code` (768-d, code-specialized, GPU-worthy), `bge-base-en-v1.5`, `bge-large-en-v1.5`, `mxbai-large`. Changing the embedder requires a reindex.
-
 ## Output Formats
 
 ```bash
