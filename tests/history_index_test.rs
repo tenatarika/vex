@@ -294,7 +294,7 @@ fn history_finds_deleted_symbol() {
     let envelope: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("history JSON parse: {e}\nstdout: {stdout}"));
     let items = envelope
-        .pointer("/results/items")
+        .pointer("/results")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
@@ -420,7 +420,7 @@ fn update_history_linear_new_commits_is_incremental() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         let items = envelope
-            .pointer("/results/items")
+            .pointer("/results")
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
@@ -530,7 +530,7 @@ fn force_push_triggers_full_rebuild_with_warning() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let items = envelope
-        .pointer("/results/items")
+        .pointer("/results")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
@@ -550,7 +550,7 @@ fn force_push_triggers_full_rebuild_with_warning() {
     let beta_stdout = String::from_utf8_lossy(&beta_output.stdout);
     let beta_env: serde_json::Value = serde_json::from_str(&beta_stdout).unwrap();
     let beta_items = beta_env
-        .pointer("/results/items")
+        .pointer("/results")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();

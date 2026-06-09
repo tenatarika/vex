@@ -449,7 +449,27 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             branch,
             limit,
             no_index,
-        } => cmd_history::history(&ctx, symbol, path, depth, branch, limit, no_index),
+            since,
+            until,
+            author,
+            kind,
+            diff,
+        } => cmd_history::history(
+            &ctx,
+            cmd_history::HistoryArgs {
+                symbol,
+                path,
+                depth,
+                branch,
+                limit,
+                no_index,
+                since,
+                until,
+                author,
+                kind,
+                diff,
+            },
+        ),
 
         Commands::Mcp { action } => match action {
             args::McpAction::Install {

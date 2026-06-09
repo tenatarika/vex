@@ -15,17 +15,45 @@
 //!   - sidecar present → indexed
 //!   - sidecar absent → walker
 //!
-//! JSON output advertises which path served the query via
-//! `_meta.vex.dev/history_mode = "indexed" | "walker"`.
+//! Phase 14.9 Tier A: post-filter via [`HistoryFilter`] (date / author
+//! / kind) before output; `--author` is walker-only (rejected with a
+//! hard error on the indexed path). JSON output uses the standard
+//! Phase 13 [`ResponseEnvelope`](crate::protocol::ResponseEnvelope)
+//! shape via [`crate::cli::output::print_envelope`]; the legacy
+//! `results: { items: [...] }` nesting is gone (breaking change for
+//! MCP consumers — documented in v1.16.0 release notes).
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 
 use crate::cli::args::OutputFormat;
 use crate::cli::common::CmdCtx;
-use crate::history::{find_symbol_history, HistoricalSymbol, HistoryOpts};
+use crate::cli::output;
+use crate::history::{
+    find_symbol_history, parse_iso_date, HistoricalSymbol, HistoryFilter, HistoryOpts,
+};
 use crate::store::git_history::HistoryReader;
 use crate::util::config;
+
+/// Flattened CLI arguments for `vex history <Symbol>`. Mirrors the
+/// `Commands::History` clap variant 1:1; carved out as a struct so
+/// the dispatch site doesn't keep growing positional arguments and
+/// so internal call sites (tests, MCP shim) can build an instance
+/// without going through clap.
+#[derive(Debug, Clone, Default)]
+pub struct HistoryArgs {
+    pub symbol: String,
+    pub path: Option<PathBuf>,
+    pub depth: Option<usize>,
+    pub branch: Option<String>,
+    pub limit: Option<usize>,
+    pub no_index: bool,
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub author: Option<String>,
+    pub kind: Option<String>,
+    pub diff: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HistoryMode {
@@ -42,15 +70,21 @@ impl HistoryMode {
     }
 }
 
-pub(crate) fn history(
-    ctx: &CmdCtx,
-    symbol: String,
-    path: Option<PathBuf>,
-    depth: Option<usize>,
-    branch: Option<String>,
-    limit: Option<usize>,
-    no_index: bool,
-) -> Result<()> {
+pub(crate) fn history(ctx: &CmdCtx, args: HistoryArgs) -> Result<()> {
+    let HistoryArgs {
+        symbol,
+        path,
+        depth,
+        branch,
+        limit,
+        no_index,
+        since,
+        until,
+        author,
+        kind,
+        diff,
+    } = args;
+
     let raw_root = match path {
         Some(p) => p,
         None => std::env::current_dir()?,
@@ -65,50 +99,107 @@ pub(crate) fn history(
     // back to the raw path on error (non-existent dirs in tests).
     let root = raw_root.canonicalize().unwrap_or(raw_root);
 
-    let (results, mode) = if no_index {
-        (
-            run_walker(&root, &symbol, depth, branch.as_deref(), limit)?,
-            HistoryMode::Walker,
-        )
-    } else {
-        // Phase 14.8: try indexed first; fall back to walker on absence.
-        let sidecar_path = config::git_history_path(&root);
-        match HistoryReader::open(&sidecar_path)? {
-            Some(reader) => {
-                // Code-reviewer MUST-FIX #2: the indexed section is
-                // always built against `HEAD` at index time. A user
-                // passing `--branch other` would silently get
-                // HEAD-time results from the indexed path. Surface
-                // this mismatch via tracing::warn! so MCP agents
-                // tailing logs see it; suggest `--no-index` for the
-                // branch-specific path (which actually honours
-                // `--branch` via the walker).
-                if let Some(b) = branch.as_deref() {
-                    if b != "HEAD" {
-                        tracing::warn!(
-                            requested_branch = %b,
-                            "phase 14.8: --branch is ignored by the indexed path \
-                             (section reflects HEAD at index time). Pass --no-index \
-                             to query the v1.16 walker against the requested branch."
-                        );
-                    }
+    // Build + validate the filter once. Date parsing surfaces a clean
+    // error before any walker / index work happens.
+    let filter = build_filter(since.as_deref(), until.as_deref(), author.clone(), kind)?;
+
+    // When a filter is active, don't push `--limit` down to the
+    // walker / indexed path — we need the full pre-filter set so the
+    // limit caps post-filter output, not raw rows that get filtered
+    // away. The trade-off is more walker work; acceptable because
+    // `--limit` without filters is the common case and stays fast.
+    let inner_limit = if filter.is_active() { None } else { limit };
+
+    // Pre-resolve mode so we can reject --author on the indexed path
+    // BEFORE doing any walker work. Otherwise an --author query with a
+    // populated sidecar would run, return rows, then error after the
+    // fact.
+    let mode = resolve_mode(no_index, &root)?;
+
+    if mode == HistoryMode::Indexed && author.is_some() {
+        eprintln!(
+            "error: `vex history --author` is walker-only — the Phase 14.8 \
+             history sidecar does not record commit author. Re-run with \
+             `--no-index` to force the walker (slower but author-aware). \
+             Phase 14.10 will populate author on the indexed path."
+        );
+        return Err(anyhow!(
+            "--author requires --no-index against Phase 14.8 sidecars"
+        ));
+    }
+
+    let mut results = match mode {
+        HistoryMode::Indexed => {
+            // Warn when --branch is passed against the indexed path
+            // (same surface as before — section reflects HEAD at index
+            // time).
+            if let Some(b) = branch.as_deref() {
+                if b != "HEAD" {
+                    tracing::warn!(
+                        requested_branch = %b,
+                        "phase 14.8: --branch is ignored by the indexed path \
+                         (section reflects HEAD at index time). Pass --no-index \
+                         to query the v1.16 walker against the requested branch."
+                    );
                 }
-                (run_indexed(&reader, &symbol, limit), HistoryMode::Indexed)
             }
-            None => (
-                run_walker(&root, &symbol, depth, branch.as_deref(), limit)?,
-                HistoryMode::Walker,
-            ),
+            run_indexed(&root, &symbol, inner_limit)?
         }
+        HistoryMode::Walker => run_walker(&root, &symbol, depth, branch.as_deref(), inner_limit)?,
     };
 
+    // Apply post-filter. When inactive this is a no-op iterator.
+    if filter.is_active() {
+        let filtered: Vec<HistoricalSymbol> = filter.apply(&results).cloned().collect();
+        results = filtered;
+        if let Some(cap) = limit {
+            results.truncate(cap);
+        }
+    }
+
     match ctx.format {
-        OutputFormat::Text => render_text(&symbol, &results),
-        OutputFormat::Json => render_json(&symbol, &results, mode)?,
+        OutputFormat::Text => render_text(&symbol, &results, diff),
+        OutputFormat::Json => render_json(&root, &symbol, &results, mode, diff)?,
         OutputFormat::Compact => render_compact(&results),
     }
 
     Ok(())
+}
+
+/// Pick which path will service the query without doing the work.
+/// Probes the sidecar path with `HistoryReader::open` (cheap — mmap
+/// header read only) and returns `Walker` on absence.
+fn resolve_mode(no_index: bool, root: &std::path::Path) -> Result<HistoryMode> {
+    if no_index {
+        return Ok(HistoryMode::Walker);
+    }
+    let sidecar_path = config::git_history_path(root);
+    match HistoryReader::open(&sidecar_path)? {
+        Some(_) => Ok(HistoryMode::Indexed),
+        None => Ok(HistoryMode::Walker),
+    }
+}
+
+fn build_filter(
+    since: Option<&str>,
+    until: Option<&str>,
+    author: Option<String>,
+    kind: Option<String>,
+) -> Result<HistoryFilter> {
+    let since_iso = since
+        .map(parse_iso_date)
+        .transpose()
+        .map_err(|e| anyhow!(e))?;
+    let until_iso = until
+        .map(parse_iso_date)
+        .transpose()
+        .map_err(|e| anyhow!(e))?;
+    Ok(HistoryFilter {
+        since_iso,
+        until_iso,
+        author,
+        kind: kind.map(|k| k.to_ascii_lowercase()),
+    })
 }
 
 fn run_walker(
@@ -130,10 +221,14 @@ fn run_walker(
 }
 
 fn run_indexed(
-    reader: &HistoryReader,
+    root: &std::path::Path,
     symbol: &str,
     limit: Option<usize>,
-) -> Vec<HistoricalSymbol> {
+) -> Result<Vec<HistoricalSymbol>> {
+    let sidecar_path = config::git_history_path(root);
+    let reader = HistoryReader::open(&sidecar_path)?
+        .ok_or_else(|| anyhow!("history sidecar disappeared between mode probe and run"))?;
+
     let entry_idxs = reader.find_by_name(symbol);
     let mut out = Vec::with_capacity(entry_idxs.len());
     for entry_idx in entry_idxs {
@@ -173,7 +268,7 @@ fn run_indexed(
     if let Some(cap) = limit {
         out.truncate(cap);
     }
-    out
+    Ok(out)
 }
 
 fn hex_string(sha: &[u8; 20]) -> String {
@@ -220,26 +315,58 @@ fn kind_label(kind_byte: u8) -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-fn render_text(symbol: &str, results: &[HistoricalSymbol]) {
+fn render_text(symbol: &str, results: &[HistoricalSymbol], diff: bool) {
     if results.is_empty() {
         println!("No history found for `{symbol}` — not in any indexed file at the chosen tip.");
         return;
     }
     println!("History for `{symbol}` ({} versions):\n", results.len());
+
+    if diff {
+        // Group consecutive entries by (symbol_name, kind), render
+        // entry[0] full + entry[1..N] as unified diff against
+        // entry[i-1]. The slice is in newest-first order — render
+        // oldest-first within each group so the diff reads naturally.
+        let groups = crate::history::diff::group_by_kind(results);
+        for group in groups {
+            for (idx, entry) in group.iter().enumerate() {
+                print_entry_header(entry);
+                if idx == 0 {
+                    if !entry.signature.is_empty() {
+                        println!("    {}", entry.signature);
+                    }
+                } else {
+                    let prev = group[idx - 1];
+                    let diff_text = crate::history::diff::render_unified_diff(prev, entry);
+                    for line in diff_text.lines() {
+                        println!("    {line}");
+                    }
+                }
+                println!("    blob {}", entry.blob_sha);
+                println!();
+            }
+        }
+        return;
+    }
+
     for r in results {
-        println!(
-            "  {short_sha}  {date}  {author}",
-            short_sha = &r.commit_sha[..8.min(r.commit_sha.len())],
-            date = r.commit_date,
-            author = r.author,
-        );
-        println!("    {}:{}  {}", r.file_path, r.line, r.kind);
+        print_entry_header(r);
         if !r.signature.is_empty() {
             println!("    {}", r.signature);
         }
         println!("    blob {}", r.blob_sha);
         println!();
     }
+}
+
+fn print_entry_header(r: &HistoricalSymbol) {
+    println!(
+        "  {short_sha}  {date}  {author}",
+        short_sha = &r.commit_sha[..8.min(r.commit_sha.len())],
+        date = r.commit_date,
+        author = r.author,
+    );
+    println!("    {}:{}  {}", r.file_path, r.line, r.kind);
 }
 
 fn render_compact(results: &[HistoricalSymbol]) {
@@ -256,36 +383,42 @@ fn render_compact(results: &[HistoricalSymbol]) {
     }
 }
 
-fn render_json(symbol: &str, results: &[HistoricalSymbol], mode: HistoryMode) -> Result<()> {
-    let items: Vec<_> = results
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "commit_sha": r.commit_sha,
-                "commit_date": r.commit_date,
-                "author": r.author,
-                "file_path": r.file_path,
-                "blob_sha": r.blob_sha,
-                "line": r.line,
-                "signature": r.signature,
-                "kind": r.kind,
+fn render_json(
+    root: &std::path::Path,
+    symbol: &str,
+    results: &[HistoricalSymbol],
+    mode: HistoryMode,
+    diff: bool,
+) -> Result<()> {
+    // Phase 14.9 Tier A.5: port from the hand-rolled `json!({...})`
+    // wrapper to the standard Phase 13 envelope. BREAKING for any MCP
+    // consumer that read `results.items[*]` instead of `results[*]`.
+    let items: Vec<serde_json::Value> = if diff {
+        crate::history::diff::render_json_items(results)
+    } else {
+        results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "commit_sha": r.commit_sha,
+                    "commit_date": r.commit_date,
+                    "author": r.author,
+                    "file_path": r.file_path,
+                    "blob_sha": r.blob_sha,
+                    "line": r.line,
+                    "signature": r.signature,
+                    "kind": r.kind,
+                })
             })
-        })
-        .collect();
+            .collect()
+    };
 
-    let envelope = serde_json::json!({
-        "protocol_version": crate::protocol::PROTOCOL_VERSION,
-        "capabilities": crate::protocol::capabilities::current(),
-        "_meta": {
-            "vex.dev/query_symbol": symbol,
-            "vex.dev/result_count": results.len(),
-            "vex.dev/history_mode": mode.as_str(),
-        },
-        "results": {
-            "items": items,
-        }
-    });
-    println!("{}", serde_json::to_string_pretty(&envelope)?);
+    let _ = symbol; // The symbol used to live in `vex.dev/query_symbol`; dropped in the port (caller already knows what it queried).
+
+    let mut meta = output::default_meta_for(root);
+    meta.history_mode = Some(mode.as_str());
+
+    output::print_envelope(items, crate::protocol::capabilities::current(), meta);
     Ok(())
 }
 

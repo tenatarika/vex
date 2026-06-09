@@ -80,6 +80,7 @@ pub fn build_search_meta(manifest_path: &Path) -> MetaEnvelope {
         stale,
         stale_reason,
         why_trace: None,
+        history_mode: None,
     }
 }
 
@@ -119,6 +120,7 @@ pub(crate) fn default_meta_for(root: &Path) -> MetaEnvelope {
         stale,
         stale_reason,
         why_trace: None,
+        history_mode: None,
     }
 }
 

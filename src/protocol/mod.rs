@@ -21,6 +21,11 @@ pub struct Capabilities {
     pub scope_filters: bool,
     pub metadata_filters: bool,
     pub auto_update: bool,
+    /// Phase 14.9 Tier A.1: `vex history --diff` is available, and the
+    /// JSON envelope's `results[*]` carry `body_diff: { from, to,
+    /// hunks }` for non-head entries within each `(symbol, kind)`
+    /// group. Lets MCP agents feature-detect the diff rendering.
+    pub history_diff: bool,
 }
 
 #[derive(Serialize, Default, Clone, Debug)]
@@ -97,6 +102,16 @@ pub struct MetaEnvelope {
     /// `vex.dev/` namespace as the other observability fields.
     #[serde(rename = "vex.dev/why_trace", skip_serializing_if = "Option::is_none")]
     pub why_trace: Option<serde_json::Value>,
+    /// Phase 14.9 Tier A.5: which path served a `vex history` query —
+    /// `"indexed"` (Phase 14.8 sidecar FST lookup, ~ms) or
+    /// `"walker"` (v1.16 query-time git-log walk, ~seconds). Only set
+    /// by `cmd_history`. Same `vex.dev/` namespace as the other
+    /// observability fields.
+    #[serde(
+        rename = "vex.dev/history_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub history_mode: Option<&'static str>,
 }
 
 #[derive(Serialize, Clone, Debug)]

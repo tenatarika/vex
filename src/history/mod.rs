@@ -48,6 +48,11 @@ use anyhow::{bail, Context, Result};
 use crate::parse::extractor::extract_symbols_and_imports;
 use crate::parse::language::Language;
 
+pub mod diff;
+pub mod filter;
+
+pub use filter::{parse_iso_date, HistoryFilter};
+
 /// One historical occurrence of the requested symbol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoricalSymbol {

@@ -1005,6 +1005,44 @@ pub enum Commands {
         /// because no index path exists yet.
         #[arg(long)]
         no_index: bool,
+
+        /// Phase 14.9 Tier A.2 — keep only entries whose commit date
+        /// is `>= YYYY-MM-DD` (inclusive). Compared lexicographically
+        /// against `%cs` / unix-seconds-derived ISO strings; works
+        /// on both walker and indexed paths.
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        since: Option<String>,
+
+        /// Phase 14.9 Tier A.2 — keep only entries whose commit date
+        /// is `<= YYYY-MM-DD` (inclusive).
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        until: Option<String>,
+
+        /// Phase 14.9 Tier A.3 — keep only entries whose commit author
+        /// contains this substring (case-insensitive). Walker-only —
+        /// the Phase 14.8 sidecar does not record author info, so the
+        /// indexed path rejects this flag with a clear error pointing
+        /// at `--no-index`. Phase 14.10 (rename tracking) will
+        /// retroactively populate author for the indexed path.
+        #[arg(long, value_name = "SUBSTR")]
+        author: Option<String>,
+
+        /// Phase 14.9 Tier A.4 — keep only entries whose symbol kind
+        /// matches exactly. Use the lowercase label
+        /// (`function` / `struct` / `impl` / …) — matches the kind
+        /// strings the indexed and walker paths both emit.
+        #[arg(long, value_name = "KIND")]
+        kind: Option<String>,
+
+        /// Phase 14.9 Tier A.1 — render unified diffs between
+        /// consecutive historical versions of the same
+        /// `(symbol, kind)` pair instead of repeating the full body
+        /// for each entry. Cuts output noise dramatically on deep
+        /// histories. JSON consumers see `body_diff` in place of
+        /// `body`; advertised in the `capabilities` matrix as
+        /// `history_diff: true`.
+        #[arg(long)]
+        diff: bool,
     },
 
     /// v1.15.0 — manage the `vex-mcp` server entry in your coding
