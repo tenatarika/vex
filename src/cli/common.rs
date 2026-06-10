@@ -295,7 +295,7 @@ pub(crate) fn build_index_options(
         // `Cpu` otherwise). `vex index` / `vex update` override `device` +
         // `gpu_explicit` from CLI/config/env after this returns (see
         // cmd_index.rs / cmd_update.rs), mirroring the `drop_semantic` pattern.
-        device: crate::embed::device::default_device(),
+        device: crate::embed::device::DEFAULT_DEVICE,
         gpu_explicit: false,
     }
 }

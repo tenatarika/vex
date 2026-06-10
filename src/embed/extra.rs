@@ -91,8 +91,10 @@ impl FastEmbedModel {
     /// Load `spec`'s model onto `device`. Downloads on first use into the
     /// shared vex embedding cache (heavier models are larger — `bge-large` is
     /// several hundred MB). `Device::Cpu` (and `Auto` on a CPU-only build)
-    /// yields an empty execution-provider list — the legacy CPU path.
-    pub fn new(spec: &'static Spec, device: Device) -> Result<Self> {
+    /// yields an empty execution-provider list — the legacy CPU path. `strict`
+    /// makes a failed EP registration a hard error instead of a silent CPU
+    /// fallback (the `vex gpu` probe).
+    pub fn new(spec: &'static Spec, device: Device, strict: bool) -> Result<Self> {
         let cache_dir = crate::util::config::embed_cache_dir();
         std::fs::create_dir_all(&cache_dir).with_context(|| {
             format!(
@@ -100,7 +102,7 @@ impl FastEmbedModel {
                 cache_dir.display()
             )
         })?;
-        let eps = execution_providers(device)?;
+        let eps = execution_providers(device, strict)?;
         let gpu = !eps.is_empty();
         let model = TextEmbedding::try_new(
             InitOptions::new(spec.model.clone())

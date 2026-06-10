@@ -842,7 +842,14 @@ pub(super) fn generate_embeddings(
         device = ?effective_device,
         "loading embedding model"
     );
-    let mut embedder = embed::make_embedder_with_device(embedder_id, effective_device)?;
+    // Graceful EP fallback (`strict = false`): if the GPU provider can't
+    // register, ORT quietly serves CPU — an index build must never fail just
+    // because the GPU is misconfigured (`vex gpu` is the strict diagnostic).
+    // Concurrency: the boxed embedder wraps a `fastembed::TextEmbedding`,
+    // which is `Send` but NOT `Sync` (ort 2.0.0-rc.12). The embed step below
+    // must stay on this one thread — do not parallelise it (e.g. rayon) over
+    // a shared embedder without redesigning ownership.
+    let mut embedder = embed::make_embedder_with_device(embedder_id, effective_device, false)?;
     tracing::info!(
         elapsed = ?model_start.elapsed(),
         model = embedder.id(),

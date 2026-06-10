@@ -42,6 +42,13 @@ fn attn_budget() -> usize {
 
 /// Embed `texts` with length-aware micro-batching (see module docs). Returns
 /// one vector per input, in input order.
+///
+/// Concurrency: `fastembed::TextEmbedding` is `Send` but **not `Sync`** (ort
+/// 2.0.0-rc.12), so the `&mut` receiver is load-bearing — this function must
+/// be called from a single thread at a time. A future refactor that shares the
+/// model across threads (e.g. `rayon::spawn` over batches) would be unsound
+/// without redesigning ownership. The sole production caller is the index
+/// pipeline's sequential embed step (`index/pipeline/output.rs`).
 pub fn embed_length_aware(model: &mut TextEmbedding, texts: &[String]) -> Result<Vec<Vec<f32>>> {
     if texts.is_empty() {
         return Ok(Vec::new());
@@ -69,6 +76,23 @@ pub fn embed_length_aware(model: &mut TextEmbedding, texts: &[String]) -> Result
             end += 1;
         }
         let batch_idx = &order[start..end];
+        // Safety valve: a single context can blow the attention budget on its
+        // own (`count == 1` with `len² > budget`). It is embedded alone rather
+        // than dropped — intentional (every input must produce a vector) but
+        // observable: on a GPU one huge context can spike VRAM well past the
+        // budget the batching otherwise guarantees, so warn the operator.
+        if batch_idx.len() == 1 {
+            let len = texts[batch_idx[0]].len().max(1);
+            if len * len > budget {
+                tracing::warn!(
+                    bytes = len,
+                    budget,
+                    "single context exceeds the GPU attention budget on its own; \
+                     embedding it as a one-item batch (VRAM may spike — consider \
+                     raising VEX_GPU_ATTN_BUDGET or trimming the symbol)"
+                );
+            }
+        }
         let batch: Vec<&str> = batch_idx.iter().map(|&i| texts[i].as_str()).collect();
         let n = batch.len();
         // `Some(n)` forces a single fastembed inference batch of exactly this

@@ -77,21 +77,49 @@ jobs:
       # CUDA-style provider dylibs). Without this, the exe loads the stale in-box
       # C:\Windows\System32\DirectML.dll (DirectML 1.0-era), whose feature level
       # is too old for current ORT → DMLCreateDevice fails 887A0004 and the EP
-      # silently falls back to CPU. We locate the cached redist DLL (largest
-      # match wins) and stage it for packaging. See docs/GPU_SUPPORT.md §6.
+      # silently falls back to CPU.
+      #
+      # Supply-chain pin: the candidate DLL is selected BY SHA-256, not by size —
+      # the release tarball must never trust whatever happens to sit in the
+      # runner's ort cache (a poisoned cache, a compromised transitive dep, or
+      # two ort versions left by a dirty build could otherwise substitute a
+      # different DLL silently). The pinned hash is the x64 DirectML.dll from
+      # the official Microsoft.AI.DirectML 1.15.4 NuGet package — the version
+      # ort =2.0.0-rc.12 stages (verified byte-identical against
+      # https://www.nuget.org/packages/Microsoft.AI.DirectML/1.15.4).
+      # On an ort upgrade that bumps DirectML, this step fails closed: recompute
+      # the constant from the matching NuGet package, never from the cache alone.
+      # See docs/GPU_SUPPORT.md §6.
       - name: Stage DirectML.dll (windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
+        env:
+          # SHA-256 of bin/x64-win/DirectML.dll inside Microsoft.AI.DirectML 1.15.4 (18,527,776 bytes).
+          DIRECTML_DLL_SHA256: "9C9E6D822561C6C41B90E6994B3E8857CF1D66DBFB1E0C4C799C7C89B4E92DA1"
         run: |
           $dest = "target/${{ matrix.target }}/release"
-          $dll = Get-ChildItem -Path "$env:LOCALAPPDATA\ort.pyke.io", $dest -Recurse -Filter DirectML.dll -ErrorAction SilentlyContinue |
-                 Sort-Object Length -Descending | Select-Object -First 1
-          if (-not $dll) {
+          $candidates = @(Get-ChildItem -Path "$env:LOCALAPPDATA\ort.pyke.io", $dest -Recurse -Filter DirectML.dll -ErrorAction SilentlyContinue)
+          if (-not $candidates) {
             Write-Error "DirectML.dll not found in ort cache — the DirectML EP would silently fall back to CPU. Aborting release."
             exit 1
           }
+          $dll = $candidates | Where-Object { (Get-FileHash $_.FullName -Algorithm SHA256).Hash -eq $env:DIRECTML_DLL_SHA256 } | Select-Object -First 1
+          if (-not $dll) {
+            Write-Host "Candidates found (none matched the pinned SHA-256):"
+            foreach ($c in $candidates) {
+              Write-Host ("  {0}  size={1}  sha256={2}" -f $c.FullName, $c.Length, (Get-FileHash $c.FullName -Algorithm SHA256).Hash)
+            }
+            Write-Error "No DirectML.dll matched the pinned SHA-256 ($env:DIRECTML_DLL_SHA256). If ort bumped its DirectML version, recompute the pin from the official Microsoft.AI.DirectML NuGet package. Aborting release."
+            exit 1
+          }
           Copy-Item $dll.FullName (Join-Path $dest "DirectML.dll") -Force
-          Write-Host ("staged DirectML.dll {0:N1} MB from {1}" -f ($dll.Length / 1MB), $dll.FullName)
+          # Re-verify the staged copy — guards against a corrupt/raced copy.
+          $staged = Get-FileHash (Join-Path $dest "DirectML.dll") -Algorithm SHA256
+          if ($staged.Hash -ne $env:DIRECTML_DLL_SHA256) {
+            Write-Error "Staged DirectML.dll hash mismatch after copy ($($staged.Hash)). Aborting release."
+            exit 1
+          }
+          Write-Host ("staged DirectML.dll {0:N1} MB from {1} (sha256 verified)" -f ($dll.Length / 1MB), $dll.FullName)
 
       - name: Package (unix)
         if: matrix.os != 'windows-latest'

@@ -139,7 +139,7 @@ fn all_known_embedders_resolve_via_public_lookups() {
 #[test]
 fn make_embedder_with_device_unknown_id_errors_like_make_embedder() {
     // Act: unknown id on the explicit-device path.
-    let result = make_embedder_with_device("definitely-not-a-model", Device::Cpu);
+    let result = make_embedder_with_device("definitely-not-a-model", Device::Cpu, false);
     assert!(result.is_err(), "unknown id must error on the device path");
     let msg = result.err().unwrap().to_string();
     // Assert: echoes the bad id and lists a known one (parity with make_embedder).
@@ -166,9 +166,21 @@ fn resolve_embedder_config_when_no_cli() {
 }
 
 /// Falls back to `DEFAULT_EMBEDDER` when neither CLI nor config is set.
+///
+/// Hermetic w.r.t. the host: a developer machine may legitimately pin
+/// `VEX_EMBEDDER` globally (it is a documented user-level default), which
+/// would otherwise win the all-`None` fallthrough and fail this test.
+/// `#[serial]` because mutating process env from a multi-threaded test
+/// runner races every concurrent `getenv` (POSIX UB).
 #[test]
+#[serial_test::serial]
 fn resolve_embedder_default_when_neither() {
+    let saved = std::env::var("VEX_EMBEDDER").ok();
+    std::env::remove_var("VEX_EMBEDDER");
     let result = resolve_embedder(None, None);
+    if let Some(v) = saved {
+        std::env::set_var("VEX_EMBEDDER", v);
+    }
     assert_eq!(result, DEFAULT_EMBEDDER);
     assert_eq!(result, "minilm-l6-v2");
 }

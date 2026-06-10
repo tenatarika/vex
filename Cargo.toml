@@ -164,6 +164,10 @@ proptest = "1.5"
 # Needed by the P2 marker-cache tests to set an explicit mtime on a
 # temp file — proves the fast path is taken when mtime + size match.
 filetime = "0.2"
+# Serializes the env-mutating unit tests (VEX_DEVICE / VEX_EMBEDDER):
+# nextest runs in-binary tests on multiple threads, and concurrent
+# setenv/getenv is UB (Rust 1.80+ marks set_var unsafe for this reason).
+serial_test = "3.2"
 
 # Phase 13.2 Inc 7 — first Criterion benchmark in the repo. Establishes a
 # latency baseline for the `vex bundle` modes (BFS, indegree scan, symbol

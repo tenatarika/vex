@@ -1,7 +1,11 @@
-pub mod batching;
+// `batching`, `device`, and `extra` are crate-internal: their signatures carry
+// transitive-dep types (`fastembed::TextEmbedding`, ort dispatch values) that
+// must not become part of the library surface. External consumers (the
+// integration tests) get what they need via the `pub use` facade below.
+pub(crate) mod batching;
 pub mod cache;
-pub mod device;
-pub mod extra;
+pub(crate) mod device;
+pub(crate) mod extra;
 pub mod integrity;
 pub mod minilm;
 pub mod model;
@@ -64,7 +68,11 @@ pub fn make_embedder(id: &str) -> Result<Box<dyn Embedder>> {
     match id {
         MINILM_ID => Ok(Box::new(MiniLMEmbedder::new()?)),
         other => match extra::spec_for(other) {
-            Some(spec) => Ok(Box::new(extra::FastEmbedModel::new(spec, Device::Cpu)?)),
+            Some(spec) => Ok(Box::new(extra::FastEmbedModel::new(
+                spec,
+                Device::Cpu,
+                false,
+            )?)),
             None => bail!(
                 "unknown embedder: `{other}`. Known embedders: {}",
                 known_embedders().join(", ")
@@ -76,12 +84,20 @@ pub fn make_embedder(id: &str) -> Result<Box<dyn Embedder>> {
 /// Construct an embedder by ID on a specific compute [`Device`]. Used by the
 /// index path, which resolves the device from CLI/config/env via
 /// [`Device::resolve`]. On a CPU-only build a non-CPU/Auto device errors (see
-/// [`device::execution_providers`]).
-pub fn make_embedder_with_device(id: &str, device: Device) -> Result<Box<dyn Embedder>> {
+/// `device::execution_providers`).
+///
+/// `strict` makes a failed EP registration a hard error instead of ORT's
+/// silent CPU fallback. The index path passes `false` (graceful fallback); the
+/// `vex gpu` probe passes `true` so "engaged" vs "fell back" is observable.
+pub fn make_embedder_with_device(
+    id: &str,
+    device: Device,
+    strict: bool,
+) -> Result<Box<dyn Embedder>> {
     match id {
-        MINILM_ID => Ok(Box::new(MiniLMEmbedder::with_device(device)?)),
+        MINILM_ID => Ok(Box::new(MiniLMEmbedder::with_device(device, strict)?)),
         other => match extra::spec_for(other) {
-            Some(spec) => Ok(Box::new(extra::FastEmbedModel::new(spec, device)?)),
+            Some(spec) => Ok(Box::new(extra::FastEmbedModel::new(spec, device, strict)?)),
             None => bail!(
                 "unknown embedder: `{other}`. Known embedders: {}",
                 known_embedders().join(", ")
@@ -142,6 +158,13 @@ pub fn known_embedders() -> Vec<&'static str> {
 /// default embedder across all projects — mirroring `VEX_DEVICE` for the
 /// compute device. Returns an owned `String` since the sources supply distinct
 /// lifetimes.
+///
+/// The return is always a *known* embedder id when it came from the env:
+/// `VEX_EMBEDDER` is ambient state, not an explicit per-run request, so an
+/// unknown value degrades to [`DEFAULT_EMBEDDER`] with a warning instead of
+/// failing every command — mirroring `downgrade_uncompiled_env_device` for
+/// `VEX_DEVICE`. CLI / config ids pass through verbatim: an explicit request
+/// must error loudly in [`make_embedder`] rather than be silently rewritten.
 pub fn resolve_embedder(cli: Option<&str>, config: Option<&str>) -> String {
     if let Some(id) = cli {
         return id.to_string();
@@ -152,7 +175,15 @@ pub fn resolve_embedder(cli: Option<&str>, config: Option<&str>) -> String {
     if let Ok(env) = std::env::var("VEX_EMBEDDER") {
         let trimmed = env.trim();
         if !trimmed.is_empty() {
-            return trimmed.to_string();
+            if known_embedders().contains(&trimmed) {
+                return trimmed.to_string();
+            }
+            tracing::warn!(
+                embedder = trimmed,
+                fallback = DEFAULT_EMBEDDER,
+                known = known_embedders().join(", "),
+                "VEX_EMBEDDER names an unknown embedder; falling back to the default"
+            );
         }
     }
     DEFAULT_EMBEDDER.to_string()
@@ -191,6 +222,8 @@ pub fn check_embedder_match(manifest_embedder: Option<&str>, requested: &str) ->
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
+
     use super::*;
 
     #[test]
@@ -226,9 +259,11 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolve_embedder_precedence() {
-        // `VEX_EMBEDDER` is the only env var this test touches, so the
-        // set/remove below doesn't race other tests.
+        // `#[serial]`: mutating process env from a multi-threaded test runner
+        // races every concurrent `getenv` (POSIX UB) — all env-mutating tests
+        // share the serial lock.
         std::env::remove_var("VEX_EMBEDDER");
         // CLI flag wins over everything.
         assert_eq!(resolve_embedder(Some("cli-id"), Some("cfg-id")), "cli-id");
@@ -236,12 +271,18 @@ mod tests {
         assert_eq!(resolve_embedder(None, Some("cfg-id")), "cfg-id");
         // No CLI/config + no env → default.
         assert_eq!(resolve_embedder(None, None), DEFAULT_EMBEDDER);
-        // Env is the global fallback when CLI/config are absent...
-        std::env::set_var("VEX_EMBEDDER", "env-id");
-        assert_eq!(resolve_embedder(None, None), "env-id");
+        // Env is the global fallback when CLI/config are absent — accepted
+        // only when it names a KNOWN embedder (allowlist at the boundary).
+        std::env::set_var("VEX_EMBEDDER", "jina-code");
+        assert_eq!(resolve_embedder(None, None), "jina-code");
         // ...but CLI/config still override it.
         assert_eq!(resolve_embedder(Some("cli-id"), None), "cli-id");
         assert_eq!(resolve_embedder(None, Some("cfg-id")), "cfg-id");
+        // An unknown env id is ambient state, not an explicit request: it
+        // degrades to the default (with a warning) instead of failing every
+        // command — and never leaks out as "the embedder id to use".
+        std::env::set_var("VEX_EMBEDDER", "not-a-real-embedder");
+        assert_eq!(resolve_embedder(None, None), DEFAULT_EMBEDDER);
         // Blank env is ignored (falls through to default).
         std::env::set_var("VEX_EMBEDDER", "   ");
         assert_eq!(resolve_embedder(None, None), DEFAULT_EMBEDDER);

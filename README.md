@@ -88,7 +88,7 @@ cp target/release/vex ~/.local/bin/
 Pre-built `vex.exe` ships in every GitHub Release.
 
 1. Download `vex-x86_64-pc-windows-msvc.tar.gz` from the [latest release](https://github.com/tenatarika/vex/releases/latest)
-2. Extract `vex.exe` somewhere stable (e.g. `C:\Users\<you>\bin\`) — `tar -xzf vex-x86_64-pc-windows-msvc.tar.gz` from a recent PowerShell, or 7-Zip / WinRAR via right-click.
+2. Extract `vex.exe` somewhere stable (e.g. `C:\Users\<you>\bin\`) — `tar -xzf vex-x86_64-pc-windows-msvc.tar.gz` from a recent PowerShell, or 7-Zip / WinRAR via right-click. Security note: `vex.exe` loads the bundled `DirectML.dll` from its own folder, so on a multi-user machine or shared drive prefer a directory other users can't write to (e.g. `C:\Program Files\vex\` — with the trade-off that `vex self-update` then needs an elevated shell). See [GPU_SUPPORT.md §6](docs/GPU_SUPPORT.md).
 3. Add that folder to `PATH` (System Properties → Environment Variables → edit `Path` → add the folder)
 4. Open a fresh terminal and run `vex --version`
 
@@ -328,8 +328,8 @@ Semantic indexing (`--semantic`) can run the embedding model on a GPU — a larg
 | Variable | Effect |
 |----------|--------|
 | `VEX_DEVICE` | Global default device (`cpu`/`auto`/`cuda`/`directml`/`coreml`) for all projects. Below `--device`/`--gpu` and `.vex.toml` in precedence. |
-| `VEX_EMBEDDER` | Global default embedder id (e.g. `jina-code`). Below `--embedder` and `.vex.toml`. |
-| `VEX_GPU_STRICT=1` | Turn ORT's silent CPU fallback into a hard error — proves whether the GPU engaged. (`vex gpu` sets this internally.) |
+| `VEX_EMBEDDER` | Global default embedder id (e.g. `jina-code`). Below `--embedder` and `.vex.toml`. An unknown id falls back to the default embedder with a warning. |
+| `VEX_GPU_STRICT=1` | Turn ORT's silent CPU fallback into a hard error — proves whether the GPU engaged. (`vex gpu` requests the same strict mode internally, without touching the environment.) |
 | `VEX_GPU_MEM_LIMIT=<bytes>` | Advanced: hard cap on the GPU arena VRAM. Set it generously (≥ working set) or it OOMs on long-context batches. |
 | `VEX_GPU_ATTN_BUDGET=<n>` | Advanced: tune length-aware batch sizing (the `count × max_len²` budget). |
 

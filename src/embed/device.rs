@@ -31,15 +31,13 @@ pub enum Device {
 /// A GPU-compiled binary defaults to [`Device::Auto`] (silent CPU fallback if
 /// no GPU is usable); a CPU-only build defaults to [`Device::Cpu`] — today's
 /// behaviour. This is the single source of truth shared by [`Device::resolve`]
-/// and `vex status`, so the two can never drift.
+/// and `vex status`, so the two can never drift. A cfg-gated const (rather
+/// than two near-identical functions) so the only thing that can vary per
+/// build is the value itself.
 #[cfg(any(feature = "gpu-coreml", feature = "gpu-directml", feature = "gpu-cuda"))]
-pub fn default_device() -> Device {
-    Device::Auto
-}
+pub const DEFAULT_DEVICE: Device = Device::Auto;
 #[cfg(not(any(feature = "gpu-coreml", feature = "gpu-directml", feature = "gpu-cuda")))]
-pub fn default_device() -> Device {
-    Device::Cpu
-}
+pub const DEFAULT_DEVICE: Device = Device::Cpu;
 
 /// Human-readable summary of GPU support compiled into this binary, for
 /// `vex status`. Lists the execution provider(s) baked in, or notes none.
@@ -109,7 +107,7 @@ impl Device {
     ///   3. `.vex.toml` `device = "<x>"`
     ///   4. `.vex.toml` `gpu = true|false`
     ///   5. `VEX_DEVICE` env
-    ///   6. default: [`default_device`] — `Auto` in a GPU-compiled binary,
+    ///   6. default: `DEFAULT_DEVICE` — `Auto` in a GPU-compiled binary,
     ///      `Cpu` otherwise.
     ///
     /// The MCP server forwards its `gpu`/`device` args as the equivalent CLI
@@ -142,13 +140,13 @@ impl Device {
         // back gracefully, mirroring `Auto`'s silent CPU fallback.
         match std::env::var("VEX_DEVICE") {
             Ok(v) => Ok(downgrade_uncompiled_env_device(Device::parse(&v)?)),
-            Err(_) => Ok(default_device()),
+            Err(_) => Ok(DEFAULT_DEVICE),
         }
     }
 }
 
 /// Soften a `VEX_DEVICE`-sourced device: a specific GPU EP not compiled into
-/// this binary falls back to [`default_device`], so a stale global pin (e.g.
+/// this binary falls back to [`DEFAULT_DEVICE`], so a stale global pin (e.g.
 /// left by `vex gpu --enable` before a CPU-only reinstall) degrades to the
 /// compile-time default instead of hard-erroring every index. `Cpu`, `Auto`,
 /// and any compiled-in EP pass through unchanged. Explicit `--device` / config
@@ -160,11 +158,11 @@ fn downgrade_uncompiled_env_device(dev: Device) -> Device {
         uncompiled => {
             tracing::warn!(
                 pinned = uncompiled.as_str(),
-                fallback = default_device().as_str(),
+                fallback = DEFAULT_DEVICE.as_str(),
                 "VEX_DEVICE pins a GPU execution provider not compiled into this vex build; \
                  falling back (set VEX_DEVICE=cpu or auto, or install a gpu-* build to silence)"
             );
-            default_device()
+            DEFAULT_DEVICE
         }
     }
 }
@@ -201,8 +199,16 @@ fn cuda_ep() -> fastembed::ExecutionProviderDispatch {
 /// [`Device::Cpu`], or for [`Device::Auto`] when no EP is compiled in. An
 /// **explicit** non-auto request for an EP that wasn't compiled in errors, so
 /// the user isn't silently downgraded to CPU.
+///
+/// `strict` turns ORT's default silent EP-registration fallback into a hard
+/// error — used by the `vex gpu` probe to distinguish "engaged" from "quietly
+/// fell back to CPU". It is threaded as a parameter (never via in-process
+/// `set_var`: concurrent `setenv`/`getenv` is UB once the Rayon pool is alive).
 #[cfg(any(feature = "gpu-coreml", feature = "gpu-directml", feature = "gpu-cuda"))]
-pub fn execution_providers(device: Device) -> Result<Vec<fastembed::ExecutionProviderDispatch>> {
+pub fn execution_providers(
+    device: Device,
+    strict: bool,
+) -> Result<Vec<fastembed::ExecutionProviderDispatch>> {
     let mut eps = Vec::new();
     match device {
         Device::Cpu => {}
@@ -236,22 +242,26 @@ pub fn execution_providers(device: Device) -> Result<Vec<fastembed::ExecutionPro
             bail!("vex was not built with CoreML support (rebuild with --features gpu-coreml)");
         }
     }
-    // Diagnostic / strict mode: `VEX_GPU_STRICT` turns ORT's default silent
-    // EP-registration fallback into a hard error, so a benchmark (or a user
-    // who insists on GPU) can tell whether the provider actually engaged
-    // instead of quietly running on CPU. Off by default — normal runs keep the
-    // graceful CPU fallback (`error_on_failure = false`).
-    if !eps.is_empty() && std::env::var_os("VEX_GPU_STRICT").is_some() {
+    // Diagnostic / strict mode: requested via the `strict` parameter (the
+    // `vex gpu` probe) or the user-facing `VEX_GPU_STRICT` env var, so a
+    // benchmark (or a user who insists on GPU) can tell whether the provider
+    // actually engaged instead of quietly running on CPU. The env var is only
+    // ever READ here — set it in the shell, never in-process. Off by default —
+    // normal runs keep the graceful CPU fallback (`error_on_failure = false`).
+    if !eps.is_empty() && (strict || std::env::var_os("VEX_GPU_STRICT").is_some()) {
         eps = eps.into_iter().map(|d| d.error_on_failure()).collect();
     }
     Ok(eps)
 }
 
 /// CPU-only build: any GPU request that isn't `Auto`/`Cpu` errors; otherwise an
-/// empty list (legacy CPU path). This is the impl `cargo test --workspace`
-/// compiles in CI.
+/// empty list (legacy CPU path). `strict` is meaningless with no EP to
+/// register. This is the impl `cargo test --workspace` compiles in CI.
 #[cfg(not(any(feature = "gpu-coreml", feature = "gpu-directml", feature = "gpu-cuda")))]
-pub fn execution_providers(device: Device) -> Result<Vec<fastembed::ExecutionProviderDispatch>> {
+pub fn execution_providers(
+    device: Device,
+    _strict: bool,
+) -> Result<Vec<fastembed::ExecutionProviderDispatch>> {
     match device {
         Device::Auto | Device::Cpu => Ok(Vec::new()),
         _ => bail!("this vex build has no GPU support compiled in (rebuild with a gpu-* feature)"),
@@ -260,6 +270,8 @@ pub fn execution_providers(device: Device) -> Result<Vec<fastembed::ExecutionPro
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
+
     use super::*;
 
     #[test]
@@ -318,16 +330,18 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolve_env_uncompiled_gpu_falls_back_not_errors() {
         // `VEX_DEVICE` is a sticky global default, not a fresh request: a GPU
         // EP this binary lacks must degrade to the compile-time default, never
         // hard-error (otherwise a stale `vex gpu --enable` pin bricks every
-        // `index` after a CPU-only reinstall). `resolve` reads the env only on
-        // the all-None fallthrough, so this is the sole test that touches it.
+        // `index` after a CPU-only reinstall). `#[serial]`: mutating process
+        // env from a multi-threaded test runner races every concurrent
+        // `getenv` (POSIX UB) — all env-mutating tests share the serial lock.
         std::env::set_var("VEX_DEVICE", "cuda");
         assert_eq!(
             Device::resolve(None, None, None, None).unwrap(),
-            default_device(),
+            DEFAULT_DEVICE,
             "an uncompiled env-pinned GPU EP must fall back, not error"
         );
         // cpu / auto always pass through verbatim, on any build.
@@ -346,16 +360,18 @@ mod tests {
 
     #[test]
     fn execution_providers_cpu_is_empty() {
-        assert!(execution_providers(Device::Cpu).unwrap().is_empty());
+        assert!(execution_providers(Device::Cpu, false).unwrap().is_empty());
         // On the default CPU build, Auto also yields an empty list.
-        assert!(execution_providers(Device::Auto).unwrap().is_empty());
+        assert!(execution_providers(Device::Auto, false).unwrap().is_empty());
+        // Strict mode has no EP list to harden — still empty, never an error.
+        assert!(execution_providers(Device::Cpu, true).unwrap().is_empty());
     }
 
     #[cfg(not(any(feature = "gpu-coreml", feature = "gpu-directml", feature = "gpu-cuda")))]
     #[test]
     fn execution_providers_explicit_gpu_errors_on_cpu_build() {
-        assert!(execution_providers(Device::Cuda).is_err());
-        assert!(execution_providers(Device::DirectMl).is_err());
-        assert!(execution_providers(Device::CoreMl).is_err());
+        assert!(execution_providers(Device::Cuda, false).is_err());
+        assert!(execution_providers(Device::DirectMl, false).is_err());
+        assert!(execution_providers(Device::CoreMl, false).is_err());
     }
 }

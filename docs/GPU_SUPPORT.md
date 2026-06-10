@@ -48,7 +48,7 @@ time*, whether that compiled-in EP is actually used.
    `cargo build` / `cargo install` is unchanged. (The shipped Windows/macOS
    release binaries *are* built `--features gpu-*` — see §6.)
 2. **Two-layer default — the compile-time feature is the real opt-in.**
-   (a) For **indexing**, `Device::resolve()` defaults to `default_device()` —
+   (a) For **indexing**, `Device::resolve()` defaults to `DEFAULT_DEVICE` —
    `Auto` in a GPU-compiled binary, `Cpu` otherwise — so a prebuilt GPU binary
    accelerates cold builds with **no flag**. (b) The low-level embedder
    constructor stays **CPU-neutral** (`new()` / `make_embedder()` default
@@ -105,6 +105,20 @@ on for fastembed's ort too — verified: `cargo tree -i ort` resolves a single
 `ort v2.0.0-rc.12` node shared by fastembed and vex).
 
 ## 5. Implementation
+
+> **Provenance note:** the code snippets in this section are the original
+> design sketch and are kept for the rationale they carry; **the source is
+> authoritative** where they differ. Review-driven deltas shipped after this
+> was written: `default_device()` became the cfg-gated const
+> `device::DEFAULT_DEVICE`; `execution_providers` / `make_embedder_with_device`
+> / `MiniLMEmbedder::with_device` / `FastEmbedModel::new` gained a
+> `strict: bool` parameter (strict EP registration is threaded as a parameter,
+> never via in-process `set_var`); `Device::resolve` softens a stale
+> `VEX_DEVICE` pinning an uncompiled EP instead of erroring;
+> `resolve_embedder` allowlists `VEX_EMBEDDER` against the known-embedder
+> registry; `batching`, `device`, and `extra` are `pub(crate)` modules behind
+> a `pub use` facade; and `vex gpu` / `vex status` emit GPU fields under
+> `--format json`.
 
 ### 5.1 `Cargo.toml` — optional dep + features (no `[features]` block exists yet)
 
@@ -480,7 +494,7 @@ across three OSes (`ci.yml`), and uses `assert_cmd` + `insta`. Add:
 
 **Decision (chosen): bake GPU into the standard prebuilt Windows/macOS
 binaries.** Those release binaries are built with the EP compiled in, so
-`default_device()` returns `Auto` and a `brew install` / release-download user
+`DEFAULT_DEVICE` is `Auto` and a `brew install` / release-download user
 gets cold-build acceleration with **no compilation and no SDK**. Linux prebuilt
 stays CPU (no vendor-agnostic GPU EP; CUDA needs a host SDK). CUDA remains
 source-build-only on every platform.
@@ -510,15 +524,47 @@ matrix:
 **Windows must also bundle `DirectML.dll`** (§11.1): ORT downloads the modern
 redist DLL into its binary cache during `cargo build` but does *not* copy it
 beside the exe, and the in-box `System32` copy is too old. `release.yml` adds a
-*Stage DirectML.dll* step that finds the cached DLL (largest match in
-`%LOCALAPPDATA%\ort.pyke.io`) and copies it into the release dir, then packs it
-**into the `vex` tarball only** (`vex.exe DirectML.dll`) — not `vex-mcp` (it
-spawns `vex` as a subprocess and never loads ORT). A smoke-test asserts the DLL
-is in the archive. **Self-update caveat:** `vex self-update` extracts only the
-named `vex` binary, so the bundled DLL reaches fresh installs (manual untar /
-brew) but **not** self-update; a self-updating user without the DLL keeps working
-on CPU (graceful fallback). macOS CoreML needs no sidecar (system framework);
-Linux is CPU-only.
+*Stage DirectML.dll* step that selects the cached DLL in
+`%LOCALAPPDATA%\ort.pyke.io` **by pinned SHA-256** and copies it into the
+release dir, then packs it **into the `vex` tarball only**
+(`vex.exe DirectML.dll`) — not `vex-mcp` (it spawns `vex` as a subprocess and
+never loads ORT). A smoke-test asserts the DLL is in the archive.
+**Self-update caveat:** `vex self-update` extracts only the named `vex` binary,
+so the bundled DLL reaches fresh installs (manual untar / brew) but **not**
+self-update; a self-updating user without the DLL keeps working on CPU
+(graceful fallback). macOS CoreML needs no sidecar (system framework); Linux is
+CPU-only.
+
+**DirectML.dll supply-chain pin.** The staging step never trusts whatever it
+finds in the runner's ort cache: every candidate `DirectML.dll` is hashed and
+only a file whose SHA-256 equals the pinned constant — the x64 DLL from the
+official `Microsoft.AI.DirectML` NuGet package version that ort
+(`=2.0.0-rc.12` → DirectML **1.15.4**) stages — is packed into the signed
+tarball; otherwise the release fails closed, listing the candidates and their
+hashes. A poisoned runner cache, a compromised transitive dependency, or two
+ort versions left in the cache by a dirty build therefore cannot substitute a
+different DLL silently. On an ort upgrade that bumps DirectML, recompute the
+pin from the matching NuGet package on nuget.org (never from the cache alone)
+and update the `DIRECTML_DLL_SHA256` constant in `release.yml`.
+
+**DirectML.dll side-loading (install-location hardening).** `vex.exe` loads
+`DirectML.dll` from its own directory via the standard Windows DLL search
+order. That is the point (it must shadow the stale `System32` copy), but it
+also means **any install location writable by a lower-privileged process lets
+that process swap the DLL and gain code execution inside vex on the next
+run**. This is inherent to redistributing DirectML and cannot be fully closed
+without load-time signature verification. Mitigation: install vex in a
+directory with restricted write permissions — e.g. `C:\Program Files\vex\`
+(admin-writable only) — rather than a user-writable location like
+`%LOCALAPPDATA%\Programs\vex\` or a folder on a shared drive. The same advice
+applies to any tool that ships sidecar DLLs. Scope of the exposure: vex runs
+with the invoking user's privileges (no elevation), so a swap by *that same
+user's* malware adds persistence rather than new privilege — but when the
+writer is a **different** principal (another user on a shared drive, a
+constrained service account), the swap is horizontal privilege escalation
+into the invoking user's context. Trade-off to know about: installing under
+`C:\Program Files\` means `vex self-update` needs an elevated shell to
+replace the binary in place.
 
 `release.yml` Homebrew `install` block — the `--HEAD` (source) branch currently
 passes no features (`release.yml:298-304`), so `brew install vex --HEAD` would
@@ -600,6 +646,17 @@ Win/macOS legs for size/time regressions. Linux is unaffected.
   inference, reporting OK/FAILED + targeted remediation (it cannot use ort's
   absent `is_available()`, so it probes by actually loading). `vex status` still
   reports only compiled support + the baseline default.
+- **ONNX model downloads are not secondarily SHA-pinned (residual risk).** The
+  default MiniLM model has a vex-side pinned-SHA-256 integrity check
+  (`src/embed/integrity.rs`). The opt-in heavier embedders (`jina-code`,
+  `bge-*`, `mxbai-large`) do **not** carry a second vex-side pin: fastembed
+  verifies its own downloads against Hugging Face Hub metadata, and vex trusts
+  that. A compromised HF repo or CDN that also controls the metadata could
+  therefore serve a tampered model for the opt-in embedders. Accepted residual
+  risk for a developer tool (the blast radius is embedding vectors, not code
+  execution — ONNX graphs are data to ONNX Runtime); revisit if vex ever runs
+  in a trust-sensitive pipeline. Mitigation today: stick to the default
+  embedder, or pre-seed the embed cache from a vetted mirror.
 
 ## 8. Pre-release validation (manual — CI can't do this)
 
@@ -734,7 +791,10 @@ scope for now.
   inference), reports OK/FAILED + EP-specific remediation, and `--enable` pins
   `VEX_DEVICE`. The supported way to confirm GPU engagement.
 - `VEX_GPU_STRICT=1` — turn ORT's silent EP-registration fallback into a hard
-  error (proves whether the GPU actually engaged); what `vex gpu` sets internally.
+  error (proves whether the GPU actually engaged). `vex gpu` requests the same
+  strict registration internally via a constructor parameter — it does **not**
+  mutate the environment (in-process `set_var` races concurrent `getenv` from
+  live Rayon workers, which is UB).
 - `tracing` `device=…` line at model load shows the selected device.
 - `VEX_GPU_MEM_LIMIT`, `VEX_GPU_ATTN_BUDGET`, `VEX_DEVICE`, `VEX_EMBEDDER` env
   overrides.

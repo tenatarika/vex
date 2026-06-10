@@ -27,7 +27,7 @@ pub const MINILM_CHAR_BUDGET: usize = 1100;
 /// gate, GPU is a large win even for MiniLM — 51× CUDA / 29× DirectML on embed —
 /// so this gate only protects small incremental updates, not full indexes.)
 /// Heavier models override this with smaller values (see
-/// [`crate::embed::extra::Spec`]).
+/// `crate::embed::extra::Spec` — crate-internal, so no doc-link).
 pub const MINILM_GPU_AUTO_MIN_MISSES: usize = 512;
 
 pub struct MiniLMEmbedder {
@@ -44,10 +44,10 @@ impl MiniLMEmbedder {
     /// the current working directory — that re-downloads the same model
     /// for every project and pollutes the project tree.
     /// Construct on the default CPU device. Equivalent to
-    /// `with_device(Device::Cpu)` — the library floor. The GPU decision lives
-    /// in the index path (see [`crate::embed::make_embedder_with_device`]).
+    /// `with_device(Device::Cpu, false)` — the library floor. The GPU decision
+    /// lives in the index path (see [`crate::embed::make_embedder_with_device`]).
     pub fn new() -> Result<Self> {
-        Self::with_device(crate::embed::device::Device::Cpu)
+        Self::with_device(crate::embed::device::Device::Cpu, false)
     }
 
     /// Construct on a specific compute [`Device`](crate::embed::device::Device).
@@ -55,8 +55,9 @@ impl MiniLMEmbedder {
     /// execution-provider list — byte-for-byte the legacy CPU load. GPU
     /// providers are chained via fastembed's `with_execution_providers`; the
     /// downloaded ONNX bytes are identical regardless of EP, so the integrity
-    /// check below is unaffected.
-    pub fn with_device(device: crate::embed::device::Device) -> Result<Self> {
+    /// check below is unaffected. `strict` makes a failed EP registration a
+    /// hard error instead of a silent CPU fallback (the `vex gpu` probe).
+    pub fn with_device(device: crate::embed::device::Device, strict: bool) -> Result<Self> {
         let cache_dir = crate::util::config::embed_cache_dir();
         // Surface the cache-dir creation error explicitly. Without
         // context, a failure here would propagate up as the cryptic
@@ -68,7 +69,7 @@ impl MiniLMEmbedder {
                 cache_dir.display()
             )
         })?;
-        let execution_providers = crate::embed::device::execution_providers(device)?;
+        let execution_providers = crate::embed::device::execution_providers(device, strict)?;
         let gpu = !execution_providers.is_empty();
         let model = TextEmbedding::try_new(
             InitOptions::new(EmbeddingModel::AllMiniLML6V2)

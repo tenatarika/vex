@@ -625,10 +625,17 @@ fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
+
     use super::*;
     use std::sync::Mutex;
 
-    // env mutations are process-global; serialize the tests that touch them.
+    // Env mutations are process-global; the `#[serial]` attribute on every
+    // test that calls `with_env_vars` puts them on serial_test's GLOBAL
+    // lock — shared with every other env-mutating test in this binary
+    // (embed::device, embed::mod, embed::integrity), so cross-module
+    // setenv/getenv races are excluded too. The module mutex stays as
+    // defense-in-depth for any future caller that forgets the attribute.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// RAII guard that restores env vars on drop — covers both the
@@ -664,6 +671,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn cli_override_beats_everything() {
         with_env_vars(&[("VEX_CACHE_DIR", Some("/from/env"))], || {
             let cfg = VexConfig {
@@ -679,6 +687,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn env_beats_config() {
         with_env_vars(&[("VEX_CACHE_DIR", Some("/from/env"))], || {
             let cfg = VexConfig {
@@ -691,6 +700,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn empty_env_falls_through_to_config() {
         with_env_vars(&[("VEX_CACHE_DIR", Some(""))], || {
             let cfg = VexConfig {
@@ -703,6 +713,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn relative_config_path_resolves_against_source_dir() {
         with_env_vars(&[("VEX_CACHE_DIR", None)], || {
             let cfg = VexConfig {
@@ -717,6 +728,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn tilde_expands_to_home() {
         with_env_vars(
             &[("VEX_CACHE_DIR", None), ("HOME", Some("/home/alice"))],
@@ -737,6 +749,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn local_cache_uses_project_root_no_hash() {
         with_env_vars(&[("VEX_CACHE_DIR", None)], || {
             let cfg = VexConfig {
@@ -751,6 +764,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn rejects_path_traversal_in_relative_cache_dir() {
         with_env_vars(&[("VEX_CACHE_DIR", None)], || {
             let cfg = VexConfig {
@@ -773,6 +787,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn absolute_cache_dir_with_parent_dir_components_is_allowed() {
         // Path traversal is only a concern for *relative* paths anchored
         // at the project root. Absolute paths are explicit user intent.
@@ -788,6 +803,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn explicit_cache_dir_beats_local_cache() {
         with_env_vars(&[("VEX_CACHE_DIR", None)], || {
             let cfg = VexConfig {
@@ -803,6 +819,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolve_jobs_priority() {
         with_env_vars(&[("VEX_JOBS", None)], || {
             let mut cfg = VexConfig {
@@ -841,6 +858,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn jobs_zero_in_config_means_all_cores() {
         with_env_vars(&[("VEX_JOBS", None)], || {
             let cfg = VexConfig {
@@ -852,6 +870,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn vex_jobs_zero_env_means_all_cores() {
         // Symmetric to the config field — an explicit 0 in any source
         // is the opt-in to "use every available core".
@@ -868,6 +887,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn tilde_with_parent_dir_is_rejected() {
         // Regression: `expand_user` turns `~/../etc/evil` into an
         // absolute path, which previously bypassed the traversal check.
@@ -903,6 +923,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn explicit_jobs_returns_none_when_unset() {
         with_env_vars(&[("VEX_JOBS", None)], || {
             let cfg = VexConfig::default();
@@ -911,6 +932,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn explicit_jobs_picks_up_env() {
         with_env_vars(&[("VEX_JOBS", Some("3"))], || {
             let cfg = VexConfig::default();
