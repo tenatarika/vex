@@ -736,7 +736,8 @@ brew tap tenatarika/tap && brew install vex
 # In your project
 cd /path/to/project
 vex init              # create .vex.toml
-vex index             # build index (add --semantic for meaning-based search)
+vex index             # build index (add --semantic for meaning-based search;
+                      # add --history for `vex history <Symbol>` archaeology queries — v1.15.0/v1.16.0)
 ```
 
 Then add `.vex.toml` config for auto-update so Claude always searches a fresh index:
@@ -766,12 +767,15 @@ cargo build --release -p vex-mcp
     "vex": {
       "command": "/path/to/vex-mcp",
       "env": {
-        "VEX_ROOT": "/path/to/your/project"
+        "VEX_ROOT": "/path/to/your/project",
+        "VEX_DEVICE": "auto"
       }
     }
   }
 }
 ```
+
+`VEX_DEVICE` (v1.16.0) picks the GPU execution provider when the binary was built with `gpu-cuda` / `gpu-directml` / `gpu-coreml` — relevant when an MCP-driven `index` / `update` call rebuilds semantic embeddings on a large repo (51× CUDA / 29× DirectML over CPU on MiniLM-L6). `auto` is safe on CPU-only builds (degrades silently). Run `vex gpu` once to confirm the EP actually engages.
 
 **MCP Tools (23):**
 - `search` — 3-way hybrid (structural + BM25 + semantic); accepts `filter` / `include` / `exclude` / `kind` / `context_path` / `no_bm25` / `--why` / metadata filters / diff-scope (`since` / `since_branched` / `changed_only`)
@@ -792,9 +796,11 @@ cargo build --release -p vex-mcp
 - `check` — fast symbol existence check
 - `bundle` — unified multi-source bundle (`mode: symbol | pr-impact | project`), Phase 13 envelope
 - `eval` — ranking-evaluation harness (`bench` / `min_ndcg`), MCP defaults `json: true` so agents get a structured `EvalReport`
-- `capabilities` — machine-readable capability matrix (`protocol_version`, `signals`, `bundle_modes`, etc.)
-- `index` / `update` — build/rebuild index
-- `status` — index statistics
+- `capabilities` — machine-readable capability matrix (`protocol_version`, `signals`, `bundle_modes`, `history_diff` *(v1.16.0)*, etc.)
+- `index` / `update` — build/rebuild index; **v1.16.0** adds `gpu: bool` / `device: cpu|auto|cuda|directml|coreml` args (GPU-enabled builds only) so an agent can opt into GPU semantic embedding per-call without touching env or config
+- `status` — index statistics (now includes `gpu_support` / `default_device` *(v1.16.0)*)
+
+> **Note (v1.16.0):** `vex history <Symbol>` (with its new `--diff` / `--exact-presence` / `--since` / `--author` / `--kind` flags) is CLI-only — it is not yet an MCP tool, despite being advertised through `capabilities.history_diff`. Agents that need historical-symbol queries should shell out to `vex history` via Bash (the `--format json` envelope is the same shape every other vex command emits). Promotion to a first-class MCP tool is tracked separately.
 
 **MCP ↔ CLI parity (v1.10):** the schemas now mirror the CLI surface for every path-aware tool. Glob filters (`include` / `exclude`), substring `filter`, `kind` boost, `context_path` proximity hint, `no_bm25`, Phase 13.3 truncation, diff-scope, and `no_stale_check` are exposed everywhere the CLI accepts them — agents no longer need to drop to bash for "Rust files under `crates/api/` since `main`"-style scoping.
 
