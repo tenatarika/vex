@@ -3,9 +3,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/tenatarika/vex/actions/workflows/ci.yml/badge.svg)](https://github.com/tenatarika/vex/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
-[![Commands](https://img.shields.io/badge/commands-25-blue.svg)]()
+[![Commands](https://img.shields.io/badge/commands-27-blue.svg)]()
 [![Languages](https://img.shields.io/badge/languages-19-blueviolet.svg)]()
-[![Tests](https://img.shields.io/badge/tests-1973-green.svg)]()
+[![Tests](https://img.shields.io/badge/tests-2712-green.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
@@ -146,6 +146,13 @@ vex reachable "process_event"             # everything that transitively reaches
 # Symbol-level diff against a branch (v1.7)
 vex diff --base main                      # what symbols did this branch change?
 
+# Historical view of a symbol — every commit that touched it (v1.15.0; v1.16.0 expanded)
+vex index --history                       # build the persistent history sidecar once
+vex history "PaymentService"              # ~10ms — every version reachable from HEAD
+vex history "PaymentService" --diff       # unified diffs between consecutive versions
+vex history "Foo" --since 2026-01-01 --author alice --kind function
+vex history "deleted_symbol" --exact-presence    # exact commit set where each blob lived (revert-aware)
+
 # Semantic similarity by existing symbol — explain what's actually similar (v1.7)
 vex similar "PaymentService" --limit 5 --min-score 0.7 --explain
 
@@ -195,6 +202,11 @@ vex watch
 
 # Show index stats
 vex status
+
+# GPU doctor — is the compiled EP actually engaging on this machine? (v1.16.0)
+vex gpu                                   # probes the compiled-in EP with strict registration
+vex gpu cuda                              # narrow to one EP
+vex gpu --enable                          # persist working device to VEX_DEVICE
 
 # Shell completions
 vex completions zsh > ~/.zfunc/_vex
