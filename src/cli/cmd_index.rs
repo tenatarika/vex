@@ -29,11 +29,25 @@ pub(crate) fn index(
     no_wait: bool,
     history: bool,
     history_depth: Option<usize>,
+    gpu: bool,
+    no_gpu: bool,
+    device: Option<String>,
 ) -> Result<()> {
     let root = resolve_root(path)?;
     let start = Instant::now();
     let with_semantic = resolve_semantic(semantic, no_semantic, ctx.cfg);
     let embedder_id = resolve_embedder(embedder.as_deref(), ctx.cfg);
+    // Resolve the embedding device (CLI > .vex.toml > VEX_DEVICE > compile-time
+    // default). `gpu_explicit` is set only for an explicit CLI request so it
+    // bypasses the miss-count gate; `.vex.toml gpu = true` stays gated.
+    let cli_gpu = gpu.then_some(true).or(no_gpu.then_some(false));
+    let resolved_device = crate::embed::Device::resolve(
+        device.as_deref(),
+        cli_gpu,
+        ctx.cfg.device.as_deref(),
+        ctx.cfg.gpu,
+    )?;
+    let gpu_explicit = device.is_some() || matches!(cli_gpu, Some(true));
     if ctx.local_cache_active {
         let cache_root = config::index_dir(&root);
         std::fs::create_dir_all(&cache_root).ok();
@@ -56,6 +70,8 @@ pub(crate) fn index(
     // so `with_semantic` is guaranteed false here when `drop_semantic` is
     // true. The flag is request-scoped — never persisted into the manifest.
     opts.drop_semantic = drop_semantic;
+    opts.device = resolved_device;
+    opts.gpu_explicit = gpu_explicit;
     let outcome = if no_wait {
         pipeline::run_or_busy(&root, opts, &embedder_id, ctx.excludes)?
     } else {

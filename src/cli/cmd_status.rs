@@ -25,7 +25,15 @@ pub(crate) fn status(
     if !index_path.exists() {
         match ctx.format {
             OutputFormat::Json => {
-                let payload = serde_json::json!({"error": "no index found"});
+                // GPU fields are compile-time properties of the binary, so
+                // they're meaningful (and most useful) BEFORE the first index
+                // exists — an MCP agent deciding whether to pass --gpu to the
+                // initial `vex index` gates on exactly this branch.
+                let payload = serde_json::json!({
+                    "error": "no index found",
+                    "gpu_support": crate::embed::device::gpu_support_str(),
+                    "default_device": crate::embed::device::DEFAULT_DEVICE.as_str(),
+                });
                 print_envelope(&payload, capabilities::current(), MetaEnvelope::default());
                 // ^ no index → no manifest → no index_age; default meta is correct.
             }
@@ -61,6 +69,13 @@ pub(crate) fn status(
                 "embeddings": reader.has_vectors(),
                 "call_graph": reader.has_call_graph(),
                 "bm25": reader.has_bm25(),
+                // GPU support is a compile-time property of THIS binary; the
+                // default device is what an unflagged `vex index` would use.
+                // Mirrors the text branch so MCP agents can gate on the JSON
+                // (e.g. decide whether to pass --gpu) instead of scraping
+                // human-readable text. See docs/GPU_SUPPORT.md §5.7.
+                "gpu_support": crate::embed::device::gpu_support_str(),
+                "default_device": crate::embed::device::DEFAULT_DEVICE.as_str(),
                 // v1.14 marker — None on pre-1.14 manifests, Some(true)
                 // from v1.14+. Serialised as a literal bool so scripts
                 // can `jq '.cpp_includes_processed'` without unwrapping.
@@ -94,6 +109,15 @@ pub(crate) fn status(
             println!(
                 "Embeddings: {}",
                 if reader.has_vectors() { "yes" } else { "no" }
+            );
+            // GPU support is a compile-time property of THIS binary; the
+            // default device is what an unflagged `vex index` would use (the
+            // actual device per-run still depends on --gpu/--device/.vex.toml/
+            // $VEX_DEVICE). See docs/GPU_SUPPORT.md §5.7.
+            println!(
+                "GPU:        {} · default {}",
+                crate::embed::device::gpu_support_str(),
+                crate::embed::device::DEFAULT_DEVICE.as_str()
             );
             println!(
                 "Call graph: {}",

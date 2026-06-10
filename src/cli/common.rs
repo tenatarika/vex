@@ -291,6 +291,12 @@ pub(crate) fn build_index_options(
         // `--drop-semantic`. Auto-update never drops — failed semantic
         // rebuilds keep prior vectors on disk for the next attempt.
         drop_semantic: false,
+        // Device defaults to the compile-time floor (`Auto` on a GPU build,
+        // `Cpu` otherwise). `vex index` / `vex update` override `device` +
+        // `gpu_explicit` from CLI/config/env after this returns (see
+        // cmd_index.rs / cmd_update.rs), mirroring the `drop_semantic` pattern.
+        device: crate::embed::device::DEFAULT_DEVICE,
+        gpu_explicit: false,
     }
 }
 

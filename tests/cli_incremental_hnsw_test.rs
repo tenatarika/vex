@@ -45,6 +45,12 @@ fn vex_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(dir);
     cmd.env_remove("VEX_CACHE_DIR");
+    // Hermetic w.r.t. the host: a developer machine may pin a global default
+    // embedder/device (documented user-level env vars). The fixtures here are
+    // seeded at MINILM_DIM — an ambient `VEX_EMBEDDER=jina-code` (768-d) would
+    // make the spawned `vex update --semantic` fail with a dim mismatch.
+    cmd.env_remove("VEX_EMBEDDER");
+    cmd.env_remove("VEX_DEVICE");
     // Capture the incremental-update tracing event by enabling info-
     // level emit. `build_hnsw_incremental_at` calls
     // `tracing::info!("HNSW incremental update applied")` on the

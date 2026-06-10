@@ -68,6 +68,13 @@ tree-sitter-toml-ng = "0.7"
 # Embedding generation (bundled ONNX Runtime + tokenizer + model download)
 fastembed = "5.13"
 
+# Optional GPU execution providers for embedding (opt-in via gpu-* features).
+# Direct dep pinned EXACTLY to fastembed's internal pin so cargo unifies to a
+# single ort/onnxruntime build (no second runtime). `optional` + `dep:ort` in
+# the gpu-* features means the default CPU build never pulls it. See
+# docs/GPU_SUPPORT.md. default-features=false mirrors fastembed's ort pin.
+ort = { version = "=2.0.0-rc.12", default-features = false, optional = true }
+
 # HNSW vector index
 usearch = "2.25"
 
@@ -133,6 +140,20 @@ self_update = { version = "0.42", default-features = false, features = [
     "signatures",
 ] }
 
+[features]
+default = []
+# Optional GPU execution providers for semantic embedding. All OFF by default;
+# enabled per-target in .github/workflows/release.yml (DirectML on Windows,
+# CoreML on macOS) and via `cargo install vex --features gpu-cuda` for NVIDIA.
+# NOTE: feature tables can't be cfg(target)-gated and `ort/directml` only builds
+# on Windows / `ort/coreml` only on Apple — so these must be applied per-target,
+# never put in `default`. See docs/GPU_SUPPORT.md §5.1.
+gpu-coreml = ["dep:ort", "ort/coreml"] # macOS — shippable prebuilt
+# `ort/directml` is implied by `fastembed/directml` (which also applies the
+# required DirectML session tweak); listed explicitly for intent.
+gpu-directml = ["dep:ort", "ort/directml", "fastembed/directml"] # Windows — shippable prebuilt
+gpu-cuda = ["dep:ort", "ort/cuda"] # NVIDIA — SOURCE BUILD ONLY (host CUDA 12/13 + cuDNN 9)
+
 [dev-dependencies]
 tempfile = "3.14"
 assert_cmd = "2.0"
@@ -143,6 +164,10 @@ proptest = "1.5"
 # Needed by the P2 marker-cache tests to set an explicit mtime on a
 # temp file — proves the fast path is taken when mtime + size match.
 filetime = "0.2"
+# Serializes the env-mutating unit tests (VEX_DEVICE / VEX_EMBEDDER):
+# nextest runs in-binary tests on multiple threads, and concurrent
+# setenv/getenv is UB (Rust 1.80+ marks set_var unsafe for this reason).
+serial_test = "3.2"
 
 # Phase 13.2 Inc 7 — first Criterion benchmark in the repo. Establishes a
 # latency baseline for the `vex bundle` modes (BFS, indegree scan, symbol

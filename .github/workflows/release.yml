@@ -33,13 +33,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `features` bakes a GPU execution provider into the shipped binary
+        # (docs/GPU_SUPPORT.md §6): CoreML on macOS, DirectML on Windows — both
+        # build on stock GPU-less runners and need no user SDK. Linux stays CPU
+        # (no vendor-agnostic EP; CUDA needs a host SDK → source build only).
+        # Runtime default is then Auto with silent CPU fallback.
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
+            features: gpu-coreml
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            features: ""
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            features: gpu-directml
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +65,61 @@ jobs:
         # root crate and `target/<triple>/release/vex-mcp` never exists —
         # which is exactly what the v1.11.2 release pipeline tripped on
         # when it tried to tar a non-existent vex-mcp binary.
-        run: cargo build --release --workspace --target ${{ matrix.target }}
+        # `matrix.features` is "" on the Linux leg; empty string is FALSY in GHA
+        # expressions, so the `|| ''` branch yields no --features there. The
+        # ${{ }} is substituted by the runner before any shell runs, so this is
+        # shell-agnostic (works on the bash and pwsh legs without pinning).
+        run: cargo build --release --workspace --target ${{ matrix.target }} ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
+
+      # The DirectML EP needs the modern redistributable DirectML.dll beside the
+      # exe. ORT downloads it into its binary cache during `cargo build`, but
+      # `copy-dylibs` does NOT place it next to the binary (it only copies the
+      # CUDA-style provider dylibs). Without this, the exe loads the stale in-box
+      # C:\Windows\System32\DirectML.dll (DirectML 1.0-era), whose feature level
+      # is too old for current ORT → DMLCreateDevice fails 887A0004 and the EP
+      # silently falls back to CPU.
+      #
+      # Supply-chain pin: the candidate DLL is selected BY SHA-256, not by size —
+      # the release tarball must never trust whatever happens to sit in the
+      # runner's ort cache (a poisoned cache, a compromised transitive dep, or
+      # two ort versions left by a dirty build could otherwise substitute a
+      # different DLL silently). The pinned hash is the x64 DirectML.dll from
+      # the official Microsoft.AI.DirectML 1.15.4 NuGet package — the version
+      # ort =2.0.0-rc.12 stages (verified byte-identical against
+      # https://www.nuget.org/packages/Microsoft.AI.DirectML/1.15.4).
+      # On an ort upgrade that bumps DirectML, this step fails closed: recompute
+      # the constant from the matching NuGet package, never from the cache alone.
+      # See docs/GPU_SUPPORT.md §6.
+      - name: Stage DirectML.dll (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          # SHA-256 of bin/x64-win/DirectML.dll inside Microsoft.AI.DirectML 1.15.4 (18,527,776 bytes).
+          DIRECTML_DLL_SHA256: "9C9E6D822561C6C41B90E6994B3E8857CF1D66DBFB1E0C4C799C7C89B4E92DA1"
+        run: |
+          $dest = "target/${{ matrix.target }}/release"
+          $candidates = @(Get-ChildItem -Path "$env:LOCALAPPDATA\ort.pyke.io", $dest -Recurse -Filter DirectML.dll -ErrorAction SilentlyContinue)
+          if (-not $candidates) {
+            Write-Error "DirectML.dll not found in ort cache — the DirectML EP would silently fall back to CPU. Aborting release."
+            exit 1
+          }
+          $dll = $candidates | Where-Object { (Get-FileHash $_.FullName -Algorithm SHA256).Hash -eq $env:DIRECTML_DLL_SHA256 } | Select-Object -First 1
+          if (-not $dll) {
+            Write-Host "Candidates found (none matched the pinned SHA-256):"
+            foreach ($c in $candidates) {
+              Write-Host ("  {0}  size={1}  sha256={2}" -f $c.FullName, $c.Length, (Get-FileHash $c.FullName -Algorithm SHA256).Hash)
+            }
+            Write-Error "No DirectML.dll matched the pinned SHA-256 ($env:DIRECTML_DLL_SHA256). If ort bumped its DirectML version, recompute the pin from the official Microsoft.AI.DirectML NuGet package. Aborting release."
+            exit 1
+          }
+          Copy-Item $dll.FullName (Join-Path $dest "DirectML.dll") -Force
+          # Re-verify the staged copy — guards against a corrupt/raced copy.
+          $staged = Get-FileHash (Join-Path $dest "DirectML.dll") -Algorithm SHA256
+          if ($staged.Hash -ne $env:DIRECTML_DLL_SHA256) {
+            Write-Error "Staged DirectML.dll hash mismatch after copy ($($staged.Hash)). Aborting release."
+            exit 1
+          }
+          Write-Host ("staged DirectML.dll {0:N1} MB from {1} (sha256 verified)" -f ($dll.Length / 1MB), $dll.FullName)
 
       - name: Package (unix)
         if: matrix.os != 'windows-latest'
@@ -110,7 +172,14 @@ jobs:
         # rustup and `cargo build --release -p vex-mcp` themselves.
         run: |
           Push-Location target/${{ matrix.target }}/release
-          tar -czf "../../../vex-${{ matrix.target }}.tar.gz" vex.exe
+          # vex.exe ships with DirectML.dll (the GPU EP's runtime dep, staged
+          # above). vex-mcp.exe spawns the `vex` CLI as a subprocess and never
+          # loads ORT itself, so it needs no DLL. Note: `vex self-update` only
+          # extracts the named `vex` binary from the archive, so the bundled
+          # DirectML.dll reaches fresh installs (manual untar / brew) but NOT
+          # self-update — a self-updating user without the DLL keeps working on
+          # CPU (graceful fallback), which is acceptable. See GPU_SUPPORT.md §6.
+          tar -czf "../../../vex-${{ matrix.target }}.tar.gz" vex.exe DirectML.dll
           tar -czf "../../../vex-mcp-${{ matrix.target }}.tar.gz" vex-mcp.exe
           Pop-Location
 
@@ -137,6 +206,13 @@ jobs:
             }
             Write-Host "OK: $tar extracts cleanly"
           }
+          # The GPU EP's DirectML.dll must ride along in the vex archive, or
+          # every fresh Windows install silently runs on CPU.
+          if (-not (Test-Path "smoke-vex/DirectML.dll")) {
+            Write-Error "FAIL: DirectML.dll missing from vex archive — DirectML EP would not load"
+            exit 1
+          }
+          Write-Host "OK: DirectML.dll present in vex archive"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -297,7 +373,12 @@ jobs:
 
             def install
               if build.head?
-                system "cargo", "install", *std_cargo_args
+                # Match the prebuilt bottle: bake CoreML into macOS source
+                # builds. Linux --HEAD stays CPU (no vendor-agnostic EP; CUDA
+                # needs a host SDK). See docs/GPU_SUPPORT.md §6.
+                args = std_cargo_args
+                args += ["--features", "gpu-coreml"] if OS.mac?
+                system "cargo", "install", *args
               else
                 bin.install "vex"
               end

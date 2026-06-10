@@ -365,6 +365,8 @@ pub fn find_minilm_onnx(cache_dir: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
+
     use super::*;
     use std::io::Write;
     use std::sync::Mutex;
@@ -372,9 +374,12 @@ mod tests {
 
     // Env vars are process-global — `set_var` in one test races with
     // every other test that reads `VEX_EMBEDDER_SKIP_CHECK`. The std
-    // test harness runs tests in parallel by default, so we serialise
-    // every test in this module behind one mutex. `clear` always runs
-    // (even on panic) via the `_guard` scope.
+    // test harness runs tests in parallel by default. `#[serial]` puts
+    // these tests on serial_test's GLOBAL lock — shared with every other
+    // env-mutating test in this binary (embed::device, embed::mod,
+    // util::config), so cross-module setenv/getenv races are excluded
+    // too. The module mutex stays as defense-in-depth for any future
+    // test here that forgets the attribute.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn known_hash(content: &[u8]) -> String {
@@ -384,6 +389,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn matching_checksum_passes() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(SKIP_ENV_VAR);
@@ -395,6 +401,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn mismatching_checksum_bails_with_actionable_error() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(SKIP_ENV_VAR);
@@ -421,6 +428,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn skip_env_var_bypasses_mismatch() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var(SKIP_ENV_VAR, "1");
@@ -433,6 +441,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn missing_file_returns_open_error() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(SKIP_ENV_VAR);
@@ -479,6 +488,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn marker_first_call_hashes_and_persists_marker() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(SKIP_ENV_VAR);
@@ -496,6 +506,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn marker_hit_skips_rehash_when_mtime_and_size_match() {
         // The marker's defining behavior: trust mtime+size. We prove
         // the fast path was taken by tampering with the file contents
@@ -520,6 +531,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn marker_invalidated_by_size_change_triggers_rehash() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(SKIP_ENV_VAR);
@@ -540,6 +552,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn marker_with_wrong_sha_field_bails_on_hit() {
         // Marker that matches mtime+size but stores a SHA different
         // from the expected pin → bail with the marker-stale message.
@@ -565,6 +578,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn malformed_marker_falls_through_to_slow_path() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(SKIP_ENV_VAR);
@@ -580,6 +594,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn marker_rejected_when_magic_header_differs() {
         // Future v2 markers (or v0 leftovers) must be ignored so a
         // version drift doesn't quietly trust a marker written by an
@@ -602,6 +617,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn marker_tampered_bytes_with_new_mtime_bail_with_mismatch() {
         // End-to-end "model swapped under us" check: new mtime
         // invalidates the marker → slow path runs → real SHA differs
@@ -630,6 +646,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn marker_skip_env_var_bypasses() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var(SKIP_ENV_VAR, "1");
