@@ -4338,9 +4338,11 @@ dependencies = [
  "criterion",
  "fastembed",
  "filetime",
+ "flate2",
  "fs2",
  "fst",
  "globset",
+ "http",
  "ignore",
  "insta",
  "memmap2",
@@ -4358,6 +4360,7 @@ dependencies = [
  "sha2",
  "similar",
  "streaming-iterator",
+ "tar",
  "tempfile",
  "thiserror",
  "toml",
@@ -4385,6 +4388,7 @@ dependencies = [
  "tree-sitter-yaml",
  "usearch",
  "xxhash-rust",
+ "zipsign-api",
 ]
 
 [[package]]

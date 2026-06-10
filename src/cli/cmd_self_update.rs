@@ -4,6 +4,8 @@
 
 use anyhow::{Context, Result};
 
+use super::self_update_flow;
+
 /// ed25519 public key used to verify release archives signed in CI via
 /// `zipsign`. Anyone modifying this MUST also rotate the corresponding
 /// private key stored in the `ZIPSIGN_PRIVATE_KEY` GitHub Secret —
@@ -27,9 +29,11 @@ const _: () = assert!(
 );
 
 /// Update the running binary from the latest GitHub release. The
-/// self_update crate handles platform detection (target triple), archive
-/// download, ed25519 signature verification, atomic file replacement,
-/// and Windows-specific in-use-binary swap via a temp rename.
+/// self_update crate handles platform detection (target triple) and the
+/// release/asset lookup; the apply path lives in `self_update_flow`, which
+/// downloads + verifies the archive once and installs EVERY file in it —
+/// the bundled DirectML.dll sidecar included, which the crate's built-in
+/// `update()` silently dropped (it extracts only the named binary).
 pub(crate) fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     // SAFETY of the `try_into` below: the byte count is asserted at
@@ -106,11 +110,42 @@ pub(crate) fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> 
         return Ok(());
     }
 
-    let result = status.update().context("apply self-update")?;
-    match result {
-        self_update::Status::UpToDate(v) => println!("vex is already up to date ({v})."),
-        self_update::Status::Updated(v) => println!("Updated to vex {v}. Restart any open shells."),
+    // Apply path. `status.update()` is deliberately NOT used: it extracts
+    // only the named binary from the archive, so Windows self-updates
+    // dropped the DirectML.dll sidecar and degraded GPU embedding to CPU
+    // until the next manual reinstall. The custom flow mirrors its version
+    // gate and confirmation UX, then installs the whole archive.
+    let release = status
+        .get_latest_release()
+        .context("fetch latest release from GitHub (offline or rate-limited?)")?;
+    let latest = release.version.as_str();
+    let newer = latest != current
+        && self_update::version::bump_is_greater(current, latest)
+            .with_context(|| format!("could not compare versions {current:?} and {latest:?}"))?;
+    if !newer {
+        // Mirrors the crate's `Status::UpToDate` arm (also covers a local
+        // dev build that is ahead of the newest GitHub release).
+        println!("vex is already up to date ({current}).");
+        return Ok(());
     }
+
+    let asset = release
+        .asset_for(target, Some(&identifier))
+        .ok_or_else(|| {
+            anyhow::anyhow!("no release asset found for target `{target}` in vex {latest}")
+        })?;
+
+    if !no_confirm {
+        println!("\nvex release status:");
+        println!("  * Current version: {current}");
+        println!("  * New release: {} ({})", latest, asset.name);
+        println!("\nThe new release will be downloaded/extracted and the existing binary will be replaced.");
+        self_update_flow::confirm("Do you want to continue? [Y/n] ")?;
+    }
+
+    self_update_flow::apply_update(&asset.name, &asset.download_url, pubkey, "vex")
+        .context("apply self-update")?;
+    println!("Updated to vex {latest}. Restart any open shells.");
     Ok(())
 }
 

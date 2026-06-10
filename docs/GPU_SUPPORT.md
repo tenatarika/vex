@@ -529,11 +529,18 @@ beside the exe, and the in-box `System32` copy is too old. `release.yml` adds a
 release dir, then packs it **into the `vex` tarball only**
 (`vex.exe DirectML.dll`) — not `vex-mcp` (it spawns `vex` as a subprocess and
 never loads ORT). A smoke-test asserts the DLL is in the archive.
-**Self-update caveat:** `vex self-update` extracts only the named `vex` binary,
-so the bundled DLL reaches fresh installs (manual untar / brew) but **not**
-self-update; a self-updating user without the DLL keeps working on CPU
-(graceful fallback). macOS CoreML needs no sidecar (system framework); Linux is
-CPU-only.
+**Self-update:** `vex self-update` (releases after v1.16.0) extracts the
+**whole** archive and installs every non-binary file as a sidecar beside the
+exe — `DirectML.dll` included (`src/cli/self_update_flow.rs`). The DLL is
+SHA-256-compared first and skipped when byte-identical (the common case; it
+only changes on an ort bump), and a missing DLL — an install degraded by an
+older updater, which extracted only the named binary — is healed on the next
+self-update. Sidecars install *before* the binary swap: a failed DLL write
+(e.g. unelevated under `C:\Program Files\vex\`) aborts the update with the
+old exe + DLL pair intact, never leaving exe↔DLL version skew. One-release
+lag: a user *running* a v1.16.0-or-older binary still updates with the old
+extract-binary-only code on that hop; the heal kicks in from the next update
+onward. macOS CoreML needs no sidecar (system framework); Linux is CPU-only.
 
 **DirectML.dll supply-chain pin.** The staging step never trusts whatever it
 finds in the runner's ort cache: every candidate `DirectML.dll` is hashed and

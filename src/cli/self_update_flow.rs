@@ -1,0 +1,566 @@
+//! Custom apply flow for `vex self-update` — download once, verify the
+//! zipsign signature, extract the WHOLE archive, install sidecar files
+//! (DirectML.dll on Windows) beside the exe, then swap the binary last.
+//!
+//! Why not `self_update::Status::update()`: its internal flow extracts only
+//! the named binary from the release archive (`Extract::extract_file`), so
+//! every Windows self-update since v1.13 dropped the bundled DirectML.dll
+//! and silently degraded GPU embedding to CPU. This module rebuilds the
+//! apply path from the crate's public building blocks (`Download`,
+//! `Extract::extract_into`, re-exported `self_replace`/`TempDir`) plus a
+//! replicated ~20-line signature check, keeping a single download and a
+//! single ed25519 verification for *all* files in the archive.
+//!
+//! Failure ordering: sidecars install BEFORE the exe swap. If a sidecar
+//! write fails (e.g. unelevated under `C:\Program Files\vex\`), the update
+//! aborts with the old exe + DLL pair intact — never exe↔DLL version skew.
+
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, bail, Context, Result};
+use sha2::{Digest, Sha256};
+
+/// Outcome of the hash-compare gate for one sidecar file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SidecarAction {
+    /// Destination already has the identical bytes — leave it alone. The
+    /// common case: DirectML.dll only changes when `ort` bumps its pin.
+    Skip,
+    /// Destination is missing (heals installs degraded by the old updater)
+    /// or differs — install the new copy.
+    Install,
+}
+
+/// Pure decision: skip a sidecar only when the destination exists AND is
+/// byte-identical. `dest_hash = None` means the file is absent.
+pub(crate) fn sidecar_action(src_hash: &[u8; 32], dest_hash: Option<&[u8; 32]>) -> SidecarAction {
+    match dest_hash {
+        Some(dest) if dest == src_hash => SidecarAction::Skip,
+        _ => SidecarAction::Install,
+    }
+}
+
+/// Pure: split extracted archive entries into the binary and its sidecars.
+/// Matches `bin_name` and `bin_name.exe` case-insensitively (Windows
+/// filesystems are case-preserving but insensitive). Everything else is a
+/// sidecar — generic on purpose, so a future second redist ships without
+/// touching this code. On Linux/macOS the archive holds only `vex`, the
+/// sidecar list is empty, and the flow degrades to exactly today's behavior.
+pub(crate) fn classify_entries(
+    extracted: &[PathBuf],
+    bin_name: &str,
+) -> (Option<PathBuf>, Vec<PathBuf>) {
+    let bin_lower = bin_name.to_lowercase();
+    let exe_lower = format!("{bin_lower}.exe");
+    let mut binary = None;
+    let mut sidecars = Vec::new();
+    for path in extracted {
+        let name_lower = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_lowercase);
+        match name_lower {
+            Some(n) if binary.is_none() && (n == bin_lower || n == exe_lower) => {
+                binary = Some(path.clone());
+            }
+            Some(_) => sidecars.push(path.clone()),
+            None => {} // non-UTF-8 name — never produced by our release pipeline
+        }
+    }
+    (binary, sidecars)
+}
+
+/// SHA-256 of a file's contents, streamed in 64 KiB chunks (DirectML.dll
+/// is ~18 MB — don't buffer it whole).
+pub(crate) fn sha256_file(path: &Path) -> Result<[u8; 32]> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("open {} for hashing", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .with_context(|| format!("read {} for hashing", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().into())
+}
+
+/// Verify the zipsign ed25519 signature embedded in a downloaded release
+/// archive. Replicates `self_update`'s private `verify_signature` for the
+/// tar.gz case (the only format vex ships — see release.yml): the signing
+/// CONTEXT is the archive's file name, so `archive_path` MUST be named
+/// exactly like the GitHub release asset or verification fails.
+pub(crate) fn verify_signature(
+    archive_path: &Path,
+    keys: &[[u8; zipsign_api::PUBLIC_KEY_LENGTH]],
+) -> Result<()> {
+    let context = archive_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::as_bytes)
+        .ok_or_else(|| anyhow!("archive path has no UTF-8 file name: {archive_path:?}"))?;
+    let keys = zipsign_api::verify::collect_keys(keys.iter().copied().map(Ok))
+        .context("collect release verifying keys")?;
+    let mut archive = fs::File::open(archive_path)
+        .with_context(|| format!("open downloaded archive {}", archive_path.display()))?;
+    zipsign_api::verify::verify_tar(&mut archive, &keys, Some(context))
+        .context("verify release archive signature (zipsign ed25519)")?;
+    Ok(())
+}
+
+/// Replicates `self_update`'s private `confirm`: blank or `y`/`Y` proceeds,
+/// anything else aborts.
+pub(crate) fn confirm(prompt: &str) -> Result<()> {
+    print!("{prompt}");
+    std::io::stdout().flush().context("flush confirm prompt")?;
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .context("read confirmation")?;
+    let answer = answer.trim().to_lowercase();
+    if !answer.is_empty() && answer != "y" {
+        bail!("update aborted");
+    }
+    Ok(())
+}
+
+/// Install one sidecar next to the exe.
+///
+/// NOT `self_update::Move`: its `to_dest` is a bare `fs::rename`, which
+/// fails when source (the OS temp dir, usually `C:`) and destination (the
+/// install dir, possibly another volume) differ. Instead:
+///   1. rename any existing destination aside WITHIN the same directory —
+///      same-volume rename succeeds even while the DLL is mapped into
+///      another running vex process (the same trick `self_replace` uses
+///      for the exe itself);
+///   2. COPY the new file into place (copy works across volumes);
+///   3. best-effort delete of the set-aside copy — if a process still maps
+///      it the delete fails and the `.old` file is reaped on a later run.
+///
+/// On a failed copy the old file is renamed back, so the install dir is
+/// never left without a working sidecar.
+fn install_sidecar(src: &Path, dest: &Path) -> Result<()> {
+    let dest_dir = dest
+        .parent()
+        .ok_or_else(|| anyhow!("sidecar destination {} has no parent dir", dest.display()))?;
+    let file_name = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow!("sidecar destination {} has no file name", dest.display()))?;
+    let set_aside = dest_dir.join(format!("{file_name}.self-update.old"));
+
+    // Reap leftovers from a previous update whose mapped DLL blocked the
+    // delete. Ignore failure — it just stays for the next round.
+    if set_aside.exists() {
+        let _ = fs::remove_file(&set_aside);
+    }
+
+    let had_existing = dest.exists();
+    if had_existing {
+        fs::rename(dest, &set_aside).map_err(|e| elevation_hint(e, dest))?;
+    }
+    if let Err(e) = fs::copy(src, dest) {
+        if had_existing {
+            // Roll the old file back so the install keeps working.
+            let _ = fs::rename(&set_aside, dest);
+        }
+        return Err(elevation_hint(e, dest));
+    }
+    if had_existing {
+        let _ = fs::remove_file(&set_aside);
+    }
+    Ok(())
+}
+
+/// Wrap a filesystem error on the install dir with an actionable message —
+/// the common cause is vex installed under a write-protected directory
+/// (e.g. `C:\Program Files\vex\`) and the shell not being elevated.
+fn elevation_hint(e: std::io::Error, dest: &Path) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::PermissionDenied {
+        anyhow!(e).context(format!(
+            "cannot write {} — vex appears to be installed in a protected directory; \
+             re-run `vex self-update` from an elevated shell",
+            dest.display()
+        ))
+    } else {
+        anyhow!(e).context(format!("install sidecar {}", dest.display()))
+    }
+}
+
+/// List the files `Extract::extract_into` produced in the temp dir,
+/// excluding the downloaded archive itself.
+fn extracted_files(tmp_dir: &Path, archive_name: &str) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(tmp_dir).context("list extracted archive contents")? {
+        let entry = entry.context("read extracted dir entry")?;
+        let path = entry.path();
+        if path.is_file() && entry.file_name().to_string_lossy() != archive_name {
+            files.push(path);
+        }
+    }
+    files.sort(); // deterministic install order (and stable test output)
+    Ok(files)
+}
+
+/// Install every sidecar (hash-gated) into `install_dir`, then return the
+/// extracted binary's path for the final swap. Split from [`apply_update`]
+/// so the whole post-download pipeline is testable without network or
+/// `self_replace`.
+pub(crate) fn install_from_extracted(
+    tmp_dir: &Path,
+    archive_name: &str,
+    bin_name: &str,
+    install_dir: &Path,
+) -> Result<PathBuf> {
+    let files = extracted_files(tmp_dir, archive_name)?;
+    let (binary, sidecars) = classify_entries(&files, bin_name);
+    let binary = binary.ok_or_else(|| {
+        anyhow!("release archive {archive_name} did not contain the `{bin_name}` binary")
+    })?;
+
+    for sidecar in &sidecars {
+        let name = sidecar
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| anyhow!("sidecar {} has no UTF-8 file name", sidecar.display()))?;
+        let dest = install_dir.join(name);
+        let src_hash = sha256_file(sidecar)?;
+        let dest_hash = if dest.exists() {
+            Some(sha256_file(&dest)?)
+        } else {
+            None
+        };
+        match sidecar_action(&src_hash, dest_hash.as_ref()) {
+            SidecarAction::Skip => println!("Sidecar {name} is up to date — skipping."),
+            SidecarAction::Install => {
+                install_sidecar(sidecar, &dest)?;
+                println!("Installed sidecar {name}.");
+            }
+        }
+    }
+    Ok(binary)
+}
+
+/// The apply pipeline: download the release asset, verify its signature,
+/// extract everything, install sidecars beside the running exe, and swap
+/// the binary LAST. The caller has already compared versions and asked the
+/// user for confirmation.
+pub(crate) fn apply_update(
+    asset_name: &str,
+    download_url: &str,
+    pubkey: [u8; 32],
+    bin_name: &str,
+) -> Result<()> {
+    // GitHub asset names can't contain path separators, but the archive
+    // name becomes a temp-dir path component below — fail closed anyway.
+    if asset_name.contains(['/', '\\']) {
+        bail!("refusing suspicious release asset name: {asset_name:?}");
+    }
+
+    let tmp_dir = self_update::TempDir::new().context("create temp dir for self-update")?;
+    // MUST be named exactly like the asset: the zipsign verification
+    // context is the file name (see `verify_signature`).
+    let tmp_archive_path = tmp_dir.path().join(asset_name);
+    let mut tmp_archive = fs::File::create(&tmp_archive_path)
+        .with_context(|| format!("create {}", tmp_archive_path.display()))?;
+
+    println!("Downloading...");
+    let mut download = self_update::Download::from_url(download_url);
+    // The asset URL is the GitHub API endpoint — without this Accept header
+    // it returns JSON metadata instead of the archive bytes. (`download_to`
+    // supplies a default User-Agent on its own.)
+    download.set_header(
+        http::header::ACCEPT,
+        http::HeaderValue::from_static("application/octet-stream"),
+    );
+    download.show_progress(true);
+    download
+        .download_to(&mut tmp_archive)
+        .context("download release archive")?;
+    drop(tmp_archive); // close before reopening for verification on Windows
+
+    println!("Verifying downloaded archive...");
+    verify_signature(&tmp_archive_path, &[pubkey])?;
+
+    println!("Extracting archive...");
+    self_update::Extract::from_source(&tmp_archive_path)
+        .extract_into(tmp_dir.path())
+        .context("extract release archive")?;
+
+    let current_exe = std::env::current_exe().context("locate current vex binary")?;
+    let install_dir = current_exe
+        .parent()
+        .ok_or_else(|| anyhow!("current exe {} has no parent dir", current_exe.display()))?;
+
+    // Sidecars first — a failure here aborts BEFORE the exe is touched, so
+    // the old exe + DLL pair stays intact (no version skew).
+    let new_binary = install_from_extracted(tmp_dir.path(), asset_name, bin_name, install_dir)?;
+
+    println!("Replacing binary...");
+    self_update::self_replace::self_replace(&new_binary).context("replace vex binary")?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    // ---- pure logic -----------------------------------------------------
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn classify_entries_splits_binary_and_dll_on_windows() {
+        let (binary, sidecars) = classify_entries(&paths(&["DirectML.dll", "vex.exe"]), "vex");
+        assert_eq!(binary, Some(PathBuf::from("vex.exe")));
+        assert_eq!(sidecars, paths(&["DirectML.dll"]));
+    }
+
+    #[test]
+    fn classify_entries_no_sidecars_on_unix() {
+        let (binary, sidecars) = classify_entries(&paths(&["vex"]), "vex");
+        assert_eq!(binary, Some(PathBuf::from("vex")));
+        assert!(sidecars.is_empty());
+    }
+
+    #[test]
+    fn classify_entries_is_case_insensitive() {
+        let (binary, sidecars) = classify_entries(&paths(&["VEX.EXE"]), "vex");
+        assert_eq!(binary, Some(PathBuf::from("VEX.EXE")));
+        assert!(sidecars.is_empty());
+    }
+
+    #[test]
+    fn classify_entries_reports_missing_binary() {
+        let (binary, sidecars) = classify_entries(&paths(&["DirectML.dll"]), "vex");
+        assert_eq!(binary, None);
+        assert_eq!(sidecars, paths(&["DirectML.dll"]));
+    }
+
+    #[test]
+    fn sidecar_action_skips_when_hashes_match() {
+        let h = [7u8; 32];
+        assert_eq!(sidecar_action(&h, Some(&h)), SidecarAction::Skip);
+    }
+
+    #[test]
+    fn sidecar_action_installs_when_dest_missing() {
+        // The heal path: installs degraded by the old updater have no DLL.
+        assert_eq!(sidecar_action(&[7u8; 32], None), SidecarAction::Install);
+    }
+
+    #[test]
+    fn sidecar_action_installs_when_hashes_differ() {
+        assert_eq!(
+            sidecar_action(&[7u8; 32], Some(&[8u8; 32])),
+            SidecarAction::Install
+        );
+    }
+
+    #[test]
+    fn sha256_file_matches_known_vector() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.txt");
+        fs::write(&path, b"abc").unwrap();
+        // SHA-256("abc") — FIPS 180-2 test vector.
+        let expected: [u8; 32] = [
+            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+            0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+            0xf2, 0x00, 0x15, 0xad,
+        ];
+        assert_eq!(sha256_file(&path).unwrap(), expected);
+    }
+
+    // ---- end-to-end pipeline (no network) -------------------------------
+    //
+    // Builds a synthetic release archive shaped exactly like the Windows
+    // asset (fake vex.exe + DirectML.dll in a tar.gz), signs it with a
+    // throwaway zipsign key, then drives verify → extract → sidecar
+    // install against a scratch "install dir". Covers everything in
+    // `apply_update` except the real download and the final
+    // `self_replace` (which would replace the test runner's own binary).
+
+    const ASSET_NAME: &str = "vex-x86_64-pc-windows-msvc.tar.gz";
+    const FAKE_EXE: &[u8] = b"fake vex.exe payload";
+    const FAKE_DLL: &[u8] = b"fake DirectML.dll payload";
+
+    fn test_keypair() -> (zipsign_api::SigningKey, [u8; 32]) {
+        // Deterministic — no rand dep; any 32 bytes are a valid ed25519 seed.
+        let signing = zipsign_api::SigningKey::from_bytes(&[42u8; 32]);
+        let pubkey = signing.verifying_key().to_bytes();
+        (signing, pubkey)
+    }
+
+    /// tar.gz the given entries and zipsign the result with `context`.
+    fn signed_archive(entries: &[(&str, &[u8])], context: &[u8]) -> Vec<u8> {
+        let mut tar_gz = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut tar_gz, flate2::Compression::fast());
+            let mut tar = tar::Builder::new(enc);
+            for (name, data) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o755);
+                header.set_cksum();
+                tar.append_data(&mut header, name, Cursor::new(data))
+                    .unwrap();
+            }
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+        let (signing, _) = test_keypair();
+        let mut signed = Cursor::new(Vec::new());
+        zipsign_api::sign::copy_and_sign_tar(
+            &mut Cursor::new(tar_gz),
+            &mut signed,
+            &[signing],
+            Some(context),
+        )
+        .unwrap();
+        signed.into_inner()
+    }
+
+    /// Write a signed archive into a fresh temp dir under `ASSET_NAME`.
+    fn write_signed_archive(entries: &[(&str, &[u8])]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(ASSET_NAME);
+        fs::write(&path, signed_archive(entries, ASSET_NAME.as_bytes())).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn verify_signature_accepts_matching_key_and_context() {
+        let (_dir, archive) = write_signed_archive(&[("vex.exe", FAKE_EXE)]);
+        let (_, pubkey) = test_keypair();
+        verify_signature(&archive, &[pubkey]).unwrap();
+    }
+
+    #[test]
+    fn verify_signature_rejects_wrong_context() {
+        // Signed under a different file name → the rename-the-asset attack.
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join(ASSET_NAME);
+        let bytes = signed_archive(&[("vex.exe", FAKE_EXE)], b"some-other-asset.tar.gz");
+        fs::write(&archive, bytes).unwrap();
+        let (_, pubkey) = test_keypair();
+        assert!(verify_signature(&archive, &[pubkey]).is_err());
+    }
+
+    #[test]
+    fn verify_signature_rejects_wrong_key() {
+        let (_dir, archive) = write_signed_archive(&[("vex.exe", FAKE_EXE)]);
+        let other_pub = zipsign_api::SigningKey::from_bytes(&[9u8; 32])
+            .verifying_key()
+            .to_bytes();
+        assert!(verify_signature(&archive, &[other_pub]).is_err());
+    }
+
+    /// Run verify → extract → sidecar install, returning the binary path
+    /// `apply_update` would hand to `self_replace`.
+    fn run_pipeline(tmp: &Path, archive: &Path, install_dir: &Path) -> Result<PathBuf> {
+        let (_, pubkey) = test_keypair();
+        verify_signature(archive, &[pubkey])?;
+        self_update::Extract::from_source(archive).extract_into(tmp)?;
+        install_from_extracted(tmp, ASSET_NAME, "vex", install_dir)
+    }
+
+    #[test]
+    fn pipeline_installs_missing_sidecar_and_finds_binary() {
+        let (tmp, archive) =
+            write_signed_archive(&[("vex.exe", FAKE_EXE), ("DirectML.dll", FAKE_DLL)]);
+        let install = tempfile::tempdir().unwrap(); // degraded: no DLL
+
+        let binary = run_pipeline(tmp.path(), &archive, install.path()).unwrap();
+
+        assert_eq!(fs::read(binary).unwrap(), FAKE_EXE);
+        let dll = install.path().join("DirectML.dll");
+        assert_eq!(
+            fs::read(dll).unwrap(),
+            FAKE_DLL,
+            "heal path installs the DLL"
+        );
+    }
+
+    #[test]
+    fn pipeline_skips_identical_sidecar() {
+        let (tmp, archive) =
+            write_signed_archive(&[("vex.exe", FAKE_EXE), ("DirectML.dll", FAKE_DLL)]);
+        let install = tempfile::tempdir().unwrap();
+        let dll = install.path().join("DirectML.dll");
+        fs::write(&dll, FAKE_DLL).unwrap();
+        let mtime_before = fs::metadata(&dll).unwrap().modified().unwrap();
+
+        run_pipeline(tmp.path(), &archive, install.path()).unwrap();
+
+        let mtime_after = fs::metadata(&dll).unwrap().modified().unwrap();
+        assert_eq!(
+            mtime_before, mtime_after,
+            "identical DLL must not be rewritten"
+        );
+    }
+
+    #[test]
+    fn pipeline_replaces_outdated_sidecar() {
+        let (tmp, archive) =
+            write_signed_archive(&[("vex.exe", FAKE_EXE), ("DirectML.dll", FAKE_DLL)]);
+        let install = tempfile::tempdir().unwrap();
+        let dll = install.path().join("DirectML.dll");
+        fs::write(&dll, b"stale 1.0-era dll").unwrap();
+
+        run_pipeline(tmp.path(), &archive, install.path()).unwrap();
+
+        assert_eq!(fs::read(&dll).unwrap(), FAKE_DLL);
+        assert!(
+            !install.path().join("DirectML.dll.self-update.old").exists(),
+            "set-aside copy is reaped when nothing maps the old DLL"
+        );
+    }
+
+    #[test]
+    fn pipeline_errors_when_binary_missing_from_archive() {
+        let (tmp, archive) = write_signed_archive(&[("DirectML.dll", FAKE_DLL)]);
+        let install = tempfile::tempdir().unwrap();
+        let err = run_pipeline(tmp.path(), &archive, install.path()).unwrap_err();
+        assert!(err.to_string().contains("did not contain"), "{err}");
+    }
+
+    #[test]
+    fn unix_archive_with_only_binary_installs_nothing_extra() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("vex-x86_64-unknown-linux-gnu.tar.gz");
+        fs::write(
+            &archive,
+            signed_archive(&[("vex", FAKE_EXE)], b"vex-x86_64-unknown-linux-gnu.tar.gz"),
+        )
+        .unwrap();
+        let install = tempfile::tempdir().unwrap();
+
+        let (_, pubkey) = test_keypair();
+        verify_signature(&archive, &[pubkey]).unwrap();
+        self_update::Extract::from_source(&archive)
+            .extract_into(dir.path())
+            .unwrap();
+        let binary = install_from_extracted(
+            dir.path(),
+            "vex-x86_64-unknown-linux-gnu.tar.gz",
+            "vex",
+            install.path(),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(binary).unwrap(), FAKE_EXE);
+        assert_eq!(
+            fs::read_dir(install.path()).unwrap().count(),
+            0,
+            "no sidecars may be written for a unix archive"
+        );
+    }
+}
