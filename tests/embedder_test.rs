@@ -4,15 +4,19 @@
 //! mismatch detection), `Manifest::embedder_id`, `VexConfig::embedder`, and
 //! the updated `write_index_full` writer signature.
 //!
-//! **No model is loaded.** `MiniLMEmbedder::new()` is never called — doing so
-//! would trigger an 86 MB download. All semantics-level assertions operate
-//! through the registry metadata functions.
+//! **No model is loaded by default.** `MiniLMEmbedder::new()` is never called —
+//! doing so would trigger an 86 MB download. All default assertions operate
+//! through the registry metadata functions. The single `#[ignore]`d test
+//! `extra_models_declared_dim_matches_actual_output` is the sole exception: it
+//! is opt-in (`cargo test --test embedder_test -- --ignored`) and downloads the
+//! opt-in embedder models to verify each declared dim against the real output.
 
 use tempfile::TempDir;
 use vex::embed::minilm::MINILM_CHAR_BUDGET;
 use vex::embed::{
-    build_context, check_embedder_match, embedder_dim, known_embedders, make_embedder,
-    resolve_embedder, DEFAULT_EMBEDDER, MINILM_DIM, MINILM_ID,
+    build_context, check_embedder_match, embedder_char_budget, embedder_dim,
+    embedder_gpu_auto_min_misses, known_embedders, make_embedder, make_embedder_with_device,
+    resolve_embedder, Device, DEFAULT_EMBEDDER, MINILM_DIM, MINILM_ID,
 };
 use vex::index::manifest::Manifest;
 use vex::index::symbols::{ParsedFile, ParsedSymbol, SymbolKind};
@@ -75,25 +79,72 @@ fn known_embedders_contains_minilm() {
     );
 }
 
-/// `make_embedder("bge-large")` returns `Err`; the error message must mention
-/// both the unknown id and at least one known id ("minilm-l6-v2").
+/// An unknown embedder id errors, and the message must echo the bad id AND list
+/// EVERY known id. A user who guesses a short form like "bge-large" (the real id
+/// is "bge-large-en-v1.5") can then discover the correct ones. Supersedes the
+/// older minilm-only spot-check and self-updates as the registry grows.
 #[test]
-fn make_embedder_unknown_errors() {
+fn unknown_embedder_error_lists_every_known_id() {
+    // Arrange: a genuinely-unknown id (a natural short-form guess users make).
     let result = make_embedder("bge-large");
     assert!(
         result.is_err(),
-        "make_embedder(\"bge-large\") should return Err"
+        "make_embedder(\"bge-large\") should be Err"
     );
     // Extract the error without requiring T: Debug on Box<dyn Embedder>.
     let msg = result.err().unwrap().to_string();
+    // Assert: the bad id is echoed and every known id is offered as a fix.
     assert!(
         msg.contains("bge-large"),
-        "error should mention the unknown id \"bge-large\", got: {msg}"
+        "error should echo the bad id, got: {msg}"
     );
+    for id in known_embedders() {
+        assert!(
+            msg.contains(id),
+            "error must list known id {id}, got: {msg}"
+        );
+    }
+}
+
+/// Every id advertised by `known_embedders()` must resolve through all three
+/// public metadata lookups. Closes the wiring seam between the registry list and
+/// the lookup fns that the in-crate `registry_invariants` (which iterates SPECS
+/// directly, never through the public fns) doesn't cover.
+#[test]
+fn all_known_embedders_resolve_via_public_lookups() {
+    // Arrange: MiniLM + every extra spec.
+    let known = known_embedders();
     assert!(
-        msg.contains("minilm-l6-v2"),
-        "error should list a known embedder \"minilm-l6-v2\", got: {msg}"
+        known.len() >= 5,
+        "expected MiniLM + 4 extras, got {known:?}"
     );
+    // Act + Assert: each advertised id resolves via every public lookup.
+    for id in known {
+        assert!(embedder_dim(id).is_some(), "embedder_dim missing for {id}");
+        assert!(
+            embedder_char_budget(id).is_some(),
+            "char_budget missing for {id}"
+        );
+        assert!(
+            embedder_gpu_auto_min_misses(id) > 0,
+            "non-positive gpu gate for {id}"
+        );
+    }
+}
+
+/// The index/GPU-path constructor `make_embedder_with_device` must reject an
+/// unknown id exactly like `make_embedder` — same contract, no model load
+/// (`Device::Cpu` registers no execution provider, and the bail arm returns
+/// before any download).
+#[test]
+fn make_embedder_with_device_unknown_id_errors_like_make_embedder() {
+    // Act: unknown id on the explicit-device path.
+    let result = make_embedder_with_device("definitely-not-a-model", Device::Cpu, false);
+    assert!(result.is_err(), "unknown id must error on the device path");
+    let msg = result.err().unwrap().to_string();
+    // Assert: echoes the bad id and lists a known one (parity with make_embedder).
+    assert!(msg.contains("definitely-not-a-model"), "got: {msg}");
+    assert!(msg.contains("minilm-l6-v2"), "got: {msg}");
 }
 
 // ---------------------------------------------------------------------------
@@ -115,9 +166,21 @@ fn resolve_embedder_config_when_no_cli() {
 }
 
 /// Falls back to `DEFAULT_EMBEDDER` when neither CLI nor config is set.
+///
+/// Hermetic w.r.t. the host: a developer machine may legitimately pin
+/// `VEX_EMBEDDER` globally (it is a documented user-level default), which
+/// would otherwise win the all-`None` fallthrough and fail this test.
+/// `#[serial]` because mutating process env from a multi-threaded test
+/// runner races every concurrent `getenv` (POSIX UB).
 #[test]
+#[serial_test::serial]
 fn resolve_embedder_default_when_neither() {
+    let saved = std::env::var("VEX_EMBEDDER").ok();
+    std::env::remove_var("VEX_EMBEDDER");
     let result = resolve_embedder(None, None);
+    if let Some(v) = saved {
+        std::env::set_var("VEX_EMBEDDER", v);
+    }
     assert_eq!(result, DEFAULT_EMBEDDER);
     assert_eq!(result, "minilm-l6-v2");
 }
@@ -354,4 +417,45 @@ fn writer_validates_vector_length() {
         result.is_err(),
         "write_index_full should return Err when vector length != vector_dim"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Opt-in: real model loads (network downloads). Run with `-- --ignored`.
+// ---------------------------------------------------------------------------
+
+/// Each opt-in embedder's declared `Spec.dim` (src/embed/extra.rs) must equal
+/// the model's ACTUAL output length. A wrong dim silently corrupts every index
+/// built with that model — the Header records the declared dim while the vectors
+/// are a different length — and no offline test can catch it: it requires
+/// loading the model. One table-driven pass over all four ids covers both the
+/// 768-dim (jina-code, bge-base) and 1024-dim (bge-large, mxbai) families, on
+/// `Device::Cpu` so it runs on the default CPU build (no gpu-* feature).
+///
+/// Opt-in — downloads ~600 MB total (cached after first run):
+///   cargo test --test embedder_test -- --ignored
+#[test]
+#[ignore = "downloads ~600 MB of embedder models; run with --ignored"]
+fn extra_models_declared_dim_matches_actual_output() {
+    let ids = [
+        "jina-code",
+        "bge-base-en-v1.5",
+        "bge-large-en-v1.5",
+        "mxbai-large",
+    ];
+    for id in ids {
+        // Arrange: the dim the registry declares for this model.
+        let declared = embedder_dim(id).expect("known id has a declared dim");
+        // Act: load on CPU and embed one probe string.
+        let mut emb = make_embedder(id).unwrap_or_else(|e| panic!("load {id}: {e}"));
+        let v = emb
+            .embed("fn probe() {}")
+            .unwrap_or_else(|e| panic!("embed {id}: {e}"));
+        // Assert: declared dim == actual output dim.
+        assert_eq!(
+            v.len() as u32,
+            declared,
+            "{id}: declared dim {declared} != actual output {}",
+            v.len()
+        );
+    }
 }

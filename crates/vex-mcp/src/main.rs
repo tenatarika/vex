@@ -77,6 +77,25 @@ fn opt_bool(args: &Value, field: &str, default: bool) -> Result<bool> {
         .ok_or_else(|| ParamError::wrong_type(field, "a boolean", v).into())
 }
 
+/// Optional bool that distinguishes "absent / null" from an explicit value.
+/// Returns `None` when the field is absent or null; fails on wrong type the
+/// same way [`opt_bool`] does. Used by the `index`/`update` `gpu` arm so an
+/// explicit `gpu: false` can forward `--no-gpu` (overriding `.vex.toml gpu =
+/// true`), while an absent `gpu` forwards nothing (letting config / VEX_DEVICE
+/// decide via the CLI's `Device::resolve`).
+fn opt_bool_some(args: &Value, field: &str) -> Result<Option<bool>> {
+    let v = &args[field];
+    if v.is_null() {
+        return Ok(None);
+    }
+    Some(
+        v.as_bool()
+            .ok_or_else(|| ParamError::wrong_type(field, "a boolean", v)),
+    )
+    .transpose()
+    .map_err(Into::into)
+}
+
 /// Optional u64 with default. Fails on negative / float / string input —
 /// `serde_json::Value::as_u64()` returns `None` for all three, which the
 /// old `unwrap_or(default)` silently masked.
@@ -626,6 +645,26 @@ fn push_auto_update(extra: &mut Vec<String>, args: &Value) -> Result<()> {
     Ok(())
 }
 
+/// Translate the optional `gpu: bool` (and advanced `device: string`) MCP args
+/// into the CLI `--gpu` / `--no-gpu` / `--device` flags for `index`/`update`.
+/// Tri-state on purpose: an absent `gpu` forwards nothing (so `.vex.toml gpu` /
+/// `$VEX_DEVICE` win via the CLI's `Device::resolve`), `gpu: false` forwards
+/// `--no-gpu` (overriding config `gpu = true`), and `gpu: true` forwards
+/// `--gpu`. `device` (advanced) is mutually exclusive with the `gpu` boolean —
+/// passing both forwards conflicting flags that the CLI rejects (clap
+/// `conflicts_with`), mirroring `vex index --gpu --device`. See docs/GPU_SUPPORT.md.
+fn push_gpu(extra: &mut Vec<String>, args: &Value) -> Result<()> {
+    match opt_bool_some(args, "gpu")? {
+        Some(true) => extra.push("--gpu".into()),
+        Some(false) => extra.push("--no-gpu".into()),
+        None => {}
+    }
+    if let Some(device) = opt_str(args, "device")? {
+        extra.extend(["--device".into(), device.to_string()]);
+    }
+    Ok(())
+}
+
 /// Translate the optional `no_stale_check: bool` MCP arg into the CLI
 /// `--no-stale-check` flag. Defaults to `false` (i.e. stale check runs)
 /// so existing clients see no behavior change. Note: when `auto_update`
@@ -904,6 +943,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             if semantic {
                 extra.push("--semantic".into());
             }
+            push_gpu(&mut extra, args)?;
             ("index".to_string(), extra)
         }
         "update" => {
@@ -912,6 +952,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             if semantic {
                 extra.push("--semantic".into());
             }
+            push_gpu(&mut extra, args)?;
             ("update".to_string(), extra)
         }
         "status" => (
@@ -1368,7 +1409,9 @@ fn tool_descriptors() -> Value {
                 "type": "object",
                 "properties": {
                     "project_root": { "type": "string", "description": "Absolute path to the project root to index" },
-                    "semantic": { "type": "boolean", "description": "Also generate per-symbol embeddings (enables semantic search / similar / duplicates; adds ~30-90s on a medium repo)", "default": false }
+                    "semantic": { "type": "boolean", "description": "Also generate per-symbol embeddings (enables semantic search / similar / duplicates; adds ~30-90s on a medium repo)", "default": false },
+                    "gpu": { "type": "boolean", "description": "Use the GPU for embedding generation if this vex build supports it (DirectML on Windows / CoreML on macOS prebuilts; CUDA via source build), with silent CPU fallback. Only speeds up cold/large semantic builds. Omit to let .vex.toml gpu/device or $VEX_DEVICE decide; pass false to force CPU even when config enables GPU." },
+                    "device": { "type": "string", "description": "Advanced: pin a specific embedding execution provider (cpu | auto | cuda | directml | coreml). Mutually exclusive with `gpu`." }
                 },
                 "required": ["project_root"]
             }
@@ -1380,7 +1423,9 @@ fn tool_descriptors() -> Value {
                 "type": "object",
                 "properties": {
                     "project_root": { "type": "string", "description": "Absolute path to the project root whose index should be refreshed" },
-                    "semantic": { "type": "boolean", "description": "Also refresh embeddings for changed files", "default": false }
+                    "semantic": { "type": "boolean", "description": "Also refresh embeddings for changed files", "default": false },
+                    "gpu": { "type": "boolean", "description": "Use the GPU for embedding generation if this vex build supports it, with silent CPU fallback. Mostly a no-op for incremental updates (few/zero embeddings recomputed). Omit to let .vex.toml gpu/device or $VEX_DEVICE decide; pass false to force CPU." },
+                    "device": { "type": "string", "description": "Advanced: pin a specific embedding execution provider (cpu | auto | cuda | directml | coreml). Mutually exclusive with `gpu`." }
                 },
                 "required": ["project_root"]
             }

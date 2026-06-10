@@ -39,7 +39,6 @@ use parse_files::{
 };
 
 const CHUNK_SIZE: usize = 500;
-const EMBED_BATCH_SIZE: usize = 256;
 
 /// Build-time toggles for [`run`] and [`update`].
 ///
@@ -85,6 +84,17 @@ pub struct IndexOptions {
     /// as "easy way to lose semantic search permanently without
     /// realizing", especially while the critical HNSW bug stood.
     pub drop_semantic: bool,
+
+    /// Compute device for embedding generation (resolved from CLI/config/env
+    /// via [`crate::embed::Device::resolve`]). Runtime-only — never persisted
+    /// to the manifest, since vectors are model-defined, not device-defined.
+    /// See `docs/GPU_SUPPORT.md`.
+    pub device: crate::embed::Device,
+    /// True only when GPU was selected by an EXPLICIT CLI `--gpu` / `--device`.
+    /// Bypasses the miss-count gate (`docs/GPU_SUPPORT.md` §3.4). NOT set for
+    /// `.vex.toml gpu = true` or `VEX_DEVICE` — config/env `Auto` stays gated
+    /// so a tiny `vex update` still avoids GPU warm-up.
+    pub gpu_explicit: bool,
 }
 
 impl Default for IndexOptions {
@@ -98,6 +108,11 @@ impl Default for IndexOptions {
             history_depth: None,
             drop_history: false,
             drop_semantic: false,
+            // Neutral baseline; the index/update paths override from
+            // CLI/config/env. `with_embeddings: false` above makes device moot
+            // for the default value.
+            device: crate::embed::Device::Cpu,
+            gpu_explicit: false,
         }
     }
 }
@@ -280,7 +295,13 @@ fn run_with_lock(
     let symbol_count: usize = all_parsed.iter().map(|f| f.symbols.len()).sum();
 
     let (mut vectors, hashes) = if opts.with_embeddings && symbol_count > 0 {
-        generate_embeddings(&all_parsed, embedder_id, root)?
+        generate_embeddings(
+            &all_parsed,
+            embedder_id,
+            root,
+            opts.device,
+            opts.gpu_explicit,
+        )?
     } else {
         (Vec::new(), Vec::new())
     };
@@ -583,7 +604,13 @@ fn update_inner(
     // body-aware one `generate_embeddings` would emit for the same
     // symbol if it were freshly parsed).
     let (new_vectors, _new_hashes) = if opts.with_embeddings && new_sym_count > 0 {
-        generate_embeddings(&newly_parsed, embedder_id, &root)?
+        generate_embeddings(
+            &newly_parsed,
+            embedder_id,
+            &root,
+            opts.device,
+            opts.gpu_explicit,
+        )?
     } else {
         (Vec::new(), Vec::new())
     };

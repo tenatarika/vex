@@ -246,6 +246,14 @@ expression: descriptors
     "description": "Build or rebuild the vex index from scratch. Run once per project; use `update` afterward for incremental refreshes. Set semantic=true to also generate embeddings (slower; required for find_similar / similar / duplicates).",
     "inputSchema": {
       "properties": {
+        "device": {
+          "description": "Advanced: pin a specific embedding execution provider (cpu | auto | cuda | directml | coreml). Mutually exclusive with `gpu`.",
+          "type": "string"
+        },
+        "gpu": {
+          "description": "Use the GPU for embedding generation if this vex build supports it (DirectML on Windows / CoreML on macOS prebuilts; CUDA via source build), with silent CPU fallback. Only speeds up cold/large semantic builds. Omit to let .vex.toml gpu/device or $VEX_DEVICE decide; pass false to force CPU even when config enables GPU.",
+          "type": "boolean"
+        },
         "project_root": {
           "description": "Absolute path to the project root to index",
           "type": "string"
@@ -267,6 +275,14 @@ expression: descriptors
     "description": "Incremental index refresh: only re-parses files whose mtime changed since the last index. Prefer over `index` when an index already exists — typically <1s on small change sets vs full rebuild cost. Most other tools default to auto_update=true and call this implicitly.",
     "inputSchema": {
       "properties": {
+        "device": {
+          "description": "Advanced: pin a specific embedding execution provider (cpu | auto | cuda | directml | coreml). Mutually exclusive with `gpu`.",
+          "type": "string"
+        },
+        "gpu": {
+          "description": "Use the GPU for embedding generation if this vex build supports it, with silent CPU fallback. Mostly a no-op for incremental updates (few/zero embeddings recomputed). Omit to let .vex.toml gpu/device or $VEX_DEVICE decide; pass false to force CPU.",
+          "type": "boolean"
+        },
         "project_root": {
           "description": "Absolute path to the project root whose index should be refreshed",
           "type": "string"

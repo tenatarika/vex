@@ -26,6 +26,21 @@ pub struct VexConfig {
     /// when omitted. Use `vex --help` or the docs to list known IDs.
     pub embedder: Option<String>,
 
+    /// Use the GPU for embedding generation by default, if this vex build was
+    /// compiled with a `gpu-*` feature. `Some(true)` resolves to `Auto`
+    /// (best compiled-in execution provider, silent CPU fallback);
+    /// `Some(false)` forces CPU. Overridden by `--gpu`/`--no-gpu`/`--device`
+    /// and `$VEX_DEVICE`. A config-level `gpu = true` stays subject to the
+    /// miss-count gate (it is not treated as an explicit request). Default
+    /// (omitted): the compile-time default — `Auto` on a GPU build, `Cpu`
+    /// otherwise. See `docs/GPU_SUPPORT.md`.
+    pub gpu: Option<bool>,
+
+    /// Advanced: pin a specific embedding execution provider
+    /// (`cpu` | `auto` | `cuda` | `directml` | `coreml`). Takes precedence over
+    /// `gpu`. Overridden by the `--device` CLI flag.
+    pub device: Option<String>,
+
     /// Override the cache root used to store the index for this project.
     ///
     /// Accepts:
@@ -116,9 +131,23 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 # Automatically run `vex update` before search if the index is stale
 # auto_update = false
 
-# Embedder used for semantic indexing. Known IDs: minilm-l6-v2 (default).
-# Changing the embedder requires a full reindex.
+# Embedder used for semantic indexing. IDs: minilm-l6-v2 (default, CPU-fast),
+# jina-code (code-specialized, GPU-worthy), bge-base-en-v1.5, bge-large-en-v1.5,
+# mxbai-large. Changing the embedder requires a full reindex.
+# Set globally across projects with the VEX_EMBEDDER env var (this file wins).
 # embedder = "minilm-l6-v2"
+
+# Use the GPU for embedding generation, if this vex build was compiled with a
+# gpu-* feature (DirectML on Windows / CoreML on macOS prebuilts; CUDA via
+# `cargo install vex --features gpu-cuda`). `true` => best available provider
+# with silent CPU fallback; only speeds up cold/large semantic builds.
+# Per-invocation override: `vex index --gpu` / `--no-gpu`.
+# gpu = false
+
+# Advanced: pin a specific embedding execution provider. Takes precedence over
+# `gpu`. One of: "cpu", "auto", "cuda", "directml", "coreml".
+# Per-invocation override: `vex index --device <DEVICE>`.
+# device = "auto"
 
 # Cache directory override. Defaults to the platform cache location.
 #   macOS:   ~/Library/Caches/vex
@@ -596,10 +625,17 @@ fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
+
     use super::*;
     use std::sync::Mutex;
 
-    // env mutations are process-global; serialize the tests that touch them.
+    // Env mutations are process-global; the `#[serial]` attribute on every
+    // test that calls `with_env_vars` puts them on serial_test's GLOBAL
+    // lock — shared with every other env-mutating test in this binary
+    // (embed::device, embed::mod, embed::integrity), so cross-module
+    // setenv/getenv races are excluded too. The module mutex stays as
+    // defense-in-depth for any future caller that forgets the attribute.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// RAII guard that restores env vars on drop — covers both the
@@ -635,6 +671,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn cli_override_beats_everything() {
         with_env_vars(&[("VEX_CACHE_DIR", Some("/from/env"))], || {
             let cfg = VexConfig {
@@ -650,6 +687,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn env_beats_config() {
         with_env_vars(&[("VEX_CACHE_DIR", Some("/from/env"))], || {
             let cfg = VexConfig {
@@ -662,6 +700,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn empty_env_falls_through_to_config() {
         with_env_vars(&[("VEX_CACHE_DIR", Some(""))], || {
             let cfg = VexConfig {
@@ -674,6 +713,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn relative_config_path_resolves_against_source_dir() {
         with_env_vars(&[("VEX_CACHE_DIR", None)], || {
             let cfg = VexConfig {
@@ -688,6 +728,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn tilde_expands_to_home() {
         with_env_vars(
             &[("VEX_CACHE_DIR", None), ("HOME", Some("/home/alice"))],
@@ -708,6 +749,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn local_cache_uses_project_root_no_hash() {
         with_env_vars(&[("VEX_CACHE_DIR", None)], || {
             let cfg = VexConfig {
@@ -722,6 +764,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn rejects_path_traversal_in_relative_cache_dir() {
         with_env_vars(&[("VEX_CACHE_DIR", None)], || {
             let cfg = VexConfig {
@@ -744,6 +787,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn absolute_cache_dir_with_parent_dir_components_is_allowed() {
         // Path traversal is only a concern for *relative* paths anchored
         // at the project root. Absolute paths are explicit user intent.
@@ -759,6 +803,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn explicit_cache_dir_beats_local_cache() {
         with_env_vars(&[("VEX_CACHE_DIR", None)], || {
             let cfg = VexConfig {
@@ -774,6 +819,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolve_jobs_priority() {
         with_env_vars(&[("VEX_JOBS", None)], || {
             let mut cfg = VexConfig {
@@ -812,6 +858,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn jobs_zero_in_config_means_all_cores() {
         with_env_vars(&[("VEX_JOBS", None)], || {
             let cfg = VexConfig {
@@ -823,6 +870,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn vex_jobs_zero_env_means_all_cores() {
         // Symmetric to the config field — an explicit 0 in any source
         // is the opt-in to "use every available core".
@@ -839,6 +887,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn tilde_with_parent_dir_is_rejected() {
         // Regression: `expand_user` turns `~/../etc/evil` into an
         // absolute path, which previously bypassed the traversal check.
@@ -874,6 +923,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn explicit_jobs_returns_none_when_unset() {
         with_env_vars(&[("VEX_JOBS", None)], || {
             let cfg = VexConfig::default();
@@ -882,6 +932,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn explicit_jobs_picks_up_env() {
         with_env_vars(&[("VEX_JOBS", Some("3"))], || {
             let cfg = VexConfig::default();

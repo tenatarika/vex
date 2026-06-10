@@ -5,6 +5,7 @@ pub(crate) mod cmd_check;
 pub(crate) mod cmd_diff;
 pub(crate) mod cmd_duplicates;
 pub(crate) mod cmd_eval;
+pub(crate) mod cmd_gpu;
 pub(crate) mod cmd_grep;
 pub(crate) mod cmd_history;
 pub(crate) mod cmd_implementations;
@@ -98,6 +99,9 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_wait,
             history,
             history_depth,
+            gpu,
+            no_gpu,
+            device,
         } => cmd_index::index(
             &ctx,
             path,
@@ -112,6 +116,9 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_wait,
             history,
             history_depth,
+            gpu,
+            no_gpu,
+            device,
         ),
         Commands::Search {
             query,
@@ -188,6 +195,9 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_wait,
             history,
             no_history,
+            gpu,
+            no_gpu,
+            device,
         } => cmd_update::update(
             &ctx,
             path,
@@ -201,6 +211,9 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_wait,
             history,
             no_history,
+            gpu,
+            no_gpu,
+            device,
         ),
         Commands::Outline { file, kind } => {
             cmd_outline::cmd_outline(&file, kind.as_deref(), &ctx.format)
@@ -258,6 +271,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             scope,
         ),
         Commands::Status { path, coverage } => cmd_status::status(&ctx, path, coverage),
+        Commands::Gpu { device, enable } => cmd_gpu::gpu(&ctx, device, enable),
         Commands::Grep {
             pattern,
             limit,

@@ -227,6 +227,21 @@ pub enum Commands {
         /// `HEAD`).
         #[arg(long, value_name = "N", requires = "history")]
         history_depth: Option<usize>,
+
+        /// Use the GPU for embedding generation, if this vex build was compiled
+        /// with a gpu-* feature (DirectML on Windows / CoreML on macOS prebuilts;
+        /// CUDA via source build). Falls back to CPU if no GPU is usable.
+        #[arg(long, conflicts_with = "no_gpu")]
+        gpu: bool,
+
+        /// Force CPU embedding even if `gpu = true` is set in .vex.toml.
+        #[arg(long)]
+        no_gpu: bool,
+
+        /// Advanced: pick a specific embedding execution provider
+        /// (cpu | auto | cuda | directml | coreml). Mutually exclusive with --gpu/--no-gpu.
+        #[arg(long, value_name = "DEVICE", conflicts_with_all = ["gpu", "no_gpu"])]
+        device: Option<String>,
     },
 
     /// Search symbols by name or semantics
@@ -454,6 +469,21 @@ pub enum Commands {
         /// path lands in Step 5. Today `--no-history` is a no-op.
         #[arg(long, conflicts_with = "history")]
         no_history: bool,
+
+        /// Use the GPU for embedding generation, if this vex build was compiled
+        /// with a gpu-* feature. Falls back to CPU if no GPU is usable. (Mostly
+        /// a no-op for incremental updates — few/zero embeddings are recomputed.)
+        #[arg(long, conflicts_with = "no_gpu")]
+        gpu: bool,
+
+        /// Force CPU embedding even if `gpu = true` is set in .vex.toml.
+        #[arg(long)]
+        no_gpu: bool,
+
+        /// Advanced: pick a specific embedding execution provider
+        /// (cpu | auto | cuda | directml | coreml). Mutually exclusive with --gpu/--no-gpu.
+        #[arg(long, value_name = "DEVICE", conflicts_with_all = ["gpu", "no_gpu"])]
+        device: Option<String>,
     },
 
     /// Show structure of a file (symbols, kinds, lines)
@@ -625,6 +655,21 @@ pub enum Commands {
         /// appears in the tree.
         #[arg(long)]
         coverage: bool,
+    },
+
+    /// Diagnose GPU acceleration: show the execution provider compiled into
+    /// this binary, actively probe whether it engages on this machine, and
+    /// print targeted setup help if it does not. No index needed.
+    Gpu {
+        /// Probe only this device (cuda|directml|coreml; `auto` = all). Default:
+        /// every execution provider compiled into this binary.
+        device: Option<String>,
+
+        /// If a GPU engages, persist it to the VEX_DEVICE environment variable
+        /// (user-level) so every project uses it. Applies to new shells. If no
+        /// GPU engages, nothing is pinned and the command says so.
+        #[arg(long)]
+        enable: bool,
     },
 
     /// Find all types that inherit from / implement a base class, trait, or interface (no index needed)
