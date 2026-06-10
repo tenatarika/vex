@@ -183,11 +183,12 @@ filetime = "0.2"
 # nextest runs in-binary tests on multiple threads, and concurrent
 # setenv/getenv is UB (Rust 1.80+ marks set_var unsafe for this reason).
 serial_test = "3.2"
-# tests/self_update_pipeline.rs builds and signs a synthetic release
-# archive to exercise the verify→extract→sidecar-install path without
-# GitHub. `sign-tar` is test-only; the shipped binary needs `verify-tar`
-# alone (see [dependencies]). tar/flate2 already in the tree via
-# self_update — versions track the lockfile.
+# The in-module E2E tests (`#[cfg(test)]` in src/cli/self_update_flow.rs)
+# build and sign a synthetic release archive to exercise the
+# verify→extract→sidecar-install path without GitHub. `sign-tar` is
+# test-only; the shipped binary needs `verify-tar` alone (see
+# [dependencies]). tar/flate2 already in the tree via self_update —
+# versions track the lockfile.
 zipsign-api = { version = "=0.1.5", default-features = false, features = [
     "sign-tar",
 ] }

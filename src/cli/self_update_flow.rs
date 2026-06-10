@@ -48,13 +48,18 @@ pub(crate) fn sidecar_action(src_hash: &[u8; 32], dest_hash: Option<&[u8; 32]>) 
 /// sidecar — generic on purpose, so a future second redist ships without
 /// touching this code. On Linux/macOS the archive holds only `vex`, the
 /// sidecar list is empty, and the flow degrades to exactly today's behavior.
+///
+/// Errors on a SECOND binary-named entry (e.g. both `vex` and `vex.exe`):
+/// silently reclassifying one as a sidecar would install a stray binary
+/// next to the exe. Our release pipeline never produces this, so a
+/// duplicate means a malformed archive — fail loudly instead.
 pub(crate) fn classify_entries(
     extracted: &[PathBuf],
     bin_name: &str,
-) -> (Option<PathBuf>, Vec<PathBuf>) {
+) -> Result<(Option<PathBuf>, Vec<PathBuf>)> {
     let bin_lower = bin_name.to_lowercase();
     let exe_lower = format!("{bin_lower}.exe");
-    let mut binary = None;
+    let mut binary: Option<PathBuf> = None;
     let mut sidecars = Vec::new();
     for path in extracted {
         let name_lower = path
@@ -62,14 +67,22 @@ pub(crate) fn classify_entries(
             .and_then(|n| n.to_str())
             .map(str::to_lowercase);
         match name_lower {
-            Some(n) if binary.is_none() && (n == bin_lower || n == exe_lower) => {
+            Some(n) if n == bin_lower || n == exe_lower => {
+                if let Some(first) = &binary {
+                    bail!(
+                        "release archive contains more than one `{bin_name}` binary entry \
+                         ({} and {}) — refusing to guess which to install",
+                        first.display(),
+                        path.display()
+                    );
+                }
                 binary = Some(path.clone());
             }
             Some(_) => sidecars.push(path.clone()),
             None => {} // non-UTF-8 name — never produced by our release pipeline
         }
     }
-    (binary, sidecars)
+    Ok((binary, sidecars))
 }
 
 /// SHA-256 of a file's contents, streamed in 64 KiB chunks (DirectML.dll
@@ -114,8 +127,15 @@ pub(crate) fn verify_signature(
     Ok(())
 }
 
-/// Replicates `self_update`'s private `confirm`: blank or `y`/`Y` proceeds,
-/// anything else aborts.
+/// Pure decision behind [`confirm`]: blank or `y`/`Y` proceeds, anything
+/// else aborts. Matches `self_update`'s private `confirm` semantics.
+fn confirm_accepts(answer: &str) -> bool {
+    let answer = answer.trim().to_lowercase();
+    answer.is_empty() || answer == "y"
+}
+
+/// Replicates `self_update`'s private `confirm`: the user's last gate
+/// before the binary swap.
 pub(crate) fn confirm(prompt: &str) -> Result<()> {
     print!("{prompt}");
     std::io::stdout().flush().context("flush confirm prompt")?;
@@ -123,8 +143,7 @@ pub(crate) fn confirm(prompt: &str) -> Result<()> {
     std::io::stdin()
         .read_line(&mut answer)
         .context("read confirmation")?;
-    let answer = answer.trim().to_lowercase();
-    if !answer.is_empty() && answer != "y" {
+    if !confirm_accepts(&answer) {
         bail!("update aborted");
     }
     Ok(())
@@ -139,12 +158,18 @@ pub(crate) fn confirm(prompt: &str) -> Result<()> {
 ///      same-volume rename succeeds even while the DLL is mapped into
 ///      another running vex process (the same trick `self_replace` uses
 ///      for the exe itself);
-///   2. COPY the new file into place (copy works across volumes);
+///   2. the new file is STAGED into the destination directory first
+///      (`<name>.self-update.new`, via copy — copy works across volumes)
+///      and only then renamed into place — same-volume, atomic, so `dest`
+///      is never observable in a half-written state (a partial DLL beside
+///      the exe would fail `LoadLibrary` harder than the missing-DLL case
+///      this module exists to fix);
 ///   3. best-effort delete of the set-aside copy — if a process still maps
 ///      it the delete fails and the `.old` file is reaped on a later run.
 ///
-/// On a failed copy the old file is renamed back, so the install dir is
-/// never left without a working sidecar.
+/// Failure handling: a failed staging copy aborts before `dest` is ever
+/// touched; a failed final rename restores the set-aside original. The
+/// install dir is never left without a working sidecar.
 fn install_sidecar(src: &Path, dest: &Path) -> Result<()> {
     let dest_dir = dest
         .parent()
@@ -153,23 +178,39 @@ fn install_sidecar(src: &Path, dest: &Path) -> Result<()> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow!("sidecar destination {} has no file name", dest.display()))?;
+    let staged = dest_dir.join(format!("{file_name}.self-update.new"));
     let set_aside = dest_dir.join(format!("{file_name}.self-update.old"));
 
-    // Reap leftovers from a previous update whose mapped DLL blocked the
-    // delete. Ignore failure — it just stays for the next round.
+    // Reap leftovers from a previous update (a mapped DLL blocks the .old
+    // delete; an interrupted run can leave a .new). Ignore failures — they
+    // just stay for the next round.
     if set_aside.exists() {
         let _ = fs::remove_file(&set_aside);
+    }
+    if staged.exists() {
+        let _ = fs::remove_file(&staged);
+    }
+
+    // Stage first: the cross-volume copy happens BEFORE the existing dest
+    // is disturbed, so a permission error or short write aborts cleanly.
+    if let Err(e) = fs::copy(src, &staged) {
+        let _ = fs::remove_file(&staged);
+        return Err(elevation_hint(e, dest));
     }
 
     let had_existing = dest.exists();
     if had_existing {
-        fs::rename(dest, &set_aside).map_err(|e| elevation_hint(e, dest))?;
+        if let Err(e) = fs::rename(dest, &set_aside) {
+            let _ = fs::remove_file(&staged);
+            return Err(elevation_hint(e, dest));
+        }
     }
-    if let Err(e) = fs::copy(src, dest) {
+    if let Err(e) = fs::rename(&staged, dest) {
         if had_existing {
             // Roll the old file back so the install keeps working.
             let _ = fs::rename(&set_aside, dest);
         }
+        let _ = fs::remove_file(&staged);
         return Err(elevation_hint(e, dest));
     }
     if had_existing {
@@ -195,12 +236,27 @@ fn elevation_hint(e: std::io::Error, dest: &Path) -> anyhow::Error {
 
 /// List the files `Extract::extract_into` produced in the temp dir,
 /// excluding the downloaded archive itself.
+///
+/// Release-contract guard: vex archives are FLAT (`tar czf … vex.exe
+/// DirectML.dll` in release.yml). This scan is deliberately non-recursive,
+/// so a directory entry means the archive shape changed — fail loudly
+/// rather than silently dropping whatever is nested inside (a sidecar that
+/// never reaches the install dir would reintroduce the exact degraded-GPU
+/// state this module exists to fix).
 fn extracted_files(tmp_dir: &Path, archive_name: &str) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in fs::read_dir(tmp_dir).context("list extracted archive contents")? {
         let entry = entry.context("read extracted dir entry")?;
         let path = entry.path();
-        if path.is_file() && entry.file_name().to_string_lossy() != archive_name {
+        if path.is_dir() {
+            bail!(
+                "release archive {archive_name} unexpectedly contains a directory ({}) — \
+                 vex release archives are flat; update self_update_flow.rs if the release \
+                 layout changed",
+                path.display()
+            );
+        }
+        if entry.file_name().to_string_lossy() != archive_name {
             files.push(path);
         }
     }
@@ -219,7 +275,7 @@ pub(crate) fn install_from_extracted(
     install_dir: &Path,
 ) -> Result<PathBuf> {
     let files = extracted_files(tmp_dir, archive_name)?;
-    let (binary, sidecars) = classify_entries(&files, bin_name);
+    let (binary, sidecars) = classify_entries(&files, bin_name)?;
     let binary = binary.ok_or_else(|| {
         anyhow!("release archive {archive_name} did not contain the `{bin_name}` binary")
     })?;
@@ -299,7 +355,9 @@ pub(crate) fn apply_update(
         .ok_or_else(|| anyhow!("current exe {} has no parent dir", current_exe.display()))?;
 
     // Sidecars first — a failure here aborts BEFORE the exe is touched, so
-    // the old exe + DLL pair stays intact (no version skew).
+    // the old exe + DLL pair stays intact (no version skew). `asset_name`
+    // doubles as the exclude filter because the archive was written under
+    // exactly that name above — keep the two in sync.
     let new_binary = install_from_extracted(tmp_dir.path(), asset_name, bin_name, install_dir)?;
 
     println!("Replacing binary...");
@@ -320,30 +378,91 @@ mod tests {
 
     #[test]
     fn classify_entries_splits_binary_and_dll_on_windows() {
-        let (binary, sidecars) = classify_entries(&paths(&["DirectML.dll", "vex.exe"]), "vex");
+        let (binary, sidecars) =
+            classify_entries(&paths(&["DirectML.dll", "vex.exe"]), "vex").unwrap();
         assert_eq!(binary, Some(PathBuf::from("vex.exe")));
         assert_eq!(sidecars, paths(&["DirectML.dll"]));
     }
 
     #[test]
     fn classify_entries_no_sidecars_on_unix() {
-        let (binary, sidecars) = classify_entries(&paths(&["vex"]), "vex");
+        let (binary, sidecars) = classify_entries(&paths(&["vex"]), "vex").unwrap();
         assert_eq!(binary, Some(PathBuf::from("vex")));
         assert!(sidecars.is_empty());
     }
 
     #[test]
+    fn classify_entries_rejects_duplicate_binary_entries() {
+        // A malformed archive with both `vex` and `vex.exe` must fail
+        // loudly, not silently install one of them as a sidecar.
+        let err = classify_entries(&paths(&["vex", "vex.exe"]), "vex").unwrap_err();
+        assert!(err.to_string().contains("more than one"), "{err}");
+    }
+
+    #[test]
     fn classify_entries_is_case_insensitive() {
-        let (binary, sidecars) = classify_entries(&paths(&["VEX.EXE"]), "vex");
+        let (binary, sidecars) = classify_entries(&paths(&["VEX.EXE"]), "vex").unwrap();
         assert_eq!(binary, Some(PathBuf::from("VEX.EXE")));
         assert!(sidecars.is_empty());
     }
 
     #[test]
     fn classify_entries_reports_missing_binary() {
-        let (binary, sidecars) = classify_entries(&paths(&["DirectML.dll"]), "vex");
+        let (binary, sidecars) = classify_entries(&paths(&["DirectML.dll"]), "vex").unwrap();
         assert_eq!(binary, None);
         assert_eq!(sidecars, paths(&["DirectML.dll"]));
+    }
+
+    #[test]
+    fn confirm_accepts_blank_and_y_only() {
+        assert!(confirm_accepts(""));
+        assert!(confirm_accepts("\n"));
+        assert!(confirm_accepts("y\n"));
+        assert!(confirm_accepts("Y\n"));
+        assert!(!confirm_accepts("n\n"));
+        assert!(!confirm_accepts("yes\n")); // crate parity: only bare y/Y
+        assert!(!confirm_accepts("q\n"));
+    }
+
+    #[test]
+    fn elevation_hint_mentions_elevated_shell_on_permission_denied() {
+        let err = elevation_hint(
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            Path::new("C:/Program Files/vex/DirectML.dll"),
+        );
+        assert!(format!("{err:#}").contains("elevated shell"), "{err:#}");
+    }
+
+    #[test]
+    fn elevation_hint_stays_generic_on_other_errors() {
+        let err = elevation_hint(
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+            Path::new("DirectML.dll"),
+        );
+        let msg = format!("{err:#}");
+        assert!(msg.contains("install sidecar"), "{msg}");
+        assert!(!msg.contains("elevated shell"), "{msg}");
+    }
+
+    #[test]
+    fn install_sidecar_failed_staging_leaves_dest_untouched() {
+        // A staging-copy failure (src missing here; disk-full/EPERM in the
+        // field) must abort BEFORE the existing dest is disturbed and must
+        // not litter the install dir with .new/.old files.
+        let install = tempfile::tempdir().unwrap();
+        let dest = install.path().join("DirectML.dll");
+        fs::write(&dest, b"old working dll").unwrap();
+
+        let missing_src = install.path().join("nonexistent-src");
+        let err = install_sidecar(&missing_src, &dest).unwrap_err();
+
+        assert!(format!("{err:#}").contains("install sidecar"), "{err:#}");
+        assert_eq!(fs::read(&dest).unwrap(), b"old working dll");
+        assert_eq!(
+            fs::read_dir(install.path()).unwrap().count(),
+            1,
+            "no .self-update.new/.old litter may remain"
+        );
     }
 
     #[test]
@@ -386,8 +505,11 @@ mod tests {
     // asset (fake vex.exe + DirectML.dll in a tar.gz), signs it with a
     // throwaway zipsign key, then drives verify → extract → sidecar
     // install against a scratch "install dir". Covers everything in
-    // `apply_update` except the real download and the final
-    // `self_replace` (which would replace the test runner's own binary).
+    // `apply_update` except the real download, the final `self_replace`
+    // (which would replace the test runner's own binary), and the
+    // mapped-DLL case where the `.old` reap fails and the file survives
+    // until a later run — none of which can be simulated portably; all
+    // three are part of the documented post-release manual smoke.
 
     const ASSET_NAME: &str = "vex-x86_64-pc-windows-msvc.tar.gz";
     const FAKE_EXE: &[u8] = b"fake vex.exe payload";
@@ -530,6 +652,26 @@ mod tests {
         let install = tempfile::tempdir().unwrap();
         let err = run_pipeline(tmp.path(), &archive, install.path()).unwrap_err();
         assert!(err.to_string().contains("did not contain"), "{err}");
+    }
+
+    #[test]
+    fn pipeline_rejects_nested_archive_layout() {
+        // The flat-archive release contract: a nested entry would extract
+        // into a subdirectory the non-recursive scan never visits, so the
+        // sidecar would be silently dropped — fail loudly instead.
+        let (tmp, archive) =
+            write_signed_archive(&[("vex.exe", FAKE_EXE), ("runtimes/DirectML.dll", FAKE_DLL)]);
+        let install = tempfile::tempdir().unwrap();
+        let err = run_pipeline(tmp.path(), &archive, install.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("contains a directory"),
+            "nested layout must be rejected, got: {err}"
+        );
+        assert_eq!(
+            fs::read_dir(install.path()).unwrap().count(),
+            0,
+            "nothing may be installed from a malformed archive"
+        );
     }
 
     #[test]

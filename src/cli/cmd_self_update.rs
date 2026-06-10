@@ -113,8 +113,18 @@ pub(crate) fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> 
     // Apply path. `status.update()` is deliberately NOT used: it extracts
     // only the named binary from the archive, so Windows self-updates
     // dropped the DirectML.dll sidecar and degraded GPU embedding to CPU
-    // until the next manual reinstall. The custom flow mirrors its version
-    // gate and confirmation UX, then installs the whole archive.
+    // until the next manual reinstall. The custom flow keeps the crate's
+    // confirmation UX, then installs the whole archive.
+    //
+    // DELIBERATE semantics change vs `status.update()`: the gate below is
+    // `get_latest_release()` + `bump_is_greater` (strictly newer, majors
+    // included, prereleases excluded by GitHub's /releases/latest), where
+    // the crate used `get_latest_releases()` + `bump_is_compatible` (major-
+    // pinned, prereleases visible). For a single-binary CLI, stopping at a
+    // major boundary just strands users on an unmaintained line — and the
+    // `--check` branch above has always used exactly these newer semantics,
+    // so check and apply now agree. Downgrades remain impossible either
+    // way (`latest < current` never passes the gate).
     let release = status
         .get_latest_release()
         .context("fetch latest release from GitHub (offline or rate-limited?)")?;
