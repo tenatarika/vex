@@ -109,6 +109,48 @@ follow the conventional-commit prefixes (`feat`, `fix`, `docs`,
 release notes` commits are filtered out of the auto-generated body —
 see `cliff.toml`.
 
+## DirectML.dll pin (Windows release archive)
+
+`.github/workflows/release.yml` ships `DirectML.dll` next to `vex.exe` in
+the Windows tarball and verifies a SHA-256 pin before staging — see the
+`EXPECTED_SHA256` env on the staging step. The pinned value MUST match
+the DirectML build that the current `ort` crate version (`Cargo.toml`
+`ort = "=2.0.0-rc.12"`) statically links against. Updating the pin is
+a two-step audit:
+
+```bash
+# 1. Find which DirectML redist the installed ort version bundles.
+#    ort-sys pulls it via build-time download (path differs by host):
+#      Windows: %LOCALAPPDATA%\ort.pyke.io\<version>\runtimes\win-x64\native\DirectML.dll
+#      Linux/macOS: ~/.cache/ort.pyke.io/... (no DirectML on these targets;
+#                   pin is verified on the Windows runner only)
+#    A fresh `cargo build --target x86_64-pc-windows-msvc --features gpu-directml`
+#    on the Windows runner populates that path; alternatively, fetch the
+#    same blob from nuget.org by the version ort pins in its build.rs.
+#
+# 2. Compute and verify the SHA-256. Pass the FULL path discovered in
+#    step 1 — `sha256sum DirectML.dll` would hash whatever happens to be
+#    in $PWD (potentially a stale or unrelated DLL) and silently agree.
+#
+#    PowerShell (the canonical Windows path — the redist lives under
+#    %LOCALAPPDATA% which has no Unix-shell equivalent):
+# (Get-FileHash "$env:LOCALAPPDATA\ort.pyke.io\<version>\runtimes\win-x64\native\DirectML.dll" `
+#     -Algorithm SHA256).Hash
+#
+#    Linux/macOS (only if you fetched the NuGet redist manually for audit):
+sha256sum "/full/path/to/extracted/DirectML.dll"
+```
+
+When bumping `ort` to a version that pulls a different DirectML release
+(check the ort changelog for "DirectML version" or grep `ort-sys`
+`build.rs` for the pinned URL/version), update `EXPECTED_SHA256` in
+`release.yml` to the new SHA. The Windows job will fail closed on
+mismatch and surface the candidate list, so a missed bump is loud.
+
+Cross-reference: `Microsoft.AI.DirectML` packages on nuget.org are
+Microsoft-signed; the SHA you pin should come from a NuGet-extracted
+DLL, not from a redistributable shipped by a third party.
+
 ## Internal format versions
 
 Some on-disk format versions live as constants in source rather than in

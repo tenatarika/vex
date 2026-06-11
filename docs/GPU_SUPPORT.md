@@ -1,10 +1,9 @@
 # Optional GPU Support for Semantic Indexing
 
-> Status: **IMPLEMENTED** (branch `feat/optional-gpu-embedding`). Verified:
-> CPU `cargo check`/`clippy -D warnings`/`fmt`, `cargo check --features
-> gpu-directml` (Windows EP path), 7 `Device` unit tests + 5 CLI tests green,
-> MCP descriptor snapshot updated. GPU *runtime* (does the EP register on real
-> hardware?) is still pending the §8 pre-release validation.
+> Status: **RELEASED in v1.16.0**. Runtime validation is performed on the
+> user's machine by the `vex gpu` doctor command, which actively probes the
+> compiled EP with strict registration (one real inference) and reports
+> `FAILED` with EP-specific remediation on a silent CPU fallback.
 > Scope: GPU acceleration of the **ONNX embedding** step only. Parsing, BM25,
 > HNSW build, and call-graph extraction are **not** GPU targets (see §9).
 
