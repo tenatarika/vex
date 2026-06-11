@@ -6,17 +6,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.16.1] - 2026-06-11
+
+Patch release. Folds in the v1.16.0-driven `vex self-update` Windows-sidecar fix
+landed via PR #4 (resolves the silent CPU-fallback path on GPU builds upgraded
+through the old binary-only updater) plus a handful of follow-ups surfaced by
+post-release review: a `OnceLock`-gated DLL-missing warning so long-running
+consumers (MCP server, daemon) don't get one warning per embedding batch, RAII
+env-restore guards on the env-mutating `#[serial]` tests so a panic between
+`set_var` and cleanup no longer pollutes the next test's view of `VEX_DEVICE` /
+`VEX_EMBEDDER`, a `vex gpu --help` long-form that documents every env var the
+GPU paths observe (previously only README-side), and a `docs/RELEASING.md` audit
+trail for the pinned `DirectML.dll` SHA so the next `ort` upgrade has explicit
+steps to re-verify the constant in the release workflow.
+
 ### Fixed
 
 - **`vex self-update` now installs the `DirectML.dll` sidecar on Windows.** The previous updater delegated to `self_update`'s built-in flow, which extracts only the named `vex` binary from the release archive — so a self-updating Windows user got the DirectML-capable exe *without* its required redist DLL and silently fell back to CPU embedding (the DLL only reached fresh installs; see GPU_SUPPORT.md §6). The apply path is rebuilt in `src/cli/self_update_flow.rs` from the crate's public building blocks: one download, one zipsign ed25519 verification (replicated — context is the asset file name), whole-archive extraction, then every non-binary file installs as a sidecar beside the exe. Sidecars are SHA-256-gated (a byte-identical DLL is skipped; a DLL missing after an older self-update is healed) and install *before* the binary swap, so a failed sidecar write (e.g. unelevated under `C:\Program Files\vex\`) aborts with the old exe + DLL pair intact instead of leaving exe↔DLL version skew. The install path deliberately avoids `self_update::Move` (its bare `fs::rename` fails when the OS temp dir and the install dir sit on different volumes): the old DLL is renamed aside within its own directory — legal even while mapped by another running vex process — and the new one is copied in. Linux/macOS archives contain only the binary, so behavior there is unchanged. `--check`, the confirm/`--yes` UX, and the v1.13.1 `vex-<target>` identifier fix (don't match `vex-mcp-*` assets) are preserved; 26 new unit/E2E tests (one Unix-gated) cover the pipeline, including a signed synthetic-archive end-to-end run, a tampered-signing-context negative, a corrupt-staged-copy abort, and a symlink-entry rejection. One-release lag: a user running v1.16.0 or older still updates with the old binary-only code on that hop; the heal applies from the next update onward.
+- **`warn_if_directml_dll_missing` is now `OnceLock`-gated.** v1.16.0 wired the warning into `execution_providers`, which fires once per embedding session — fine for a one-shot CLI, but a long-running MCP server / daemon would re-run `current_exe + canonicalize + is_file` (three syscalls) on every batch and re-emit the `eprintln!` to stderr, the exact noise users would silence with `2>/dev/null` (hiding the next real diagnostic). The lock is set unconditionally after the first probe (DLL present or absent), so subsequent calls return on the cheap `OnceLock::get` check.
+- **`#[serial]` env-mutating tests in `embed::device` and `embed::mod` are now panic-safe.** Both tests had a single `remove_var` at the trailing edge of a several-`set_var` block — a panic between any `set_var` and that cleanup left `VEX_DEVICE` / `VEX_EMBEDDER` set for the next `#[serial]` test (the lock orders tests, it does not unwind their env mutations). New `VexDeviceGuard` / `VexEmbedderGuard` RAII types capture the pre-test env on construction and restore it on `Drop`, so the cleanup runs on the panic path too.
 
 ### Added
 
 - **A DirectML-capable vex now warns when `DirectML.dll` is missing beside the exe.** Embedding initialisation prints an unconditional stderr warning (plus a `tracing` WARN for `RUST_LOG` users — `tracing::warn!` alone is filtered out under the default `EnvFilter`) with a `vex self-update` hint, instead of silently falling back to CPU — surfacing both installs degraded by the old binary-only updater and the one-release lag of the sidecar fix above.
+- **`vex gpu --help --long` documents every env var the GPU paths observe**: `VEX_DEVICE` (global default device), `VEX_EMBEDDER` (global default embedder), `VEX_GPU_STRICT` (turn ORT's silent EP-registration fallback into a hard error — same mode `vex gpu` requests internally without mutating the process env), and `VEX_GPU_ATTN_BUDGET` / `VEX_GPU_MEM_LIMIT` (advanced batching / VRAM tunables, see `docs/GPU_SUPPORT.md` §11). Closes the gap that the README and GPU_SUPPORT.md documented these but `--help` did not.
 
 ### Changed
 
 - **`vex self-update` now follows the latest release across major-version boundaries.** The old apply path inherited `self_update`'s `bump_is_compatible` gate (major-pinned: a hypothetical v2.0.0 would never be offered) while `vex self-update --check` already reported strictly-newer releases. Both paths now agree: strictly newer than current wins, majors included, prereleases excluded (GitHub's `/releases/latest` never serves them). Downgrades remain impossible — an older-but-signed release never passes the version gate. Crossing a major boundary prints a loud stderr warning in interactive, `--no-confirm`, and `--check` runs, so scripted updates cannot silently land on a new major and the preview carries the same signal as the apply. The confirm prompt now also accepts a typed `yes`, not just bare `y`.
+- **`docs/GPU_SUPPORT.md` status block** updated from "IMPLEMENTED — pending §8 pre-release validation" (a stale phrasing from the pre-v1.16.0 branch) to "RELEASED in v1.16.0", cross-referencing the `vex gpu` doctor as the runtime validation gate users now run on their own machines.
+- **`docs/RELEASING.md` documents the `DirectML.dll` SHA pin audit trail**: how to find the redist the current `ort` crate version pulls (the `%LOCALAPPDATA%\ort.pyke.io\<version>\runtimes\win-x64\native\DirectML.dll` cache populated by `cargo build`), how to verify the SHA-256 with the full path (a bare `sha256sum DirectML.dll` would silently agree with whatever DLL is in `$PWD`), and when to bump `EXPECTED_SHA256` in `.github/workflows/release.yml` for a new `ort` version. Closes the audit-gap noted at the v1.16.0 security review.
 
 ## [1.16.0] - 2026-06-10
 
