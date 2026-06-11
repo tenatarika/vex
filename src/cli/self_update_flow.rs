@@ -488,8 +488,15 @@ mod tests {
         assert!(confirm_accepts("Y\n"));
         assert!(confirm_accepts("yes\n")); // people type the word against [Y/n]
         assert!(confirm_accepts("YES\n"));
+        // Windows console read_line delivers CRLF — the primary platform of
+        // this whole fix. Production strips it via trim(); pin that, so a
+        // refactor to e.g. trim_end_matches('\n') can't silently turn every
+        // Windows interactive confirm into "update aborted".
+        assert!(confirm_accepts("y\r\n"));
+        assert!(confirm_accepts("yes\r\n"));
         assert!(!confirm_accepts("n\n"));
         assert!(!confirm_accepts("no\n"));
+        assert!(!confirm_accepts("ye\n"));
         assert!(!confirm_accepts("q\n"));
     }
 
@@ -593,6 +600,17 @@ mod tests {
     }
 
     #[test]
+    fn sha256_file_if_exists_fails_closed_on_a_non_file() {
+        // A non-file at the dest path must yield Err, never Ok(None) — a
+        // future widening of the NotFound match (e.g. swallowing
+        // PermissionDenied as "missing") must not read a directory as
+        // absent. On Windows the open itself fails non-NotFound; on Unix
+        // the open succeeds and the read fails inside sha256_stream.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(sha256_file_if_exists(dir.path()).is_err());
+    }
+
+    #[test]
     fn sha256_file_if_exists_distinguishes_missing_from_present() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("abc.txt");
@@ -611,10 +629,12 @@ mod tests {
     // throwaway zipsign key, then drives verify → extract → sidecar
     // install against a scratch "install dir". Covers everything in
     // `apply_update` except the real download, the final `self_replace`
-    // (which would replace the test runner's own binary), and the
-    // mapped-DLL case where the `.old` reap fails and the file survives
-    // until a later run — none of which can be simulated portably; all
-    // three are part of the documented post-release manual smoke.
+    // (which would replace the test runner's own binary), the mapped-DLL
+    // case where the `.old` reap fails and the file survives until a later
+    // run, and sidecar placement when the exe is reached via a
+    // symlink/junction (the `fs::canonicalize` step — needs a real
+    // symlinked exe) — none of which can be simulated portably; all four
+    // are part of the documented post-release manual smoke.
 
     const ASSET_NAME: &str = "vex-x86_64-pc-windows-msvc.tar.gz";
     const FAKE_EXE: &[u8] = b"fake vex.exe payload";
@@ -786,6 +806,26 @@ mod tests {
             fs::read_dir(install.path()).unwrap().count(),
             0,
             "nothing may be installed from a malformed archive"
+        );
+    }
+
+    /// The other half of the flat-archive contract: entries are judged on
+    /// their OWN file type, so a symlink — even one pointing at a regular
+    /// file — is rejected, not silently dereferenced into a sidecar.
+    /// Unix-only because symlink creation on Windows needs privileges; the
+    /// branch under test is platform-independent.
+    #[cfg(unix)]
+    #[test]
+    fn extracted_files_rejects_symlink_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("vex.exe"), FAKE_EXE).unwrap();
+        std::os::unix::fs::symlink("vex.exe", tmp.path().join("DirectML.dll")).unwrap();
+
+        let err = extracted_files(tmp.path(), ASSET_NAME).unwrap_err();
+
+        assert!(
+            err.to_string().contains("non-regular entry"),
+            "symlink must be rejected, got: {err}"
         );
     }
 

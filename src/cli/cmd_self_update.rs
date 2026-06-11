@@ -29,11 +29,13 @@ const _: () = assert!(
 );
 
 /// The binary/package name, used for the release-asset identifier, the
-/// archive-entry match, and the final swap. `env!` rather than a `"vex"`
-/// literal so a future crate rename surfaces as a compile-time mismatch
-/// instead of a runtime asset-lookup miss. (The GitHub `repo_name` below
-/// stays a literal — the repository is a different namespace that happens
-/// to share the name.)
+/// archive-entry match, and the final swap. `env!` rather than scattered
+/// `"vex"` literals so every site tracks the package name together; the
+/// `bin_name_matches_release_asset_contract` test pins it to the LITERAL
+/// asset naming in release.yml (which is not derived from the package
+/// name), so a crate rename fails tests instead of producing a runtime
+/// asset-lookup miss. (The GitHub `repo_name` below stays a literal — the
+/// repository is a different namespace that happens to share the name.)
 const BIN_NAME: &str = env!("CARGO_PKG_NAME");
 
 /// Update the running binary from the latest GitHub release. The
@@ -104,30 +106,30 @@ pub(crate) fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> 
     // `--check` has always used exactly these newer semantics, so check and
     // apply agree. Downgrades remain impossible either way (`latest <
     // current` never passes the gate). Major-version crossings warn loudly
-    // below, including under --no-confirm.
+    // below, including under --no-confirm and --check.
     let release = status
         .get_latest_release()
         .context("fetch latest release from GitHub (offline or rate-limited?)")?;
     let latest = release.version.as_str();
-    // Surface a semver parse failure as an error rather than silently
-    // mis-reporting direction — a release tagged with an unexpected
-    // prefix would otherwise produce a confusing "no action needed".
-    let newer = latest != current
-        && self_update::version::bump_is_greater(current, latest)
-            .with_context(|| format!("could not compare versions {current:?} and {latest:?}"))?;
+    let decision = update_decision(current, latest)?;
 
     if check_only {
-        if latest == current {
-            println!("vex is up to date ({current}).");
-        } else if newer {
-            println!(
-                "Update available: {current} → {latest} ({}).\nRun `vex self-update` (omit --check) to install.",
-                release.name
-            );
-        } else {
-            // Local build ahead of GitHub (e.g. a dev branch). Don't
-            // pretend an update is needed — just report what's out there.
-            println!("Latest release: {latest} (current: {current} — newer, no action needed).");
+        match decision {
+            UpdateDecision::UpToDate => println!("vex is up to date ({current})."),
+            UpdateDecision::Newer => {
+                warn_if_crossing_major(current, latest);
+                println!(
+                    "Update available: {current} → {latest} ({}).\nRun `vex self-update` (omit --check) to install.",
+                    release.name
+                );
+            }
+            UpdateDecision::LocalAhead => {
+                // Local build ahead of GitHub (e.g. a dev branch). Don't
+                // pretend an update is needed — just report what's out there.
+                println!(
+                    "Latest release: {latest} (current: {current} — newer, no action needed)."
+                );
+            }
         }
         return Ok(());
     }
@@ -137,7 +139,7 @@ pub(crate) fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> 
     // dropped the DirectML.dll sidecar and degraded GPU embedding to CPU
     // until the next manual reinstall. The custom flow keeps the crate's
     // confirmation UX, then installs the whole archive.
-    if !newer {
+    if decision != UpdateDecision::Newer {
         // Mirrors the crate's `Status::UpToDate` arm (also covers a local
         // dev build that is ahead of the newest GitHub release).
         println!("vex is already up to date ({current}).");
@@ -150,19 +152,7 @@ pub(crate) fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> 
             anyhow::anyhow!("no release asset found for target `{target}` in vex {latest}")
         })?;
 
-    // A major-version crossing means likely breaking changes. The prompt
-    // below gives an interactive user the chance to bail, but a scripted
-    // `--no-confirm` run (CI refresh jobs) would silently land on the new
-    // major — warn on stderr in BOTH modes. Both versions are known
-    // parseable here (`bump_is_greater` above errored otherwise).
-    if let (Some(cur_major), Some(new_major)) = (semver_major(current), semver_major(latest)) {
-        if cur_major != new_major {
-            eprintln!(
-                "WARNING: {current} → {latest} crosses a major version boundary — expect \
-                 breaking changes; review the release notes before relying on scripted updates."
-            );
-        }
-    }
+    warn_if_crossing_major(current, latest);
 
     if !no_confirm {
         println!("\nvex release status:");
@@ -176,6 +166,63 @@ pub(crate) fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> 
         .context("apply self-update")?;
     println!("Updated to vex {latest}. Restart any open shells.");
     Ok(())
+}
+
+/// Outcome of the shared `--check`/apply version gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateDecision {
+    /// `latest == current` — nothing to do.
+    UpToDate,
+    /// Strictly newer than current: majors included, prereleases never
+    /// reach here (GitHub's `/releases/latest` excludes them).
+    Newer,
+    /// Local build ahead of the newest GitHub release (e.g. a dev branch).
+    LocalAhead,
+}
+
+/// Pure decision behind the version gate, extracted from the
+/// network-coupled `cmd_self_update` so the direction logic is
+/// unit-testable — an argument swap in `bump_is_greater` (gating
+/// DOWNGRADES instead of upgrades) would otherwise survive the whole
+/// suite. Errors when the versions don't compare as semver: surfaced
+/// rather than silently mis-reporting direction, since a release tagged
+/// with an unexpected prefix would otherwise read as "no action needed".
+fn update_decision(current: &str, latest: &str) -> Result<UpdateDecision> {
+    if latest == current {
+        return Ok(UpdateDecision::UpToDate);
+    }
+    let newer = self_update::version::bump_is_greater(current, latest)
+        .with_context(|| format!("could not compare versions {current:?} and {latest:?}"))?;
+    Ok(if newer {
+        UpdateDecision::Newer
+    } else {
+        UpdateDecision::LocalAhead
+    })
+}
+
+/// True when `current → latest` crosses a major version boundary.
+/// Unparseable inputs read as "not crossing" (stay quiet); both strings
+/// are already semver-validated by [`update_decision`] on every reachable
+/// path.
+fn crosses_major(current: &str, latest: &str) -> bool {
+    match (semver_major(current), semver_major(latest)) {
+        (Some(cur), Some(new)) => cur != new,
+        _ => false,
+    }
+}
+
+/// A major-version crossing means likely breaking changes — warn loudly on
+/// stderr. Fires on the apply path in BOTH interactive and `--no-confirm`
+/// modes (the prompt lets an interactive user bail, but scripted CI must
+/// not silently land on a new major) and on `--check`, so the preview
+/// carries the same signal as the apply.
+fn warn_if_crossing_major(current: &str, latest: &str) {
+    if crosses_major(current, latest) {
+        eprintln!(
+            "WARNING: {current} → {latest} crosses a major version boundary — expect \
+             breaking changes; review the release notes before relying on scripted updates."
+        );
+    }
 }
 
 /// First numeric component of a version string (`"1.16.0"` → `1`,
@@ -275,5 +322,56 @@ mod tests {
         assert_eq!(super::semver_major("2-beta"), Some(2));
         assert_eq!(super::semver_major("garbage"), None);
         assert_eq!(super::semver_major(""), None);
+    }
+
+    #[test]
+    fn update_decision_classifies_all_directions() {
+        use super::UpdateDecision::*;
+        // The gate that protects users from downgrades and spurious
+        // updates — pinned so an argument swap in `bump_is_greater`
+        // (which would gate downgrades instead of upgrades) fails here.
+        assert_eq!(
+            super::update_decision("1.16.0", "1.16.0").unwrap(),
+            UpToDate
+        );
+        assert_eq!(super::update_decision("1.16.0", "1.16.1").unwrap(), Newer);
+        assert_eq!(super::update_decision("1.16.0", "1.17.0").unwrap(), Newer);
+        assert_eq!(
+            super::update_decision("1.16.0", "2.0.0").unwrap(),
+            Newer,
+            "majors are included (deliberate bump_is_greater semantics)"
+        );
+        assert_eq!(
+            super::update_decision("1.16.0", "1.15.9").unwrap(),
+            LocalAhead,
+            "downgrades never pass the gate"
+        );
+        assert_eq!(
+            super::update_decision("2.0.0", "1.99.9").unwrap(),
+            LocalAhead
+        );
+        assert!(super::update_decision("1.16.0", "not-semver").is_err());
+    }
+
+    #[test]
+    fn crosses_major_detects_boundary_only() {
+        assert!(super::crosses_major("1.16.0", "2.0.0"));
+        assert!(super::crosses_major("1.16.0", "10.0.0"));
+        assert!(!super::crosses_major("1.16.0", "1.17.0"));
+        assert!(!super::crosses_major("1.16.0", "1.16.1"));
+        assert!(
+            !super::crosses_major("garbage", "2.0.0"),
+            "unparseable input stays quiet rather than warning spuriously"
+        );
+    }
+
+    #[test]
+    fn bin_name_matches_release_asset_contract() {
+        // release.yml packs assets under the LITERAL name
+        // `vex-<target>.tar.gz` — it is not derived from CARGO_PKG_NAME.
+        // If the crate is ever renamed, BIN_NAME silently follows but the
+        // published assets don't; this pin fails first, forcing the
+        // release contract and the constant to be revisited together.
+        assert_eq!(super::BIN_NAME, "vex");
     }
 }
