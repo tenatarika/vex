@@ -660,6 +660,23 @@ pub enum Commands {
     /// Diagnose GPU acceleration: show the execution provider compiled into
     /// this binary, actively probe whether it engages on this machine, and
     /// print targeted setup help if it does not. No index needed.
+    #[command(
+        long_about = "Diagnose GPU acceleration. Prints the execution provider compiled \
+into this binary and actively probes one real inference, so a silent CPU fallback shows as \
+FAILED with EP-specific setup help.\n\n\
+Environment variables observed by GPU paths (all read-only — `vex gpu` never mutates the \
+process env):\n  \
+  VEX_DEVICE       Global default device across projects (cpu|auto|cuda|directml|coreml). \
+Lower precedence than --device / .vex.toml. A stale pin to an uncompiled EP degrades to the \
+compile-time default rather than erroring.\n  \
+  VEX_EMBEDDER     Global default embedder (minilm-l6-v2 / jina-code / bge-base-en-v1.5 / \
+bge-large-en-v1.5 / mxbai-large). Unknown values fall back to the default with a warning.\n  \
+  VEX_GPU_STRICT   `1` turns ORT's silent EP-registration fallback into a hard error — \
+useful for benchmarking or for proving the GPU engaged on a given box. `vex gpu` requests \
+strict mode internally without setting this variable. Default: unset (lenient).\n  \
+  VEX_GPU_ATTN_BUDGET / VEX_GPU_MEM_LIMIT  Advanced batching / VRAM tunables (see \
+docs/GPU_SUPPORT.md §11 — heavy embedders / shared GPU only)."
+    )]
     Gpu {
         /// Probe only this device (cuda|directml|coreml; `auto` = all). Default:
         /// every execution provider compiled into this binary.
