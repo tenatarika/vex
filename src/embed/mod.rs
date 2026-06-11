@@ -226,6 +226,34 @@ mod tests {
 
     use super::*;
 
+    /// Restores a `VEX_EMBEDDER` env mutation on Drop — including unwind. Mirrors
+    /// `VexDeviceGuard` in `embed::device`; without it a panic between any
+    /// `set_var` and the trailing `remove_var` left `VEX_EMBEDDER` polluted for
+    /// the next `#[serial]` test (the lock orders, doesn't unwind their env).
+    struct VexEmbedderGuard {
+        prior: Option<std::ffi::OsString>,
+    }
+
+    impl VexEmbedderGuard {
+        fn capture() -> Self {
+            Self {
+                prior: std::env::var_os("VEX_EMBEDDER"),
+            }
+        }
+    }
+
+    impl Drop for VexEmbedderGuard {
+        fn drop(&mut self) {
+            // SAFETY (Rust 1.80+ marks set_var/remove_var unsafe under
+            // edition-2024): only called from a `#[serial]` test holding the
+            // `serial_test` global lock — no concurrent `getenv` can race.
+            match &self.prior {
+                Some(v) => std::env::set_var("VEX_EMBEDDER", v),
+                None => std::env::remove_var("VEX_EMBEDDER"),
+            }
+        }
+    }
+
     #[test]
     fn registry_lookups_cover_minilm_and_extras() {
         // MiniLM (default) is always known.
@@ -263,7 +291,10 @@ mod tests {
     fn resolve_embedder_precedence() {
         // `#[serial]`: mutating process env from a multi-threaded test runner
         // races every concurrent `getenv` (POSIX UB) — all env-mutating tests
-        // share the serial lock.
+        // share the serial lock. `VexEmbedderGuard`: a panic between any
+        // `set_var` and the trailing `remove_var` left `VEX_EMBEDDER` set for
+        // the next serial test; Drop restores it now even on unwind.
+        let _guard = VexEmbedderGuard::capture();
         std::env::remove_var("VEX_EMBEDDER");
         // CLI flag wins over everything.
         assert_eq!(resolve_embedder(Some("cli-id"), Some("cfg-id")), "cli-id");
@@ -286,6 +317,6 @@ mod tests {
         // Blank env is ignored (falls through to default).
         std::env::set_var("VEX_EMBEDDER", "   ");
         assert_eq!(resolve_embedder(None, None), DEFAULT_EMBEDDER);
-        std::env::remove_var("VEX_EMBEDDER");
+        // `_guard` restores the captured pre-test VEX_EMBEDDER on Drop.
     }
 }

@@ -209,8 +209,19 @@ fn directml_dll_missing(exe_dir: &std::path::Path) -> bool {
 /// old binary-only self-updater, releases ≤ v1.16.0) registers the EP, fails to load it,
 /// and quietly embeds on CPU. Warn where the EP is requested so the user
 /// learns about the fallback; the next `vex self-update` reinstalls the DLL.
+///
+/// `OnceLock` keeps a long-running consumer (MCP server, daemon, batch
+/// indexer) from emitting one warning per `execution_providers` call —
+/// the check itself is cheap, but `eprintln!` on every batch floods stderr
+/// and is exactly the noise users will silence with `2>/dev/null`, hiding
+/// the next real diagnostic.
 #[cfg(feature = "gpu-directml")]
 fn warn_if_directml_dll_missing() {
+    use std::sync::OnceLock;
+    static WARNED: OnceLock<()> = OnceLock::new();
+    if WARNED.get().is_some() {
+        return;
+    }
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
@@ -234,6 +245,12 @@ fn warn_if_directml_dll_missing() {
              (run `vex self-update` to restore it)"
         );
     }
+    // Always latch — regardless of whether the warning fired. Skipping this
+    // on the DLL-present branch left every subsequent call re-doing
+    // `current_exe` + `canonicalize` + `is_file`, which compounds to
+    // O(batches) syscalls in a long-running MCP server (the exact load the
+    // OnceLock was added to dampen).
+    let _ = WARNED.set(());
 }
 
 /// Build the ort execution-provider list for `device`.
@@ -323,6 +340,36 @@ mod tests {
 
     use super::*;
 
+    /// Restores a `VEX_DEVICE` env mutation on Drop — including unwind. Without
+    /// this, a panic between `set_var` and the explicit `remove_var` leaves
+    /// `VEX_DEVICE` polluted for the next `#[serial]` test (the `serial_test`
+    /// lock orders tests but does not unwind their env). The guard captures
+    /// the pre-test value once on construction and restores it (or unsets)
+    /// on Drop, regardless of how the test exits.
+    struct VexDeviceGuard {
+        prior: Option<std::ffi::OsString>,
+    }
+
+    impl VexDeviceGuard {
+        fn capture() -> Self {
+            Self {
+                prior: std::env::var_os("VEX_DEVICE"),
+            }
+        }
+    }
+
+    impl Drop for VexDeviceGuard {
+        fn drop(&mut self) {
+            // SAFETY (Rust 1.80+ marks set_var/remove_var unsafe under
+            // edition-2024): only called from a `#[serial]` test holding the
+            // `serial_test` global lock — no concurrent `getenv` can race.
+            match &self.prior {
+                Some(v) => std::env::set_var("VEX_DEVICE", v),
+                None => std::env::remove_var("VEX_DEVICE"),
+            }
+        }
+    }
+
     #[test]
     fn parse_known_variants() {
         assert_eq!(Device::parse("auto").unwrap(), Device::Auto);
@@ -403,6 +450,10 @@ mod tests {
         // `index` after a CPU-only reinstall). `#[serial]`: mutating process
         // env from a multi-threaded test runner races every concurrent
         // `getenv` (POSIX UB) — all env-mutating tests share the serial lock.
+        // `VexDeviceGuard`: a panic between any `set_var` and the original
+        // `remove_var` left `VEX_DEVICE` set for the next serial test (the
+        // lock orders, doesn't unwind); Drop restores it now even on panic.
+        let _guard = VexDeviceGuard::capture();
         std::env::set_var("VEX_DEVICE", "cuda");
         assert_eq!(
             Device::resolve(None, None, None, None).unwrap(),
@@ -420,7 +471,6 @@ mod tests {
             Device::resolve(None, None, None, None).unwrap(),
             Device::Auto
         );
-        std::env::remove_var("VEX_DEVICE");
     }
 
     #[test]
