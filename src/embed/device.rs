@@ -193,6 +193,29 @@ fn cuda_ep() -> fastembed::ExecutionProviderDispatch {
     cuda.build()
 }
 
+/// Surface the silently-degraded state this warning's companion fix in
+/// `self_update_flow` exists to heal: a DirectML-capable binary whose
+/// `DirectML.dll` redist is missing beside the exe (installs updated by the
+/// old binary-only self-updater, releases ≤ v1.16.0) registers the EP, fails to load it,
+/// and quietly embeds on CPU. Warn where the EP is requested so the user
+/// learns about the fallback; the next `vex self-update` reinstalls the DLL.
+#[cfg(feature = "gpu-directml")]
+fn warn_if_directml_dll_missing() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    let Some(dir) = exe.parent() else { return };
+    if !dir.join("DirectML.dll").is_file() {
+        tracing::warn!(
+            exe_dir = %dir.display(),
+            "DirectML.dll not found beside the vex binary — the DirectML execution \
+             provider cannot load and embedding will fall back to CPU; run \
+             `vex self-update` to restore the DLL"
+        );
+    }
+}
+
 /// Build the ort execution-provider list for `device`.
 ///
 /// Returns an empty `Vec` (== today's CPU path) on a non-GPU build, for
@@ -219,7 +242,10 @@ pub fn execution_providers(
             #[cfg(feature = "gpu-cuda")]
             eps.push(cuda_ep());
             #[cfg(feature = "gpu-directml")]
-            eps.push(ort::ep::DirectML::default().build());
+            {
+                warn_if_directml_dll_missing();
+                eps.push(ort::ep::DirectML::default().build());
+            }
             #[cfg(feature = "gpu-coreml")]
             eps.push(ort::ep::CoreML::default().build());
         }
@@ -231,7 +257,10 @@ pub fn execution_providers(
         }
         Device::DirectMl => {
             #[cfg(feature = "gpu-directml")]
-            eps.push(ort::ep::DirectML::default().build());
+            {
+                warn_if_directml_dll_missing();
+                eps.push(ort::ep::DirectML::default().build());
+            }
             #[cfg(not(feature = "gpu-directml"))]
             bail!("vex was not built with DirectML support (rebuild with --features gpu-directml)");
         }

@@ -540,7 +540,10 @@ self-update. Sidecars install *before* the binary swap: a failed DLL write
 old exe + DLL pair intact, never leaving exe↔DLL version skew. One-release
 lag: a user *running* a v1.16.0-or-older binary still updates with the old
 extract-binary-only code on that hop; the heal kicks in from the next update
-onward. macOS CoreML needs no sidecar (system framework); Linux is CPU-only.
+onward. The degraded state is also *visible* now: a DirectML build that can't
+find the DLL beside the exe logs a WARN at embedding init (with a
+`vex self-update` hint) instead of falling back to CPU silently. macOS CoreML
+needs no sidecar (system framework); Linux is CPU-only.
 
 **DirectML.dll supply-chain pin.** The staging step never trusts whatever it
 finds in the runner's ort cache: every candidate `DirectML.dll` is hashed and

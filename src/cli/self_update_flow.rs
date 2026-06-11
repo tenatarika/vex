@@ -88,8 +88,25 @@ pub(crate) fn classify_entries(
 /// SHA-256 of a file's contents, streamed in 64 KiB chunks (DirectML.dll
 /// is ~18 MB — don't buffer it whole).
 pub(crate) fn sha256_file(path: &Path) -> Result<[u8; 32]> {
-    let mut file =
+    let file =
         fs::File::open(path).with_context(|| format!("open {} for hashing", path.display()))?;
+    sha256_stream(file, path)
+}
+
+/// SHA-256 of a file that may legitimately be absent (the heal path: a
+/// destination DLL missing after an old binary-only self-update). A single
+/// `open` distinguishes missing from other errors — no separate `exists()`
+/// probe, so there is no stat→open window for a concurrent process to race
+/// and one fewer syscall on the path.
+pub(crate) fn sha256_file_if_exists(path: &Path) -> Result<Option<[u8; 32]>> {
+    match fs::File::open(path) {
+        Ok(file) => sha256_stream(file, path).map(Some),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(anyhow!(e).context(format!("open {} for hashing", path.display()))),
+    }
+}
+
+fn sha256_stream(mut file: fs::File, path: &Path) -> Result<[u8; 32]> {
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
@@ -127,11 +144,13 @@ pub(crate) fn verify_signature(
     Ok(())
 }
 
-/// Pure decision behind [`confirm`]: blank or `y`/`Y` proceeds, anything
-/// else aborts. Matches `self_update`'s private `confirm` semantics.
+/// Pure decision behind [`confirm`]: blank, `y`, or `yes` (any case)
+/// proceeds, anything else aborts. Superset of `self_update`'s private
+/// `confirm` (bare `y` only) — the prompt reads `[Y/n]` and people type
+/// the full word, which must not read as an abort.
 fn confirm_accepts(answer: &str) -> bool {
     let answer = answer.trim().to_lowercase();
-    answer.is_empty() || answer == "y"
+    answer.is_empty() || answer == "y" || answer == "yes"
 }
 
 /// Replicates `self_update`'s private `confirm`: the user's last gate
@@ -160,17 +179,20 @@ pub(crate) fn confirm(prompt: &str) -> Result<()> {
 ///      for the exe itself);
 ///   2. the new file is STAGED into the destination directory first
 ///      (`<name>.self-update.new`, via copy — copy works across volumes)
-///      and only then renamed into place — same-volume, atomic, so `dest`
-///      is never observable in a half-written state (a partial DLL beside
-///      the exe would fail `LoadLibrary` harder than the missing-DLL case
-///      this module exists to fix);
+///      and re-hashed against `src_hash` — `fs::copy` can report success
+///      after a short write on some network filesystems, and the staged
+///      copy is what actually lands beside the exe — and only then renamed
+///      into place — same-volume, atomic, so `dest` is never observable in
+///      a half-written state (a partial DLL beside the exe would fail
+///      `LoadLibrary` harder than the missing-DLL case this module exists
+///      to fix);
 ///   3. best-effort delete of the set-aside copy — if a process still maps
 ///      it the delete fails and the `.old` file is reaped on a later run.
 ///
-/// Failure handling: a failed staging copy aborts before `dest` is ever
-/// touched; a failed final rename restores the set-aside original. The
-/// install dir is never left without a working sidecar.
-fn install_sidecar(src: &Path, dest: &Path) -> Result<()> {
+/// Failure handling: a failed or corrupt staging copy aborts before `dest`
+/// is ever touched; a failed final rename restores the set-aside original.
+/// The install dir is never left without a working sidecar.
+fn install_sidecar(src: &Path, dest: &Path, src_hash: &[u8; 32]) -> Result<()> {
     let dest_dir = dest
         .parent()
         .ok_or_else(|| anyhow!("sidecar destination {} has no parent dir", dest.display()))?;
@@ -196,6 +218,24 @@ fn install_sidecar(src: &Path, dest: &Path) -> Result<()> {
     if let Err(e) = fs::copy(src, &staged) {
         let _ = fs::remove_file(&staged);
         return Err(elevation_hint(e, dest));
+    }
+
+    // The staged copy is what actually lands beside the exe — verify it
+    // against the source hash before the existing dest is disturbed.
+    match sha256_file(&staged) {
+        Ok(h) if h == *src_hash => {}
+        Ok(_) => {
+            let _ = fs::remove_file(&staged);
+            bail!(
+                "staged copy of {} is corrupt (hash mismatch after copy) — \
+                 the existing install was left untouched; re-run `vex self-update`",
+                dest.display()
+            );
+        }
+        Err(e) => {
+            let _ = fs::remove_file(&staged);
+            return Err(e);
+        }
     }
 
     let had_existing = dest.exists();
@@ -242,17 +282,34 @@ fn elevation_hint(e: std::io::Error, dest: &Path) -> anyhow::Error {
 /// so a directory entry means the archive shape changed — fail loudly
 /// rather than silently dropping whatever is nested inside (a sidecar that
 /// never reaches the install dir would reintroduce the exact degraded-GPU
-/// state this module exists to fix).
+/// state this module exists to fix). Entries are judged by their own file
+/// type (`DirEntry::file_type`, which does NOT follow symlinks): the
+/// contract is about what the archive contained, not what a link points
+/// at, so symlinks and other non-regular entries are rejected too.
+///
+/// Invariant: `archive_name` must be the exact file name the downloaded
+/// archive was written under inside `tmp_dir` — the string comparison
+/// below is the only thing excluding the archive from the result, and a
+/// mismatched name would classify the archive itself as a sidecar.
+/// [`apply_update`] guarantees this by using one variable for both.
 fn extracted_files(tmp_dir: &Path, archive_name: &str) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in fs::read_dir(tmp_dir).context("list extracted archive contents")? {
         let entry = entry.context("read extracted dir entry")?;
         let path = entry.path();
-        if path.is_dir() {
+        let file_type = entry.file_type().context("stat extracted dir entry")?;
+        if file_type.is_dir() {
             bail!(
                 "release archive {archive_name} unexpectedly contains a directory ({}) — \
                  vex release archives are flat; update self_update_flow.rs if the release \
                  layout changed",
+                path.display()
+            );
+        }
+        if !file_type.is_file() {
+            bail!(
+                "release archive {archive_name} unexpectedly contains a non-regular entry \
+                 ({}) — vex release archives contain only plain files",
                 path.display()
             );
         }
@@ -268,6 +325,14 @@ fn extracted_files(tmp_dir: &Path, archive_name: &str) -> Result<Vec<PathBuf>> {
 /// extracted binary's path for the final swap. Split from [`apply_update`]
 /// so the whole post-download pipeline is testable without network or
 /// `self_replace`.
+///
+/// Integrity boundary: the archive-level zipsign ed25519 signature
+/// (verified before extraction) covers every byte of every file installed
+/// here. The per-file SHA-256s below are NOT a second trust check — they
+/// are a skip-gate (don't rewrite a byte-identical DLL) plus a staging
+/// copy-integrity re-check inside [`install_sidecar`]. Don't add a pinned
+/// per-file hash here (it would drift on every ort bump), and don't remove
+/// the archive signature check thinking these hashes replace it.
 pub(crate) fn install_from_extracted(
     tmp_dir: &Path,
     archive_name: &str,
@@ -287,15 +352,11 @@ pub(crate) fn install_from_extracted(
             .ok_or_else(|| anyhow!("sidecar {} has no UTF-8 file name", sidecar.display()))?;
         let dest = install_dir.join(name);
         let src_hash = sha256_file(sidecar)?;
-        let dest_hash = if dest.exists() {
-            Some(sha256_file(&dest)?)
-        } else {
-            None
-        };
+        let dest_hash = sha256_file_if_exists(&dest)?;
         match sidecar_action(&src_hash, dest_hash.as_ref()) {
             SidecarAction::Skip => println!("Sidecar {name} is up to date — skipping."),
             SidecarAction::Install => {
-                install_sidecar(sidecar, &dest)?;
+                install_sidecar(sidecar, &dest, &src_hash)?;
                 println!("Installed sidecar {name}.");
             }
         }
@@ -349,7 +410,13 @@ pub(crate) fn apply_update(
         .extract_into(tmp_dir.path())
         .context("extract release archive")?;
 
+    // `current_exe()` "may or may not" follow symlinks; canonicalize the exe
+    // path (not just its parent — that wouldn't resolve a symlinked FILE like
+    // `~/.local/bin/vex` → `/opt/vex/vex`) so sidecars land beside the REAL
+    // binary, where the Windows loader actually resolves DLLs. Best-effort:
+    // on canonicalization failure fall back to the reported path.
     let current_exe = std::env::current_exe().context("locate current vex binary")?;
+    let current_exe = fs::canonicalize(&current_exe).unwrap_or(current_exe);
     let install_dir = current_exe
         .parent()
         .ok_or_else(|| anyhow!("current exe {} has no parent dir", current_exe.display()))?;
@@ -414,13 +481,15 @@ mod tests {
     }
 
     #[test]
-    fn confirm_accepts_blank_and_y_only() {
+    fn confirm_accepts_blank_y_and_yes() {
         assert!(confirm_accepts(""));
         assert!(confirm_accepts("\n"));
         assert!(confirm_accepts("y\n"));
         assert!(confirm_accepts("Y\n"));
+        assert!(confirm_accepts("yes\n")); // people type the word against [Y/n]
+        assert!(confirm_accepts("YES\n"));
         assert!(!confirm_accepts("n\n"));
-        assert!(!confirm_accepts("yes\n")); // crate parity: only bare y/Y
+        assert!(!confirm_accepts("no\n"));
         assert!(!confirm_accepts("q\n"));
     }
 
@@ -454,9 +523,33 @@ mod tests {
         fs::write(&dest, b"old working dll").unwrap();
 
         let missing_src = install.path().join("nonexistent-src");
-        let err = install_sidecar(&missing_src, &dest).unwrap_err();
+        let err = install_sidecar(&missing_src, &dest, &[0u8; 32]).unwrap_err();
 
         assert!(format!("{err:#}").contains("install sidecar"), "{err:#}");
+        assert_eq!(fs::read(&dest).unwrap(), b"old working dll");
+        assert_eq!(
+            fs::read_dir(install.path()).unwrap().count(),
+            1,
+            "no .self-update.new/.old litter may remain"
+        );
+    }
+
+    #[test]
+    fn install_sidecar_rejects_corrupt_staged_copy() {
+        // A short/corrupt staging copy (simulated here by passing a wrong
+        // expected hash; in the field: `fs::copy` reporting success after a
+        // partial flush on a network filesystem) must abort with the
+        // existing dest untouched and no litter.
+        let install = tempfile::tempdir().unwrap();
+        let dest = install.path().join("DirectML.dll");
+        fs::write(&dest, b"old working dll").unwrap();
+        let src_dir = tempfile::tempdir().unwrap();
+        let src = src_dir.path().join("DirectML.dll");
+        fs::write(&src, b"new dll bytes").unwrap();
+
+        let err = install_sidecar(&src, &dest, &[0u8; 32]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("hash mismatch"), "{err:#}");
         assert_eq!(fs::read(&dest).unwrap(), b"old working dll");
         assert_eq!(
             fs::read_dir(install.path()).unwrap().count(),
@@ -497,6 +590,18 @@ mod tests {
             0xf2, 0x00, 0x15, 0xad,
         ];
         assert_eq!(sha256_file(&path).unwrap(), expected);
+    }
+
+    #[test]
+    fn sha256_file_if_exists_distinguishes_missing_from_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.txt");
+        assert_eq!(sha256_file_if_exists(&path).unwrap(), None);
+        fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            sha256_file_if_exists(&path).unwrap(),
+            Some(sha256_file(&path).unwrap())
+        );
     }
 
     // ---- end-to-end pipeline (no network) -------------------------------
@@ -618,6 +723,16 @@ mod tests {
         let install = tempfile::tempdir().unwrap();
         let dll = install.path().join("DirectML.dll");
         fs::write(&dll, FAKE_DLL).unwrap();
+        // Backdate the mtime far beyond any filesystem timestamp resolution
+        // (FAT32/APFS: up to 2 s). A rewrite stamps the file with "now",
+        // which can never equal the two-hour-old value — a plain
+        // before/after comparison would false-pass whenever both writes
+        // land in the same coarse timestamp tick.
+        let backdated = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60);
+        let f = fs::OpenOptions::new().write(true).open(&dll).unwrap();
+        f.set_times(fs::FileTimes::new().set_modified(backdated))
+            .unwrap();
+        drop(f);
         let mtime_before = fs::metadata(&dll).unwrap().modified().unwrap();
 
         run_pipeline(tmp.path(), &archive, install.path()).unwrap();
