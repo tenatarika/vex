@@ -104,7 +104,7 @@ Pre-built `vex.exe` ships in every GitHub Release.
 3. Add that folder to `PATH` (System Properties → Environment Variables → edit `Path` → add the folder)
 4. Open a fresh terminal and run `vex --version`
 
-To update, run `vex self-update` — it fetches the latest release, picks the right archive for your platform, and replaces the binary in-place. Same command works on macOS and Linux too.
+To update, run `vex self-update` — it fetches the latest release, picks the right archive for your platform, verifies its signature, and replaces the binary in-place. On Windows it also installs/refreshes the bundled `DirectML.dll` sidecar (skipped when byte-identical; re-installed if an older self-update dropped it — updaters up to v1.16.0 extracted only the binary). Same command works on macOS and Linux too.
 
 > **GPU acceleration is built into the prebuilt binaries** — Windows ships with DirectML (any DX12 GPU, driver-only; the redist `DirectML.dll` is bundled in the archive) and macOS arm64 with CoreML. NVIDIA CUDA is a source-build opt-in. Run `vex gpu` to check, and see [GPU Acceleration](#gpu-acceleration).
 

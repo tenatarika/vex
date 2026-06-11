@@ -27,6 +27,7 @@ pub(crate) mod exit_code;
 pub(crate) mod index_management;
 pub mod output;
 pub mod scope;
+pub(crate) mod self_update_flow;
 pub mod show_truncate;
 pub(crate) mod stale_signal;
 pub(crate) mod status_coverage;

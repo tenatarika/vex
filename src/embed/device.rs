@@ -193,6 +193,49 @@ fn cuda_ep() -> fastembed::ExecutionProviderDispatch {
     cuda.build()
 }
 
+/// Pure decision behind [`warn_if_directml_dll_missing`]. Un-gated from
+/// `gpu-directml` (compiled in test builds too) so the logic has coverage in
+/// every `cargo test` run, not just GPU-feature builds. A path that exists
+/// but is not a regular file counts as missing — `LoadLibrary` can't load a
+/// directory either.
+#[cfg(any(test, feature = "gpu-directml"))]
+fn directml_dll_missing(exe_dir: &std::path::Path) -> bool {
+    !exe_dir.join("DirectML.dll").is_file()
+}
+
+/// Surface the silently-degraded state this warning's companion fix in
+/// `self_update_flow` exists to heal: a DirectML-capable binary whose
+/// `DirectML.dll` redist is missing beside the exe (installs updated by the
+/// old binary-only self-updater, releases ≤ v1.16.0) registers the EP, fails to load it,
+/// and quietly embeds on CPU. Warn where the EP is requested so the user
+/// learns about the fallback; the next `vex self-update` reinstalls the DLL.
+#[cfg(feature = "gpu-directml")]
+fn warn_if_directml_dll_missing() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    let Some(dir) = exe.parent() else { return };
+    if directml_dll_missing(dir) {
+        // `tracing::warn!` alone disappears when RUST_LOG is unset — the
+        // default for exactly the degraded-install users this targets (the
+        // subscriber's `EnvFilter::from_default_env()` drops everything
+        // below ERROR). `eprintln!` is unconditional; same pattern as
+        // `embed::integrity`'s bypass warning.
+        eprintln!(
+            "warning: DirectML.dll not found beside the vex binary ({}) — the DirectML \
+             execution provider cannot load and embedding will fall back to CPU; run \
+             `vex self-update` to restore the DLL",
+            dir.display()
+        );
+        tracing::warn!(
+            exe_dir = %dir.display(),
+            "DirectML.dll missing beside the binary; embedding falls back to CPU \
+             (run `vex self-update` to restore it)"
+        );
+    }
+}
+
 /// Build the ort execution-provider list for `device`.
 ///
 /// Returns an empty `Vec` (== today's CPU path) on a non-GPU build, for
@@ -219,7 +262,10 @@ pub fn execution_providers(
             #[cfg(feature = "gpu-cuda")]
             eps.push(cuda_ep());
             #[cfg(feature = "gpu-directml")]
-            eps.push(ort::ep::DirectML::default().build());
+            {
+                warn_if_directml_dll_missing();
+                eps.push(ort::ep::DirectML::default().build());
+            }
             #[cfg(feature = "gpu-coreml")]
             eps.push(ort::ep::CoreML::default().build());
         }
@@ -231,7 +277,10 @@ pub fn execution_providers(
         }
         Device::DirectMl => {
             #[cfg(feature = "gpu-directml")]
-            eps.push(ort::ep::DirectML::default().build());
+            {
+                warn_if_directml_dll_missing();
+                eps.push(ort::ep::DirectML::default().build());
+            }
             #[cfg(not(feature = "gpu-directml"))]
             bail!("vex was not built with DirectML support (rebuild with --features gpu-directml)");
         }
@@ -292,6 +341,22 @@ mod tests {
         let err = Device::parse("metal").unwrap_err().to_string();
         assert!(err.contains("metal"));
         assert!(err.contains("cpu|auto|cuda|directml|coreml"));
+    }
+
+    #[test]
+    fn directml_dll_missing_detects_absence_presence_and_non_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(directml_dll_missing(dir.path()), "empty dir → missing");
+
+        std::fs::write(dir.path().join("DirectML.dll"), b"dll bytes").unwrap();
+        assert!(!directml_dll_missing(dir.path()), "regular file → present");
+
+        std::fs::remove_file(dir.path().join("DirectML.dll")).unwrap();
+        std::fs::create_dir(dir.path().join("DirectML.dll")).unwrap();
+        assert!(
+            directml_dll_missing(dir.path()),
+            "a directory named DirectML.dll is not a loadable DLL"
+        );
     }
 
     #[test]

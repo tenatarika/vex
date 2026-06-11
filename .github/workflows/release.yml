@@ -123,11 +123,14 @@ jobs:
 
       - name: Package (unix)
         if: matrix.os != 'windows-latest'
-        # Each binary ships as a separate tarball. `vex self-update` only
-        # extracts the named `vex` binary from `vex-<target>.tar.gz`, so
-        # `vex-mcp` cannot live alongside it — the second binary would be
-        # silently ignored on self-update. The separate `vex-mcp-<target>`
-        # archive keeps both installable from the GitHub release page.
+        # Each binary ships as a separate tarball. `vex self-update`
+        # (releases after v1.16.0) installs EVERYTHING in
+        # `vex-<target>.tar.gz`: the `vex` binary is self-replaced and
+        # every other file is treated as a sidecar installed beside the
+        # exe. `vex-mcp` therefore cannot live in this archive —
+        # self-update would start installing it as a sidecar next to
+        # `vex`. The separate `vex-mcp-<target>` archive keeps both
+        # installable from the GitHub release page.
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../vex-${{ matrix.target }}.tar.gz vex
@@ -174,11 +177,13 @@ jobs:
           Push-Location target/${{ matrix.target }}/release
           # vex.exe ships with DirectML.dll (the GPU EP's runtime dep, staged
           # above). vex-mcp.exe spawns the `vex` CLI as a subprocess and never
-          # loads ORT itself, so it needs no DLL. Note: `vex self-update` only
-          # extracts the named `vex` binary from the archive, so the bundled
-          # DirectML.dll reaches fresh installs (manual untar / brew) but NOT
-          # self-update — a self-updating user without the DLL keeps working on
-          # CPU (graceful fallback), which is acceptable. See GPU_SUPPORT.md §6.
+          # loads ORT itself, so it needs no DLL. `vex self-update` (releases
+          # after v1.16.0) installs every non-binary file in this archive as a
+          # sidecar beside the exe — so the DLL now reaches BOTH fresh installs
+          # (manual untar / brew) and self-updates, and an install degraded by
+          # an older binary-only updater is healed on its next self-update.
+          # Consequence: never add a file to this tarball that must not land
+          # next to vex.exe on update. See GPU_SUPPORT.md §6.
           tar -czf "../../../vex-${{ matrix.target }}.tar.gz" vex.exe DirectML.dll
           tar -czf "../../../vex-mcp-${{ matrix.target }}.tar.gz" vex-mcp.exe
           Pop-Location

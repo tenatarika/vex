@@ -140,6 +140,21 @@ self_update = { version = "0.42", default-features = false, features = [
     "signatures",
 ] }
 
+# Direct dep so the custom self-update apply flow (cli/self_update_flow.rs)
+# can verify release signatures itself — self_update's verification is
+# private and its all-in-one `update()` extracts only the named binary,
+# dropping the DirectML.dll sidecar. Pinned to the exact version
+# self_update 0.42 locks so cargo unifies to a single build.
+zipsign-api = { version = "=0.1.5", default-features = false, features = [
+    "verify-tar",
+] }
+
+# Header constants for the self-update asset download (GitHub's API asset
+# URL needs `Accept: application/octet-stream`). `self_update::Download`
+# takes `reqwest::header::*` types, which are re-exports of this crate —
+# depending on `http` directly avoids pulling all of reqwest into our API.
+http = "1"
+
 [features]
 default = []
 # Optional GPU execution providers for semantic embedding. All OFF by default;
@@ -168,6 +183,17 @@ filetime = "0.2"
 # nextest runs in-binary tests on multiple threads, and concurrent
 # setenv/getenv is UB (Rust 1.80+ marks set_var unsafe for this reason).
 serial_test = "3.2"
+# The in-module E2E tests (`#[cfg(test)]` in src/cli/self_update_flow.rs)
+# build and sign a synthetic release archive to exercise the
+# verify→extract→sidecar-install path without GitHub. `sign-tar` is
+# test-only; the shipped binary needs `verify-tar` alone (see
+# [dependencies]). tar/flate2 already in the tree via self_update —
+# versions track the lockfile.
+zipsign-api = { version = "=0.1.5", default-features = false, features = [
+    "sign-tar",
+] }
+tar = "0.4"
+flate2 = "1.1"
 
 # Phase 13.2 Inc 7 — first Criterion benchmark in the repo. Establishes a
 # latency baseline for the `vex bundle` modes (BFS, indegree scan, symbol
