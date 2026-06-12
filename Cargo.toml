@@ -231,3 +231,13 @@ harness = false
 [[bench]]
 name = "perf_b12"
 harness = false
+
+# v1.17 Phase 14.10 — `build_rename_chains` micro-bench. Pins the
+# chain-builder's absolute cost (LSH build → candidate scan → UF
+# merge → sidecar emit) at 1k / 10k / 50k corpus + 0% / 5% / 25%
+# rename-pair densities. Backstop for the task's ≤30% re-index
+# overhead claim — full-pipeline measurement is sensitive to
+# parse/git noise; the function-level bench isolates the chain cost.
+[[bench]]
+name = "rename_chains"
+harness = false

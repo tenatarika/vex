@@ -57,33 +57,39 @@ use self::weights::{
 /// re-parsing blobs through the Phase 14.7 blob cache; the chain
 /// builder is agnostic to that source so the algorithm can be unit-
 /// tested with synthetic strings.
-pub(crate) struct BuildInput<'a> {
+// `#[doc(hidden)] pub` (instead of `pub(crate)`) so `benches/rename_chains.rs`
+// can drive the orchestrator from outside the crate-private layer. The
+// `doc(hidden)` keeps the symbol off the crate's documented surface;
+// downstream consumers should treat `RenameChainsReader` (in
+// `crate::store::rename_chains`) as the supported API.
+#[doc(hidden)]
+pub struct BuildInput<'a> {
     /// One per HistoryEntry. The entry's `kind`, `first_commit_idx`,
     /// `last_commit_idx` drive the per-commit-pair link discovery.
-    pub(crate) entries: &'a [HistoryEntry],
+    pub entries: &'a [HistoryEntry],
     /// Body-token strings keyed by entry_idx. `None` = body not
     /// available (e.g. parser couldn't extract one). Whitespace-
     /// separated, already lowercased by the extractor.
-    pub(crate) entry_body_tokens: &'a [Option<String>],
+    pub entry_body_tokens: &'a [Option<String>],
     /// Signature-token strings keyed by entry_idx. `None` = no
     /// signature. Whitespace-separated.
-    pub(crate) entry_sig_tokens: &'a [Option<String>],
+    pub entry_sig_tokens: &'a [Option<String>],
     /// `context_hash` for each entry, when known. Keyed by entry_idx.
     /// Used to look up MiniLM vectors via [`CosineLookup`]; `None`
     /// means the entry has no embedding (e.g. blob was not in the
     /// current-tip embedding set).
-    pub(crate) entry_context_hash: &'a [Option<u64>],
+    pub entry_context_hash: &'a [Option<u64>],
     /// Pre-computed body_tokens hash for the header staleness guard.
     /// Caller is free to pick the encoding so long as it is stable
     /// across rebuilds — see [`compute_body_tokens_hash`] for the
     /// default.
-    pub(crate) body_tokens_hash: u64,
+    pub body_tokens_hash: u64,
     /// Raw 20-byte tip SHA of the history sidecar this artifact is
     /// paired with. Used in the staleness guard.
-    pub(crate) history_tip_sha_prefix: [u8; 20],
+    pub history_tip_sha_prefix: [u8; 20],
     /// MiniLM cosine lookup, when semantic embeddings are available.
     /// `None` engages the no-cosine renormalised weights.
-    pub(crate) cosine_lookup: Option<&'a CosineLookup<'a>>,
+    pub cosine_lookup: Option<&'a CosineLookup<'a>>,
 }
 
 /// Default encoding used by [`compute_body_tokens_hash`] / header
@@ -93,7 +99,7 @@ pub(crate) struct BuildInput<'a> {
 ///
 /// Bytes per record: `[u32_le byte_len][utf-8 bytes; byte_len]`, or
 /// a single `u32::MAX` sentinel for `None`.
-pub(crate) fn compute_body_tokens_hash(records: &[Option<String>]) -> u64 {
+#[doc(hidden)] pub fn compute_body_tokens_hash(records: &[Option<String>]) -> u64 {
     // Single-pass hasher would be marginally cheaper, but xxh3_64 over
     // a Vec<u8> is plenty fast for the once-per-build call site.
     let mut buf: Vec<u8> = Vec::with_capacity(records.len() * 8);
@@ -137,7 +143,7 @@ pub(crate) fn compute_body_tokens_hash(records: &[Option<String>]) -> u64 {
 ///    body_tokens.
 /// 5. **Phase D (serial)** — emit `ForwardEntry` (only chains ≥ 2
 ///    members), `ChainTableEntry`, flat member list.
-pub(crate) fn build_rename_chains(input: BuildInput<'_>) -> Result<RenameChainsArtifact> {
+#[doc(hidden)] pub fn build_rename_chains(input: BuildInput<'_>) -> Result<RenameChainsArtifact> {
     if input.entries.len() != input.entry_body_tokens.len()
         || input.entries.len() != input.entry_sig_tokens.len()
         || input.entries.len() != input.entry_context_hash.len()
