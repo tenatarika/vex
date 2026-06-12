@@ -34,6 +34,7 @@ use crate::history::{
     HistoryFilter, HistoryOpts,
 };
 use crate::store::git_history::HistoryReader;
+use crate::store::rename_chains::{self, RenameChainsReader};
 use crate::util::config;
 
 /// Flattened CLI arguments for `vex history <Symbol>`. Mirrors the
@@ -155,7 +156,14 @@ pub(crate) fn history(ctx: &CmdCtx, args: HistoryArgs) -> Result<()> {
             let r = reader
                 .as_ref()
                 .expect("resolve_mode invariant: Indexed implies Some(reader)");
-            run_indexed(r, &symbol, inner_limit)
+
+            // Phase 14.10: open the rename_chains sidecar if present and
+            // paired with the current history sidecar (tip-SHA match).
+            // Absence / mismatch / corruption silently degrades to
+            // singleton chains (v1.16 behaviour). The query path never
+            // bubbles an Io error here — chain expansion is opportunistic.
+            let chain_reader = open_chain_reader_for_history(&root, r);
+            run_indexed(r, chain_reader.as_ref(), &symbol, inner_limit)
         }
         HistoryMode::Walker => run_walker(&root, &symbol, depth, branch.as_deref(), inner_limit)?,
     };
@@ -206,6 +214,45 @@ pub(crate) fn history(ctx: &CmdCtx, args: HistoryArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Phase 14.10: open the rename_chains sidecar at query time, paired
+/// with the freshly-opened history reader by tip SHA. Returns `None`
+/// on every degraded state — absence, magic/version mismatch, tip
+/// drift, or Io error. The expansion is opportunistic; the query
+/// must never fail because chains are unavailable.
+fn open_chain_reader_for_history(
+    root: &std::path::Path,
+    history: &HistoryReader,
+) -> Option<RenameChainsReader> {
+    let commit_count = history.header().commit_count;
+    if commit_count == 0 {
+        return None;
+    }
+    // Commits are stored chronologically (oldest → newest); tip is
+    // the last entry. Co-write atomicity in
+    // `pipeline::output::write_rename_chains_sidecar` means a
+    // rename_chains sidecar paired with this history's tip is the
+    // freshest one we wrote.
+    let tip_commit = history.commit(commit_count - 1)?;
+    let index_dir = config::index_dir(root);
+    match rename_chains::open_for_query(&index_dir, &tip_commit.sha) {
+        Ok(reader) => reader,
+        Err(crate::store::rename_chains::SidecarError::Io(e)) => {
+            // Disk failure on the sidecar read is distinct from a
+            // stale-guard miss — surface so the user can see *why*
+            // chain expansion silently degraded.
+            tracing::warn!(
+                error = %e,
+                "rename_chains sidecar read failed; chain expansion disabled for this query"
+            );
+            None
+        }
+        // Magic / version / tip mismatch — expected degradation paths,
+        // already covered by the v1.16 singleton-chain fallback. Quiet
+        // by design.
+        Err(_) => None,
+    }
 }
 
 /// Pick which path will service the query and, when the indexed path
@@ -268,6 +315,7 @@ fn run_walker(
 
 fn run_indexed(
     reader: &HistoryReader,
+    chain_reader: Option<&RenameChainsReader>,
     symbol: &str,
     limit: Option<usize>,
 ) -> Vec<HistoricalSymbol> {
@@ -275,7 +323,28 @@ fn run_indexed(
     // misses on an identifier-shaped query. Cap at 50 distinct FST
     // keys to bound worst-case work; lexicographic order, not
     // relevance.
-    let entry_idxs = reader.find_by_name_or_prefix(symbol, 50);
+    let fst_hits = reader.find_by_name_or_prefix(symbol, 50);
+    // Phase 14.10: expand each FST hit through its rename chain so a
+    // query for the post-rename name surfaces the pre-rename rows too
+    // (and vice-versa). `follow_chain` returns `[entry_idx]` when no
+    // chain exists, so the no-chain path is byte-identical to the
+    // pre-14.10 behaviour. Absent / stale sidecar → `chain_reader`
+    // is `None` and we skip the expansion entirely.
+    let entry_idxs: Vec<u32> = match chain_reader {
+        Some(chain) => {
+            let mut seen = std::collections::HashSet::new();
+            let mut out = Vec::with_capacity(fst_hits.len());
+            for hit in fst_hits {
+                for member in chain.follow_chain(hit) {
+                    if seen.insert(member) {
+                        out.push(member);
+                    }
+                }
+            }
+            out
+        }
+        None => fst_hits,
+    };
     let mut out = Vec::with_capacity(entry_idxs.len());
     for entry_idx in entry_idxs {
         let entry = match reader.entry(entry_idx) {

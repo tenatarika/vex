@@ -8,8 +8,10 @@ use super::common::{resolve_root, CmdCtx};
 use super::output::print_envelope;
 use super::status_coverage;
 use crate::index::manifest::Manifest;
+use crate::index::rename_chains::weights as chain_weights;
 use crate::protocol::{capabilities, MetaEnvelope};
 use crate::store::reader::IndexReader;
+use crate::store::rename_chains as store_rc;
 use crate::util::config;
 
 pub(crate) fn status(
@@ -53,6 +55,17 @@ pub(crate) fn status(
     // are best-effort reads — failures fall through silently.
     let has_submodules = root.join(".gitmodules").is_file();
     let git_history_size_bytes = std::fs::metadata(config::git_history_path(&root))
+        .ok()
+        .map(|m| m.len());
+    // Phase 14.10 — rename-chains sidecar diagnostics. Best-effort:
+    // a corrupt / version-mismatched sidecar is reported as absent.
+    // No tip-SHA or body-hash check here — `vex status` reports what's
+    // on disk, not whether the chain data is fresh (use `vex history`
+    // to surface staleness via fallback).
+    let chain_header = store_rc::read_header(&config::index_dir(&root))
+        .ok()
+        .flatten();
+    let chain_sidecar_size_bytes = std::fs::metadata(config::rename_chains_path(&root))
         .ok()
         .map(|m| m.len());
     // Manifest load is best-effort — a missing/corrupt JSON sidecar must
@@ -104,6 +117,33 @@ pub(crate) fn status(
                 // compute the §4c #5 ratio themselves.
                 "has_submodules": has_submodules,
                 "git_history_size_bytes": git_history_size_bytes,
+                // Phase 14.10 — rename-chains sidecar diagnostics.
+                // `null` when the sidecar is absent / corrupt / pre-v1.17;
+                // an object with chain counts + active thresholds + weights
+                // when present. Fields are additive — agents can `jq
+                // '.rename_chains.chain_count // 0'` without unwrapping.
+                "rename_chains": chain_header.as_ref().map(|h| serde_json::json!({
+                    "chain_count": h.chain_count,
+                    "forward_count": h.forward_count,
+                    "member_count": h.member_count,
+                    "sidecar_size_bytes": chain_sidecar_size_bytes,
+                    "thresholds": {
+                        "score": chain_weights::GATE_SCORE,
+                        "jaccard": chain_weights::GATE_JACCARD,
+                        "len_ratio": chain_weights::GATE_LEN_RATIO,
+                    },
+                    "weights": {
+                        "body_with_cos": chain_weights::W_BODY_WITH_COS,
+                        "sig_with_cos":  chain_weights::W_SIG_WITH_COS,
+                        "cos":           chain_weights::W_COS,
+                        "body_no_cos":   chain_weights::W_BODY_NO_COS,
+                        "sig_no_cos":    chain_weights::W_SIG_NO_COS,
+                    },
+                    // MiniLM tiebreaker not yet plumbed into the index-time
+                    // builder; serialised as `null` so the field shape is
+                    // stable across future enablement.
+                    "minilm_tiebreak_hits": serde_json::Value::Null,
+                })),
             });
             if let Some(c) = &coverage_report {
                 json["coverage"] = serde_json::to_value(c)?;
@@ -188,6 +228,41 @@ pub(crate) fn status(
                     println!(
                         "History:    no (run `vex index --history` to enable indexed `vex history`)"
                     );
+                }
+            }
+            // Phase 14.10 — rename-chains surface, gated on history
+            // being indexed (the sidecar is co-written with
+            // index.git_history). Three shapes: present with chains,
+            // present-but-empty (history indexed, no renames detected
+            // — common on small / young repos), and absent.
+            match (&manifest.history_indexed_at, &chain_header) {
+                (Some(_), Some(h)) if h.chain_count > 0 => {
+                    println!(
+                        "Rename chains: {} chains, {} members (threshold {:.2}, body-Jaccard ≥ {:.2})",
+                        h.chain_count,
+                        h.member_count,
+                        chain_weights::GATE_SCORE,
+                        chain_weights::GATE_JACCARD,
+                    );
+                }
+                (Some(_), Some(_)) => {
+                    println!(
+                        "Rename chains: 0 (no renames detected at threshold {:.2})",
+                        chain_weights::GATE_SCORE,
+                    );
+                }
+                (Some(_), None) => {
+                    // History indexed but no rename_chains sidecar —
+                    // likely a pre-Phase-14.10 index (no chain wiring
+                    // when it was built). Action: re-index.
+                    println!(
+                        "Rename chains: no (re-run `vex index --history` to enable Phase 14.10 chain detection)"
+                    );
+                }
+                (None, _) => {
+                    // History not indexed — chain detection is gated on it.
+                    // The "History: no" line above already prompted the user;
+                    // skip a redundant chain-specific hint.
                 }
             }
             // Phase 14.9 Tier B.6 — submodule + size-ratio warnings,
