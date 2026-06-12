@@ -9,5 +9,6 @@ pub mod pattern_skeletons;
 pub mod reader;
 pub mod ref_edges;
 pub mod refs_fst;
+pub mod rename_chains;
 pub mod symbol_fst;
 pub mod writer;

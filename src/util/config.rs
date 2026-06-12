@@ -492,6 +492,19 @@ pub fn git_history_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("index.git_history")
 }
 
+/// v1.17+ / Phase 14.10: rename-chains sidecar. Stores rename + move +
+/// signature-change-resilient chain assignments across historical
+/// symbols so `vex history bar` returns the full pre-rename +
+/// post-rename timeline. Paired with `index.git_history` via the
+/// `history_tip_sha_prefix` field in the sidecar header — a mismatch
+/// invalidates the sidecar on open. Absent file = chain detection
+/// disabled or sidecar dropped due to a stale-guard mismatch; the
+/// `vex history` path falls back to singleton chains (the v1.16
+/// behaviour).
+pub fn rename_chains_path(project_root: &std::path::Path) -> PathBuf {
+    index_dir(project_root).join("index.rename_chains")
+}
+
 /// Full path to the manifest file (tracks file hashes for incremental updates).
 pub fn manifest_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("manifest.json")
