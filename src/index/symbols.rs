@@ -119,8 +119,16 @@ pub struct ParsedSymbol {
     /// Docstring/comment extracted from lines above the symbol (used for embedding context only).
     #[serde(skip)]
     pub doc: Option<String>,
-    /// Meaningful identifiers extracted from the symbol body (used for embedding context only).
-    #[serde(skip)]
+    /// Meaningful identifiers extracted from the symbol body — used for
+    /// embedding context AND Phase 14.10 rename-chain detection.
+    ///
+    /// **Persisted** to the 14.7 blob cache as of `CACHE_FORMAT_VERSION = 3`.
+    /// Earlier cache versions used `#[serde(skip)]` and dropped this
+    /// field on disk; the v3 bump invalidates v2 entries on read so a
+    /// one-time re-parse repopulates them with body_tokens. Without
+    /// persistence, the rename-chains builder loses the tip-current
+    /// side of every candidate pair because the current-tip parse
+    /// populates the cache before the history walker reads it.
     pub body_tokens: Option<String>,
 }
 

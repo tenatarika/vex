@@ -51,7 +51,13 @@ pub const MAGIC: &[u8; 4] = b"VXBC";
 /// - `2`: v1.14.1 — covers v1.14.0's `ParsedFile.cpp_includes: Vec<String>`
 ///   addition (a structurally-incompatible shape change shipped without
 ///   a bump in v1.14.0 — this version closes the gap retroactively).
-pub const CACHE_FORMAT_VERSION: u16 = 2;
+/// - `3`: v1.17+ Phase 14.10 — dropped `#[serde(skip)]` from
+///   `ParsedSymbol.body_tokens` so the rename-chains builder has the
+///   body-token strings on cache hit. Old v2 caches at this position
+///   stored a shorter payload (body_tokens skipped) — bincode reads
+///   them as truncated. Treating v2 caches as misses on read forces a
+///   one-time re-parse, after which v3 entries take over.
+pub const CACHE_FORMAT_VERSION: u16 = 3;
 
 /// On-disk header size: 4 (magic) + 2 (version) + 4 (fingerprint).
 const HEADER_SIZE: usize = 10;
