@@ -457,6 +457,16 @@ pub(super) fn write_output_locked(
                             mode = if can_incremental { "incremental" } else { "full" },
                             "wrote git_history sidecar"
                         );
+
+                        // Phase 14.10 — best-effort rename-chains sidecar.
+                        // Paired with the git_history sidecar via the tip
+                        // SHA + body_tokens_hash stale-guards; absent or
+                        // stale sidecar = `vex history` falls back to
+                        // singleton chains (v1.16 behaviour).
+                        if let Some(tip_bytes) = current_tip.as_deref().and_then(parse_tip_sha_20) {
+                            write_rename_chains_sidecar(root, &section, tip_bytes);
+                        }
+
                         history_manifest_fields = Some(HistoryManifestFields {
                             indexed_at: today_iso_date(),
                             tip_sha: current_tip,
@@ -610,6 +620,108 @@ fn today_iso_date() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     let y = (if m <= 2 { y_civil + 1 } else { y_civil }) as i32;
     format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+/// Parse a 40-char hex SHA into raw 20 bytes. Returns `None` on any
+/// shape error — used by the rename-chains tip-SHA guard, which
+/// degrades gracefully to "no sidecar written" if the conversion fails.
+fn parse_tip_sha_20(hex: &str) -> Option<[u8; 20]> {
+    if hex.len() != 40 {
+        return None;
+    }
+    let mut out = [0u8; 20];
+    for (i, byte) in out.iter_mut().enumerate() {
+        let s = hex.get(i * 2..i * 2 + 2)?;
+        *byte = u8::from_str_radix(s, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Phase 14.10 — best-effort rename-chains sidecar emit. Caller should
+/// invoke this only AFTER the git_history sidecar has been written
+/// successfully (the two sidecars share a tip-SHA guard).
+///
+/// Failures are non-fatal: a warn-log is emitted and the existing
+/// rename_chains sidecar (if any) stays on disk. The next `vex history`
+/// call will discard it via the stale-guard when its tip SHA disagrees
+/// with the freshly-written `index.git_history`.
+fn write_rename_chains_sidecar(
+    root: &Path,
+    section: &crate::index::history_builder::HistorySection,
+    tip_sha: [u8; 20],
+) {
+    use crate::index::rename_chains::{build_rename_chains, compute_body_tokens_hash, BuildInput};
+    use crate::store::rename_chains as store_rc;
+
+    let path = config::rename_chains_path(root);
+
+    // The chain builder demands entry-keyed body/sig/context_hash
+    // slices the same length as `entries`. The build path populates
+    // body/sig from the parser (`HistorySection::entry_*_tokens`); a
+    // merge-from-disk pads with None for the prior side (limitation
+    // documented in `merge_history_sections`).
+    //
+    // `entry_context_hash` is None for every entry in v1: the MiniLM
+    // tiebreaker is wired separately to keep this scaffold focused
+    // on the structural side. The chain builder's no-cosine
+    // renormalised weights (0.78 body / 0.22 sig) cover the
+    // structural-only path.
+    let entry_count = section.entries.len();
+    let body = if section.entry_body_tokens.len() == entry_count {
+        section.entry_body_tokens.clone()
+    } else {
+        vec![None; entry_count]
+    };
+    let sig = if section.entry_sig_tokens.len() == entry_count {
+        section.entry_sig_tokens.clone()
+    } else {
+        vec![None; entry_count]
+    };
+    let ctx_hash = vec![None; entry_count];
+    let body_tokens_hash = compute_body_tokens_hash(&body);
+
+    let input = BuildInput {
+        entries: &section.entries,
+        entry_body_tokens: &body,
+        entry_sig_tokens: &sig,
+        entry_context_hash: &ctx_hash,
+        body_tokens_hash,
+        history_tip_sha_prefix: tip_sha,
+        cosine_lookup: None,
+    };
+
+    let artifact = match build_rename_chains(input) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "rename_chains builder failed; sidecar not written"
+            );
+            return;
+        }
+    };
+
+    let chain_count = artifact.chains.len();
+    let forward_count = artifact.forward.len();
+    match store_rc::save(&path, &artifact) {
+        Ok(()) => {
+            tracing::debug!(
+                path = %path.display(),
+                chains = chain_count,
+                forward = forward_count,
+                "wrote rename_chains sidecar"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to persist rename_chains sidecar; \
+                 vex history will use singleton chains"
+            );
+        }
+    }
 }
 
 fn rev_parse_head(repo: &Path) -> Option<String> {

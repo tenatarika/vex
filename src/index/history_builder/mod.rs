@@ -240,6 +240,27 @@ pub struct HistorySection {
     /// the root commit. Surfaced via the section header's
     /// `flags` bit 0 so `vex status` can warn.
     pub was_depth_capped: bool,
+    /// **Phase 14.10 build-time-only.** Body-token strings keyed by
+    /// `entry_idx` (parallel to `entries`); `None` if the parser did
+    /// not extract a body for the symbol. Consumed by
+    /// `crate::index::rename_chains::build_rename_chains` to produce
+    /// the rename-chains sidecar.
+    ///
+    /// **Not persisted to disk.** The `git_history` sidecar has no
+    /// space for body tokens (HistoryEntry is fixed 28 B with no slack)
+    /// and adding a body_tokens-by-entry sidecar would double indexing
+    /// time on history-heavy repos. The merge path therefore pads prior
+    /// (loaded-from-disk) entries with `None`, which means the
+    /// rename-chain builder cannot detect renames that cross a
+    /// `vex update --history` incremental-merge boundary. A full
+    /// rebuild restores full coverage.
+    pub entry_body_tokens: Vec<Option<String>>,
+    /// **Phase 14.10 build-time-only.** Signature-token strings keyed
+    /// by `entry_idx`, same semantics as `entry_body_tokens`. We carry
+    /// these separately rather than re-reading the strings table at
+    /// chain-build time because the chain builder needs the raw bytes
+    /// (whitespace-split) rather than the `signature_offset` u32.
+    pub entry_sig_tokens: Vec<Option<String>>,
 }
 
 /// Build a [`HistorySection`] over `cfg.tip..cfg.depth`. Used
@@ -382,6 +403,8 @@ fn build_with_range(cfg: &BuildConfig, git_log_arg: &str) -> Result<(HistorySect
 
     let mut entries: Vec<HistoryEntry> = Vec::new();
     let mut entry_names: Vec<String> = Vec::new();
+    let mut entry_body_tokens: Vec<Option<String>> = Vec::new();
+    let mut entry_sig_tokens: Vec<Option<String>> = Vec::new();
 
     for ((blob_sha, path), span) in spans.iter() {
         let lang = match std::path::Path::new(path)
@@ -431,6 +454,12 @@ fn build_with_range(cfg: &BuildConfig, git_log_arg: &str) -> Result<(HistorySect
                 _pad: [0; 3],
             });
             entry_names.push(sym.name.clone());
+            // Phase 14.10: capture per-entry token strings for the
+            // rename-chains sidecar. The parser already produced these
+            // — discarding them at this site is the only reason a
+            // future Phase 14.10 caller would have to re-parse blobs.
+            entry_body_tokens.push(sym.body_tokens.clone());
+            entry_sig_tokens.push(sym.signature.clone());
         }
     }
     drop(batch);
@@ -456,6 +485,8 @@ fn build_with_range(cfg: &BuildConfig, git_log_arg: &str) -> Result<(HistorySect
             symbol_postings: HashMap::new(),
             strings: strings.as_bytes().to_vec(),
             was_depth_capped,
+            entry_body_tokens,
+            entry_sig_tokens,
         },
         entry_names,
     ))
@@ -523,9 +554,11 @@ pub fn merge_history_sections(
 
     // 4. Entries: shift commit indices, remap blob indices, shift
     //    string offsets. Append to prior entries.
+    let prior_entry_count = prior.entries.len();
+    let delta_entry_count = delta.entries.len();
     let mut entries = prior.entries;
     let mut names = prior_names;
-    entries.reserve(delta.entries.len());
+    entries.reserve(delta_entry_count);
     names.reserve(delta_names.len());
     for (mut e, name) in delta.entries.into_iter().zip(delta_names) {
         e.blob_idx = delta_blob_remap
@@ -540,6 +573,21 @@ pub fn merge_history_sections(
         names.push(name);
     }
 
+    // 5. Phase 14.10: entry_body_tokens / entry_sig_tokens. Prior
+    //    side comes from disk; `extract_owned` now pads with `None`
+    //    to the entry count so the pass-through branch in
+    //    `pad_or_pass` handles it. The else branch is a defensive
+    //    fallback for any future caller that hands in a
+    //    partially-populated vec — `debug_assert` surfaces the
+    //    drift in dev. Documented limitation: chains across the
+    //    merge boundary are not detected until the next full
+    //    rebuild (prior body tokens are all `None`).
+    debug_assert_eq!(delta.entry_body_tokens.len(), delta_entry_count);
+    let mut entry_body_tokens = pad_or_pass(prior.entry_body_tokens, prior_entry_count);
+    entry_body_tokens.extend(delta.entry_body_tokens);
+    let mut entry_sig_tokens = pad_or_pass(prior.entry_sig_tokens, prior_entry_count);
+    entry_sig_tokens.extend(delta.entry_sig_tokens);
+
     let merged = HistorySection {
         entries,
         commits,
@@ -547,8 +595,36 @@ pub fn merge_history_sections(
         symbol_postings: HashMap::new(),
         strings,
         was_depth_capped: prior.was_depth_capped || delta.was_depth_capped,
+        entry_body_tokens,
+        entry_sig_tokens,
     };
     (merged, names)
+}
+
+/// Helper for [`merge_history_sections`]: pass `tokens` through when
+/// it matches `expected`, otherwise replace with a `None`-filled vec
+/// of the right length.
+///
+/// In normal flow both `extract_owned` (disk path, pads with `None`)
+/// and `build_with_range` (in-memory path, populates from parser) emit
+/// length-matching vecs — so the else branch is dead code today and
+/// the `debug_assert!` surfaces any future caller bug that hands in
+/// a partially-populated input. The fallback is kept (rather than
+/// `assert!`/panic) so a release-mode merge against a malformed prior
+/// degrades to "no chain coverage on prior side" rather than aborting
+/// `vex update --history`.
+fn pad_or_pass(tokens: Vec<Option<String>>, expected: usize) -> Vec<Option<String>> {
+    debug_assert!(
+        tokens.is_empty() || tokens.len() == expected,
+        "pad_or_pass: partially-populated token vec ({} of {})",
+        tokens.len(),
+        expected,
+    );
+    if tokens.len() == expected {
+        tokens
+    } else {
+        vec![None; expected]
+    }
 }
 
 fn empty_section() -> HistorySection {
@@ -559,6 +635,8 @@ fn empty_section() -> HistorySection {
         symbol_postings: HashMap::new(),
         strings: Vec::new(),
         was_depth_capped: false,
+        entry_body_tokens: Vec::new(),
+        entry_sig_tokens: Vec::new(),
     }
 }
 

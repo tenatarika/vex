@@ -731,6 +731,11 @@ impl HistoryReader {
         let strings_end = strings_start + self.header.strings_len as usize;
         let strings = self.mmap[strings_start..strings_end].to_vec();
 
+        // Phase 14.10: entry_body_tokens / entry_sig_tokens are
+        // build-time-only and not persisted. Return empty Vecs;
+        // `merge_history_sections` pads them with `None` to match the
+        // entry count if a merge consumes this section.
+        let entry_count = entries.len();
         let section = HistorySection {
             entries,
             commits,
@@ -738,6 +743,8 @@ impl HistoryReader {
             symbol_postings: std::collections::HashMap::new(),
             strings,
             was_depth_capped: self.was_depth_capped(),
+            entry_body_tokens: vec![None; entry_count],
+            entry_sig_tokens: vec![None; entry_count],
         };
         Ok((section, names))
     }
@@ -802,6 +809,7 @@ mod tests {
             _pad: [0; 3],
         });
 
+        let entry_count = entries.len();
         let section = HistorySection {
             entries,
             commits,
@@ -809,6 +817,10 @@ mod tests {
             symbol_postings: HashMap::new(), // unused by writer path
             strings: Vec::new(),
             was_depth_capped: false,
+            // Build-time-only fields — tests round-trip through the
+            // sidecar which doesn't carry these. Empty/None placeholders.
+            entry_body_tokens: vec![None; entry_count],
+            entry_sig_tokens: vec![None; entry_count],
         };
         let names = vec!["alpha".to_string(), "beta".to_string()];
         (section, names)
