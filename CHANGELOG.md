@@ -6,6 +6,64 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Phase 14.10: symbol-rename tracking via content-similarity
+
+- **`vex history <Symbol>` follows renames across commits.** Detection
+  runs unconditionally during `vex index --history` (no opt-in flag).
+  The chain builder computes a 240-slot MinHash signature over each
+  symbol's `body_tokens`, prunes candidates via 20×12 LSH bands
+  (xxh3 u64 fingerprints), gates each candidate pair on kind match +
+  length-ratio ≥ 0.60 + body-Jaccard ≥ 0.70, composite-scores at
+  0.78·j_body + 0.22·j_sig (no-cosine path; the 0.70/0.20/0.10
+  with-cosine path is wired but the MiniLM tiebreaker is dark until a
+  follow-up commit plumbs `entry_context_hash`), greedy 1:1 assigns
+  per commit pair with deterministic tie-break, then union-find
+  merges across commit boundaries. Chains land in
+  `<index_dir>/index.rename_chains` (new VEXR v1 magic, 48 B header
+  guarded by `body_tokens_hash` + `history_tip_sha_prefix`).
+  `vex history` opens the sidecar via
+  `RenameChainsReader::open_for_query` (relaxed-guard variant; the
+  tip-SHA guard plus co-write atomicity is sufficient at query time)
+  and expands each FST hit through `follow_chain(entry_idx)` so a
+  query for either side of a rename returns the full pre + post-rename
+  timeline. Absent / stale / corrupt sidecar silently degrades to v1.16
+  singleton chains. Closes LIMITATIONS §4c #2 (qualified — N:M merge /
+  split is still punted; same-name overloads in the same file can
+  over-chain).
+- **`vex status` reports chain stats.** New JSON top-level
+  `rename_chains` object: `{chain_count, forward_count, member_count,
+  sidecar_size_bytes, thresholds: {score, jaccard, len_ratio},
+  weights: {body_with_cos, sig_with_cos, cos, body_no_cos, sig_no_cos},
+  minilm_tiebreak_hits: null}`. `null` when the sidecar is absent or
+  pre-1.17; non-null with `chain_count: 0` when history is indexed but
+  the builder found no chains. Text mode emits a one-line summary
+  alongside the existing `History:` line.
+- **Validation:** CodeShovel oracle smoke run (10 commons-io methods)
+  hits macro **F1 = 0.947 / P = 0.917 / R = 1.000**; full 100-method
+  corpus run is gated behind `tests/oracle_codeshovel_test.rs::oracle_codeshovel_full`
+  (clones ~10 GB of Java repos; opt-in via `--ignored`). Bench
+  (`benches/rename_chains.rs`): 50k entries at 5% rename rate runs
+  in ~1.9 s (≈ 7-20% of a typical `vex index --history` baseline at
+  that scale).
+
+### Changed
+
+- **`parse_cache` format bump v2 → v3.** Dropped `#[serde(skip)]` from
+  `ParsedSymbol.body_tokens` so the blob cache persists the field. The
+  v2 cache stripped body_tokens on serialise, which made cross-blob
+  rename detection impossible by construction (the current-tip parse
+  populates the cache for the tip blob, and the history walker then
+  reads the same blob back from the cache with `body_tokens = None`).
+  v2 caches are invalidated on read via the version-mismatch guard
+  and re-parsed once — one-time cost per repo, automatic.
+- **`HistorySection` gains build-time-only `entry_body_tokens` +
+  `entry_sig_tokens` fields.** Populated from the parser during
+  `build_with_range`; padded with `None` on the disk-loaded side via
+  `HistoryReader::extract_owned`. Documented limitation: chains across
+  the `vex update --history` incremental-merge boundary are not
+  detected until the next full rebuild (prior body tokens are not
+  persisted on disk).
+
 ## [1.16.1] - 2026-06-11
 
 Patch release. Folds in the v1.16.0-driven `vex self-update` Windows-sidecar fix

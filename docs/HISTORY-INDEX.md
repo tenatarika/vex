@@ -413,12 +413,97 @@ vex history IndexReader --since 2026-01-01 --kind struct --diff \
   --format json
 ```
 
+### Rename tracking (Phase 14.10)
+
+Phase 14.10 collapses rename + move + signature-change-resilient
+transitions across commits into a single chain so `vex history bar`
+returns the full pre-rename + post-rename timeline. Detection runs
+unconditionally during `vex index --history` (no opt-in flag) and
+persists chain assignments to a paired sidecar at
+`<index_dir>/index.rename_chains` (VEXR v1 magic, 48 B header).
+
+**Algorithm summary** (full design in
+`.claude/Task/PHASE14.10-symbol-rename-tracking.md`):
+
+1. **Phase 0 (serial)** — per `HistoryEntry`, build a 240-slot
+   MinHash signature over `body_tokens` and insert into a 20×12 LSH
+   band table (xxh3-fingerprinted, u64).
+2. **Phase A (rayon par_iter over commit pairs)** — for each
+   `(C, C+1)` boundary: collect deletions (`last_commit_idx == C`),
+   additions (`first_commit_idx == C+1`); pull LSH candidates;
+   apply cheapest-first gates (kind match → length-ratio ≥ 0.60 →
+   exact body-Jaccard ≥ 0.70 → composite-score ≥ 0.65); greedy 1:1
+   assignment per pair, deterministic tie-break on `(score desc,
+   del_idx asc, add_idx asc)`.
+3. **Phase B (serial)** — drain all per-pair links into one
+   union-find; lower-index root wins ties.
+4. **Phase C (serial)** — derive a stable `chain_id` per UF root
+   as `xxh3_64(sorted body_tokens)` so the same chain has the same
+   ID across full rebuilds.
+5. **Phase D (serial)** — emit `ForwardEntry` (sorted ascending by
+   `entry_idx`) + `ChainTableEntry` (sorted ascending by `chain_id`)
+   + flat `[u32]` member list. Chains with one member are dropped;
+   `follow_chain(entry_idx)` returns `[entry_idx]` for singletons.
+
+**Composite score weights** are `pub(crate) const` in
+`src/index/rename_chains/weights.rs`. With MiniLM cosine (currently
+dark — entry_context_hash is None everywhere): 0.70·j_body +
+0.20·j_sig + 0.10·cos. Without (current path): renormalised
+0.78·j_body + 0.22·j_sig so a perfect body match clears
+`GATE_SCORE` at j_sig = 0.
+
+**Staleness guards** (`Header.body_tokens_hash` +
+`Header.history_tip_sha_prefix`):
+
+- `body_tokens_hash` = `xxh3_64` over the body_tokens bytes
+  produced for this build, in entry_idx order. Mismatch on read →
+  parser-version drift, sidecar is stale.
+- `history_tip_sha_prefix` = raw 20-byte SHA of the paired
+  `index.git_history` sidecar's tip commit. Mismatch on read →
+  history rebuilt under us, drop the sidecar.
+
+`vex history <name>` opens the sidecar via
+`RenameChainsReader::open_for_query` (relaxed-guard variant that
+trusts the sidecar's own `body_tokens_hash` because the query side
+has no way to recompute it — the tip-SHA guard plus co-write
+atomicity in `pipeline::output::write_rename_chains_sidecar` is
+sufficient). Each FST hit is expanded via `follow_chain(entry_idx)`
+and HashSet-deduped before hydration. Absent / stale / corrupt
+sidecar silently degrades to v1.16 singleton chains.
+
+**Validation:** CodeShovel oracle smoke run (10 commons-io methods)
+hits macro F1 = 0.947 / P = 0.917 / R = 1.000. 8/10 methods
+perfect; 2 with small precision drops from same-name overloads
+chaining in the same file (vex doesn't disambiguate by method
+signature — known v1 limitation, see LIMITATIONS §4c #2). Bench
+(`benches/rename_chains.rs`): 50k entries at 5% rename rate runs
+in ~1.9 s, ≈ 7-20% of a typical `vex index --history` baseline at
+that scale.
+
+```bash
+# Same query, indexed path. Pre-rename name surfaces post-rename rows.
+vex history compute_total_revenue
+# → 2 rows: the original commit + the rename to `calculate_gross_income`
+
+# Walker path is unchanged — only finds names that still exist at HEAD.
+vex history compute_total_revenue --no-index
+# → 0 rows (name no longer at tip)
+
+# Chain stats in vex status JSON.
+vex status --format json | jq '.results.rename_chains'
+# { "chain_count": 47, "member_count": 113, ... }
+```
+
 ### `vex status`
 
 JSON: `history_indexed_at` (top-level, ISO date or null) +
 `history` sub-object with `commit_count`/`blob_count`/`entry_count`/
 `depth_capped`. Phase 14.9 Tier B.6 additions: top-level
 `has_submodules: bool` and `git_history_size_bytes: u64 | null`.
+Phase 14.10: top-level `rename_chains` object with
+`chain_count`/`forward_count`/`member_count`/`sidecar_size_bytes`/
+`thresholds`/`weights`/`minilm_tiebreak_hits` (null until the
+MiniLM plumbing lands).
 
 Text:
 ```
@@ -444,6 +529,17 @@ Or, on a non-history-indexed project:
 ```
 History:    no (run `vex index --history` to enable indexed `vex history`)
 ```
+
+Phase 14.10 — when chains are present, an additional line:
+```
+Rename chains: 3 chains, 8 members (threshold 0.65, body-Jaccard ≥ 0.70)
+```
+On a history-indexed project with no detected chains:
+```
+Rename chains: 0 (no renames detected at threshold 0.65)
+```
+The line is omitted when history isn't indexed (the History line
+above already prompts the user with the relevant action).
 
 ---
 

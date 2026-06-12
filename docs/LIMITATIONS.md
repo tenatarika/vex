@@ -412,15 +412,60 @@ against the requested branch.
 `--no-index` falls back to the walker, which DOES honour `--branch`.
 A future phase could index multiple refs; not in v1.
 
-### No symbol-rename tracking
+### Symbol-rename tracking — qualified (Phase 14.10)
 
-A function renamed `foo` → `bar` surfaces as two separate symbols.
-`vex history foo` returns history up to the rename; `vex history bar`
-returns history from the rename onward. Two-query workflow.
+**Pre-Phase-14.10 contract** (still applies when `index.rename_chains`
+is absent or stale): a function renamed `foo` → `bar` surfaces as two
+separate symbols. `vex history foo` cuts off at the rename; `vex
+history bar` starts from the rename.
 
-Requires content-similarity matching at index time (embeddings or
-AST diff) to collapse renames into a single symbol. Out of scope for
-v1.
+**v1.17 Phase 14.10:** chain detection runs unconditionally during
+`vex index --history` (no opt-in flag). The chain builder computes
+240-slot MinHash signatures over body_tokens, prunes candidates via
+20×12 LSH bands, gates each candidate pair on `kind` match +
+length-ratio ≥ 0.60 + body-Jaccard ≥ 0.70, composite-scores at
+0.78·body + 0.22·sig (no-cosine path; MiniLM tiebreaker plumbing
+deferred), greedy 1:1 assignment per commit pair, then union-find
+merges across boundaries. Detected chains land in
+`<index_dir>/index.rename_chains` (VEXR v1 magic, 48 B header
+guarded by `body_tokens_hash` + `history_tip_sha_prefix`); `vex
+history <name>` opens the sidecar via `RenameChainsReader::open_for_query`
+and expands every FST hit through `follow_chain` so a query for
+either side of the rename returns the full pre + post-rename
+timeline.
+
+Validation: CodeShovel oracle smoke run on commons-io (10 methods)
+hits macro F1 0.947 / P 0.917 / R 1.000 — chain detection catches
+all ground-truth files for every method including ones that survived
+two consecutive class renames (`FilesystemObserver` →
+`FileObserver` → `FileAlterationObserver`). See
+`tests/oracle_codeshovel_test.rs`.
+
+**Caveats (open):**
+
+- **N:M (merge / split) is NOT detected.** Two methods merged into
+  one or one method split into two are 1:N / N:1 transitions; the
+  builder enforces greedy 1:1 per commit boundary and drops the
+  losing edges. Every reviewed tool (CodeTracker, RefactoringMiner
+  3.0, HistoryFinder) punts here too — N:M is the rename-detection
+  hard problem.
+- **Same-name overload chains in the same file are over-eager.**
+  Vex doesn't disambiguate by method signature; two `read()`
+  overloads with similar bodies in the same class file can chain
+  together. The CodeShovel commons-io smoke produced 2/10 cases
+  with F1 < 1.0 from this artifact (still P ≥ 0.50, R = 1.0).
+- **Extract-method false positives** are gated by the length-ratio
+  filter (`min/max ≥ 0.60`) per RefactoringMiner 3.0's empirical
+  fix — but a refactor that extracts roughly half a method into a
+  same-name helper can still chain if body-Jaccard stays high.
+- **Cross-merge-boundary chains** during `vex update --history`
+  are not detected: the merge path pads the prior side's body
+  tokens with `None` (the previous history sidecar didn't persist
+  them). Full rebuild restores coverage.
+- **MiniLM tiebreaker is wired but dark.** `entry_context_hash` is
+  fed `None` for every entry today. Activating it requires plumbing
+  the in-memory `vectors` + `hashes` slice through to the chain
+  builder.
 
 ### No per-commit time-travel
 
