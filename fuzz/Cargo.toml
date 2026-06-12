@@ -78,5 +78,13 @@ name = "fuzz_incremental_hnsw"
 path = "fuzz_targets/fuzz_incremental_hnsw.rs"
 doc = false
 
+# Phase 14.10 — rename_chains sidecar parser (`index.rename_chains`,
+# `VEXR` magic v1). Loaded at every `vex history` chain expansion and
+# `vex status`; must never panic on a malformed sidecar.
+[[bin]]
+name = "fuzz_rename_chains_load"
+path = "fuzz_targets/fuzz_rename_chains_load.rs"
+doc = false
+
 [workspace]
 members = ["."]
