@@ -134,13 +134,12 @@ fn build_corpus(entry_count: usize, rename_pct: f32) -> Corpus {
     // Remaining entries are singletons spread across the rest of the
     // commit space, with disjoint bodies (no chains form).
     let remaining = entry_count.saturating_sub(2 * rename_pairs);
-    let mut commit_cursor = (2 * rename_pairs) as u32;
+    let commit_offset = (2 * rename_pairs) as u32;
     for j in 0..remaining {
         let base = (j * 7 + 17) % VOCAB.len();
-        entries.push(make_entry(commit_cursor));
+        entries.push(make_entry(commit_offset + j as u32));
         bodies.push(Some(body_at(base)));
         sigs.push(Some(format!("fn unique_{j}(arg)")));
-        commit_cursor += 1;
     }
 
     let hashes = vec![None; entry_count];
