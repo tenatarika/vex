@@ -99,7 +99,8 @@ pub struct BuildInput<'a> {
 ///
 /// Bytes per record: `[u32_le byte_len][utf-8 bytes; byte_len]`, or
 /// a single `u32::MAX` sentinel for `None`.
-#[doc(hidden)] pub fn compute_body_tokens_hash(records: &[Option<String>]) -> u64 {
+#[doc(hidden)]
+pub fn compute_body_tokens_hash(records: &[Option<String>]) -> u64 {
     // Single-pass hasher would be marginally cheaper, but xxh3_64 over
     // a Vec<u8> is plenty fast for the once-per-build call site.
     let mut buf: Vec<u8> = Vec::with_capacity(records.len() * 8);
@@ -143,7 +144,36 @@ pub struct BuildInput<'a> {
 ///    body_tokens.
 /// 5. **Phase D (serial)** — emit `ForwardEntry` (only chains ≥ 2
 ///    members), `ChainTableEntry`, flat member list.
-#[doc(hidden)] pub fn build_rename_chains(input: BuildInput<'_>) -> Result<RenameChainsArtifact> {
+#[doc(hidden)]
+pub fn build_rename_chains(input: BuildInput<'_>) -> Result<RenameChainsArtifact> {
+    // Thin wrapper for callers that don't care about build-time stats.
+    // The sidecar payload (`RenameChainsArtifact`) is the same in both
+    // entry points — only the [`BuildStats`] return distinguishes them.
+    build_rename_chains_with_stats(input).map(|(artifact, _stats)| artifact)
+}
+
+/// Build statistics that aren't part of the on-disk sidecar but are
+/// useful as build-time provenance — `vex status` surfaces them so
+/// users can see how often the MiniLM tie-breaker actually decided
+/// outcomes.
+#[doc(hidden)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BuildStats {
+    /// Number of accepted links whose cosine contribution was
+    /// strictly required to clear `GATE_SCORE` — see
+    /// `score_pair::cosine_decisive` for the precise predicate.
+    /// Zero when the build ran without a `CosineLookup`.
+    pub minilm_tiebreak_hits: u32,
+}
+
+/// Builder variant that returns both the sidecar artifact and the
+/// build-time stats. The pipeline call site uses this so it can
+/// thread `minilm_tiebreak_hits` into the manifest; tests + benches
+/// use the thin [`build_rename_chains`] wrapper.
+#[doc(hidden)]
+pub fn build_rename_chains_with_stats(
+    input: BuildInput<'_>,
+) -> Result<(RenameChainsArtifact, BuildStats)> {
     if input.entries.len() != input.entry_body_tokens.len()
         || input.entries.len() != input.entry_sig_tokens.len()
         || input.entries.len() != input.entry_context_hash.len()
@@ -174,6 +204,25 @@ pub struct BuildInput<'a> {
         .collect();
 
     // -----------------------------------------------------------------
+    // Tally the MiniLM tie-breaker hits across survivors. Each
+    // `per_pair_links[i]` is already the 1:1-assignment-winning subset
+    // for commit pair `i` (the greedy retain runs inside
+    // `discover_links_for_pair`), so this sum counts only links that
+    // survived intra-pair contention. Note: the count is at the
+    // *link* level — if two cosine-decisive links happen to union
+    // two entries that another link already unioned, the metric still
+    // reports both. For `vex status` purposes this matches "how
+    // many decisions owed their existence to cosine," which is the
+    // user-facing question we want to answer.
+    // -----------------------------------------------------------------
+    let minilm_tiebreak_hits: u32 = per_pair_links
+        .iter()
+        .flat_map(|pair| pair.iter())
+        .filter(|l| l.cosine_decisive)
+        .count()
+        .min(u32::MAX as usize) as u32;
+
+    // -----------------------------------------------------------------
     // Phase B — serial UF merge over all links (deterministic order:
     // iterate pairs ascending, links inside each pair already sorted
     // by `discover_links_for_pair`'s 1:1-assignment pass).
@@ -201,7 +250,12 @@ pub struct BuildInput<'a> {
         input.history_tip_sha_prefix,
     );
 
-    Ok(artifact)
+    Ok((
+        artifact,
+        BuildStats {
+            minilm_tiebreak_hits,
+        },
+    ))
 }
 
 // =====================================================================
@@ -287,6 +341,13 @@ struct Link {
     add: u32,
     /// Composite score; `score >= GATE_SCORE` by construction.
     score: f32,
+    /// `true` when the cosine contribution was strictly required to
+    /// push the pair across `GATE_SCORE` — i.e. removing the
+    /// `W_COS * cos_value` term would have rejected it. Tracked so
+    /// `vex status` can report how often the MiniLM tie-breaker
+    /// actually changed an outcome rather than just nudged a score
+    /// that was already above the gate.
+    cosine_decisive: bool,
 }
 
 fn discover_links_for_pair(
@@ -411,8 +472,11 @@ fn score_pair(del_idx: u32, add_idx: u32, phase0: &Phase0, input: &BuildInput<'_
         &phase0.sig_tokens[add_idx as usize],
     );
 
-    // Composite score — branch on cosine availability.
-    let score = match input.cosine_lookup {
+    // Composite score — branch on cosine availability. When the cosine
+    // path is active, `cos_value` captures the positive cosine
+    // contribution so we can decide post-hoc whether removing the
+    // tie-breaker term would have rejected the pair.
+    let (score, cos_contribution) = match input.cosine_lookup {
         Some(cos) => {
             let cos_value = match (
                 input.entry_context_hash[del_idx as usize],
@@ -421,19 +485,30 @@ fn score_pair(del_idx: u32, add_idx: u32, phase0: &Phase0, input: &BuildInput<'_
                 (Some(h_a), Some(h_b)) => cos.cosine(h_a, h_b).max(0.0),
                 _ => 0.0,
             };
-            W_BODY_WITH_COS * j_body + W_SIG_WITH_COS * j_sig + W_COS * cos_value
+            let s = W_BODY_WITH_COS * j_body + W_SIG_WITH_COS * j_sig + W_COS * cos_value;
+            (s, W_COS * cos_value)
         }
-        None => W_BODY_NO_COS * j_body + W_SIG_NO_COS * j_sig,
+        None => (W_BODY_NO_COS * j_body + W_SIG_NO_COS * j_sig, 0.0),
     };
 
     if score < GATE_SCORE {
         return None;
     }
 
+    // `cosine_decisive`: the cosine term contributed *strictly more
+    // than zero* AND removing it would drop the score back below
+    // `GATE_SCORE`. Both checks are needed — a tiny cos_contribution
+    // (`< epsilon`) is not a real tie-breaker, and a pair that
+    // crossed the gate purely on Jaccard wasn't decided by MiniLM
+    // either. The subtraction is exact enough at f32 precision for
+    // this counting purpose (no `epsilon`-tolerant compare needed).
+    let cosine_decisive = cos_contribution > 0.0 && (score - cos_contribution) < GATE_SCORE;
+
     Some(Link {
         del: del_idx,
         add: add_idx,
         score,
+        cosine_decisive,
     })
 }
 

@@ -322,6 +322,19 @@ pub(super) fn write_output_locked(
         None
     };
     let mut history_manifest_fields: Option<HistoryManifestFields> = None;
+    // Phase 14.10 — tri-state record of whether rename_chains were built
+    // this run: `None` = chain detection wasn't reached (history not
+    // indexed, drop branch, or tip-SHA parse failure); `Some(true)` =
+    // sidecar written successfully; `Some(false)` = builder reached
+    // but write failed. Mirrors body_tokens_persisted gating so the
+    // manifest stays honest with what's on disk.
+    let mut rename_chains_built: Option<bool> = None;
+    // Phase 14.10 — count of MiniLM tie-breaker decisions emitted by
+    // the rename-chain builder this run. `None` until the build path
+    // overwrites it (drop branch and non-history runs keep `None`);
+    // `Some(0)` is a meaningful signal that the cosine path ran but
+    // never decided a borderline pair.
+    let mut rename_chains_minilm_tiebreak_hits: Option<u32> = None;
     if opts.drop_history {
         // Best-effort: missing file is fine (idempotent); permission
         // errors warn but don't block the rest of the index write.
@@ -340,8 +353,24 @@ pub(super) fn write_output_locked(
                 );
             }
         }
+        // Phase 14.10 — rename_chains sidecar is coupled to git_history
+        // via the tip-SHA guard, so it's stale the moment history is
+        // dropped. Remove it alongside so `vex status` doesn't keep
+        // surfacing a chain count for a section that no longer exists.
+        let rename_chains_path = config::rename_chains_path(root);
+        if rename_chains_path.exists() {
+            if let Err(e) = std::fs::remove_file(&rename_chains_path) {
+                tracing::warn!(
+                    path = %rename_chains_path.display(),
+                    error = %e,
+                    "failed to drop rename_chains sidecar alongside --no-history; \
+                     stale sidecar may surface in `vex status` until next rebuild"
+                );
+            }
+        }
         // history_manifest_fields stays None — manifest serialises all
-        // four `history_*` fields as None.
+        // four `history_*` fields as None. rename_chains_built stays
+        // None — pre-14.10 semantics ("not run").
     } else if opts.with_history {
         let prior_tip = prior_manifest_for_history
             .as_ref()
@@ -378,6 +407,19 @@ pub(super) fn write_output_locked(
                 depth: opts.history_depth.or(prior_depth),
                 stats: prior_stats.unwrap_or_default(),
             });
+            // Phase 14.10 — fast path reuses the on-disk sidecar
+            // verbatim, so the provenance must reuse the prior
+            // manifest's values rather than regress to `None`. Without
+            // this every no-op `vex update` would forget that the
+            // sidecar exists, and `vex status` would prompt a re-index
+            // even though the file is still valid on disk. Mirrors
+            // how `prior_stats` is reused above.
+            rename_chains_built = prior_manifest_for_history
+                .as_ref()
+                .and_then(|m| m.rename_chains_built);
+            rename_chains_minilm_tiebreak_hits = prior_manifest_for_history
+                .as_ref()
+                .and_then(|m| m.rename_chains_minilm_tiebreak_hits);
         } else {
             // Phase 14.8 Step 5c — three sub-branches for the
             // "rebuild" case, picking the cheapest viable path:
@@ -462,9 +504,31 @@ pub(super) fn write_output_locked(
                         // Paired with the git_history sidecar via the tip
                         // SHA + body_tokens_hash stale-guards; absent or
                         // stale sidecar = `vex history` falls back to
-                        // singleton chains (v1.16 behaviour).
+                        // singleton chains (v1.16 behaviour). Outcome is
+                        // captured in `rename_chains_built` so the
+                        // manifest below records the actual disk state
+                        // (None = not attempted; Some(true) = sidecar
+                        // written; Some(false) = tried but failed).
+                        //
+                        // MiniLM tie-breaker: enabled when this build
+                        // emitted semantic vectors. Sym_idx-aligned
+                        // `hashes` are recomputed inside the helper via
+                        // `compute_hashes_for`; vectors are already
+                        // L2-normalized post-v1.13 so the dot-product
+                        // fast path engages.
                         if let Some(tip_bytes) = current_tip.as_deref().and_then(parse_tip_sha_20) {
-                            write_rename_chains_sidecar(root, &section, tip_bytes);
+                            let outcome = write_rename_chains_sidecar(
+                                root,
+                                &section,
+                                &entry_names,
+                                tip_bytes,
+                                parsed,
+                                vectors,
+                                embedder_id.as_deref(),
+                                !vectors.is_empty(),
+                            );
+                            rename_chains_built = Some(outcome.sidecar_written);
+                            rename_chains_minilm_tiebreak_hits = outcome.minilm_tiebreak_hits;
                         }
 
                         history_manifest_fields = Some(HistoryManifestFields {
@@ -580,6 +644,14 @@ pub(super) fn write_output_locked(
             .and_then(|f| f.tip_sha.clone()),
         history_depth: history_manifest_fields.as_ref().and_then(|f| f.depth),
         history: history_manifest_fields.as_ref().map(|f| f.stats.clone()),
+        // Phase 14.10 — gated on the actual sidecar write outcome (see
+        // `rename_chains_built` initialisation comment above). `None`
+        // when chain detection wasn't reached, `Some(true)` on a
+        // successful write, `Some(false)` when the builder ran but the
+        // write failed. Mirrors `body_tokens_persisted` semantics so
+        // `vex status` provenance matches disk state.
+        rename_chains_built,
+        rename_chains_minilm_tiebreak_hits,
     };
     manifest.save(&manifest_path)?;
     Ok(())
@@ -645,12 +717,47 @@ fn parse_tip_sha_20(hex: &str) -> Option<[u8; 20]> {
 /// rename_chains sidecar (if any) stays on disk. The next `vex history`
 /// call will discard it via the stale-guard when its tip SHA disagrees
 /// with the freshly-written `index.git_history`.
+///
+/// Outcome of a [`write_rename_chains_sidecar`] call. The boolean
+/// reports the disk state (`true` = sidecar present and valid); the
+/// hit count is `Some(n)` only when the MiniLM tie-breaker actually
+/// ran (cosine path active) — `None` distinguishes "no semantic
+/// embeddings available" from "ran but nothing was decisive".
+struct RenameChainsWriteOutcome {
+    sidecar_written: bool,
+    minilm_tiebreak_hits: Option<u32>,
+}
+
+/// Returns whether the sidecar was persisted and how many MiniLM
+/// tie-breaker decisions fired during the build. The caller threads
+/// both into the manifest so `vex status` reports the same outcome
+/// users observe on disk.
+// Eight scalar/slice borrows from the caller; grouping them into a
+// struct would just move the same argument list one level down.
+// Acceptable for a single private callee with one caller.
+//
+// `assume_normalized_post_v1_13` records the pipeline invariant that
+// every vector reaching this site has been L2-normalized by
+// `pipeline::run`/`pipeline::update` (v1.13 P5). The caller passes
+// `!vectors.is_empty()` because the only branch that yields a
+// non-empty `vectors` slice is the post-v1.13 normalize-on-write
+// path. If a future caller bypasses that path the parameter must
+// flip to `false` so `CosineLookup` runs the full cosine formula
+// instead of the dot-product fast path.
+#[allow(clippy::too_many_arguments)]
 fn write_rename_chains_sidecar(
     root: &Path,
     section: &crate::index::history_builder::HistorySection,
+    entry_names: &[String],
     tip_sha: [u8; 20],
-) {
-    use crate::index::rename_chains::{build_rename_chains, compute_body_tokens_hash, BuildInput};
+    parsed: &[ParsedFile],
+    vectors: &[Vec<f32>],
+    embedder_id: Option<&str>,
+    assume_normalized_post_v1_13: bool,
+) -> RenameChainsWriteOutcome {
+    use crate::index::rename_chains::{
+        build_rename_chains_with_stats, compute_body_tokens_hash, score::CosineLookup, BuildInput,
+    };
     use crate::store::rename_chains as store_rc;
 
     let path = config::rename_chains_path(root);
@@ -660,12 +767,6 @@ fn write_rename_chains_sidecar(
     // body/sig from the parser (`HistorySection::entry_*_tokens`); a
     // merge-from-disk pads with None for the prior side (limitation
     // documented in `merge_history_sections`).
-    //
-    // `entry_context_hash` is None for every entry in v1: the MiniLM
-    // tiebreaker is wired separately to keep this scaffold focused
-    // on the structural side. The chain builder's no-cosine
-    // renormalised weights (0.78 body / 0.22 sig) cover the
-    // structural-only path.
     let entry_count = section.entries.len();
     let body = if section.entry_body_tokens.len() == entry_count {
         section.entry_body_tokens.clone()
@@ -677,41 +778,98 @@ fn write_rename_chains_sidecar(
     } else {
         vec![None; entry_count]
     };
-    let ctx_hash = vec![None; entry_count];
     let body_tokens_hash = compute_body_tokens_hash(&body);
+
+    // MiniLM tie-breaker wiring (Phase 14.10 closure step). Active
+    // only when this build produced semantic vectors *and* the names
+    // slice matches the entries slice — both are caller invariants
+    // but we guard defensively so a future refactor doesn't silently
+    // disable the cosine path on length mismatch.
+    let tip_hashes = if let Some(id) = embedder_id {
+        if !vectors.is_empty() && vectors.len() == count_parsed_symbols(parsed) {
+            match compute_hashes_for(parsed, id) {
+                Ok(h) => Some(h),
+                Err(e) => {
+                    tracing::warn!(
+                        embedder_id = id,
+                        error = %e,
+                        "rename_chains: failed to compute current-tip context hashes; \
+                         falling back to structural-only path"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Per-entry context_hash. Only entries whose `(path, name, kind)`
+    // matches a current-tip symbol get a hash — historical-only
+    // entries (the renamed-away pre-image side) get `None` and the
+    // cosine helper returns 0.0 for missing hashes, which the gate
+    // logic already handles. The map collapses overloads at the same
+    // `(path, name, kind)` to the last-written hash; the resulting
+    // ambiguity matches what `CosineLookup` already does with
+    // duplicate vectors (keep-first).
+    let (entry_context_hash, cosine_lookup) = if let Some(hashes) = tip_hashes.as_deref() {
+        let key_to_hash = build_tip_hash_lookup(parsed, hashes);
+        let resolved = resolve_entry_context_hashes(section, entry_names, &key_to_hash);
+        let lookup =
+            CosineLookup::from_hashed_vectors(vectors, hashes, assume_normalized_post_v1_13);
+        (resolved, Some(lookup))
+    } else {
+        (vec![None; entry_count], None)
+    };
 
     let input = BuildInput {
         entries: &section.entries,
         entry_body_tokens: &body,
         entry_sig_tokens: &sig,
-        entry_context_hash: &ctx_hash,
+        entry_context_hash: &entry_context_hash,
         body_tokens_hash,
         history_tip_sha_prefix: tip_sha,
-        cosine_lookup: None,
+        cosine_lookup: cosine_lookup.as_ref(),
     };
 
-    let artifact = match build_rename_chains(input) {
-        Ok(a) => a,
+    let (artifact, stats) = match build_rename_chains_with_stats(input) {
+        Ok(pair) => pair,
         Err(e) => {
             tracing::warn!(
                 path = %path.display(),
                 error = %e,
                 "rename_chains builder failed; sidecar not written"
             );
-            return;
+            return RenameChainsWriteOutcome {
+                sidecar_written: false,
+                // Builder failed before scoring → no semantic decisions
+                // were made, so the count is `None` rather than `Some(0)`
+                // (zero would falsely imply the path ran).
+                minilm_tiebreak_hits: None,
+            };
         }
     };
 
+    // Capture stats up front so `Some(0)` survives even if the write
+    // step fails — provenance is "did MiniLM decide anything", not
+    // "did the sidecar land".
+    let recorded_hits = cosine_lookup.as_ref().map(|_| stats.minilm_tiebreak_hits);
+
     let chain_count = artifact.chains.len();
     let forward_count = artifact.forward.len();
-    match store_rc::save(&path, &artifact) {
+    let sidecar_written = match store_rc::save(&path, &artifact) {
         Ok(()) => {
             tracing::debug!(
                 path = %path.display(),
                 chains = chain_count,
                 forward = forward_count,
+                minilm_tiebreak_hits = stats.minilm_tiebreak_hits,
+                cosine_active = cosine_lookup.is_some(),
                 "wrote rename_chains sidecar"
             );
+            true
         }
         Err(e) => {
             tracing::warn!(
@@ -720,8 +878,108 @@ fn write_rename_chains_sidecar(
                 "failed to persist rename_chains sidecar; \
                  vex history will use singleton chains"
             );
+            false
+        }
+    };
+
+    RenameChainsWriteOutcome {
+        sidecar_written,
+        minilm_tiebreak_hits: recorded_hits,
+    }
+}
+
+/// Total parsed symbol count — used to validate that the `vectors`
+/// slice is sym_idx-aligned before we trust the parallel
+/// `compute_hashes_for` output.
+fn count_parsed_symbols(parsed: &[ParsedFile]) -> usize {
+    parsed.iter().map(|f| f.symbols.len()).sum()
+}
+
+/// Build `(path, name, kind) -> context_hash` for current-tip
+/// symbols. `hashes` is in `sym_idx` order, parallel to the flattened
+/// `(file, sym)` iterator over `parsed` — same contract as
+/// `compute_hashes_for`. Overload collisions at the same key keep the
+/// FIRST-WRITTEN hash to mirror `CosineLookup::from_hashed_vectors`'s
+/// keep-first dedup policy (score.rs:184). If both maps used the same
+/// key but different sides of the collision, a `key_to_hash` lookup
+/// could land on a hash that isn't in `CosineLookup`, silently
+/// degrading every overload-affected entry to a 0.0 cosine — a
+/// systematic miss instead of a graceful one.
+fn build_tip_hash_lookup(
+    parsed: &[ParsedFile],
+    hashes: &[u64],
+) -> std::collections::HashMap<(String, String, u8), u64> {
+    let mut map: std::collections::HashMap<(String, String, u8), u64> =
+        std::collections::HashMap::with_capacity(hashes.len());
+    let mut idx = 0usize;
+    for file in parsed {
+        for sym in &file.symbols {
+            // Defensive: don't panic on a hashes-slice shorter than
+            // expected — the calling path already gated on lengths
+            // matching but a future refactor could regress.
+            if let Some(&h) = hashes.get(idx) {
+                // Keep-first parity with CosineLookup.
+                map.entry((file.path.clone(), sym.name.clone(), sym.kind as u8))
+                    .or_insert(h);
+            }
+            idx += 1;
         }
     }
+    map
+}
+
+/// Walk `section.entries` and look up each entry's `(file, name,
+/// kind)` in the tip-side map. The file path is decoded from the
+/// in-memory strings table; missing offsets and historical-only
+/// entries surface as `None`.
+fn resolve_entry_context_hashes(
+    section: &crate::index::history_builder::HistorySection,
+    entry_names: &[String],
+    key_to_hash: &std::collections::HashMap<(String, String, u8), u64>,
+) -> Vec<Option<u64>> {
+    let mut out = Vec::with_capacity(section.entries.len());
+    for (i, e) in section.entries.iter().enumerate() {
+        let file = decode_string_at(&section.strings, e.file_offset);
+        let Some(name) = entry_names.get(i) else {
+            out.push(None);
+            continue;
+        };
+        let hit = key_to_hash
+            .get(&(file.to_string(), name.clone(), e.kind))
+            .copied();
+        out.push(hit);
+    }
+    out
+}
+
+/// Decode a length-prefixed UTF-8 string from the build-time strings
+/// table (same layout as `StringTable::intern` produces). Returns
+/// `""` for the empty-string sentinel at offset 0 and for any out-
+/// of-range / non-UTF-8 read. Build-side mirror of
+/// `HistoryReader::string`; kept private since callers only need the
+/// `&str` view, not the offset arithmetic.
+///
+/// **Encoding contract** (must stay in lock-step with
+/// `StringTable::intern` + `HistoryReader::string`): `[u32_le
+/// byte_len][UTF-8 bytes; byte_len]`, offset 0 = empty sentinel. If
+/// the on-disk encoding ever changes, update all three call sites
+/// and the `decode_string_at_round_trips_build_time_strings` test —
+/// the test pins our half of the contract.
+fn decode_string_at(strings: &[u8], offset: u32) -> &str {
+    let off = offset as usize;
+    if off + 4 > strings.len() {
+        return "";
+    }
+    let len_bytes: [u8; 4] = match strings[off..off + 4].try_into() {
+        Ok(b) => b,
+        Err(_) => return "",
+    };
+    let len = u32::from_le_bytes(len_bytes) as usize;
+    let start = off + 4;
+    if start + len > strings.len() {
+        return "";
+    }
+    std::str::from_utf8(&strings[start..start + len]).unwrap_or("")
 }
 
 fn rev_parse_head(repo: &Path) -> Option<String> {
@@ -2168,5 +2426,47 @@ mod tests {
         let applied =
             build_hnsw_incremental_at(&hnsw_path, &hash_index_path, &v_new, &h_new).unwrap();
         assert!(!applied, "corrupt sidecar → graceful fallback");
+    }
+
+    // ---------------------------------------------------------------
+    // decode_string_at — encoding-contract guard with StringTable
+    // ---------------------------------------------------------------
+
+    /// Round-trip: bytes produced by the canonical `StringTable::intern`
+    /// must be decodable by our build-side `decode_string_at`. If
+    /// `StringTable` ever changes its on-disk encoding (e.g. length
+    /// field width), this test breaks at the seam and the helper's
+    /// docstring already points the reader at the fix locations
+    /// (`HistoryReader::string` + `decode_string_at`). Cheaper than
+    /// constructing a full sidecar + opening it via `HistoryReader`.
+    #[test]
+    fn decode_string_at_round_trips_build_time_strings() {
+        use crate::store::git_history::StringTable;
+
+        let mut st = StringTable::new();
+        let off_empty = st.intern("");
+        let off_a = st.intern("src/foo.rs");
+        let off_b = st.intern("fn frobnicate(x: u32) -> u32");
+        let off_a_dup = st.intern("src/foo.rs");
+
+        let bytes = st.as_bytes();
+
+        // Sentinel: empty string at offset 0.
+        assert_eq!(off_empty, 0);
+        assert_eq!(decode_string_at(bytes, 0), "");
+
+        // Round-trips for two distinct interns.
+        assert_eq!(decode_string_at(bytes, off_a), "src/foo.rs");
+        assert_eq!(
+            decode_string_at(bytes, off_b),
+            "fn frobnicate(x: u32) -> u32"
+        );
+
+        // Dedup: re-interning returns the same offset.
+        assert_eq!(off_a, off_a_dup);
+
+        // Defensive: out-of-range offset yields "" instead of panicking.
+        assert_eq!(decode_string_at(bytes, u32::MAX), "");
+        assert_eq!(decode_string_at(bytes, bytes.len() as u32), "");
     }
 }

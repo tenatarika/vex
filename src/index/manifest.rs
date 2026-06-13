@@ -125,6 +125,27 @@ pub struct Manifest {
     /// when `--history` was not opted into.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<HistoryStats>,
+
+    /// v1.17 Phase 14.10 — `Some(true)` when the `index.rename_chains`
+    /// sidecar was successfully written during this build, `Some(false)`
+    /// when the write was attempted but failed (builder error, disk
+    /// full, rename race). `None` when chain detection wasn't run
+    /// (history not indexed, or pre-14.10 manifest). Gated on the
+    /// actual sidecar write outcome so `vex status` provenance stays
+    /// honest — if the sidecar's not on disk, this flag must agree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename_chains_built: Option<bool>,
+
+    /// v1.17 Phase 14.10 — count of accepted rename links where the
+    /// MiniLM cosine contribution was *strictly required* to clear
+    /// `GATE_SCORE`. Surfaced by `vex status` so users can see how
+    /// often the semantic tie-breaker actually changed an outcome
+    /// (vs. just nudging an already-passing score). `None` when chain
+    /// detection didn't run or the build ran without semantic
+    /// embeddings; `Some(0)` is a meaningfully different signal
+    /// (cosine path active but no decisions hinged on it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename_chains_minilm_tiebreak_hits: Option<u32>,
 }
 
 /// Counts surfaced from the `git_history` section into the manifest
@@ -366,6 +387,74 @@ mod tests {
         assert_eq!(m.history_tip_sha, None);
         assert_eq!(m.history_depth, None);
         assert!(m.history.is_none());
+    }
+
+    #[test]
+    fn rename_chains_minilm_tiebreak_hits_round_trip() {
+        // Phase 14.10 — `Some(0)` is meaningful (cosine path active,
+        // nothing decided by it) and must serialise distinctly from
+        // `None` (no chain detection / pre-14.10). Pin both shapes.
+        let active = Manifest {
+            rename_chains_minilm_tiebreak_hits: Some(0),
+            ..Manifest::default()
+        };
+        let json = serde_json::to_string(&active).unwrap();
+        assert!(json.contains("\"rename_chains_minilm_tiebreak_hits\":0"));
+        let back: Manifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.rename_chains_minilm_tiebreak_hits, Some(0));
+
+        let absent = Manifest::default();
+        let json_absent = serde_json::to_string(&absent).unwrap();
+        assert!(
+            !json_absent.contains("rename_chains_minilm_tiebreak_hits"),
+            "expected key absent for None, got: {json_absent}"
+        );
+    }
+
+    #[test]
+    fn rename_chains_built_round_trip() {
+        // v1.17 Phase 14.10: writer records the sidecar outcome as a
+        // typed boolean. Serialise → parse must preserve `Some(true)`
+        // verbatim so `vex status` provenance matches reality.
+        let m = Manifest {
+            rename_chains_built: Some(true),
+            ..Manifest::default()
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("\"rename_chains_built\":true"));
+        let back: Manifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.rename_chains_built, Some(true));
+    }
+
+    #[test]
+    fn rename_chains_built_records_failed_write_distinctly_from_pre_v17() {
+        // A v1.17 build that attempted the sidecar but failed records
+        // `Some(false)`. A pre-1.17 manifest carries no key at all and
+        // deserialises as `None`. These must NOT collapse to the same
+        // value — `vex status` distinguishes "tried and failed, look at
+        // logs" from "not run (re-index to enable)".
+        let failed = Manifest {
+            rename_chains_built: Some(false),
+            ..Manifest::default()
+        };
+        let json = serde_json::to_string(&failed).unwrap();
+        assert!(json.contains("\"rename_chains_built\":false"));
+        let back: Manifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.rename_chains_built, Some(false));
+
+        let pre_json = r#"{"files":{}}"#;
+        let pre: Manifest = serde_json::from_str(pre_json).unwrap();
+        assert_eq!(pre.rename_chains_built, None);
+    }
+
+    #[test]
+    fn rename_chains_built_none_is_omitted_from_serialised_form() {
+        let m = Manifest::default();
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            !json.contains("rename_chains_built"),
+            "expected key absent for None, got: {json}"
+        );
     }
 
     #[test]

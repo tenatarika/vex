@@ -160,7 +160,8 @@ pub(crate) fn jaccard_sorted(a: &[u32], b: &[u32]) -> f32 {
 /// Duplicate-hash policy: keep first (matches `HnswHandle::open`
 /// semantics — see `src/search/semantic.rs:179`). Second and later
 /// vectors at the same hash are unreachable.
-#[doc(hidden)] pub struct CosineLookup<'a> {
+#[doc(hidden)]
+pub struct CosineLookup<'a> {
     by_hash: HashMap<u64, &'a [f32]>,
     normalized: bool,
 }

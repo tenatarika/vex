@@ -227,7 +227,25 @@ fn vex_status_reports_rename_chain_stats_when_present() {
     // the keys exist rather than exact float equality.
     assert!(rc["thresholds"]["score"].is_number());
     assert!(rc["weights"]["body_no_cos"].is_number());
-    assert!(rc["minilm_tiebreak_hits"].is_null());
+    // `minilm_tiebreak_hits` is sourced from the manifest. With the
+    // structural-only build path (no semantic embeddings in this
+    // fixture) the value is `null`. The shape contract is "field
+    // present, type matches" — leave the value assertion permissive
+    // so a future semantic-on test doesn't have to break this one.
+    assert!(
+        rc["minilm_tiebreak_hits"].is_null() || rc["minilm_tiebreak_hits"].is_u64(),
+        "minilm_tiebreak_hits must be null or u64, got: {}",
+        rc["minilm_tiebreak_hits"],
+    );
+
+    // Phase 14.10 manifest provenance: the sidecar wrote successfully,
+    // so the top-level `rename_chains_built` flag must be `true`. Pins
+    // the contract that `vex status` and disk state agree.
+    assert_eq!(
+        parsed["results"]["rename_chains_built"],
+        serde_json::json!(true),
+        "manifest.rename_chains_built must be true after a successful build; got:\n{stdout}",
+    );
 
     // Text: a single human-readable line.
     let out = vex_in(repo)

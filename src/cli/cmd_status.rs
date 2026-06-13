@@ -139,11 +139,27 @@ pub(crate) fn status(
                         "body_no_cos":   chain_weights::W_BODY_NO_COS,
                         "sig_no_cos":    chain_weights::W_SIG_NO_COS,
                     },
-                    // MiniLM tiebreaker not yet plumbed into the index-time
-                    // builder; serialised as `null` so the field shape is
-                    // stable across future enablement.
-                    "minilm_tiebreak_hits": serde_json::Value::Null,
+                    // MiniLM tiebreaker hit count, sourced from the
+                    // manifest (build-time stat, not persisted in the
+                    // sidecar header). `null` = pre-14.10 manifest OR
+                    // build ran without semantic embeddings; `0` =
+                    // cosine path active but no decisions hinged on
+                    // it; `>0` = number of accepted links whose
+                    // cosine contribution was strictly required to
+                    // clear GATE_SCORE. See manifest.rs docstring on
+                    // `rename_chains_minilm_tiebreak_hits` for the
+                    // exact predicate.
+                    "minilm_tiebreak_hits":
+                        manifest.rename_chains_minilm_tiebreak_hits,
                 })),
+                // Phase 14.10 — manifest provenance for the rename_chains
+                // sidecar. Distinguishes "tried and failed" (Some(false),
+                // surfaced as `false`) from "never tried" (None, surfaced
+                // as `null`). Co-rendered with the `rename_chains` block
+                // above so agents that see a populated chain header but a
+                // `false` flag here know the manifest is out of sync with
+                // disk (rare, but useful for debugging crash-recovery).
+                "rename_chains_built": manifest.rename_chains_built,
             });
             if let Some(c) = &coverage_report {
                 json["coverage"] = serde_json::to_value(c)?;
@@ -244,6 +260,24 @@ pub(crate) fn status(
                         chain_weights::GATE_SCORE,
                         chain_weights::GATE_JACCARD,
                     );
+                    // Phase 14.10 — surface tie-breaker hits only when
+                    // the cosine path actually ran (`Some(_)`). `Some(0)`
+                    // gets its own line so users can see the path was
+                    // active even without decisions hinging on it; `None`
+                    // (structural-only build, e.g. `--no-semantic`) stays
+                    // silent so the typical `--no-semantic` user isn't
+                    // told about a feature they didn't opt into.
+                    if let Some(hits) = manifest.rename_chains_minilm_tiebreak_hits {
+                        if hits > 0 {
+                            println!(
+                                "               MiniLM tie-break decided {} link{}",
+                                hits,
+                                if hits == 1 { "" } else { "s" },
+                            );
+                        } else {
+                            println!("               MiniLM tie-break: active, 0 decisive");
+                        }
+                    }
                 }
                 (Some(_), Some(_)) => {
                     println!(
@@ -252,12 +286,37 @@ pub(crate) fn status(
                     );
                 }
                 (Some(_), None) => {
-                    // History indexed but no rename_chains sidecar —
-                    // likely a pre-Phase-14.10 index (no chain wiring
-                    // when it was built). Action: re-index.
-                    println!(
-                        "Rename chains: no (re-run `vex index --history` to enable Phase 14.10 chain detection)"
-                    );
+                    // History indexed but no rename_chains sidecar.
+                    // Three distinguishable causes:
+                    //   - `rename_chains_built = Some(false)`: the build
+                    //     attempted the write and failed (disk full,
+                    //     permission, rename race). Logs carry the reason.
+                    //   - `rename_chains_built = Some(true)`: build
+                    //     succeeded but the sidecar has since gone missing
+                    //     (manual rm, filesystem hiccup, external cleanup).
+                    //     Different action — the manifest disagrees with
+                    //     disk, a re-index will reconcile.
+                    //   - `rename_chains_built = None`: a pre-Phase-14.10
+                    //     index, or chain detection wasn't reached.
+                    //     Re-index opts in.
+                    match manifest.rename_chains_built {
+                        Some(false) => println!(
+                            "Rename chains: ⚠ build attempted but write failed; \
+                             chain expansion in `vex history` is disabled. Re-run \
+                             `vex index --history` after checking logs for the \
+                             cause (disk full / permission / rename race)."
+                        ),
+                        Some(true) => println!(
+                            "Rename chains: ⚠ manifest records a successful build \
+                             but the sidecar is missing on disk. Likely manual \
+                             removal or external cleanup; re-run `vex index --history` \
+                             to reconcile."
+                        ),
+                        None => println!(
+                            "Rename chains: no (re-run `vex index --history` to enable \
+                             Phase 14.10 chain detection)"
+                        ),
+                    }
                 }
                 (None, _) => {
                     // History not indexed — chain detection is gated on it.
