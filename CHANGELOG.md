@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-06-14
+
 ### Added — Phase 14.10: symbol-rename tracking via content-similarity
 
 - **`vex history <Symbol>` follows renames across commits.** Detection
