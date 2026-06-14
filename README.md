@@ -1015,30 +1015,49 @@ sustained 3M / 5.8M iteration runs confirmed they hold.
 ## Architecture
 
 ```
-CLI (clap) → Pipeline (rayon) → Tree-sitter → Binary Format v4 (mmap)
+CLI (clap) → Pipeline (rayon, 500-file chunks) → Tree-sitter
                                       ↓
-                               Embedder trait (fastembed/MiniLM)
+                           Binary format v6 (mmap, zero-copy)
                                       ↓
-                               HNSW Index (usearch)
+       ┌──────────────────┬──────────────┬──────────────┬──────────────┐
+       ↓                  ↓              ↓              ↓              ↓
+  Symbol FST         Refs FST        BM25 doc       HNSW vectors  Call graph
+  (structural)    (cross-file refs) (body tokens)   (semantic)   (callers/callees FST)
                                       ↓
-Search:    Symbol FST (structural) + BM25 (body) + HNSW (semantic) → 3-way RRF
-Callers/Callees: Callers FST + Callees FST (persistent edges) → ~4ms
-Usages:    Refs FST + Posting Lists → zero-copy refs lookup
-Show:      Tree-sitter node boundaries → symbol body extraction
-Similar:   HNSW nearest neighbors over stored embeddings
+                       Embedder trait → fastembed / MiniLM-L6 (default)
+
+Per-project sidecars (in <index_dir>/):
+  · index.vex             — primary index (format v6)
+  · index.hnsw            — semantic vectors (HNSW graph)
+  · index.bodytokens      — per-symbol terms for BM25 + semantic context (B1.2)
+  · index.git_history     — historical symbol presence (Phase 14.8)
+  · index.rename_chains   — MinHash+LSH rename tracking across commits (Phase 14.10)
+
+Shared cross-project (in user cache root, e.g. ~/Library/Caches/vex/blobs/):
+  · {sha}.bin shards      — content-addressed parse cache, keyed by git blob SHA (Phase 14.7)
+
+Search pipeline:
+  search   → Symbol FST + BM25 + HNSW  → N-way RRF fusion → Hybrid tag on cross-channel hits
+  usages   → Refs FST + posting lists → zero-copy, --strict adds type-aware filter (v1.14.1)
+  history  → walks git tree, follows rename chains via Jaccard + greedy 1:1 (Phase 14.10)
+  similar  → HNSW nearest neighbors (hash-keyed for content-stable IDs)
+  show     → tree-sitter node boundaries → symbol body extraction
+  pattern  → AST-aware structural matcher with skeleton index
 ```
 
-- **No SQLite** — custom binary format v4 with zero-copy mmap reads (v3 still readable)
+- **No SQLite** — custom binary format v6, zero-copy mmap reads; readers accept v3+ for backwards compatibility
 - **Symbol FST** — persistent inverted index, O(query_len) lookup
-- **Refs FST** — symbol references in Finite State Transducer, prefix search
+- **Refs FST + ref_edges** — symbol references as FST + cross-file edges resolved at write time (Pass-2 in `store::writer`); enables refactor-grade `usages --strict`
 - **Persistent call graph** — `CallEdge` records + callers/callees FSTs built at index time, ~4ms lookup vs seconds of live tree-sitter scan
-- **BM25 channel** — Okapi BM25 over body identifiers, auto-on when section present
-- **HNSW** — approximate nearest neighbor via usearch, O(log N) semantic search
+- **BM25 channel** — Okapi BM25 over `body_tokens`, auto-on when section present
+- **HNSW** — approximate nearest neighbor via usearch, O(log N) semantic search; hash-keyed entries for content-stable IDs across re-indexing
 - **Pluggable embedder** — `Embedder` trait + registry, identity recorded in manifest with mismatch detection at search
-- **Parallel parsing** — rayon with 500-file chunks
-- **Incremental updates** — content hashing via xxh3, only re-parse changed files (unchanged symbols + call edges reconstructed from existing index)
-- **Watch mode** — notify crate with 500ms debouncing
-- **3-way RRF fusion** — merges structural + BM25 + semantic ranked lists, marks cross-channel hits as `Hybrid`
+- **History index** — symbol presence per commit + MinHash-based rename chain tracking (closes LIMITATIONS §4c #2 for 1:1 renames)
+- **Parallel parsing** — rayon with 500-file chunks; blob-SHA parse cache (shared across projects in the user cache root) skips re-parse of unchanged files across re-indexes
+- **Incremental updates** — content hashing via xxh3; `vex update` re-parses only changed files (unchanged symbols + call edges reconstructed from existing index)
+- **Watch mode** — `notify` crate with 500ms debouncing
+- **N-way RRF fusion** — `fuse_many` merges structural + BM25 + semantic ranked lists, marks cross-channel hits as `Hybrid`
+- **Ranking eval harness** — `vex eval` over a bundled golden set; CI regression gate on mean nDCG@10 + per-query-type floors + per-channel attribution (Phase 13.12 / 13.12.1)
 
 ## License
 
