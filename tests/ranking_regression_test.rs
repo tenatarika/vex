@@ -36,6 +36,37 @@ use tempfile::TempDir;
 /// failing test.
 const BASELINE_NDCG: f64 = 0.85;
 
+/// Per-query-type floors (Phase 13.12.1). A mean-only floor lets a
+/// silent regression in one channel hide behind perfect scores in the
+/// others — `semantic` falling from 0.73 to 0.50 still leaves the mean
+/// above 0.85 with the current 5/5/3/3 query mix. Pin each bucket so
+/// per-channel regressions surface.
+///
+/// Measured at 13.12.1 commit time:
+///   exact_symbol  1.000
+///   bm25_rare     1.000
+///   fuzzy         0.833
+///   semantic      0.729
+///
+/// Headroom is roughly proportional to the channel's tie-breaking
+/// sensitivity — exact / bm25 are deterministic identifier lookups so
+/// floors hug the measured value; fuzzy / semantic have more RRF jitter
+/// so floors sit further below.
+const FLOOR_EXACT_SYMBOL: f64 = 0.95;
+const FLOOR_BM25_RARE: f64 = 0.95;
+const FLOOR_FUZZY: f64 = 0.75;
+const FLOOR_SEMANTIC: f64 = 0.65;
+
+fn per_type_floor(query_type: &str) -> Option<f64> {
+    match query_type {
+        "exact_symbol" => Some(FLOOR_EXACT_SYMBOL),
+        "bm25_rare" => Some(FLOOR_BM25_RARE),
+        "fuzzy" => Some(FLOOR_FUZZY),
+        "semantic" => Some(FLOOR_SEMANTIC),
+        _ => None,
+    }
+}
+
 fn vex(repo_root: &Path, cache_dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(repo_root);
@@ -98,6 +129,36 @@ fn mean_ndcg_stays_above_baseline() {
          a ranking regression has likely landed. Either fix it or, if \
          intentional, update BASELINE_NDCG in this file and document \
          the change."
+    );
+
+    // Per-type floors — Phase 13.12.1. Mean nDCG can stay above its
+    // floor while one channel quietly collapses; the per-type asserts
+    // catch that. If a query_type appears in the golden set but isn't
+    // in `per_type_floor`, we skip it (forward-compat for new types).
+    let by_type = report["by_type"].as_array().expect("by_type array");
+    let mut checked = 0;
+    for bucket in by_type {
+        let qt = bucket["query_type"].as_str().expect("query_type field");
+        let bucket_ndcg = bucket["mean_ndcg"].as_f64().expect("mean_ndcg field");
+        if let Some(floor) = per_type_floor(qt) {
+            checked += 1;
+            assert!(
+                bucket_ndcg >= floor,
+                "per-type nDCG@10 for {qt} = {bucket_ndcg:.4} below floor {floor:.4} — \
+                 the {qt} channel regressed even though the global mean stayed up. \
+                 Either fix the regression or update the FLOOR_* constant with a CHANGELOG note."
+            );
+        }
+    }
+    // Pin to the exact number of FLOOR_* constants. `>= 3` would
+    // silently tolerate one floor going dark if a query_type were
+    // renamed in queries.toml or a constant deleted from
+    // per_type_floor. The fix is to assert the exact count.
+    assert_eq!(
+        checked, 4,
+        "expected 4 query-type floors to be exercised, got {checked}; \
+         either the golden set lost coverage or a query_type was \
+         renamed without updating per_type_floor()"
     );
 }
 

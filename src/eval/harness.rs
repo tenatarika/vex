@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::{mrr, ndcg_at_k, recall_at_k};
-use crate::search::{fusion, structural, SearchResult};
+use crate::search::{fusion, structural, MatchType, SearchResult};
 use crate::store::reader::IndexReader;
 
 /// Top-k window the harness evaluates against. Hard-coded so the
@@ -91,6 +91,17 @@ pub struct QueryReport {
     /// inspecting regressions in `--json` output.
     pub top_path: Option<String>,
     pub result_count: usize,
+    /// `MatchType` of each top-EVAL_K result, in rank order. Position 0
+    /// is the rank-1 result, etc. Empty when the query returned nothing.
+    /// Phase 13.12.1: lets reviewers see which channels actually pulled
+    /// the top results (e.g. all `Hybrid` vs all `Structural`).
+    ///
+    /// Stored as `MatchType` (not `String`) so adding a new variant
+    /// surfaces as a compile error in `bucket_by_channel`'s aggregation
+    /// path rather than as a silent new string in the JSON output.
+    /// Serializes as the bare variant name via `MatchType`'s `serde`
+    /// derive, so consumers see the same shape as before.
+    pub top_match_types: Vec<MatchType>,
 }
 
 /// Aggregate scores plus the per-query rows.
@@ -104,6 +115,10 @@ pub struct EvalReport {
     /// Breakdown grouped by `query_type` (exact_symbol / semantic /
     /// bm25_rare / fuzzy). Empty buckets are omitted.
     pub by_type: Vec<TypeBucket>,
+    /// Breakdown grouped by `MatchType` (which channel produced the
+    /// result). Phase 13.12.1: answers "is the semantic channel actually
+    /// contributing anything, or is fusion riding on structural/bm25?".
+    pub by_channel: Vec<ChannelBucket>,
     pub per_query: Vec<QueryReport>,
 }
 
@@ -114,6 +129,19 @@ pub struct TypeBucket {
     pub mean_ndcg: f64,
     pub mean_recall: f64,
     pub mean_mrr: f64,
+}
+
+/// Aggregate contribution of one search channel (variant of `MatchType`).
+///
+/// `top1_count` is the strongest signal — "how often did this channel
+/// produce the rank-1 result". `top_k_count` is the looser version
+/// counting any appearance within the EVAL_K window. Both are simple
+/// counts so a future delta against a baseline run reads naturally.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChannelBucket {
+    pub channel: String,
+    pub top1_count: usize,
+    pub top_k_count: usize,
 }
 
 /// Run the harness against `reader`, returning the full report.
@@ -180,6 +208,16 @@ fn run_query(reader: &IndexReader, q: &GoldenQuery, fetch_limit: usize) -> Query
             .unwrap_or(false)
     });
 
+    // Capture channels in the same EVAL_K window we score against. The
+    // metric truncation already lives inside ndcg_at_k / recall_at_k /
+    // mrr — mirror it here so aggregation by_channel only counts what
+    // the metrics actually saw.
+    let top_match_types: Vec<MatchType> = results
+        .iter()
+        .take(EVAL_K)
+        .map(|r| r.match_type.clone())
+        .collect();
+
     QueryReport {
         query: q.query.clone(),
         query_type: q.query_type.clone(),
@@ -189,6 +227,7 @@ fn run_query(reader: &IndexReader, q: &GoldenQuery, fetch_limit: usize) -> Query
         top1_hit,
         top_path,
         result_count: ranked_paths.len(),
+        top_match_types,
     }
 }
 
@@ -261,6 +300,7 @@ fn aggregate(per_query: Vec<QueryReport>) -> EvalReport {
         });
     let denom = total.max(1) as f64;
     let by_type = bucket_by_type(&per_query);
+    let by_channel = bucket_by_channel(&per_query);
     EvalReport {
         k: EVAL_K,
         total_queries: total,
@@ -268,15 +308,20 @@ fn aggregate(per_query: Vec<QueryReport>) -> EvalReport {
         mean_recall: sum_recall / denom,
         mean_mrr: sum_mrr / denom,
         by_type,
+        by_channel,
         per_query,
     }
 }
 
 fn bucket_by_type(per_query: &[QueryReport]) -> Vec<TypeBucket> {
-    // Stable order: discover types in insertion order, then aggregate.
+    use std::collections::HashMap;
+
+    // Stable order: discover types in first-seen order, dedupe via the
+    // HashMap so the seen-check is O(1) per result instead of O(|order|).
     let mut order: Vec<String> = Vec::new();
+    let mut seen: HashMap<String, ()> = HashMap::new();
     for q in per_query {
-        if !order.iter().any(|t| t == &q.query_type) {
+        if seen.insert(q.query_type.clone(), ()).is_none() {
             order.push(q.query_type.clone());
         }
     }
@@ -295,6 +340,53 @@ fn bucket_by_type(per_query: &[QueryReport]) -> Vec<TypeBucket> {
                 mean_ndcg: n / denom,
                 mean_recall: r / denom,
                 mean_mrr: m / denom,
+            }
+        })
+        .collect()
+}
+
+/// Aggregate per-channel attribution across all queries.
+///
+/// Walks every `top_match_types` row. The rank-0 entry feeds `top1_count`
+/// (the channel that produced the top result); every entry within the
+/// EVAL_K window feeds `top_k_count`. Channels are emitted in
+/// first-seen order so JSON output stays stable across runs.
+fn bucket_by_channel(per_query: &[QueryReport]) -> Vec<ChannelBucket> {
+    use std::collections::HashMap;
+
+    let mut order: Vec<MatchType> = Vec::new();
+    let mut top1: HashMap<MatchType, usize> = HashMap::new();
+    let mut topk: HashMap<MatchType, usize> = HashMap::new();
+    for q in per_query {
+        for (rank, ch) in q.top_match_types.iter().enumerate() {
+            // Use topk's key set as the "have we seen this channel"
+            // check — every channel that lands in `order` is unconditionally
+            // inserted into topk in the same iteration, so the HashMap
+            // doubles as the seen-set without a parallel structure.
+            if !topk.contains_key(ch) {
+                order.push(ch.clone());
+            }
+            *topk.entry(ch.clone()).or_insert(0) += 1;
+            if rank == 0 {
+                *top1.entry(ch.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    order
+        .into_iter()
+        .map(|ch| {
+            // topk is guaranteed to contain `ch` (we pushed `ch` to
+            // `order` precisely when we inserted it into topk above).
+            // top1 may legitimately be missing — a channel can appear
+            // at rank ≥1 across all queries and never at rank 0.
+            let top_k = *topk
+                .get(&ch)
+                .expect("channel in order implies channel in topk");
+            let top_1 = top1.get(&ch).copied().unwrap_or(0);
+            ChannelBucket {
+                channel: ch.to_string(),
+                top1_count: top_1,
+                top_k_count: top_k,
             }
         })
         .collect()
@@ -321,6 +413,17 @@ pub fn print_text_report(report: &EvalReport) {
             println!(
                 "  {:<14} n={:<3} nDCG={:.3}  recall={:.3}  MRR={:.3}",
                 b.query_type, b.count, b.mean_ndcg, b.mean_recall, b.mean_mrr
+            );
+        }
+    }
+
+    if !report.by_channel.is_empty() {
+        println!();
+        println!("By channel:");
+        for b in &report.by_channel {
+            println!(
+                "  {:<12} top1={:<3} top{}={}",
+                b.channel, b.top1_count, report.k, b.top_k_count
             );
         }
     }
@@ -467,29 +570,30 @@ acceptable_paths = []
         );
     }
 
+    fn make_report(
+        name: &str,
+        qtype: &str,
+        ndcg: f64,
+        top_match_types: Vec<MatchType>,
+    ) -> QueryReport {
+        QueryReport {
+            query: name.into(),
+            query_type: qtype.into(),
+            ndcg_at_k: ndcg,
+            recall_at_k: ndcg,
+            mrr: ndcg,
+            top1_hit: Some(ndcg > 0.5),
+            top_path: top_match_types.first().map(|_| format!("{name}.rs")),
+            result_count: top_match_types.len(),
+            top_match_types,
+        }
+    }
+
     #[test]
     fn aggregate_computes_means() {
         let per_query = vec![
-            QueryReport {
-                query: "a".into(),
-                query_type: "exact_symbol".into(),
-                ndcg_at_k: 1.0,
-                recall_at_k: 1.0,
-                mrr: 1.0,
-                top1_hit: Some(true),
-                top_path: Some("x".into()),
-                result_count: 1,
-            },
-            QueryReport {
-                query: "b".into(),
-                query_type: "exact_symbol".into(),
-                ndcg_at_k: 0.0,
-                recall_at_k: 0.0,
-                mrr: 0.0,
-                top1_hit: Some(false),
-                top_path: None,
-                result_count: 0,
-            },
+            make_report("a", "exact_symbol", 1.0, vec![MatchType::Structural]),
+            make_report("b", "exact_symbol", 0.0, vec![]),
         ];
         let report = aggregate(per_query);
         assert!((report.mean_ndcg - 0.5).abs() < 1e-9);
@@ -497,5 +601,82 @@ acceptable_paths = []
         assert!((report.mean_mrr - 0.5).abs() < 1e-9);
         assert_eq!(report.by_type.len(), 1);
         assert_eq!(report.by_type[0].count, 2);
+    }
+
+    #[test]
+    fn bucket_by_channel_counts_top1_and_topk() {
+        // Three queries: first two have Hybrid as rank-1, third has
+        // Structural. `Bm25` only appears at rank 2 (never top-1).
+        let per_query = vec![
+            make_report(
+                "q1",
+                "exact_symbol",
+                1.0,
+                vec![MatchType::Hybrid, MatchType::Bm25, MatchType::Structural],
+            ),
+            make_report(
+                "q2",
+                "semantic",
+                0.5,
+                vec![MatchType::Hybrid, MatchType::Bm25],
+            ),
+            make_report("q3", "fuzzy", 1.0, vec![MatchType::Structural]),
+        ];
+        let buckets = bucket_by_channel(&per_query);
+
+        // First-seen order: Hybrid (q1 rank 0), Bm25 (q1 rank 1), Structural (q1 rank 2).
+        let names: Vec<&str> = buckets.iter().map(|b| b.channel.as_str()).collect();
+        assert_eq!(names, vec!["Hybrid", "Bm25", "Structural"]);
+
+        let by_name: std::collections::HashMap<&str, &ChannelBucket> =
+            buckets.iter().map(|b| (b.channel.as_str(), b)).collect();
+
+        assert_eq!(
+            by_name["Hybrid"].top1_count, 2,
+            "Hybrid wins top-1 in q1+q2"
+        );
+        assert_eq!(by_name["Hybrid"].top_k_count, 2);
+
+        assert_eq!(by_name["Bm25"].top1_count, 0, "Bm25 never at rank 0");
+        assert_eq!(by_name["Bm25"].top_k_count, 2, "Bm25 at rank 1 in q1+q2");
+
+        assert_eq!(
+            by_name["Structural"].top1_count, 1,
+            "Structural wins top-1 in q3 only"
+        );
+        assert_eq!(by_name["Structural"].top_k_count, 2);
+    }
+
+    #[test]
+    fn bucket_by_channel_empty_when_no_results() {
+        let per_query = vec![make_report("q", "exact_symbol", 0.0, vec![])];
+        let buckets = bucket_by_channel(&per_query);
+        assert!(buckets.is_empty(), "no channels seen → empty bucket list");
+    }
+
+    #[test]
+    fn bucket_by_channel_all_same_channel() {
+        // Realistic case: fusion is healthy and every query's top-k
+        // window is dominated by Hybrid. top1_count must equal the
+        // query count, top_k_count must equal the sum of window sizes.
+        let per_query = vec![
+            make_report(
+                "q1",
+                "exact_symbol",
+                1.0,
+                vec![MatchType::Hybrid, MatchType::Hybrid, MatchType::Hybrid],
+            ),
+            make_report(
+                "q2",
+                "exact_symbol",
+                1.0,
+                vec![MatchType::Hybrid, MatchType::Hybrid],
+            ),
+        ];
+        let buckets = bucket_by_channel(&per_query);
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0].channel, "Hybrid");
+        assert_eq!(buckets[0].top1_count, 2);
+        assert_eq!(buckets[0].top_k_count, 5);
     }
 }

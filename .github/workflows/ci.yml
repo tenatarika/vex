@@ -80,6 +80,43 @@ jobs:
       - uses: rui314/setup-mold@v1
       - run: cargo test --workspace
 
+  # Ranking eval (Phase 13.12.1) — produces a debuggable artifact for
+  # every PR. The actual regression gate lives in `cargo test --workspace`
+  # via `tests/ranking_regression_test.rs`; this job only uploads the
+  # full `vex eval --json` report so triaging a failure doesn't require
+  # re-running locally. `if: always()` so the artifact still uploads
+  # when the eval itself fails (e.g. the floor was breached).
+  ranking-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: rui314/setup-mold@v1
+      - name: Build index
+        run: cargo run --release --quiet -- index
+      - name: Run eval and capture JSON
+        # Redirect (not `tee`) so we capture only the JSON envelope and
+        # don't let `tee`'s success swallow a non-zero exit from
+        # `vex eval`. `|| true` is explicit: this job is a debugging
+        # aid, not the regression gate (`cargo test --workspace`
+        # already runs `tests/ranking_regression_test.rs` on 3 OS). A
+        # non-zero exit here still uploads the partial report for
+        # triage, which is exactly what we want.
+        run: cargo run --release --quiet -- eval --json > eval-report.json || true
+      - name: Print eval report inline
+        if: always()
+        run: cat eval-report.json || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ranking-eval-report
+          path: eval-report.json
+          # `warn` (not `error`) so a build-step failure that skips
+          # the eval step doesn't pile a second failure on top of the
+          # first — the missing report on a failed build is expected.
+          if-no-files-found: warn
+
   # Compile benches without running them — catches API drift in
   # benches/bundle.rs (custom criterion harness) before it lands on main.
   benches:

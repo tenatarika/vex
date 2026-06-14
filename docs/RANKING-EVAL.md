@@ -25,6 +25,33 @@ It never builds one — running `vex eval` against a missing index is an
 error, not a silent rebuild. Pair with `vex index` (or `vex update`) in
 CI before invoking eval.
 
+## Per-channel attribution (Phase 13.12.1)
+
+Every result returned by `vex search` carries a `MatchType` tag —
+`Structural`, `Bm25`, `Hybrid` (the result appeared in ≥2 channels and
+was upgraded by fusion), `Fuzzy`, or `Semantic`. The eval harness
+surfaces these in two places:
+
+* **Per query**, `top_match_types` lists the channel of each result in
+  the top-EVAL_K window in rank order. Lets you see at a glance whether
+  the top-3 were pulled by the same channel or a mix.
+* **Aggregate**, `by_channel` reports `top1_count` (how often this
+  channel produced the rank-1 result) and `top_k_count` (total
+  appearances within the EVAL_K window across all queries).
+
+The aggregate answers the diagnostic question fusion-based search keeps
+raising: *is the semantic channel actually contributing anything, or is
+fusion just riding on structural/bm25?*. A measured 13.12.1 run against
+vex's own source tree (without `--semantic`):
+
+```text
+By channel:
+  Hybrid       top1=13  top10=31    ← fusion does real work; 81% of top-1s
+  Bm25         top1=1   top10=99    ← pulls a lot, rarely the best
+  Fuzzy        top1=2   top10=7
+  Structural   top1=0   top10=1     ← always upgraded to Hybrid via fusion
+```
+
 ## Metrics
 
 The harness computes three classical IR metrics per query and aggregates
@@ -91,17 +118,27 @@ After adding queries, rerun `vex eval` and update `BASELINE_NDCG` in
 ## Baseline philosophy
 
 The regression guard test (`tests/ranking_regression_test.rs`) pins a
-floor on mean nDCG@10. The floor is captured against the current vex
+floor on mean nDCG@10 **plus per-query-type floors** (added in
+Phase 13.12.1 so a regression in one channel can't hide behind perfect
+scores in the others). All floors are captured against the current vex
 source tree with a fresh index:
 
 ```text
-v1.8.2 (Phase 13.12 commit) — mean nDCG@10 ≈ 0.89
-BASELINE_NDCG = 0.85    # ~5% headroom for run-to-run variance
+v1.8.2 (Phase 13.12 commit)  — mean nDCG@10 ≈ 0.89
+BASELINE_NDCG       = 0.85   # ~5% headroom for run-to-run variance
+
+Phase 13.12.1 per-type floors:
+  exact_symbol      ≥ 0.95   # measured 1.000
+  bm25_rare         ≥ 0.95   # measured 1.000
+  fuzzy             ≥ 0.75   # measured 0.833
+  semantic          ≥ 0.65   # measured 0.729
 ```
 
-The headroom absorbs tie-breaking jitter in fusion's Reciprocal Rank
-Fusion and the deterministic-but-implementation-defined sort in
-structural search.
+Headroom absorbs tie-breaking jitter in fusion's Reciprocal Rank Fusion
+and the deterministic-but-implementation-defined sort in structural
+search. Exact / bm25 floors hug the measured value because identifier
+lookups are essentially deterministic; fuzzy / semantic floors sit
+further below because RRF reorderings shift those scores more.
 
 **When intentionally improving ranking**: rerun `vex eval`, observe the
 new score, raise `BASELINE_NDCG`. Document in `CHANGELOG.md`.
