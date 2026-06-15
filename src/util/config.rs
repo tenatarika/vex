@@ -110,11 +110,17 @@ pub fn load_config(start_dir: &Path) -> Result<VexConfig> {
 }
 
 /// Default .vex.toml content with comments explaining each option.
+///
+/// Convention: every commented-out line shows the **actual default value**
+/// vex uses when the setting is omitted. Uncomment a line to override.
+/// Exceptions are explicitly called out ("override example, not the default").
 pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/tenatarika/vex
 #
-# Place this file in your project root as .vex.toml
+# Place this file in your project root as .vex.toml.
+# Every line below is commented-out and shows the default; uncomment to override.
 
-# Glob patterns to exclude from indexing (gitignore syntax, on top of .gitignore)
+# Glob patterns to exclude from indexing (gitignore syntax, on top of .gitignore).
+# No defaults — vex relies on .gitignore + built-in junk filters when this is empty.
 # exclude = [
 #     "vendor/**",
 #     "node_modules/**",
@@ -122,13 +128,16 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 #     "dist/**",
 # ]
 
-# Default output format: "text", "json", or "compact"
-# format = "text"
+# Default output format: "text", "json", or "compact".
+# Compact has been the default since v1.10.1 — single-line records, optimized
+# for LLM / agent token efficiency. Switch to "text" for the verbose multi-line
+# form humans usually want at the terminal.
+# format = "compact"
 
-# Enable semantic embeddings by default (slower indexing, enables meaning-based search)
+# Enable semantic embeddings during indexing (slower index, enables meaning-based search).
 # semantic = false
 
-# Automatically run `vex update` before search if the index is stale
+# Automatically run `vex update` before search if the index is stale.
 # auto_update = false
 
 # Embedder used for semantic indexing. IDs: minilm-l6-v2 (default, CPU-fast),
@@ -139,22 +148,26 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 
 # Use the GPU for embedding generation, if this vex build was compiled with a
 # gpu-* feature (DirectML on Windows / CoreML on macOS prebuilts; CUDA via
-# `cargo install vex --features gpu-cuda`). `true` => best available provider
-# with silent CPU fallback; only speeds up cold/large semantic builds.
+# `cargo install vex --features gpu-cuda`).
+# When this setting is OMITTED, vex picks the compile-time default — Auto on
+# a GPU build, Cpu otherwise. Setting `true` here resolves to Auto with silent
+# CPU fallback; `false` forces CPU regardless of build features.
 # Per-invocation override: `vex index --gpu` / `--no-gpu`.
-# gpu = false
+# gpu = true
 
 # Advanced: pin a specific embedding execution provider. Takes precedence over
 # `gpu`. One of: "cpu", "auto", "cuda", "directml", "coreml".
+# Default when omitted: derived from `gpu` + build features (see above).
 # Per-invocation override: `vex index --device <DEVICE>`.
 # device = "auto"
 
-# Cache directory override. Defaults to the platform cache location.
+# Cache directory override. Defaults to the platform cache location:
 #   macOS:   ~/Library/Caches/vex
 #   Linux:   $XDG_CACHE_HOME/vex   (fallback: ~/.cache/vex)
 #   Windows: %LOCALAPPDATA%\vex    (fallback: %USERPROFILE%\AppData\Local\vex)
 # Accepts absolute paths, "~/..." or paths relative to this file (e.g. "./.vex/cache").
 # Can also be overridden per-invocation with --cache-dir or $VEX_CACHE_DIR.
+# This line shows an OVERRIDE example, not the default.
 # cache_dir = "./.vex/cache"
 
 # Store the index inside the project as `<project>/.vex_cache/`. Useful when
@@ -164,9 +177,9 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 # local_cache = false
 
 # Thread count for parallel indexing (index/update/watch).
-#   * unset  — 80% of available cores, rounded up (default, leaves headroom)
+# Default when omitted: 80% of available cores, rounded up — leaves headroom.
 #   * 0      — use all cores (explicit opt-in to max throughput)
-#   * N      — exactly N workers
+#   * N      — exactly N workers (override example below)
 # Overridable per-invocation with `-j/--jobs` or $VEX_JOBS.
 # jobs = 4
 
@@ -177,10 +190,16 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 # Per-invocation override: `vex index --no-call-graph`.
 # call_graph = true
 
-# Build the BM25 channel. Disabling drops the third RRF channel and keeps
-# only structural (+ semantic). Same persistence rules as `call_graph`.
+# Build the BM25 channel. Disabling drops the BM25 RRF channel and keeps only
+# structural (+ semantic). Same persistence rules as `call_graph`.
 # Per-invocation override: `vex index --no-bm25`.
 # bm25 = true
+
+# Build the pattern-skeleton section for `vex pattern` (Phase 11.4). When
+# disabled, `vex pattern` keeps using its live-scan path — slower per-query
+# but smaller index. Same persistence rules as `call_graph` / `bm25`.
+# Per-invocation override: `vex index --no-pattern-index`.
+# pattern_index = true
 "#;
 
 /// Process-global override for the cache root. Set once at CLI startup
