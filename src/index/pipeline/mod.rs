@@ -526,46 +526,45 @@ fn update_inner(
     // Cascade fixes this by re-parsing importers — their bound_refs
     // get produced fresh against the new name table.
     //
-    // Owned String storage for the cascade entries so they outlive the
-    // borrow from `manifest.imported_by`. The `cascade_set` is then
-    // merged into `changed_set` by &str references into that storage.
-    // Single manifest read used by BOTH the Q4-B cascade map AND the
-    // v1.13 P5 vectors_normalized check below. Without this share, the
-    // manifest is loaded twice per `vex update` (small but real I/O on
-    // watch-mode hot loops). The `old_manifest` binding is consumed by
-    // the cascade builder below and re-used for `existing_normalized`
-    // further down.
-    let old_manifest = crate::index::manifest::Manifest::load(&config::manifest_path(&root)).ok();
+    // Reuses `current_manifest` (post-lock fresh load at line 499)
+    // instead of a third re-read: avoids a redundant disk I/O on every
+    // `vex update` (watch-mode-hot-path concern) AND avoids reading a
+    // pre-lock-stale `imported_by` when a concurrent peer wrote
+    // between lock acquisition and the cascade build (third-pass
+    // review HIGH).
     let cascade_paths: Vec<String> = {
         let mut out: Vec<String> = Vec::new();
-        if let Some(m) = old_manifest.as_ref() {
-            if !m.imported_by.is_empty() {
-                let triggers = changed_set.iter().chain(deleted_set.iter()).copied();
-                let mut seen: HashSet<String> = HashSet::new();
-                for trigger in triggers {
-                    if let Some(importers) = m.imported_by.get(trigger) {
-                        for importer in importers {
-                            if changed_set.contains(importer.as_str())
-                                || deleted_set.contains(importer.as_str())
-                            {
-                                continue; // already being re-parsed
-                            }
-                            if seen.insert(importer.clone()) {
-                                out.push(importer.clone());
-                            }
+        if !current_manifest.imported_by.is_empty() {
+            let triggers = changed_set.iter().chain(deleted_set.iter()).copied();
+            let mut seen: HashSet<String> = HashSet::new();
+            for trigger in triggers {
+                if let Some(importers) = current_manifest.imported_by.get(trigger) {
+                    for importer in importers {
+                        if changed_set.contains(importer.as_str())
+                            || deleted_set.contains(importer.as_str())
+                        {
+                            continue; // already being re-parsed
+                        }
+                        if seen.insert(importer.clone()) {
+                            out.push(importer.clone());
                         }
                     }
                 }
-            } else if !changed_set.is_empty() || !deleted_set.is_empty() {
-                // architect M2: surface the bootstrap degradation so users
-                // understand the first post-upgrade update is correct but
-                // not yet cascade-aware.
-                tracing::info!(
-                    "vex update: imported_by reverse map absent in manifest (pre-11.1.10 index); \
-                     cascade skipped this turn — next update will be fully incremental \
-                     (any refs to renamed/deleted symbols may need a full `vex index`)"
-                );
             }
+        } else if current_manifest.imported_by_built.is_none()
+            && (!changed_set.is_empty() || !deleted_set.is_empty())
+        {
+            // Bootstrap signal: only fire when the field is *absent*
+            // (pre-11.1.10 manifest), NOT when the writer ran and the
+            // map happens to be empty. Without this gate, every update
+            // on a binder-less project (Go-only, fresh repo, no
+            // cross-file refs) would spam this info! line — false
+            // positive flagged by third-pass review M1.
+            tracing::info!(
+                "vex update: imported_by reverse map absent in manifest (pre-11.1.10 index); \
+                 cascade skipped this turn — next update will be fully incremental \
+                 (any refs to renamed/deleted symbols may need a full `vex index`)"
+            );
         }
         out
     };
@@ -641,12 +640,10 @@ fn update_inner(
             (Vec::new(), Vec::new(), Vec::new(), Vec::new())
         };
     // v1.13 P5: existing index's `vectors_normalized` flag drives the
-    // partial-normalize decision below. Reuses the manifest loaded for
-    // the Q4-B cascade above so we don't double-read on every update.
-    let existing_normalized = old_manifest
-        .as_ref()
-        .and_then(|m| m.vectors_normalized)
-        .unwrap_or(false);
+    // partial-normalize decision below. Reuses `current_manifest`
+    // (post-lock fresh load at line 499) — same source the Q4-B
+    // cascade now reads.
+    let existing_normalized = current_manifest.vectors_normalized.unwrap_or(false);
 
     let unchanged_sym_count: usize = unchanged_parsed.iter().map(|f| f.symbols.len()).sum();
     tracing::info!(

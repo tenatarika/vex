@@ -167,6 +167,20 @@ pub struct Manifest {
     /// inputs. Useful when manifests are committed (rare) or diffed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub imported_by: BTreeMap<String, BTreeSet<String>>,
+
+    /// Phase 11.1.10 (Q4-B) writer provenance flag. `Some(true)` when a
+    /// vex ≥ 1.18 writer produced this manifest (regardless of whether
+    /// `imported_by` ended up empty — a binder-less project or one with
+    /// no cross-file refs legitimately writes an empty map). `None` on
+    /// pre-11.1.10 manifests where the field didn't exist.
+    ///
+    /// Distinguishing "writer didn't run yet (pre-11.1.10)" from
+    /// "writer ran and saw no edges" lets `vex update` skip the
+    /// bootstrap warning on the steady-state empty case (Go-only repos,
+    /// fresh projects, etc.). Without this sentinel we'd false-positive
+    /// every update on those projects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_by_built: Option<bool>,
 }
 
 /// Counts surfaced from the `git_history` section into the manifest

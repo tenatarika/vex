@@ -188,6 +188,7 @@ fn bake_v115_index(dir: &Path) -> PathBuf {
         rename_chains_built: None,
         rename_chains_minilm_tiebreak_hits: None,
         imported_by: Default::default(),
+        imported_by_built: None,
     };
     manifest
         .save(&cache_root.join("manifest.json"))

@@ -666,6 +666,11 @@ pub(super) fn write_output_locked(
         // the writer's resolution loop or Q4-A reconstruction observed
         // at least one cross-file edge.
         imported_by: writer_meta.imported_by,
+        // Sentinel: this writer ran the Q4-B path. Distinguishes
+        // pre-11.1.10 manifests (`None`) from manifests written by a
+        // Q4-B-aware writer that observed no edges (`Some(true)` +
+        // empty `imported_by`).
+        imported_by_built: Some(true),
     };
     manifest.save(&manifest_path)?;
     Ok(())
