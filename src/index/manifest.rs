@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -146,6 +146,27 @@ pub struct Manifest {
     /// (cosine path active but no decisions hinged on it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rename_chains_minilm_tiebreak_hits: Option<u32>,
+
+    /// Phase 11.1.10 (Q4-B) — reverse map of cross-file imports.
+    /// `imported_by[target_file_path]` is the set of files that
+    /// reference (via type-aware binder) at least one symbol defined
+    /// in `target_file_path`. Used by `vex update` to cascade-invalidate
+    /// importers when a target file changes — the cascade re-parses
+    /// those files (rather than reconstructing their ref_edges via
+    /// Q4-A) so refs targeting renamed/deleted symbols get fresh
+    /// resolution against the new name table.
+    ///
+    /// Flat (not `Option`) per rust-reviewer Q7 must-fix: an empty map
+    /// is the natural "no edges to cascade" state, identical to a
+    /// pre-11.1.10 manifest deserialized with `#[serde(default)]`.
+    /// Removing the `Option` flattens the call site to a single
+    /// `manifest.imported_by` access without unwrap_or_default litter.
+    ///
+    /// BTreeMap + BTreeSet (not Hash equivalents) so JSON serialization
+    /// is sorted → byte-identical manifests across runs given identical
+    /// inputs. Useful when manifests are committed (rare) or diffed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub imported_by: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Counts surfaced from the `git_history` section into the manifest

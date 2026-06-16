@@ -515,8 +515,83 @@ fn update_inner(
         "incremental update"
     );
 
-    let changed_set: HashSet<&str> = diff.changed.iter().map(|s| s.as_str()).collect();
+    let mut changed_set: HashSet<&str> = diff.changed.iter().map(|s| s.as_str()).collect();
     let deleted_set: HashSet<&str> = diff.deleted.iter().map(|s| s.as_str()).collect();
+
+    // Phase 11.1.10 (Q4-B): cascade-invalidate importers of
+    // changed/deleted files. The Q4-A reconstruction path correctly
+    // preserves refs for unchanged files, but when a changed file
+    // renames/deletes an exported symbol, reconstructed refs from
+    // unchanged importers silently drop (LIMITATIONS §4d for Q4-A).
+    // Cascade fixes this by re-parsing importers — their bound_refs
+    // get produced fresh against the new name table.
+    //
+    // Owned String storage for the cascade entries so they outlive the
+    // borrow from `manifest.imported_by`. The `cascade_set` is then
+    // merged into `changed_set` by &str references into that storage.
+    // Single manifest read used by BOTH the Q4-B cascade map AND the
+    // v1.13 P5 vectors_normalized check below. Without this share, the
+    // manifest is loaded twice per `vex update` (small but real I/O on
+    // watch-mode hot loops). The `old_manifest` binding is consumed by
+    // the cascade builder below and re-used for `existing_normalized`
+    // further down.
+    let old_manifest = crate::index::manifest::Manifest::load(&config::manifest_path(&root)).ok();
+    let cascade_paths: Vec<String> = {
+        let mut out: Vec<String> = Vec::new();
+        if let Some(m) = old_manifest.as_ref() {
+            if !m.imported_by.is_empty() {
+                let triggers = changed_set.iter().chain(deleted_set.iter()).copied();
+                let mut seen: HashSet<String> = HashSet::new();
+                for trigger in triggers {
+                    if let Some(importers) = m.imported_by.get(trigger) {
+                        for importer in importers {
+                            if changed_set.contains(importer.as_str())
+                                || deleted_set.contains(importer.as_str())
+                            {
+                                continue; // already being re-parsed
+                            }
+                            if seen.insert(importer.clone()) {
+                                out.push(importer.clone());
+                            }
+                        }
+                    }
+                }
+            } else if !changed_set.is_empty() || !deleted_set.is_empty() {
+                // architect M2: surface the bootstrap degradation so users
+                // understand the first post-upgrade update is correct but
+                // not yet cascade-aware.
+                tracing::info!(
+                    "vex update: imported_by reverse map absent in manifest (pre-11.1.10 index); \
+                     cascade skipped this turn — next update will be fully incremental \
+                     (any refs to renamed/deleted symbols may need a full `vex index`)"
+                );
+            }
+        }
+        out
+    };
+    // Path-normalization sanity: every cascade entry should already be
+    // POSIX-relative because it came from `manifest.imported_by`, which
+    // the writer populated from `file_paths_new`, which came from
+    // `file_ids` keyed by `ParsedFile.path` (POSIX-normalized at parse
+    // time via `to_rel_posix` — memory `reference_windows_path_normalize`).
+    debug_assert!(
+        cascade_paths.iter().all(|p| !p.contains('\\')),
+        "cascade_paths must be POSIX-normalized, got: {:?}",
+        cascade_paths
+            .iter()
+            .find(|p| p.contains('\\'))
+            .map(String::as_str)
+    );
+    for path in &cascade_paths {
+        changed_set.insert(path.as_str());
+    }
+    if !cascade_paths.is_empty() {
+        tracing::info!(
+            cascade_count = cascade_paths.len(),
+            "vex update cascade: re-parsing {} importer(s) of changed/deleted files (Phase 11.1.10 / Q4-B)",
+            cascade_paths.len()
+        );
+    }
 
     // Reconstruct unchanged symbols (+ vectors) from existing index.
     // v1.15.0 B1.2 — also load the body_tokens sidecar (best-effort).
@@ -566,12 +641,10 @@ fn update_inner(
             (Vec::new(), Vec::new(), Vec::new(), Vec::new())
         };
     // v1.13 P5: existing index's `vectors_normalized` flag drives the
-    // partial-normalize decision below. Loaded once before the merge so
-    // we can skip re-normalizing already-unit vectors (avoiding
-    // floating-point drift that would accumulate across many
-    // `vex update` cycles in watch mode).
-    let existing_normalized = crate::index::manifest::Manifest::load(&config::manifest_path(&root))
-        .ok()
+    // partial-normalize decision below. Reuses the manifest loaded for
+    // the Q4-B cascade above so we don't double-read on every update.
+    let existing_normalized = old_manifest
+        .as_ref()
         .and_then(|m| m.vectors_normalized)
         .unwrap_or(false);
 

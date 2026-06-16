@@ -6,6 +6,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Phase 11.1.10 (Q4-B): `imported_by` cascade re-parses importers on rename
+
+- New `Manifest.imported_by: BTreeMap<String, BTreeSet<String>>` records
+  the reverse import graph — `imported_by[target_file]` is the set of
+  files whose binder produced at least one resolved (or recoverable)
+  cross-file edge into `target_file`. Populated by the writer from both
+  the per-file resolution loop and the Q4-A reconstruction second pass
+  (architect-H1 must-fix: capture import relationship even when this
+  turn's specific edge resolution fails — preserves the edge for the
+  next update's cascade).
+- During `vex update`, every importer in `imported_by[changed_file]` is
+  added to the changed set and **re-parsed** (not reconstructed). Fresh
+  `bound_refs` against the new name table close the Phase 11.1.9 gap
+  where renamed-in-changed-file targets silently dropped reconstructed
+  edges. `vex usages --strict` recovers the rename without a full
+  `vex index`.
+- Bootstrap: pre-11.1.10 manifests have no `imported_by`. The first
+  `vex update` after upgrade emits `tracing::info!` ("imported_by
+  absent in manifest; cascade skipped this turn") and populates the
+  map for subsequent updates. No format-version bump or forced
+  re-index needed.
+- Cycle-safe at depth 1: A↔B with only A edited cascades B; B's reverse
+  re-cascade of A is filtered by the "already in changed/deleted"
+  guard. Documented in LIMITATIONS §4d.
+- Cascade activity surfaces at `RUST_LOG=vex=info` ("cascade:
+  re-parsing N importer(s) of changed/deleted files").
+- Writer entry point now returns `Result<NewIndexMetadata>`; back-compat
+  shims (`write_index`, `write_index_full`, `write_index_with_call_graph`,
+  `write_index_with_call_graph_and_skeletons`) discard via `.map(|_| ())`
+  so external test/bench callers keep `Result<()>`.
+
 ### Fixed — Phase 11.1.9 (Q4-A): `vex update` no longer drops `ref_edges` from unchanged files
 
 - Prior to this fix, `reconstruct_unchanged` set `bound_refs: Vec::new()`

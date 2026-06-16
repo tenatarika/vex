@@ -560,13 +560,31 @@ sub-3-char or non-identifier queries.
 
 ---
 
-## 4d. Stale `vex usages --strict` results after renaming a symbol (Phase 11.1.9, Q4-A)
+## 4d. Stale `vex usages --strict` results after renaming a symbol (Phase 11.1.9 + 11.1.10)
 
-**What works (post-11.1.9):** `vex update` preserves cross-file
-ref_edges from unchanged files via reconstruction from the previous
-index. Multi-candidate ambiguities are resolved by a path-tiebreak on
-the target's defining file — refs targeting `a::Helper` when both
-`a::Helper` and `b::Helper` exist resolve correctly.
+**Closed in Phase 11.1.10 (Q4-B)** for the depth-1 case via the
+`imported_by` cascade. The pre-11.1.10 description below is kept as
+historical context.
+
+### Current behavior (11.1.10+)
+
+`vex update` consults the manifest's `imported_by` reverse-import map.
+When file A is in `changed/deleted`, every importer recorded in
+`imported_by["A"]` is added to the changed set and re-parsed. Their
+fresh `bound_refs` resolve against the new name table, so a
+rename in A correctly produces edges to the new target name from the
+re-parsed importers. `vex usages --strict NewName` returns the
+importer sites without a full `vex index`.
+
+### Pre-11.1.10 (Phase 11.1.9, Q4-A only)
+
+The 11.1.9 description below describes the old gap:
+
+> **What works (post-11.1.9):** `vex update` preserves cross-file
+> ref_edges from unchanged files via reconstruction from the previous
+> index. Multi-candidate ambiguities are resolved by a path-tiebreak on
+> the target's defining file — refs targeting `a::Helper` when both
+> `a::Helper` and `b::Helper` exist resolve correctly.
 
 **The gap.** When a *changed* file renames or deletes a symbol that
 unchanged files referenced by name, the reconstructed ref's
@@ -592,10 +610,28 @@ exported symbol; the binder will re-walk b.rs and produce a fresh edge.
 This matches the user's intuition: a refactor that touches APIs is the
 right moment to fully reconcile.
 
-**Roadmap.** Phase 11.1.10 (Q4-B) will add a persistent `imported_by`
-reverse-map to the manifest. During update, when a changed file's
-exported-symbol set shifts, files in the reverse map get re-parsed
-(not just reconstructed) so their bound_refs are fresh.
+**Workaround (still relevant for ≥2 hop chains).** Run `vex index`
+(full rebuild) after any rename of an exported symbol when the
+importers transitively re-export it through ≥1 intermediate file. The
+depth-1 cascade in 11.1.10 doesn't traverse transitive re-exports.
+
+**Remaining Q4-B limits (carried into a future Q4-C):**
+
+1. **Depth-1 only.** `A → B → C` chains where C re-exports a symbol
+   defined in B and A imports the symbol through C: when B renames the
+   symbol, the cascade re-parses C (its direct importer) but NOT A (a
+   transitive importer). For most idiomatic codebases — direct
+   `use foo::Bar` style imports — this is irrelevant. For Python /
+   TypeScript re-export façades it matters.
+2. **First-update bootstrap.** Pre-11.1.10 manifests have no
+   `imported_by`; the first `vex update` after upgrading vex degrades
+   to Q4-A behavior (no cascade) but populates the map for the second
+   and subsequent updates.
+3. **Coarse granularity.** Cascade fires whenever a changed file is in
+   the reverse map, even when the edit didn't shift any exports.
+   Over-invalidation costs a re-parse per importer; correctness is
+   preserved. Phase 11.1.11 may tighten to per-symbol granularity if
+   profile evidence justifies it.
 
 ---
 

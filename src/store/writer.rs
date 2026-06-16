@@ -95,6 +95,21 @@ impl StringPool {
     }
 }
 
+/// Phase 11.1.10 (Q4-B) — metadata the writer produces during index
+/// emission that needs to land in the manifest (or elsewhere outside
+/// the binary index). `imported_by` is the reverse-import map keyed by
+/// target file path → set of importer file paths; consumed by
+/// `vex update`'s cascade to re-parse importers when a target changes.
+///
+/// Returned only from the primary writer entry; back-compat shims
+/// (`write_index`, `write_index_full`, `write_index_with_call_graph`,
+/// `write_index_with_call_graph_and_skeletons`) discard via `.map(|_| ())`
+/// so external callers (tests, benches) keep their `Result<()>` shape.
+#[derive(Debug, Default, Clone)]
+pub struct NewIndexMetadata {
+    pub imported_by: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
 /// Write parsed files into the binary index format (no vectors, no refs FST).
 #[allow(dead_code)] // used by integration tests
 pub fn write_index(parsed: &[ParsedFile], output: &Path) -> Result<()> {
@@ -144,6 +159,7 @@ pub fn write_index_with_call_graph(
         &[], // old_file_paths
         output,
     )
+    .map(|_meta| ())
 }
 
 /// Back-compat shim for the previous Inc 3 entry — preserved so internal
@@ -172,6 +188,7 @@ pub fn write_index_with_call_graph_and_skeletons(
         &[], // old_file_paths
         output,
     )
+    .map(|_meta| ())
 }
 
 /// Write parsed files + embedding vectors + v4 sections + v6 pattern
@@ -204,7 +221,7 @@ pub(crate) fn write_index_with_call_graph_and_skeletons_and_fingerprints(
     // this writer's freshly-built `file_ids`.
     old_file_paths: &[String],
     output: &Path,
-) -> Result<()> {
+) -> Result<NewIndexMetadata> {
     // Pre-validate every vector before opening the temp file. The header's
     // section offsets are computed from `vectors.len() * vector_dim`, so a
     // single bad vector slipping past would leave every downstream section
@@ -222,7 +239,7 @@ pub(crate) fn write_index_with_call_graph_and_skeletons_and_fingerprints(
     tmp_os.push(".tmp");
     let tmp_path = PathBuf::from(tmp_os);
 
-    if let Err(e) = write_index_to(
+    let meta = match write_index_to(
         &tmp_path,
         parsed,
         vectors,
@@ -234,9 +251,12 @@ pub(crate) fn write_index_with_call_graph_and_skeletons_and_fingerprints(
         reconstructed_refs,
         old_file_paths,
     ) {
-        let _ = std::fs::remove_file(&tmp_path); // best-effort cleanup
-        return Err(e);
-    }
+        Ok(meta) => meta,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path); // best-effort cleanup
+            return Err(e);
+        }
+    };
     std::fs::rename(&tmp_path, output)
         .with_context(|| format!("rename {} → {}", tmp_path.display(), output.display()))?;
     // On POSIX, fsync the parent directory so the rename itself is
@@ -251,7 +271,7 @@ pub(crate) fn write_index_with_call_graph_and_skeletons_and_fingerprints(
             }
         }
     }
-    Ok(())
+    Ok(meta)
 }
 
 #[allow(clippy::too_many_arguments)] // internal write helper — mirrors the public entry shape
@@ -266,7 +286,7 @@ fn write_index_to(
     lang_fingerprints: &[(u8, u32)],
     reconstructed_refs: &[crate::index::pipeline::ReconstructedRef],
     old_file_paths: &[String],
-) -> Result<()> {
+) -> Result<NewIndexMetadata> {
     let mut strings = StringPool::new();
     let mut records = Vec::new();
     let mut symbol_idx: u32 = 0;
@@ -429,6 +449,12 @@ fn write_index_to(
     };
 
     let mut ref_edge_builders: Vec<RefEdgeBuilder> = Vec::new();
+    // Phase 11.1.10 (Q4-B): accumulate (target_fid, from_fid) pairs for
+    // `imported_by`. Materialized to BTreeMap<String, BTreeSet<String>>
+    // after the loop closes via `file_paths_new`. Storing fids (not
+    // paths) per rust-reviewer Q1: avoids cloning path strings on the
+    // hot loop; one clone per unique entry at materialization time.
+    let mut imported_by_pairs: Vec<(u32, u32)> = Vec::new();
     {
         let mut base_idx: u32 = 0;
         for file in parsed {
@@ -523,6 +549,17 @@ fn write_index_to(
                         col: r.col as u32,
                         kind: u8::from(r.kind),
                     });
+                    // Phase 11.1.10 (Q4-B): record (target_fid, from_fid) for
+                    // cascade. Skip the ModuleSymbol arm (architect L1) —
+                    // same-file edges have target_fid == file_id, contribute
+                    // no cascade signal, and would just bloat the map.
+                    if !matches!(r.target, BindTarget::ModuleSymbol(_)) {
+                        if let Some(&target_fid) = sym_to_file_id.get(global as usize) {
+                            if target_fid != file_id {
+                                imported_by_pairs.push((target_fid, file_id));
+                            }
+                        }
+                    }
                 }
             }
             // Same loudness rule as the ModuleSymbol path: if a file's
@@ -553,15 +590,21 @@ fn write_index_to(
     // target was renamed/deleted in the changed slice we drop silently
     // (debug! not warn!) — this is the Q4-B seam, documented in
     // LIMITATIONS §4.
-    if !reconstructed_refs.is_empty() {
-        // Inverse of file_ids — file_id → path — for the path-tiebreak
-        // lookup. Built once before the second-pass loop.
-        let mut file_paths_new: Vec<String> = vec![String::new(); file_ids.len()];
+    // Inverse of file_ids — file_id → path — used by the Q4-A second
+    // pass (path-tiebreak lookup) and by Q4-B `imported_by`
+    // materialization (pair-to-path expansion below). Built once
+    // regardless of whether reconstructed_refs is empty, so the
+    // imported_by materialization path always has it.
+    let file_paths_new: Vec<String> = {
+        let mut out: Vec<String> = vec![String::new(); file_ids.len()];
         for (path, &fid) in &file_ids {
-            if let Some(slot) = file_paths_new.get_mut(fid as usize) {
+            if let Some(slot) = out.get_mut(fid as usize) {
                 *slot = path.clone();
             }
         }
+        out
+    };
+    if !reconstructed_refs.is_empty() {
         let mut dropped_target_missing: u64 = 0;
         let mut dropped_from_missing: u64 = 0;
         for rr in reconstructed_refs {
@@ -583,6 +626,17 @@ fn write_index_to(
                 );
                 continue;
             };
+            // Phase 11.1.10 (Q4-B / architect-H1 fix): capture the
+            // import relationship for cascade EVEN IF resolution fails
+            // this turn. The whole point of Q4-B is that a target's
+            // symbol rename breaks resolution but the import edge is
+            // still real — next update's cascade needs to know
+            // "from_path imports from rr.target_path".
+            if let Some(&target_fid) = file_ids.get(rr.target_path.as_ref()) {
+                if target_fid != new_from_file_id {
+                    imported_by_pairs.push((target_fid, new_from_file_id));
+                }
+            }
             let resolved = resolve_by_name_and_path(
                 &rr.target_name,
                 Some(&rr.target_path),
@@ -911,7 +965,39 @@ fn write_index_to(
         output
     );
 
-    Ok(())
+    // Phase 11.1.10 (Q4-B): materialize imported_by_pairs to a
+    // BTreeMap<String, BTreeSet<String>>. Path strings are cloned ONCE
+    // per unique (target, importer) — `BTreeSet` dedupes silently so
+    // the pair stream may contain duplicates without inflating output.
+    let imported_by = {
+        let mut m: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for (target_fid, from_fid) in &imported_by_pairs {
+            let (Some(target_path), Some(from_path)) = (
+                file_paths_new.get(*target_fid as usize),
+                file_paths_new.get(*from_fid as usize),
+            ) else {
+                continue;
+            };
+            if target_path.is_empty() || from_path.is_empty() {
+                continue;
+            }
+            m.entry(target_path.clone())
+                .or_default()
+                .insert(from_path.clone());
+        }
+        m
+    };
+    // debug! (not info!) so RUST_LOG=vex=info users don't see this on
+    // every index/update — the user-facing cascade activity is logged
+    // in pipeline/mod.rs at info! and is the actionable signal.
+    tracing::debug!(
+        imported_by_targets = imported_by.len(),
+        imported_by_edges = imported_by.values().map(|s| s.len()).sum::<usize>(),
+        "wrote imported_by reverse map (Phase 11.1.10 / Q4-B)"
+    );
+
+    Ok(NewIndexMetadata { imported_by })
 }
 
 /// v1.14 — predicate for the C++ include-graph filter. Uses the same

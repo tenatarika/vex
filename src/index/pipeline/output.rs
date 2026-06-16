@@ -273,7 +273,7 @@ pub(super) fn write_output_locked(
     } else {
         (Vec::new(), Vec::new())
     };
-    store::writer::write_index_with_call_graph_and_skeletons_and_fingerprints(
+    let writer_meta = store::writer::write_index_with_call_graph_and_skeletons_and_fingerprints(
         parsed,
         vectors,
         vector_dim,
@@ -661,6 +661,11 @@ pub(super) fn write_output_locked(
         // `vex status` provenance matches disk state.
         rename_chains_built,
         rename_chains_minilm_tiebreak_hits,
+        // Phase 11.1.10 (Q4-B) — reverse import map for cascade. Empty
+        // for full-rebuild + binder-less projects; populated whenever
+        // the writer's resolution loop or Q4-A reconstruction observed
+        // at least one cross-file edge.
+        imported_by: writer_meta.imported_by,
     };
     manifest.save(&manifest_path)?;
     Ok(())
