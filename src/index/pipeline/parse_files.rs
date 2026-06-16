@@ -14,7 +14,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use rayon::prelude::*;
@@ -23,9 +23,46 @@ use crate::index::hasher;
 use crate::index::symbols::{ParsedFile, ParsedSymbol, RawCallEdge, SymbolKind};
 use crate::parse;
 use crate::parse::language::Language;
+use crate::parse::scope::RefKind;
 use crate::util::config;
 
 use super::CHUNK_SIZE;
+
+/// Reconstructed ref-edge fed from `reconstruct_unchanged` into the
+/// writer's second-pass resolution. Phase 11.1.9 (Q4-A).
+///
+/// `target_name` / `target_path` are `Arc<str>` interned across edges so
+/// a 50M-edge re-emission doesn't allocate ~8 GB of redundant String
+/// copies (architect-H1 / rust-reviewer-#2 must-fix). At typical repo
+/// shapes (10k distinct target paths, 5k distinct target names) the
+/// interners stay sub-megabyte.
+#[derive(Debug, Clone)]
+pub(crate) struct ReconstructedRef {
+    /// `file_id` of the unchanged source file in the OLD index's file
+    /// table. Resolved to a path in the writer via the `old_file_paths`
+    /// slice and then mapped to the new index's `file_ids`.
+    pub from_file_id: u32,
+    pub target_name: Arc<str>,
+    /// OLD-index path of the target's defining file — disambiguates
+    /// `name_to_global` candidates when `target_name` has multiple
+    /// definitions across the project.
+    pub target_path: Arc<str>,
+    pub line: u32,
+    pub col: u32,
+    pub kind: RefKind,
+}
+
+/// Bundled return from `reconstruct_unchanged` — architect-M1 must-fix.
+/// Replaces the previous 3-tuple so a future Q4-B addition lands as a
+/// named field, not another tuple-arity churn.
+pub(super) struct ReconstructionResult {
+    pub parsed_files: Vec<ParsedFile>,
+    pub vectors: Vec<Vec<f32>>,
+    pub reconstructed_refs: Vec<ReconstructedRef>,
+    /// Old-index file_paths table, kept so the writer can resolve
+    /// `ReconstructedRef.from_file_id` → path → new file_id.
+    pub old_file_paths: Vec<String>,
+}
 
 /// Reconstruct ParsedFile + vectors for unchanged files from the existing index.
 /// Symbols are in index order (file-contiguous), vectors align 1:1 with symbols.
@@ -50,7 +87,7 @@ pub(super) fn reconstruct_unchanged(
     changed: &HashSet<&str>,
     deleted: &HashSet<&str>,
     body_tokens_sidecar: Option<&[Option<String>]>,
-) -> (Vec<ParsedFile>, Vec<Vec<f32>>) {
+) -> ReconstructionResult {
     if reader.has_bm25()
         && (!changed.is_empty() || !deleted.is_empty())
         && body_tokens_sidecar.is_none()
@@ -188,7 +225,100 @@ pub(super) fn reconstruct_unchanged(
         }
     }
 
-    (parsed_files, vectors)
+    // Phase 11.1.9 (Q4-A): reconstruct cross-file ref-edges for unchanged
+    // files. Without this, every `vex update` silently drops every
+    // bound_ref from unchanged files — `vex usages --strict` degrades to
+    // an almost-empty result set after the first incremental update.
+    // Mirror of the call_edges block above (uses old-index strings, lets
+    // the writer's second pass re-resolve to NEW symbol indices).
+    let old_file_paths = reader.file_paths();
+    let mut reconstructed_refs: Vec<ReconstructedRef> = Vec::new();
+    if reader.has_ref_edges() {
+        // Path/name interners — dedupe Arc<str> across edges sharing
+        // target_path or target_name. At typical repo shape (10k paths,
+        // 5k names) these stay sub-megabyte.
+        let mut path_intern: HashMap<String, Arc<str>> = HashMap::new();
+        let mut name_intern: HashMap<String, Arc<str>> = HashMap::new();
+        let edge_count = reader.ref_edge_count();
+        for j in 0..edge_count {
+            let Some(edge) = reader.ref_edge(j) else {
+                tracing::warn!(
+                    edge_idx = j,
+                    "ref_edges section corruption: edge decode failed"
+                );
+                continue;
+            };
+            let from_file_id = edge.from_file_id;
+            let Some(from_path) = old_file_paths.get(from_file_id as usize) else {
+                tracing::warn!(
+                    from_file_id,
+                    "ref_edges corruption: from_file_id past file_paths"
+                );
+                continue;
+            };
+            // Expected drop — file in changed/deleted set will produce
+            // fresh edges through the parse path this turn.
+            if changed.contains(from_path.as_str()) || deleted.contains(from_path.as_str()) {
+                continue;
+            }
+            let Some(target_rec) = reader.symbol(edge.to_sym_idx as usize) else {
+                tracing::warn!(
+                    to_sym_idx = edge.to_sym_idx,
+                    "ref_edges corruption: to_sym_idx past symbol_count"
+                );
+                continue;
+            };
+            let target_name = reader.read_string(target_rec.name_offset);
+            // Mirror parse_files.rs ~line 102 guard — strings-section
+            // corruption surfaces as empty name; drop rather than
+            // propagate a poisoned record.
+            if target_name.is_empty() {
+                tracing::warn!(
+                    to_sym_idx = edge.to_sym_idx,
+                    "ref_edges: target symbol has empty name (strings corrupt)"
+                );
+                continue;
+            }
+            let target_path = reader.read_string(target_rec.file_offset);
+            let kind_byte = (edge.col_and_kind >> 24) as u8;
+            let kind = RefKind::try_from(kind_byte).unwrap_or_else(|_| {
+                tracing::warn!(kind_byte, "ref_edges: unknown RefKind, defaulting to Value");
+                RefKind::Value
+            });
+            let col = edge.col_and_kind & 0x00FF_FFFF;
+
+            let target_name_arc = if let Some(a) = name_intern.get(target_name) {
+                a.clone()
+            } else {
+                let a: Arc<str> = Arc::from(target_name);
+                name_intern.insert(target_name.to_string(), a.clone());
+                a
+            };
+            let target_path_arc = if let Some(a) = path_intern.get(target_path) {
+                a.clone()
+            } else {
+                let a: Arc<str> = Arc::from(target_path);
+                path_intern.insert(target_path.to_string(), a.clone());
+                a
+            };
+
+            reconstructed_refs.push(ReconstructedRef {
+                from_file_id,
+                target_name: target_name_arc,
+                target_path: target_path_arc,
+                line: edge.line,
+                col,
+                kind,
+            });
+        }
+    }
+
+    ReconstructionResult {
+        parsed_files,
+        vectors,
+        reconstructed_refs,
+        old_file_paths,
+    }
 }
 
 /// Phase 14.7 — build the global blob-SHA parse cache and run a

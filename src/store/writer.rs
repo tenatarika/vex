@@ -13,20 +13,55 @@ use super::include_resolver;
 use super::pattern_skeletons::build_pattern_skeleton_section;
 use super::ref_edges::{build_ref_edges_section, RefEdgeBuilder};
 use super::{refs_fst, symbol_fst};
-use crate::parse::scope::{BindTarget, BoundRef, RefKind};
+use crate::parse::scope::BindTarget;
+// RefKind ↔ u8 encoding lives at the scope module (`impl From<RefKind>
+// for u8` + `impl TryFrom<u8> for RefKind`) so reconstruction and the
+// reader can roundtrip without duplicating the bit layout.
 
-/// Stable on-disk encoding for `RefKind`. Kept here (not in
-/// `parse::scope`) because the bit layout is a storage concern that
-/// must not move when the in-memory enum gains new variants.
-fn ref_kind_bits(r: &BoundRef) -> u8 {
-    match r.kind {
-        RefKind::Type => 0,
-        RefKind::Value => 1,
-        RefKind::Call => 2,
-        RefKind::Macro => 3,
+use crate::index::symbols::ParsedFile;
+
+/// Resolve `name` to a global SymbolRecord position, optionally
+/// disambiguating by preferred file path. Phase 11.1.9 (Q4-A) — shared
+/// by the `BindTarget::Imported` arm (preferred_path = None) and the
+/// reconstruction second pass (preferred_path = Some(old target path)).
+///
+/// When `preferred_path` is `Some` and any candidate's new file path
+/// matches, return that candidate. Otherwise fall back to the first
+/// candidate — matches the historical `Imported` arm's
+/// first-match-wins semantics.
+fn resolve_by_name_and_path(
+    name: &str,
+    preferred_path: Option<&str>,
+    name_to_global: &HashMap<&str, Vec<u32>>,
+    sym_to_file_id: &[u32],
+    file_paths_new: &[String],
+) -> Option<u32> {
+    let candidates = name_to_global.get(name)?;
+    match preferred_path {
+        // No path hint (the `Imported` arm) — historical first-match semantics.
+        None => candidates.first().copied(),
+        Some(pref) => {
+            // Single candidate is unambiguous even if path doesn't
+            // match (typical "file was renamed, symbol kept"); take it.
+            if candidates.len() == 1 {
+                return candidates.first().copied();
+            }
+            // Multi-candidate: require the path tie-break match.
+            // Without it we'd silently mis-attribute when two unrelated
+            // files define the same name (the load-bearing case
+            // distinguishing A2 from the rejected A1 approach).
+            for &cand in candidates {
+                let cand_path = sym_to_file_id
+                    .get(cand as usize)
+                    .and_then(|fid| file_paths_new.get(*fid as usize));
+                if cand_path.map(|p| p.as_str()) == Some(pref) {
+                    return Some(cand);
+                }
+            }
+            None
+        }
     }
 }
-use crate::index::symbols::ParsedFile;
 use crate::pattern::skeleton::Skeleton;
 
 /// Vector dimension to record in the Header when no vectors are written.
@@ -105,6 +140,8 @@ pub fn write_index_with_call_graph(
         bm25,
         &[],
         &[],
+        &[], // reconstructed_refs — full rebuild path
+        &[], // old_file_paths
         output,
     )
 }
@@ -131,6 +168,8 @@ pub fn write_index_with_call_graph_and_skeletons(
         bm25,
         pattern_skeletons,
         &[],
+        &[], // reconstructed_refs — full rebuild path
+        &[], // old_file_paths
         output,
     )
 }
@@ -144,7 +183,11 @@ pub fn write_index_with_call_graph_and_skeletons(
 /// for the distinct T1 languages that contributed skeletons; Inc 5
 /// compares these against live grammar to detect drift.
 #[allow(clippy::too_many_arguments)] // primary writer entry — keep flat over a builder for now
-pub fn write_index_with_call_graph_and_skeletons_and_fingerprints(
+                                     // pub(crate) (was pub) — Phase 11.1.9 demoted this to crate-internal so the
+                                     // `ReconstructedRef` type need not be exposed in the public API surface.
+                                     // External callers (tests, benches) go through the back-compat shims
+                                     // above which translate to empty reconstructed_refs.
+pub(crate) fn write_index_with_call_graph_and_skeletons_and_fingerprints(
     parsed: &[ParsedFile],
     vectors: &[Vec<f32>],
     vector_dim: u32,
@@ -152,6 +195,14 @@ pub fn write_index_with_call_graph_and_skeletons_and_fingerprints(
     bm25: Option<Bm25Sections<'_>>,
     pattern_skeletons: &[(u32, Skeleton)],
     lang_fingerprints: &[(u8, u32)],
+    // Phase 11.1.9 (Q4-A) — reconstructed cross-file ref-edges from
+    // unchanged files. Empty for full `vex index`. Resolved to new
+    // symbol indices after the per-file bound_refs loop closes.
+    reconstructed_refs: &[crate::index::pipeline::ReconstructedRef],
+    // `old_file_paths` is the OLD index's file_paths table — used to
+    // map `ReconstructedRef.from_file_id` → path → new file_id via
+    // this writer's freshly-built `file_ids`.
+    old_file_paths: &[String],
     output: &Path,
 ) -> Result<()> {
     // Pre-validate every vector before opening the temp file. The header's
@@ -180,6 +231,8 @@ pub fn write_index_with_call_graph_and_skeletons_and_fingerprints(
         bm25,
         pattern_skeletons,
         lang_fingerprints,
+        reconstructed_refs,
+        old_file_paths,
     ) {
         let _ = std::fs::remove_file(&tmp_path); // best-effort cleanup
         return Err(e);
@@ -211,6 +264,8 @@ fn write_index_to(
     bm25: Option<Bm25Sections<'_>>,
     pattern_skeletons: &[(u32, Skeleton)],
     lang_fingerprints: &[(u8, u32)],
+    reconstructed_refs: &[crate::index::pipeline::ReconstructedRef],
+    old_file_paths: &[String],
 ) -> Result<()> {
     let mut strings = StringPool::new();
     let mut records = Vec::new();
@@ -393,11 +448,23 @@ fn write_index_to(
                         );
                         Some(base_idx.wrapping_add(*local))
                     }
-                    BindTarget::Imported(use_path) => use_path
-                        .segments
-                        .last()
-                        .and_then(|name| name_to_global.get(name.as_str()))
-                        .and_then(|hits| hits.first().copied()),
+                    // Note: `file_paths_new` isn't built until after the
+                    // per-file loop closes (it's the inverse of
+                    // `file_ids` populated by the symbol-record assembly
+                    // above). For the Imported arm we don't need
+                    // path-tiebreak — `use_path` only carries a name —
+                    // so pass an empty slice + `None` preferred_path,
+                    // which short-circuits to first-candidate semantics
+                    // in `resolve_by_name_and_path`.
+                    BindTarget::Imported(use_path) => use_path.segments.last().and_then(|name| {
+                        resolve_by_name_and_path(
+                            name.as_str(),
+                            None,
+                            &name_to_global,
+                            &sym_to_file_id,
+                            &[],
+                        )
+                    }),
                     BindTarget::Local(_) => None,
                     // v1.14 — C++ include-BFS fallback. The BFS itself
                     // bails for non-C++ files via the include_graph
@@ -454,7 +521,7 @@ fn write_index_to(
                         from_file_id: file_id,
                         line: r.line as u32,
                         col: r.col as u32,
-                        kind: ref_kind_bits(r),
+                        kind: u8::from(r.kind),
                     });
                 }
             }
@@ -472,6 +539,98 @@ fn write_index_to(
             base_idx = base_idx.wrapping_add(file.symbols.len() as u32);
         }
     }
+
+    // Phase 11.1.9 (Q4-A) — second pass: re-resolve cross-file ref-edges
+    // that were reconstructed from the OLD index for unchanged files.
+    // Runs STRICTLY AFTER the per-file loop closes so `name_to_global`
+    // and `sym_to_file_id` are fully populated (architect-C1 must-fix).
+    //
+    // The resolution is path-tiebreak: when `target_name` has multiple
+    // global candidates (popular in Java/TS), we pick the candidate
+    // whose new file resolves back to the OLD target_path. Falling back
+    // to "first candidate" (the Imported arm's semantics) would silently
+    // mis-attribute refs across files that share a name. When the
+    // target was renamed/deleted in the changed slice we drop silently
+    // (debug! not warn!) — this is the Q4-B seam, documented in
+    // LIMITATIONS §4.
+    if !reconstructed_refs.is_empty() {
+        // Inverse of file_ids — file_id → path — for the path-tiebreak
+        // lookup. Built once before the second-pass loop.
+        let mut file_paths_new: Vec<String> = vec![String::new(); file_ids.len()];
+        for (path, &fid) in &file_ids {
+            if let Some(slot) = file_paths_new.get_mut(fid as usize) {
+                *slot = path.clone();
+            }
+        }
+        let mut dropped_target_missing: u64 = 0;
+        let mut dropped_from_missing: u64 = 0;
+        for rr in reconstructed_refs {
+            // OLD file_id → OLD path (via the reconstruction's saved
+            // old_file_paths slice) → NEW file_id (via file_ids).
+            let Some(from_path) = old_file_paths.get(rr.from_file_id as usize) else {
+                dropped_from_missing += 1;
+                tracing::debug!(
+                    from_file_id = rr.from_file_id,
+                    "reconstructed ref: from_file_id past old file_paths"
+                );
+                continue;
+            };
+            let Some(&new_from_file_id) = file_ids.get(from_path) else {
+                dropped_from_missing += 1;
+                tracing::debug!(
+                    from_path,
+                    "reconstructed ref: source file dropped from new index"
+                );
+                continue;
+            };
+            let resolved = resolve_by_name_and_path(
+                &rr.target_name,
+                Some(&rr.target_path),
+                &name_to_global,
+                &sym_to_file_id,
+                &file_paths_new,
+            );
+            let Some(global) = resolved else {
+                // Expected drop — target was renamed/deleted in the
+                // changed slice. Q4-B will recover via cascade.
+                dropped_target_missing += 1;
+                tracing::debug!(
+                    target_name = %rr.target_name,
+                    target_path = %rr.target_path,
+                    "reconstructed ref: target not found in new index — dropped (Q4-B will reconcile)"
+                );
+                continue;
+            };
+            ref_edge_builders.push(RefEdgeBuilder {
+                to_sym_idx: global,
+                from_file_id: new_from_file_id,
+                line: rr.line,
+                col: rr.col,
+                kind: u8::from(rr.kind),
+            });
+        }
+        // Surface aggregate drops so `RUST_LOG=vex=info` triagers a
+        // degraded `--strict` result set without re-running. Split by
+        // cause: "target missing" is the Q4-B seam (changed file
+        // renamed/deleted an exported symbol); "from missing" means
+        // the source file itself didn't survive into the new index
+        // (rare — file deleted between reconstruction read and writer
+        // assembly). Counts are per-update, not cumulative.
+        if dropped_target_missing > 0 {
+            tracing::info!(
+                dropped_target_missing,
+                "vex update: {dropped_target_missing} cross-file refs lost their target (renamed/deleted in the changed slice); \
+                 run `vex index` to fully reconcile (Q4-B follow-up)"
+            );
+        }
+        if dropped_from_missing > 0 {
+            tracing::info!(
+                dropped_from_missing,
+                "vex update: {dropped_from_missing} reconstructed refs dropped because their source file did not survive into the new index"
+            );
+        }
+    }
+
     let (ref_edge_bytes, ref_edge_fst_bytes, ref_edge_post_bytes) =
         build_ref_edges_section(&ref_edge_builders)?;
 

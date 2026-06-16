@@ -191,6 +191,37 @@ pub enum RefKind {
     Macro,
 }
 
+impl From<RefKind> for u8 {
+    fn from(k: RefKind) -> u8 {
+        match k {
+            RefKind::Type => 0,
+            RefKind::Value => 1,
+            RefKind::Call => 2,
+            RefKind::Macro => 3,
+        }
+    }
+}
+
+/// Error from [`RefKind::try_from`] for an unknown `u8` discriminant.
+/// Returned (rather than panicking) so a corrupt or format-skewed index
+/// can be diagnosed instead of crashing the reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("unknown RefKind discriminant: {0}")]
+pub struct UnknownRefKind(pub u8);
+
+impl TryFrom<u8> for RefKind {
+    type Error = UnknownRefKind;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(RefKind::Type),
+            1 => Ok(RefKind::Value),
+            2 => Ok(RefKind::Call),
+            3 => Ok(RefKind::Macro),
+            other => Err(UnknownRefKind(other)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BoundRef {
     pub name: String,
@@ -232,6 +263,31 @@ mod tests {
             kind,
             import_path: None,
         }
+    }
+
+    #[test]
+    fn ref_kind_roundtrip_through_u8() {
+        // Phase 11.1.9 (Q4-A): reconstruction reads `kind_byte` from
+        // `RefEdge.col_and_kind` and decodes via `RefKind::try_from`.
+        // The encoding must roundtrip exhaustively so the bit layout
+        // doesn't silently lose variants between writer and reader.
+        for k in [RefKind::Type, RefKind::Value, RefKind::Call, RefKind::Macro] {
+            let bits = u8::from(k);
+            assert_eq!(
+                RefKind::try_from(bits),
+                Ok(k),
+                "roundtrip failed for {k:?} via byte {bits}"
+            );
+        }
+    }
+
+    #[test]
+    fn ref_kind_unknown_byte_errs() {
+        // Unknown variants (a future writer adding a 5th kind, or
+        // corruption) MUST surface as Err so reconstruction can warn
+        // and pick a safe default rather than silently mis-tagging.
+        assert!(matches!(RefKind::try_from(4), Err(UnknownRefKind(4))));
+        assert!(matches!(RefKind::try_from(255), Err(UnknownRefKind(255))));
     }
 
     #[test]

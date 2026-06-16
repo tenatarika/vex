@@ -560,6 +560,45 @@ sub-3-char or non-identifier queries.
 
 ---
 
+## 4d. Stale `vex usages --strict` results after renaming a symbol (Phase 11.1.9, Q4-A)
+
+**What works (post-11.1.9):** `vex update` preserves cross-file
+ref_edges from unchanged files via reconstruction from the previous
+index. Multi-candidate ambiguities are resolved by a path-tiebreak on
+the target's defining file — refs targeting `a::Helper` when both
+`a::Helper` and `b::Helper` exist resolve correctly.
+
+**The gap.** When a *changed* file renames or deletes a symbol that
+unchanged files referenced by name, the reconstructed ref's
+`target_name` no longer resolves through the new index's
+`name_to_global` map. Such edges are silently dropped from the new
+`ref_edges` section. Aggregate dropped-count is surfaced via
+`tracing::info!` when `RUST_LOG=vex=info`.
+
+```rust
+// Before update:
+//   src/a.rs:   pub struct Old;
+//   src/b.rs:   use crate::a::Old;  fn f() -> Old { … }   ← unchanged
+// User edits a.rs:
+//   src/a.rs:   pub struct New;     ← Old renamed to New
+// vex update: b.rs's ref to Old → silently dropped from ref_edges.
+//             vex usages --strict Old returns nothing (correct).
+//             vex usages --strict New does NOT show b.rs's site
+//             (this is the gap — Q4-B will fix).
+```
+
+**Workaround.** Run `vex index` (full rebuild) after any rename of an
+exported symbol; the binder will re-walk b.rs and produce a fresh edge.
+This matches the user's intuition: a refactor that touches APIs is the
+right moment to fully reconcile.
+
+**Roadmap.** Phase 11.1.10 (Q4-B) will add a persistent `imported_by`
+reverse-map to the manifest. During update, when a changed file's
+exported-symbol set shifts, files in the reverse map get re-parsed
+(not just reconstructed) so their bound_refs are fresh.
+
+---
+
 ## 5. `vex grep` is the right fallback
 
 Whenever vex's indexed surface misses something the user can see in the

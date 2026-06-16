@@ -647,6 +647,66 @@ impl IndexReader {
         Some(unsafe { &*(ptr as *const CallEdge) })
     }
 
+    /// Number of ref-edges recorded, 0 when the section is absent. Phase
+    /// 11.1.9 (Q4-A): used by `reconstruct_unchanged` to iterate every
+    /// edge for re-emission. A `ref_edges_len` that's not a multiple of
+    /// `RefEdge::SIZE` is corruption — warn + return 0 rather than
+    /// half-process the section (architect-M4 must-fix).
+    pub fn ref_edge_count(&self) -> usize {
+        let Some(h) = self.v5_section_header() else {
+            return 0;
+        };
+        let len = h.ref_edges_len as usize;
+        if !len.is_multiple_of(super::format::RefEdge::SIZE) {
+            tracing::warn!(
+                len,
+                size = super::format::RefEdge::SIZE,
+                "ref_edges_len not a multiple of RefEdge::SIZE — section truncated, treating as empty"
+            );
+            return 0;
+        }
+        len / super::format::RefEdge::SIZE
+    }
+
+    /// Get a ref-edge record by section-index. Returns a **copy** rather
+    /// than a `&RefEdge` reference so callers don't depend on the mmap
+    /// alignment of `ref_edges_offset` (architect-H3a / rust-reviewer-#3
+    /// must-fix): `RefEdgeReader::find_by_symbol_idx` at `ref_edges.rs`
+    /// uses the same `MaybeUninit + copy_nonoverlapping` idiom.
+    pub fn ref_edge(&self, idx: usize) -> Option<super::format::RefEdge> {
+        let h = self.v5_section_header()?;
+        // Inline the count check using the already-fetched header — avoids
+        // a redundant second `v5_section_header()` call via
+        // `ref_edge_count()` and folds the truncation guard into one
+        // expression (rust-reviewer HIGH cleanup).
+        let len = h.ref_edges_len as usize;
+        if !len.is_multiple_of(super::format::RefEdge::SIZE) {
+            return None;
+        }
+        let count = len / super::format::RefEdge::SIZE;
+        if idx >= count {
+            return None;
+        }
+        let offset =
+            (h.ref_edges_offset as usize).checked_add(idx * super::format::RefEdge::SIZE)?;
+        let end = offset.checked_add(super::format::RefEdge::SIZE)?;
+        if end > self.mmap.len() {
+            return None;
+        }
+        let mut rec = std::mem::MaybeUninit::<super::format::RefEdge>::uninit();
+        // SAFETY: bounds checked above; copy into stack-aligned storage
+        // so an unaligned `ref_edges_offset` (today writer 4-aligns it,
+        // but a future bump could shift) cannot UB.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.mmap[offset..].as_ptr(),
+                rec.as_mut_ptr() as *mut u8,
+                super::format::RefEdge::SIZE,
+            );
+            Some(rec.assume_init())
+        }
+    }
+
     /// Raw bytes of the callers FST section (or empty when absent).
     pub fn callers_fst_bytes(&self) -> &[u8] {
         let Some(h) = self.call_graph_header() else {

@@ -6,6 +6,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — Phase 11.1.9 (Q4-A): `vex update` no longer drops `ref_edges` from unchanged files
+
+- Prior to this fix, `reconstruct_unchanged` set `bound_refs: Vec::new()`
+  for every unchanged file during `vex update`. The writer then emitted
+  a `ref_edges` section containing only edges from the *changed* slice
+  — every cross-file reference from unchanged files was silently lost
+  on each incremental update. `vex usages --strict` would degrade to an
+  almost-empty result set after a few `vex update`s, recoverable only by
+  a full `vex index`.
+- The fix walks the old index's `ref_edges` for unchanged files,
+  re-encodes each edge as a `(from_file_id, target_name, target_path)`
+  triple, and re-resolves to the new index's symbol indices via a
+  path-tiebreak helper (`resolve_by_name_and_path`). When a target's
+  name has multiple definitions, the matching `target_path` is
+  preferred — single-candidate fallback would silently mis-attribute.
+- Memory budget: `target_name` / `target_path` are interned as
+  `Arc<str>` (architect-H1 must-fix), keeping the reconstruction buffer
+  sub-2 GB even on a 50M-edge index.
+- Known limitation: refs targeting a symbol that was renamed in the
+  *changed* slice are dropped (their old target_name no longer resolves)
+  — this is the `imported_by`-cascade gap that Q4-B will close. See
+  `docs/LIMITATIONS.md` §4d.
+- New reader API: `IndexReader::ref_edge_count()` and `ref_edge(idx)`.
+- `RefKind` gains `impl From<RefKind> for u8` and `impl TryFrom<u8>`
+  with typed `UnknownRefKind` error, replacing the writer-local
+  `ref_kind_bits` helper.
+
 ## [1.17.0] - 2026-06-14
 
 ### Added — Phase 14.10: symbol-rename tracking via content-similarity

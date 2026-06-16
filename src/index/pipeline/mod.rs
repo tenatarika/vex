@@ -9,6 +9,7 @@ use crate::util::config;
 mod lock;
 mod output;
 mod parse_files;
+pub(crate) use parse_files::ReconstructedRef;
 
 use lock::IndexLock;
 use output::{
@@ -330,6 +331,8 @@ fn run_with_lock(
         manifest_embedder,
         opts,
         true, // is_full_rebuild — `vex index` always replaces everything
+        &[],  // no reconstructed_refs on a full rebuild
+        &[],  // no old_file_paths on a full rebuild
     )?;
 
     if !vectors.is_empty() {
@@ -543,18 +546,25 @@ fn update_inner(
             None
         }
     };
-    let (unchanged_parsed, unchanged_vectors) = if index_path.exists() {
-        let reader = crate::store::reader::IndexReader::open(&index_path)
-            .context("open existing index for incremental merge")?;
-        reconstruct_unchanged(
-            &reader,
-            &changed_set,
-            &deleted_set,
-            body_tokens_sidecar.as_deref(),
-        )
-    } else {
-        (Vec::new(), Vec::new())
-    };
+    let (unchanged_parsed, unchanged_vectors, reconstructed_refs, old_file_paths) =
+        if index_path.exists() {
+            let reader = crate::store::reader::IndexReader::open(&index_path)
+                .context("open existing index for incremental merge")?;
+            let recon = reconstruct_unchanged(
+                &reader,
+                &changed_set,
+                &deleted_set,
+                body_tokens_sidecar.as_deref(),
+            );
+            (
+                recon.parsed_files,
+                recon.vectors,
+                recon.reconstructed_refs,
+                recon.old_file_paths,
+            )
+        } else {
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        };
     // v1.13 P5: existing index's `vectors_normalized` flag drives the
     // partial-normalize decision below. Loaded once before the merge so
     // we can skip re-normalizing already-unit vectors (avoiding
@@ -657,6 +667,8 @@ fn update_inner(
         manifest_embedder,
         opts,
         false, // is_full_rebuild — incremental update, skeletons partial
+        &reconstructed_refs,
+        &old_file_paths,
     )?;
 
     if !all_vectors.is_empty() {

@@ -226,6 +226,13 @@ pub(super) fn write_output_locked(
     embedder_id: Option<String>,
     opts: IndexOptions,
     is_full_rebuild: bool,
+    // Phase 11.1.9 (Q4-A): reconstructed ref-edges from unchanged files
+    // during `vex update`. Empty on full rebuild.
+    reconstructed_refs: &[crate::index::pipeline::ReconstructedRef],
+    // Old-index file_paths table — the writer maps
+    // ReconstructedRef.from_file_id back to a path via this slice and
+    // then to the NEW index's file_id via its own file_ids map.
+    old_file_paths: &[String],
 ) -> Result<()> {
     let index_path = config::index_path(root);
     let cache_dir = index_path.parent().context("index path has no parent")?;
@@ -274,6 +281,8 @@ pub(super) fn write_output_locked(
         bm25,
         &pattern_skeletons,
         &lang_fingerprints,
+        reconstructed_refs,
+        old_file_paths,
         &index_path,
     )
     .context("write index")?;
