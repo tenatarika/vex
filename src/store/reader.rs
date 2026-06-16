@@ -606,6 +606,14 @@ impl IndexReader {
     /// matches `sym_idx`. Returns an empty `Vec` when the index has no
     /// ref-edges section, when the FST is missing the key, or when the
     /// section bytes don't validate.
+    ///
+    /// The FST lookup is wrapped in `catch_unwind` because the upstream
+    /// `fst` crate's `Map::new` does only shallow header validation —
+    /// adversarially-corrupt FST bytes can pass construction but panic
+    /// during node traversal (fuzzer found one: `node.rs:302` index OOB).
+    /// vex's threat model says index bytes are user-owned, but
+    /// defense-in-depth: corrupt mmap (cosmic ray, half-truncated write,
+    /// hostile cache override) shouldn't crash the CLI.
     #[allow(dead_code)] // wired into the CLI dispatch in 11.1.3d
     pub fn find_ref_edges_by_symbol(&self, sym_idx: u32) -> Vec<super::format::RefEdge> {
         if !self.has_ref_edges() {
@@ -617,7 +625,16 @@ impl IndexReader {
         let Ok(reader) = super::ref_edges::RefEdgeReader::new(fst, post, edges) else {
             return Vec::new();
         };
-        reader.find_by_symbol_idx(sym_idx)
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reader.find_by_symbol_idx(sym_idx)
+        }))
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                sym_idx,
+                "ref_edges FST traversal panicked on corrupt bytes; returning empty result"
+            );
+            Vec::new()
+        })
     }
 
     /// Number of call edges recorded in this index, 0 when absent.
