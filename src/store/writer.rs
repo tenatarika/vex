@@ -201,8 +201,8 @@ pub fn write_index_with_call_graph_and_skeletons(
 /// compares these against live grammar to detect drift.
 #[allow(clippy::too_many_arguments)] // primary writer entry — keep flat over a builder for now
                                      // pub(crate) (was pub) — Phase 11.1.9 demoted this to crate-internal so the
-                                     // `ReconstructedRef` type need not be exposed in the public API surface.
-                                     // External callers (tests, benches) go through the back-compat shims
+                                     // `index::types::ReconstructedRef` type need not be exposed in the public API
+                                     // surface. External callers (tests, benches) go through the back-compat shims
                                      // above which translate to empty reconstructed_refs.
 pub(crate) fn write_index_with_call_graph_and_skeletons_and_fingerprints(
     parsed: &[ParsedFile],
@@ -215,7 +215,7 @@ pub(crate) fn write_index_with_call_graph_and_skeletons_and_fingerprints(
     // Phase 11.1.9 (Q4-A) — reconstructed cross-file ref-edges from
     // unchanged files. Empty for full `vex index`. Resolved to new
     // symbol indices after the per-file bound_refs loop closes.
-    reconstructed_refs: &[crate::index::pipeline::ReconstructedRef],
+    reconstructed_refs: &[crate::index::types::ReconstructedRef],
     // `old_file_paths` is the OLD index's file_paths table — used to
     // map `ReconstructedRef.from_file_id` → path → new file_id via
     // this writer's freshly-built `file_ids`.
@@ -284,7 +284,7 @@ fn write_index_to(
     bm25: Option<Bm25Sections<'_>>,
     pattern_skeletons: &[(u32, Skeleton)],
     lang_fingerprints: &[(u8, u32)],
-    reconstructed_refs: &[crate::index::pipeline::ReconstructedRef],
+    reconstructed_refs: &[crate::index::types::ReconstructedRef],
     old_file_paths: &[String],
 ) -> Result<NewIndexMetadata> {
     let mut strings = StringPool::new();

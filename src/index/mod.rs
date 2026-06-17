@@ -6,3 +6,4 @@ pub mod pipeline;
 pub mod rename_chains;
 pub mod staleness;
 pub mod symbols;
+pub(crate) mod types;

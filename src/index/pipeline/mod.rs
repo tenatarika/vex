@@ -9,7 +9,6 @@ use crate::util::config;
 mod lock;
 mod output;
 mod parse_files;
-pub(crate) use parse_files::ReconstructedRef;
 
 use lock::IndexLock;
 use output::{
@@ -331,8 +330,7 @@ fn run_with_lock(
         manifest_embedder,
         opts,
         true, // is_full_rebuild — `vex index` always replaces everything
-        &[],  // no reconstructed_refs on a full rebuild
-        &[],  // no old_file_paths on a full rebuild
+        &crate::index::types::IndexBuildArtefacts::default(),
     )?;
 
     if !vectors.is_empty() {
@@ -648,9 +646,7 @@ fn update_inner(
             None
         }
     };
-    let (unchanged_parsed, unchanged_vectors, reconstructed_refs, old_file_paths) = if index_path
-        .exists()
-    {
+    let (unchanged_parsed, unchanged_vectors, artefacts) = if index_path.exists() {
         let reader = crate::store::reader::IndexReader::open(&index_path)
             .context("open existing index for incremental merge")?;
         let recon = reconstruct_unchanged(
@@ -678,11 +674,17 @@ fn update_inner(
         (
             recon.parsed_files,
             recon.vectors,
-            recon.reconstructed_refs,
-            recon.old_file_paths,
+            crate::index::types::IndexBuildArtefacts {
+                reconstructed_refs: recon.reconstructed_refs,
+                old_file_paths: recon.old_file_paths,
+            },
         )
     } else {
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        (
+            Vec::new(),
+            Vec::new(),
+            crate::index::types::IndexBuildArtefacts::default(),
+        )
     };
     // v1.13 P5: existing index's `vectors_normalized` flag drives the
     // partial-normalize decision below. Reuses `current_manifest`
@@ -782,8 +784,7 @@ fn update_inner(
         manifest_embedder,
         opts,
         false, // is_full_rebuild — incremental update, skeletons partial
-        &reconstructed_refs,
-        &old_file_paths,
+        &artefacts,
     )?;
 
     if !all_vectors.is_empty() {

@@ -21,36 +21,13 @@ use rayon::prelude::*;
 
 use crate::index::hasher;
 use crate::index::symbols::{ParsedFile, ParsedSymbol, RawCallEdge, SymbolKind};
+use crate::index::types::ReconstructedRef;
 use crate::parse;
 use crate::parse::language::Language;
 use crate::parse::scope::RefKind;
 use crate::util::config;
 
 use super::CHUNK_SIZE;
-
-/// Reconstructed ref-edge fed from `reconstruct_unchanged` into the
-/// writer's second-pass resolution. Phase 11.1.9 (Q4-A).
-///
-/// `target_name` / `target_path` are `Arc<str>` interned across edges so
-/// a 50M-edge re-emission doesn't allocate ~8 GB of redundant String
-/// copies (architect-H1 / rust-reviewer-#2 must-fix). At typical repo
-/// shapes (10k distinct target paths, 5k distinct target names) the
-/// interners stay sub-megabyte.
-#[derive(Debug, Clone)]
-pub(crate) struct ReconstructedRef {
-    /// `file_id` of the unchanged source file in the OLD index's file
-    /// table. Resolved to a path in the writer via the `old_file_paths`
-    /// slice and then mapped to the new index's `file_ids`.
-    pub from_file_id: u32,
-    pub target_name: Arc<str>,
-    /// OLD-index path of the target's defining file — disambiguates
-    /// `name_to_global` candidates when `target_name` has multiple
-    /// definitions across the project.
-    pub target_path: Arc<str>,
-    pub line: u32,
-    pub col: u32,
-    pub kind: RefKind,
-}
 
 /// Bundled return from `reconstruct_unchanged` — architect-M1 must-fix.
 /// Replaces the previous 3-tuple so a future Q4-B addition lands as a
