@@ -27,6 +27,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   same `imported_by` map Q4-B built. The recent `index.state` sidecar
   (audit C1) was the architectural enabler: Q4-C is a pure cascade-
   algorithm change against the same on-disk shape.
+- Cross-language coverage pinned by integration tests:
+  - **Rust** (`use crate::a::T`) — 3-hop chain + cycle + star.
+  - **TypeScript** (`import { T } from './a'`) — 3-hop chain.
+  - **Python** (`from a import T`) — 3-hop chain.
+  - **Go** — no binder yet (`scope/mod.rs::bind_refs` falls through
+    to `Ok(Vec::new())`); cascade is a documented no-op. A negative-
+    control test fires if a Go binder ever lands so coverage is
+    backfilled. C# and C++ binders exist and inherit the BFS path
+    structurally; explicit tests deferred until field reports
+    surface a regression there.
 
 ### Added — Phase 11.1.10 (Q4-B): `imported_by` cascade re-parses importers on rename
 

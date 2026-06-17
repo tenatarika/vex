@@ -464,3 +464,229 @@ fn cascade_terminates_on_star_pattern() {
         "star pattern lost refs: before={edges_initial}, after={edges_after}"
     );
 }
+
+// ── Test 13 ──────────────────────────────────────────────────────────────────
+//
+// Q4-C × TypeScript: 3-hop chain via `import { X } from './y'`. The
+// TS binder records cross-file edges from `import_statement` clauses;
+// Q4-C must walk them transitively the same way it does in Rust.
+
+#[test]
+fn cascade_traverses_three_hop_chain_typescript() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("project");
+    fs::create_dir_all(project_dir.join("src")).unwrap();
+
+    fs::write(
+        project_dir.join("src/a.ts"),
+        "export interface OldName { v: number }\n\
+         export interface NewName { v: number }\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("src/b.ts"),
+        "import { NewName } from './a';\n\
+         export interface BWrapper { v: number }\n\
+         export function makeB(): BWrapper {\n\
+            const _x: NewName = { v: 1 };\n\
+            return { v: _x.v };\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("src/c.ts"),
+        "import { BWrapper } from './b';\n\
+         export function useB(): BWrapper {\n\
+            const _x: BWrapper = { v: 2 };\n\
+            return _x;\n\
+         }\n",
+    )
+    .unwrap();
+
+    vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+
+    let edges_initial = ref_edge_count(&project_dir);
+    assert!(
+        edges_initial > 0,
+        "TypeScript binder did not produce ref_edges for the 3-hop chain — \
+         check that .ts files are being indexed and binder is wired"
+    );
+
+    // Confirm both hops landed in imported_by: b → a AND c → b.
+    let m0 = load_manifest(&project_dir);
+    let b_imports_a = m0
+        .imported_by
+        .iter()
+        .any(|(t, importers)| t.contains("a.ts") && importers.iter().any(|p| p.contains("b.ts")));
+    let c_imports_b = m0
+        .imported_by
+        .iter()
+        .any(|(t, importers)| t.contains("b.ts") && importers.iter().any(|p| p.contains("c.ts")));
+    assert!(
+        b_imports_a && c_imports_b,
+        "TS imported_by missing a hop; got: {:?}",
+        m0.imported_by
+    );
+
+    // Edit ONLY a.ts: drop OldName. b.ts (depth 1) and c.ts (depth 2)
+    // must both be cascaded via Q4-C.
+    fs::write(
+        project_dir.join("src/a.ts"),
+        "export interface NewName { v: number }\n",
+    )
+    .unwrap();
+
+    let (_total, changed, _deleted) = vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        changed, 1,
+        "only a.ts was edited — b.ts + c.ts come via cascade"
+    );
+
+    let edges_after = ref_edge_count(&project_dir);
+    assert!(
+        edges_after >= edges_initial.saturating_sub(1),
+        "TS transitive cascade dropped refs: before={edges_initial}, after={edges_after}"
+    );
+}
+
+// ── Test 14 ──────────────────────────────────────────────────────────────────
+//
+// Q4-C × Python: 3-hop chain via `from x import Y`. The Python binder
+// records cross-file edges from `import_from_statement`; Q4-C must
+// walk them transitively.
+
+#[test]
+fn cascade_traverses_three_hop_chain_python() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("project");
+    fs::create_dir_all(&project_dir).unwrap();
+
+    fs::write(
+        project_dir.join("a.py"),
+        "class OldName:\n    v: int = 0\n\n\
+         class NewName:\n    v: int = 0\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("b.py"),
+        "from a import NewName\n\n\
+         class BWrapper:\n    v: int = 0\n\n\
+         def make_b() -> BWrapper:\n    _x: NewName = NewName()\n    return BWrapper()\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("c.py"),
+        "from b import BWrapper\n\n\
+         def use_b() -> BWrapper:\n    _x: BWrapper = BWrapper()\n    return _x\n",
+    )
+    .unwrap();
+
+    vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+
+    let edges_initial = ref_edge_count(&project_dir);
+    assert!(
+        edges_initial > 0,
+        "Python binder did not produce ref_edges — check .py indexing + binder wiring"
+    );
+
+    let m0 = load_manifest(&project_dir);
+    let b_imports_a = m0
+        .imported_by
+        .iter()
+        .any(|(t, importers)| t.contains("a.py") && importers.iter().any(|p| p.contains("b.py")));
+    let c_imports_b = m0
+        .imported_by
+        .iter()
+        .any(|(t, importers)| t.contains("b.py") && importers.iter().any(|p| p.contains("c.py")));
+    assert!(
+        b_imports_a && c_imports_b,
+        "Python imported_by missing a hop; got: {:?}",
+        m0.imported_by
+    );
+
+    // Edit ONLY a.py: drop OldName.
+    fs::write(project_dir.join("a.py"), "class NewName:\n    v: int = 0\n").unwrap();
+
+    let (_total, changed, _deleted) = vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        changed, 1,
+        "only a.py was edited — b.py + c.py come via cascade"
+    );
+
+    let edges_after = ref_edge_count(&project_dir);
+    assert!(
+        edges_after >= edges_initial.saturating_sub(1),
+        "Python transitive cascade dropped refs: before={edges_initial}, after={edges_after}"
+    );
+}
+
+// ── Test 15 ──────────────────────────────────────────────────────────────────
+//
+// Q4-C × Go (negative control): Go has no binder (see
+// `src/parse/scope/mod.rs::bind_refs` match arms). `imported_by` stays
+// empty for Go-only projects → cascade is a documented no-op.
+// Correctness IS preserved (nothing to drop), but this test exists to
+// pin the "no cascade for Go" contract: if a future binder lands,
+// it'll fail this test and force a coverage update.
+
+#[test]
+fn cascade_is_noop_for_go_only_project_until_binder_lands() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("project");
+    fs::create_dir_all(&project_dir).unwrap();
+
+    fs::write(
+        project_dir.join("a.go"),
+        "package main\n\ntype NewName struct{ V int }\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("b.go"),
+        "package main\n\ntype BWrapper struct{ V int }\n\n\
+         func makeB() BWrapper {\n    _ = NewName{V: 1}\n    return BWrapper{}\n}\n",
+    )
+    .unwrap();
+
+    vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+
+    // Go binder is absent — imported_by must stay empty. If this fires,
+    // a Go binder landed and `cascade_traverses_three_hop_chain_go`
+    // should be added alongside the TS / Python tests.
+    let m = load_manifest(&project_dir);
+    assert!(
+        m.imported_by.is_empty(),
+        "Go has no binder yet (see scope/mod.rs::bind_refs); imported_by must stay empty. \
+         Got: {:?} — if you wired a Go binder, replace this test with a 3-hop chain.",
+        m.imported_by
+    );
+}
