@@ -76,6 +76,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with hundreds of thousands of files plus a dense `imported_by` graph
   (architect S1 finding, 2026-06-17 audit).
 
+### Internal — cascade-then-reconstruct ordering invariant pinned
+
+- `src/index/pipeline/mod.rs` `update_inner` now documents the
+  ordering contract that the Q4-B cascade discovery must merge into
+  `changed_set` **before** the Q4-A reconstruction reads it. Two
+  `debug_assert!`s pin the invariants: `cascade_paths ⊆ changed_set`
+  after the merge, and `cascade ∩ reconstructed == ∅` after
+  `reconstruct_unchanged`. Reordering these blocks would silently
+  re-introduce the Q4-A regression Q4-B was built to fix — the
+  assertions make the breakage surface in tests instead of in user
+  refs (architect A3 finding, 2026-06-17 audit).
+
 ## [1.17.0] - 2026-06-14
 
 ### Added — Phase 14.10: symbol-rename tracking via content-similarity

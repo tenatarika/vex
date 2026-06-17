@@ -518,6 +518,24 @@ fn update_inner(
     let mut changed_set: HashSet<&str> = diff.changed.iter().map(|s| s.as_str()).collect();
     let deleted_set: HashSet<&str> = diff.deleted.iter().map(|s| s.as_str()).collect();
 
+    // === Cascade-then-reconstruct ordering invariant ===========================
+    //
+    // The three blocks immediately below — (1) Q4-B cascade discovery, (2)
+    // merge cascade entries into `changed_set`, (3) Q4-A reconstruction
+    // of unchanged files — MUST execute in that order. The whole point
+    // of cascade is to demote importers from "reconstruct from stale
+    // index" to "re-parse from source" so their `bound_refs` get rebound
+    // against the new name table. If reconstruction reads `changed_set`
+    // before cascade merges into it, every cascade importer will be
+    // re-parsed AND reconstructed — the latter wins the merge at line
+    // ~700, silently re-introducing the exact Q4-A regression Q4-B was
+    // built to fix (architect audit A3, fuzz session 2026-06-17).
+    //
+    // Invariant: `cascade_paths ⊆ changed_set` AND `cascade_paths ∩
+    // reconstructed_files == ∅`. Enforced by `debug_assert!` after each
+    // step. Do NOT reorder these blocks without re-running the
+    // `incremental_consistency_test::cascade_*` suite.
+    //
     // Phase 11.1.10 (Q4-B): cascade-invalidate importers of
     // changed/deleted files. The Q4-A reconstruction path correctly
     // preserves refs for unchanged files, but when a changed file
@@ -584,6 +602,16 @@ fn update_inner(
     for path in &cascade_paths {
         changed_set.insert(path.as_str());
     }
+    // Step (2) of the ordering invariant: every cascade importer is now
+    // a member of `changed_set`. If this ever fires, the merge loop above
+    // was edited to skip entries — `reconstruct_unchanged` would then
+    // re-import stale refs from those importers (silent Q4-A regression).
+    debug_assert!(
+        cascade_paths
+            .iter()
+            .all(|p| changed_set.contains(p.as_str())),
+        "cascade merge broken: cascade_paths contains entry absent from changed_set"
+    );
     if !cascade_paths.is_empty() {
         tracing::info!(
             cascade_count = cascade_paths.len(),
@@ -620,25 +648,42 @@ fn update_inner(
             None
         }
     };
-    let (unchanged_parsed, unchanged_vectors, reconstructed_refs, old_file_paths) =
-        if index_path.exists() {
-            let reader = crate::store::reader::IndexReader::open(&index_path)
-                .context("open existing index for incremental merge")?;
-            let recon = reconstruct_unchanged(
-                &reader,
-                &changed_set,
-                &deleted_set,
-                body_tokens_sidecar.as_deref(),
-            );
-            (
-                recon.parsed_files,
-                recon.vectors,
-                recon.reconstructed_refs,
-                recon.old_file_paths,
-            )
-        } else {
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
-        };
+    let (unchanged_parsed, unchanged_vectors, reconstructed_refs, old_file_paths) = if index_path
+        .exists()
+    {
+        let reader = crate::store::reader::IndexReader::open(&index_path)
+            .context("open existing index for incremental merge")?;
+        let recon = reconstruct_unchanged(
+            &reader,
+            &changed_set,
+            &deleted_set,
+            body_tokens_sidecar.as_deref(),
+        );
+        // Step (3) of the ordering invariant: no cascade importer
+        // was reconstructed. `reconstruct_unchanged` skips anything
+        // in `changed_set`, so this should hold transitively — but
+        // pin it explicitly so a future refactor that swaps the
+        // skip-list breaks the test instead of the user's refs.
+        debug_assert!(
+            {
+                let cascade_set: HashSet<&str> = cascade_paths.iter().map(String::as_str).collect();
+                recon
+                    .parsed_files
+                    .iter()
+                    .all(|f| !cascade_set.contains(f.path.as_str()))
+            },
+            "cascade ∩ reconstructed must be empty — Q4-B cascade must run \
+                 before Q4-A reconstruction (see ordering invariant above)"
+        );
+        (
+            recon.parsed_files,
+            recon.vectors,
+            recon.reconstructed_refs,
+            recon.old_file_paths,
+        )
+    } else {
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+    };
     // v1.13 P5: existing index's `vectors_normalized` flag drives the
     // partial-normalize decision below. Reuses `current_manifest`
     // (post-lock fresh load at line 499) — same source the Q4-B
