@@ -969,9 +969,10 @@ RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_tokenize_document   -- -max_total_t
 RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_hash_index_load     -- -max_total_time=60
 RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_incremental_hnsw    -- -max_total_time=60
 RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_rename_chains_load  -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_state_load          -- -max_total_time=60
 ```
 
-Eleven fuzz targets cover the reader's `unsafe` paths plus every text /
+Twelve fuzz targets cover the reader's `unsafe` paths plus every text /
 sidecar parser that takes adversarial input:
 
 | Target | What it fuzzes | Surface |
@@ -987,6 +988,7 @@ sidecar parser that takes adversarial input:
 | `fuzz_hash_index_load` (v1.14.1) | Arbitrary bytes as `index.hashes` sidecar | `hash_index::load` (`VEXH` magic, MAX_COUNT guard, truncation) |
 | `fuzz_incremental_hnsw` (v1.15.0) | Adversarial `new_hashes` slices | `build_hnsw_incremental_at` (duplicates, tombstones, dedup-and-skip) |
 | `fuzz_rename_chains_load` (v1.17.0) | Arbitrary bytes as `index.rename_chains` sidecar | `rename_chains::load` (VEXR v1, MinHash + LSH replay) |
+| `fuzz_state_load` (v1.18) | Arbitrary bytes as `index.state` sidecar | `incremental_state::load` (`VEXS` v1, 256 MiB cap, bincode payload) |
 
 Most recent system-wide audit (Q4-A/B closure, 2026-06-17): **~76M
 total executions across all 11 targets, 0 crashes / panics /
@@ -1048,6 +1050,7 @@ Per-project sidecars (in <index_dir>/):
   · index.bodytokens      — per-symbol terms for BM25 + semantic context (B1.2)
   · index.git_history     — historical symbol presence (Phase 14.8)
   · index.rename_chains   — MinHash+LSH rename tracking across commits (Phase 14.10)
+  · index.state           — incremental state: imported_by reverse map + writer-provenance sentinels (audit C1)
 
 Shared cross-project (in user cache root, e.g. ~/Library/Caches/vex/blobs/):
   · {sha}.bin shards      — content-addressed parse cache, keyed by git blob SHA (Phase 14.7)

@@ -88,6 +88,67 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   assertions make the breakage surface in tests instead of in user
   refs (architect A3 finding, 2026-06-17 audit).
 
+### Refactor — split `incremental_consistency_test.rs` by concern (audit H3)
+
+- The 848-line monolith broke into three focused integration binaries:
+  `incremental_consistency_basic.rs` (rename / move / empty / new file),
+  `incremental_consistency_ref_edges.rs` (Q4-A preservation +
+  multi-candidate disambiguation + multi-iteration), and
+  `incremental_consistency_cascade.rs` (Q4-B cascade scenarios).
+  Helpers are inlined per-file to keep each suite self-contained;
+  nextest parallelises across the three binaries, and a future Q4-C
+  test addition lands in `_cascade.rs` without colliding on fixtures
+  with unrelated tests.
+
+### Refactor — drop stale `#[allow(dead_code)]` on the ref_edges read path (audit H2)
+
+- `cmd_usages.rs:74` has called `find_ref_edges_by_symbol` in
+  production for several phases, so the six "wired into the CLI
+  dispatch in 11.1.3d" annotations on `RefEdgeReader` /
+  `has_ref_edges` / `ref_edges_section_bytes` / `slice_or_empty`
+  were stale. The two remaining `RefEdge::column` / `ref_kind_bits`
+  bit accessors are kept with an honest "exercised by integration
+  tests; documents the bit layout" comment.
+
+### Refactor — extract `ReconstructedRef` + `IndexBuildArtefacts` (audit C2)
+
+- The Q4-A cross-stage handoff (`ReconstructedRef` + the old-index
+  `file_paths` table) moved out of `src/index/pipeline/parse_files.rs`
+  into a new `src/index/types.rs` module and now travels through
+  `write_output_locked` as a single `IndexBuildArtefacts` parameter.
+  The writer signature shrinks by one positional arg; a future Q4-C
+  field lands as a named struct member instead of widening every
+  call site again.
+
+### Refactor — extract `IncrementalState` into `index.state` binary sidecar (audit C1)
+
+- The `Manifest` god-object split into two storage layers:
+  - JSON `manifest.json` retains the file-fingerprint table
+    (`files`), git provenance (`git_head`, `indexed_at`), embedder
+    identity, the sticky user-toggle opt-outs (`call_graph`, `bm25`,
+    `pattern_index`), and rename-chain provenance.
+  - **NEW** binary `<index_dir>/index.state` (magic `VEXS` v1,
+    bincode payload) carries `imported_by` + `imported_by_built` +
+    `cpp_includes_processed` + `body_tokens_persisted` +
+    `history_indexed_at` + `history_tip_sha` + `history_depth` +
+    `history`. These are writer-provenance / phase-state / reverse-
+    index-cache fields whose scale (especially `imported_by` —
+    O(cross-file-edges) bytes) had pushed JSON parse cost into
+    measurable territory on watch-mode hot paths.
+- Migration: `Manifest::load` reads the JSON first, then layers the
+  sidecar on top. Pre-v1.18 indexes have no sidecar; the JSON
+  `#[serde(default)]` fallback paths preserve their state, so
+  `vex update` after upgrade re-bootstraps the sidecar without a
+  forced `vex index`. The moved fields keep their struct membership
+  on `Manifest` so the 50+ existing call sites stay untouched —
+  only storage moved.
+- Sidecar surface: 256 MiB hard ceiling before payload allocation,
+  fuzzed via the new `fuzz_state_load` target alongside every other
+  binary sidecar parser. Architect verdict (memory
+  `reference_manifest_god_object_debt`): clean separation lets Q4-C
+  transitive-cascade state land as a `state.transitive_*` extension
+  instead of widening `Manifest` further.
+
 ## [1.17.0] - 2026-06-14
 
 ### Added — Phase 14.10: symbol-rename tracking via content-similarity

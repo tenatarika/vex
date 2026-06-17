@@ -86,5 +86,14 @@ name = "fuzz_rename_chains_load"
 path = "fuzz_targets/fuzz_rename_chains_load.rs"
 doc = false
 
+# v1.18 audit C1 — incremental-state sidecar parser (`index.state`,
+# `VEXS` magic v1). Loaded on every `Manifest::load`; carries the
+# manifest fields that scale O(cross-file-edges) in bincode form.
+# Must never panic — failure falls back to the JSON manifest.
+[[bin]]
+name = "fuzz_state_load"
+path = "fuzz_targets/fuzz_state_load.rs"
+doc = false
+
 [workspace]
 members = ["."]

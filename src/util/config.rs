@@ -529,6 +529,23 @@ pub fn manifest_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("manifest.json")
 }
 
+/// Full path to the v1.18 incremental-state sidecar (`VEXS` magic).
+/// Carries the manifest fields that scale with project size — primarily
+/// `imported_by` — in bincode form so a 100k-file monorepo doesn't pay a
+/// JSON parse + reserialise on every `vex update`. Absent file is the
+/// valid pre-v1.18 / fresh-index state; `Manifest::load` then falls back
+/// to the same fields living on the JSON manifest. See architect audit
+/// C1 / memory `reference_manifest_god_object_debt`.
+///
+/// `Manifest::load`/`save` use a path-relative helper internally; this
+/// `pub` entry point is the canonical project-root → sidecar-path
+/// translator for callers that have a project root in hand (status
+/// commands, integration tests, future tools).
+#[allow(dead_code)] // exposed for callers with a project_root; manifest internals use a path-derived helper
+pub fn state_path(project_root: &std::path::Path) -> PathBuf {
+    index_dir(project_root).join("index.state")
+}
+
 /// Full path to the v1.13 E2b embedding cache sidecar. One file per
 /// embedder so switching embedders doesn't poison the cache — absent
 /// file is the valid cold-start state (`EmbedCache::load` returns an

@@ -192,23 +192,20 @@ fn index_history_persisted_in_manifest() {
 
     vex_in(repo).args(["index", "--history"]).assert().success();
 
-    // Manifest is the v6 sidecar at `<index_dir>/manifest.json` (path
-    // mirror of `index.vex`). Read it and assert the future
-    // `history_indexed_at` field is present + non-null.
+    // v1.18 audit C1 — `history_indexed_at` migrated to the
+    // `index.state` binary sidecar; assert via `Manifest::load`, which
+    // transparently layers the sidecar on top of the JSON manifest.
     let idx = find_index_vex(repo).expect("index.vex must exist");
     let manifest_path = idx.with_file_name("manifest.json");
-    let manifest_text = std::fs::read_to_string(&manifest_path)
-        .unwrap_or_else(|_| panic!("manifest at {} must exist", manifest_path.display()));
-    let manifest: serde_json::Value =
-        serde_json::from_str(&manifest_text).expect("manifest must be valid JSON");
+    let manifest = vex::index::manifest::Manifest::load(&manifest_path)
+        .unwrap_or_else(|e| panic!("Manifest::load failed for {}: {e}", manifest_path.display()));
 
-    let field = manifest.get("history_indexed_at");
     assert!(
-        matches!(field, Some(v) if !v.is_null()),
+        manifest.history_indexed_at.is_some(),
         "Phase 14.8: manifest at {} must carry `history_indexed_at = Some(_)` \
          after `vex index --history` (Step 5 plumbing). Got: {:?}",
         manifest_path.display(),
-        field
+        manifest.history_indexed_at,
     );
 }
 
@@ -335,25 +332,21 @@ fn history_depth_caps_globally() {
 
     let idx = find_index_vex(repo).expect("index.vex must exist");
     let manifest_path = idx.with_file_name("manifest.json");
-    let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap_or_default())
-            .unwrap_or(serde_json::Value::Null);
+    let manifest = vex::index::manifest::Manifest::load(&manifest_path)
+        .unwrap_or_else(|e| panic!("Manifest::load failed for {}: {e}", manifest_path.display()));
 
-    // Step 5 will record commit_count in the manifest's history
-    // sub-object so this is testable without parsing the binary
-    // section directly.
-    let commits = manifest
-        .pointer("/history/commit_count")
-        .and_then(|v| v.as_u64());
+    // v1.18 audit C1: `history` migrated into the `index.state` binary
+    // sidecar. `Manifest::load` layers it back over the JSON so the test
+    // stays storage-agnostic.
+    let commits = manifest.history.as_ref().map(|h| h.commit_count);
     assert_eq!(
         commits,
         Some(2),
         "Phase 14.8: with `--history-depth 2` on a 5-commit repo, the \
          section's commit_count must be exactly 2 (NOT 5, NOT per-file). \
-         Manifest at {} reported: {:?}. Full manifest: {}",
+         Manifest at {} reported: {:?}.",
         manifest_path.display(),
         commits,
-        manifest,
     );
 }
 
@@ -587,16 +580,15 @@ fn no_history_drops_sidecar_and_manifest_fields() {
         sidecar.display()
     );
 
-    // Manifest fields nulled.
+    // Manifest fields nulled — v1.18 C1: state migrated to `index.state`
+    // sidecar; assert via `Manifest::load` so the test ignores storage.
     let manifest_path = sidecar.with_file_name("manifest.json");
-    let manifest_text = std::fs::read_to_string(&manifest_path)
-        .unwrap_or_else(|_| panic!("manifest at {}", manifest_path.display()));
-    let manifest: serde_json::Value = serde_json::from_str(&manifest_text).unwrap();
+    let manifest = vex::index::manifest::Manifest::load(&manifest_path)
+        .unwrap_or_else(|e| panic!("Manifest::load failed for {}: {e}", manifest_path.display()));
     assert!(
-        manifest.get("history_indexed_at").is_none()
-            || manifest.get("history_indexed_at").unwrap().is_null(),
-        "history_indexed_at should be absent or null in manifest after --no-history. \
-         Manifest: {manifest}"
+        manifest.history_indexed_at.is_none(),
+        "history_indexed_at should be None in manifest after --no-history. Got: {:?}",
+        manifest.history_indexed_at,
     );
 
     // cmd_history falls back to walker — advertised via meta.

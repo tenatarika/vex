@@ -61,6 +61,13 @@ These are the surfaces we treat as security-relevant:
     positions; `MAX_COUNT` guard on both save + load paths after a
     parallel-reviewer audit. 3M-iter focused + 5.8M-iter system-wide
     runs (2026-06-05) clean.
+  - `index.state` (`src/index/incremental_state.rs`, `fuzz_state_load`,
+    v1.18) — `VEXS` v1 sidecar carrying the manifest fields that scale
+    with project size (`imported_by` reverse map, writer-provenance
+    sentinels, history provenance). 12-byte header + bincode payload
+    bounded by a 256 MiB hard ceiling before the payload `Vec`
+    allocation. Loaded on every `Manifest::load`; corruption returns
+    `Err` and the loader falls back to the legacy JSON manifest fields.
   - `index.hnsw` incremental update (`build_hnsw_incremental_at`,
     `fuzz_incremental_hnsw`, v1.15.0) — drives the B1.2 update path
     with adversarial `new_hashes` slices (duplicate-heavy batches,
@@ -112,7 +119,8 @@ If you're embedding vex into a multi-tenant environment:
 
 - Treat `.vex` index files **and every sidecar in the cache directory**
   (`index.hnsw`, `index.bloom`, `index.hashes`, `index.git_history`,
-  `manifest.json`, `embed_cache_<id>.bin`, `<onnx>.sha256.marker`) as
+  `index.rename_chains`, `index.state`, `manifest.json`,
+  `embed_cache_<id>.bin`, `<onnx>.sha256.marker`) as
   **untrusted input** even when you wrote them yourself — they're
   consumed via mmap or parsed without prior validation. The fuzz
   harness covers each binary-input parser, but defence in depth

@@ -83,7 +83,12 @@ pub struct Manifest {
     /// project has any C++ files (a pure-Rust project still gets
     /// `Some(true)` because the resolver ran trivially over an empty
     /// C++ set).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// v1.18 audit C1: persisted in `index.state` (binary sidecar), not
+    /// JSON. The `skip_serializing` opt-out keeps `#[serde(default)]`
+    /// active for back-compat reads of pre-v1.18 manifests that still
+    /// carry the field in JSON.
+    #[serde(default, skip_serializing)]
     pub cpp_includes_processed: Option<bool>,
 
     /// v1.15.0 B1.2: `Some(true)` when this index was built with the
@@ -96,7 +101,10 @@ pub struct Manifest {
     /// hashes and full HNSW rebuild. The flag is a version marker; a
     /// pure non-semantic index still gets `Some(true)` because the
     /// sidecar write is unconditional.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// v1.18 audit C1: persisted in `index.state` (see same-named note
+    /// on `cpp_includes_processed`).
+    #[serde(default, skip_serializing)]
     pub body_tokens_persisted: Option<bool>,
 
     /// v1.17 Phase 14.8 — ISO-date sentinel: `Some(<YYYY-MM-DD>)` when
@@ -105,7 +113,9 @@ pub struct Manifest {
     /// sticky-rebuild logic and by `vex status` to surface "history
     /// indexed at X". Architect L3 (sticky-via-sentinel): no separate
     /// boolean — `history_indexed_at.is_some()` IS the predicate.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// v1.18 audit C1: persisted in `index.state`.
+    #[serde(default, skip_serializing)]
     pub history_indexed_at: Option<String>,
 
     /// v1.17 Phase 14.8 — full SHA of the commit the history section
@@ -115,14 +125,18 @@ pub struct Manifest {
     /// for `<prior_tip>..<new_tip>` range walking. `None` on pre-14.8
     /// manifests or when `--no-history` was passed. Not surfaced in
     /// `vex status` — it's an internal-state field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// v1.18 audit C1: persisted in `index.state`.
+    #[serde(default, skip_serializing)]
     pub history_tip_sha: Option<String>,
 
     /// v1.17 Phase 14.8 — sticky cap from `--history-depth N`. Read
     /// by `vex update --history` so the user doesn't have to repeat
     /// the flag on every incremental rebuild. `None` = unbounded
     /// walk (or pre-14.8 manifest).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// v1.18 audit C1: persisted in `index.state`.
+    #[serde(default, skip_serializing)]
     pub history_depth: Option<usize>,
 
     /// v1.17 Phase 14.8 — populated counts for the section, surfaced
@@ -130,7 +144,9 @@ pub struct Manifest {
     /// glance whether the section is non-trivial. Mirrors the build-
     /// time `HistorySection` shape. `None` on pre-14.8 manifests or
     /// when `--history` was not opted into.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// v1.18 audit C1: persisted in `index.state`.
+    #[serde(default, skip_serializing)]
     pub history: Option<HistoryStats>,
 
     /// v1.17 Phase 14.10 — `Some(true)` when the `index.rename_chains`
@@ -169,10 +185,16 @@ pub struct Manifest {
     /// Removing the `Option` flattens the call site to a single
     /// `manifest.imported_by` access without unwrap_or_default litter.
     ///
-    /// BTreeMap + BTreeSet (not Hash equivalents) so JSON serialization
-    /// is sorted → byte-identical manifests across runs given identical
-    /// inputs. Useful when manifests are committed (rare) or diffed.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// BTreeMap + BTreeSet (not Hash equivalents) so encoding is sorted
+    /// → byte-identical sidecars across runs given identical inputs.
+    ///
+    /// v1.18 audit C1: persisted in `index.state` (binary sidecar) — the
+    /// JSON manifest no longer carries this field on save. The primary
+    /// motivation for the split is this map's O(cross-file-edges) size,
+    /// which previously dominated `vex update`'s JSON parse cost.
+    /// `#[serde(default)]` still allows reads of pre-v1.18 JSON
+    /// manifests that carry the field inline.
+    #[serde(default, skip_serializing)]
     pub imported_by: BTreeMap<String, BTreeSet<String>>,
 
     /// Phase 11.1.10 (Q4-B) writer provenance flag. `Some(true)` when a
@@ -186,7 +208,9 @@ pub struct Manifest {
     /// bootstrap warning on the steady-state empty case (Go-only repos,
     /// fresh projects, etc.). Without this sentinel we'd false-positive
     /// every update on those projects.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// v1.18 audit C1: persisted in `index.state`.
+    #[serde(default, skip_serializing)]
     pub imported_by_built: Option<bool>,
 }
 
@@ -227,17 +251,80 @@ impl Manifest {
             );
         }
         let data = std::fs::read_to_string(path).context("read manifest")?;
-        serde_json::from_str(&data).context("parse manifest")
+        let mut manifest: Manifest = serde_json::from_str(&data).context("parse manifest")?;
+
+        // v1.18 audit C1: layer the binary state sidecar on top of the
+        // JSON-loaded manifest. The sidecar wins when present (it's the
+        // post-v1.18 source of truth); when absent we keep whatever the
+        // JSON load already deserialised — that's the pre-v1.18
+        // back-compat path. Sidecar load failures degrade to "treat as
+        // absent" + tracing warn rather than failing the whole load.
+        let state_path = state_path_for(path);
+        if state_path.exists() {
+            match crate::index::incremental_state::load(&state_path) {
+                Ok(state) => apply_state(&mut manifest, state),
+                Err(e) => tracing::warn!(
+                    path = %state_path.display(),
+                    error = %e,
+                    "index.state sidecar load failed; falling back to JSON-only manifest fields"
+                ),
+            }
+        }
+        Ok(manifest)
     }
 
-    /// Atomic write: write to .tmp, then rename to avoid corruption on crash.
+    /// Atomic write: write to .tmp, then rename to avoid corruption on
+    /// crash. v1.18 audit C1 — the state fields go to the
+    /// `index.state` sidecar in addition to the JSON write. JSON wins
+    /// the rename first so a crash between the two leaves the older
+    /// (or absent) sidecar, which the loader's "sidecar wins when
+    /// present" rule handles correctly: at worst a single re-bootstrap
+    /// on the next update.
     pub fn save(&self, path: &Path) -> Result<()> {
         let data = serde_json::to_string(self)?;
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, data).context("write manifest tmp")?;
         std::fs::rename(&tmp, path).context("rename manifest")?;
+        let state = capture_state(self);
+        let state_path = state_path_for(path);
+        crate::index::incremental_state::save(&state_path, &state)
+            .context("write index.state sidecar")?;
         Ok(())
     }
+}
+
+/// Derive the `index.state` path from the manifest path. Both live in
+/// the same `index_dir`, so the sidecar path is the manifest's parent
+/// directory joined with the canonical filename.
+fn state_path_for(manifest_path: &Path) -> std::path::PathBuf {
+    match manifest_path.parent() {
+        Some(dir) => dir.join("index.state"),
+        None => Path::new("index.state").to_path_buf(),
+    }
+}
+
+fn capture_state(m: &Manifest) -> crate::index::incremental_state::IncrementalState {
+    crate::index::incremental_state::IncrementalState {
+        imported_by: m.imported_by.clone(),
+        imported_by_built: m.imported_by_built,
+        cpp_includes_processed: m.cpp_includes_processed,
+        body_tokens_persisted: m.body_tokens_persisted,
+        history_indexed_at: m.history_indexed_at.clone(),
+        history_tip_sha: m.history_tip_sha.clone(),
+        history_depth: m.history_depth,
+        history: m.history.clone(),
+    }
+}
+
+fn apply_state(m: &mut Manifest, s: crate::index::incremental_state::IncrementalState) {
+    m.imported_by = s.imported_by;
+    m.imported_by_built = s.imported_by_built;
+    m.cpp_includes_processed = s.cpp_includes_processed;
+    m.body_tokens_persisted = s.body_tokens_persisted;
+    m.history_indexed_at = s.history_indexed_at;
+    m.history_tip_sha = s.history_tip_sha;
+    m.history_depth = s.history_depth;
+    m.history = s.history;
 }
 
 /// Determine which files need re-indexing.
@@ -331,18 +418,19 @@ mod tests {
     }
 
     #[test]
-    fn cpp_includes_processed_round_trip() {
-        // Writers set `Some(true)` from v1.14; serialise → parse must
-        // preserve the value verbatim. Guards against an accidental
-        // `skip_serializing_if = "Option::is_none"` regression that
-        // would drop a populated field.
+    fn cpp_includes_processed_round_trip_via_save_load() {
+        // v1.18 audit C1: this field now lives in `index.state`, not
+        // JSON. The end-to-end contract is `Manifest::save` then `load`
+        // round-trips the value through the sidecar (JSON would silently
+        // drop it on save).
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("manifest.json");
         let m = Manifest {
             cpp_includes_processed: Some(true),
             ..Manifest::default()
         };
-        let json = serde_json::to_string(&m).unwrap();
-        assert!(json.contains("\"cpp_includes_processed\":true"));
-        let back: Manifest = serde_json::from_str(&json).unwrap();
+        m.save(&path).unwrap();
+        let back = Manifest::load(&path).unwrap();
         assert_eq!(back.cpp_includes_processed, Some(true));
     }
 
@@ -358,28 +446,15 @@ mod tests {
     }
 
     #[test]
-    fn cpp_includes_processed_none_is_omitted_from_serialised_form() {
-        // Symmetric to the load case: when the field is `None`, the
-        // serialised JSON must not contain the key. Keeps old readers
-        // (pre-1.14 self-update users running on a fresh v1.14 binary
-        // that decided to opt out) from seeing unfamiliar keys.
-        let m = Manifest::default();
-        let json = serde_json::to_string(&m).unwrap();
-        assert!(
-            !json.contains("cpp_includes_processed"),
-            "expected key absent for None, got: {json}"
-        );
-    }
-
-    #[test]
-    fn body_tokens_persisted_round_trip() {
+    fn body_tokens_persisted_round_trip_via_save_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("manifest.json");
         let m = Manifest {
             body_tokens_persisted: Some(true),
             ..Manifest::default()
         };
-        let json = serde_json::to_string(&m).unwrap();
-        assert!(json.contains("\"body_tokens_persisted\":true"));
-        let back: Manifest = serde_json::from_str(&json).unwrap();
+        m.save(&path).unwrap();
+        let back = Manifest::load(&path).unwrap();
         assert_eq!(back.body_tokens_persisted, Some(true));
     }
 
@@ -391,17 +466,9 @@ mod tests {
     }
 
     #[test]
-    fn body_tokens_persisted_none_is_omitted_from_serialised_form() {
-        let m = Manifest::default();
-        let json = serde_json::to_string(&m).unwrap();
-        assert!(
-            !json.contains("body_tokens_persisted"),
-            "expected key absent for None, got: {json}"
-        );
-    }
-
-    #[test]
-    fn history_fields_round_trip() {
+    fn history_fields_round_trip_via_save_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("manifest.json");
         let m = Manifest {
             history_indexed_at: Some("2026-06-08".to_string()),
             history_tip_sha: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
@@ -414,12 +481,8 @@ mod tests {
             }),
             ..Manifest::default()
         };
-        let json = serde_json::to_string(&m).unwrap();
-        assert!(json.contains("\"history_indexed_at\":\"2026-06-08\""));
-        assert!(json.contains("\"history_tip_sha\""));
-        assert!(json.contains("\"history_depth\":500"));
-        assert!(json.contains("\"commit_count\":378"));
-        let back: Manifest = serde_json::from_str(&json).unwrap();
+        m.save(&path).unwrap();
+        let back = Manifest::load(&path).unwrap();
         assert_eq!(back.history_indexed_at.as_deref(), Some("2026-06-08"));
         assert_eq!(back.history_depth, Some(500));
         let stats = back.history.expect("history sub-object present");
@@ -439,6 +502,74 @@ mod tests {
         assert_eq!(m.history_tip_sha, None);
         assert_eq!(m.history_depth, None);
         assert!(m.history.is_none());
+    }
+
+    #[test]
+    fn pre_v1_18_inline_state_fields_load_via_json_fallback() {
+        // Migration safety: a pre-v1.18 JSON manifest carries state
+        // fields inline (no sidecar exists yet). `Manifest::load` must
+        // surface those fields from the JSON #[serde(default)] path.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let legacy_json = r#"{
+            "files": {},
+            "cpp_includes_processed": true,
+            "body_tokens_persisted": true,
+            "imported_by": {"src/a.rs": ["src/b.rs"]},
+            "imported_by_built": true,
+            "history_indexed_at": "2026-06-08",
+            "history_tip_sha": "abc123",
+            "history_depth": 250,
+            "history": {
+                "commit_count": 10,
+                "blob_count": 20,
+                "entry_count": 30,
+                "depth_capped": false
+            }
+        }"#;
+        std::fs::write(&path, legacy_json).unwrap();
+        let m = Manifest::load(&path).unwrap();
+        assert_eq!(m.cpp_includes_processed, Some(true));
+        assert_eq!(m.body_tokens_persisted, Some(true));
+        assert_eq!(m.imported_by_built, Some(true));
+        assert_eq!(m.history_indexed_at.as_deref(), Some("2026-06-08"));
+        assert_eq!(m.history_depth, Some(250));
+        assert!(m.imported_by.contains_key("src/a.rs"));
+        assert!(m.history.is_some());
+    }
+
+    #[test]
+    fn save_omits_moved_state_fields_from_json() {
+        // The JSON post-v1.18 must not carry the moved fields. Anyone
+        // reading manifest.json directly (debugging, tests, external
+        // tooling) sees only the truly-manifest concerns: file
+        // fingerprints + sticky opt-outs + non-moved sentinels.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let m = Manifest {
+            cpp_includes_processed: Some(true),
+            body_tokens_persisted: Some(true),
+            history_indexed_at: Some("2026-06-08".to_string()),
+            imported_by_built: Some(true),
+            ..Manifest::default()
+        };
+        m.save(&path).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        for key in [
+            "cpp_includes_processed",
+            "body_tokens_persisted",
+            "history_indexed_at",
+            "history_tip_sha",
+            "history_depth",
+            "imported_by",
+            "imported_by_built",
+            "\"history\":",
+        ] {
+            assert!(
+                !raw.contains(key),
+                "post-v1.18 JSON must not carry {key}; got: {raw}"
+            );
+        }
     }
 
     #[test]
@@ -507,25 +638,6 @@ mod tests {
             !json.contains("rename_chains_built"),
             "expected key absent for None, got: {json}"
         );
-    }
-
-    #[test]
-    fn history_fields_omitted_when_none() {
-        let m = Manifest::default();
-        let json = serde_json::to_string(&m).unwrap();
-        for key in [
-            "history_indexed_at",
-            "history_tip_sha",
-            "history_depth",
-            // `history` (the stats sub-object) is also omitted via
-            // skip_serializing_if when None.
-            "\"history\":",
-        ] {
-            assert!(
-                !json.contains(key),
-                "expected key {key} absent for default Manifest, got: {json}"
-            );
-        }
     }
 
     #[test]

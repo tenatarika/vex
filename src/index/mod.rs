@@ -1,5 +1,6 @@
 pub mod hasher;
 pub mod history_builder;
+pub mod incremental_state;
 pub mod manifest;
 pub mod parse_cache;
 pub mod pipeline;
