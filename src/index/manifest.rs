@@ -1,8 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+
+/// Hard ceiling on manifest JSON size. 128 MiB comfortably covers monorepos
+/// with hundreds of thousands of files plus a dense `imported_by` graph;
+/// anything larger is almost certainly hostile (the parsed structure can
+/// occupy 2-3× the on-disk size in heap). Without this cap a 50 MB attacker
+/// JSON can drive the process to 1-2 GB RSS before serde fails.
+const MAX_MANIFEST_BYTES: u64 = 128 * 1024 * 1024;
 
 /// Manifest tracks file hashes for incremental indexing.
 /// Stored as JSON next to the index file.
@@ -208,6 +215,16 @@ impl Manifest {
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
+        }
+        let meta = std::fs::metadata(path).context("stat manifest")?;
+        if meta.len() > MAX_MANIFEST_BYTES {
+            bail!(
+                "manifest {} is {} bytes, exceeds {}-byte limit (refusing to load \
+                 — file may be corrupt or crafted to exhaust memory)",
+                path.display(),
+                meta.len(),
+                MAX_MANIFEST_BYTES,
+            );
         }
         let data = std::fs::read_to_string(path).context("read manifest")?;
         serde_json::from_str(&data).context("parse manifest")
@@ -509,5 +526,61 @@ mod tests {
                 "expected key {key} absent for default Manifest, got: {json}"
             );
         }
+    }
+
+    #[test]
+    fn load_round_trip_via_save_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let mut original = Manifest::default();
+        original.files.insert("src/lib.rs".to_string(), 42);
+        original.save(&path).unwrap();
+
+        let loaded = Manifest::load(&path).unwrap();
+        assert_eq!(loaded.files.get("src/lib.rs"), Some(&42));
+    }
+
+    #[test]
+    fn load_missing_file_returns_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = Manifest::load(&tmp.path().join("absent.json")).unwrap();
+        assert!(loaded.files.is_empty());
+    }
+
+    #[test]
+    fn load_rejects_oversized_manifest() {
+        // Defense-in-depth: a hostile (or corrupted-mid-write) manifest
+        // larger than `MAX_MANIFEST_BYTES` must be refused before we
+        // allocate a `String` for it. Otherwise serde_json's parse can
+        // run the process to multi-GB RSS before failing.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("huge.json");
+        // Write `MAX + 1` bytes of garbage. JSON parse never runs.
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(MAX_MANIFEST_BYTES + 1).unwrap();
+        drop(f);
+
+        let err = Manifest::load(&path).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("exceeds") && msg.contains("limit"),
+            "expected size-limit error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_accepts_manifest_at_cap_boundary() {
+        // A 0-byte file is `<= MAX_MANIFEST_BYTES` — must reach the JSON
+        // parser (which then fails on empty input). Guards against an
+        // off-by-one in the size guard.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("empty.json");
+        std::fs::write(&path, b"").unwrap();
+        let err = Manifest::load(&path).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("parse"),
+            "expected JSON parse error past the size guard, got: {msg}"
+        );
     }
 }

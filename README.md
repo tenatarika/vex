@@ -967,33 +967,40 @@ RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_manifest_load       -- -max_total_t
 RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_marker_load         -- -max_total_time=60
 RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_tokenize_document   -- -max_total_time=60
 RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_hash_index_load     -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_incremental_hnsw    -- -max_total_time=60
+RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_rename_chains_load  -- -max_total_time=60
 ```
 
-Nine fuzz targets cover the reader's `unsafe` paths plus every text /
+Eleven fuzz targets cover the reader's `unsafe` paths plus every text /
 sidecar parser that takes adversarial input:
 
 | Target | What it fuzzes | Surface |
 |--------|---------------|---------|
-| `fuzz_index_reader` | Arbitrary bytes as `.vex` file | `header()`, `symbol()`, `vector()`, `read_string()`, `file_paths()` |
-| `fuzz_refs_fst` | Arbitrary FST + posting bytes | `RefReader::find()`, `find_by_prefix()` |
+| `fuzz_index_reader` | Arbitrary bytes as `.vex` file | `header()`, `symbol()`, `vector()`, `read_string()`, `file_paths()`, ref_edge API |
+| `fuzz_refs_fst` | Arbitrary FST + posting bytes | `RefReader::find()`, `find_by_prefix()`, `find_ref_edges_by_symbol` |
 | `fuzz_symbol_fst` | Arbitrary FST + posting bytes | `SymbolFstReader::find()`, `find_fuzzy()`, `search_with_fallback()` |
 | `fuzz_bloom_load` (v1.12.0) | Arbitrary `index.bloom` sidecar | `SymbolBloom::load`, then `may_contain` probes |
 | `fuzz_pattern_parser` (v1.12.0) | Arbitrary UTF-8 as a pattern string | `parse_composite_pattern` (metavars, `&&` / `||`, quoted segments) |
-| `fuzz_manifest_load` (v1.12.0) | Arbitrary JSON as `manifest.json` | `Manifest::load` |
+| `fuzz_manifest_load` (v1.12.0) | Arbitrary JSON as `manifest.json` | `Manifest::load` (128 MiB size cap + JSON parse) |
 | `fuzz_marker_load` (v1.13.0) | Arbitrary text as `<onnx>.sha256.marker` | `verify_with_marker` parser + decision tree |
 | `fuzz_tokenize_document` (v1.13.0) | Arbitrary UTF-8 as BM25 input | `tokenize_document` (post share-owning-String refactor) |
 | `fuzz_hash_index_load` (v1.14.1) | Arbitrary bytes as `index.hashes` sidecar | `hash_index::load` (`VEXH` magic, MAX_COUNT guard, truncation) |
+| `fuzz_incremental_hnsw` (v1.15.0) | Adversarial `new_hashes` slices | `build_hnsw_incremental_at` (duplicates, tombstones, dedup-and-skip) |
+| `fuzz_rename_chains_load` (v1.17.0) | Arbitrary bytes as `index.rename_chains` sidecar | `rename_chains::load` (VEXR v1, MinHash + LSH replay) |
 
-Most recent system-wide audit (v1.14.1, 2026-06-05): **5,792,231 total
-iterations across all 9 targets in ~9 min wall-clock, zero crashes /
-panics / AddressSanitizer hits / leaks.** Plus a focused 3,000,000-
-iter run on `fuzz_hash_index_load` alone — clean. Coverage saturated
-for the small binary-header parsers (bloom, marker, hash_index);
-JSON / grammar parsers still surfacing new features at saturation
-(`fuzz_manifest_load` reached `cov:1355 ft:4191 / 1311 corpus`,
-`fuzz_pattern_parser` `cov:551 ft:3693 / 1210 corpus`).
+Most recent system-wide audit (Q4-A/B closure, 2026-06-17): **~76M
+total executions across all 11 targets, 0 crashes / panics /
+AddressSanitizer hits / leaks** (61s per target, libFuzzer +
+ASan + nightly). One latent FST panic was caught en route in a
+dead-code path on adversarial `ref_edge` bytes and fixed before the
+clean run — `find_ref_edges_by_symbol` and `RefReader::find_by_prefix`
+now wrap the inner FST walk in `catch_unwind` so a corrupt sidecar
+returns `Err` instead of taking down the process. Earlier baselines:
+v1.14.1 (2026-06-05) ran 5.8M iterations across 9 targets clean;
+v1.15.2 release-gate (2026-06-08) ran ~853k focused executions on
+the four highest-signal targets clean.
 
-Fuzzing has found and fixed five real defects across the project life:
+Fuzzing has found and fixed six real defects across the project life:
 
 - v1.x: out-of-bounds read on crafted `symbol_count`, misaligned
   pointer dereference on odd `symbols_offset`, unchecked section
@@ -1005,6 +1012,15 @@ Fuzzing has found and fixed five real defects across the project life:
 - v1.12.0: `SymbolBloom::load` accepted `k_num` up to ~2.1B, which
   made every `may_contain` call loop for 110+ seconds (DoS, not a
   panic). Fix: cap `k_num <= MAX_K_NUM = 64` at load time.
+- Phase 11.1.10 / Q4-A (2026-06-17): FST walk inside
+  `find_ref_edges_by_symbol` panicked on a crafted refs FST,
+  bypassing the production `catch_unwind` (the libfuzzer-sys panic
+  hook fires before user code can intercept). Fix: wrap the inner
+  walk in its own `catch_unwind` and surface `Err`. Defense-in-depth
+  hardening was also applied to `Manifest::load`: a 128 MiB pre-read
+  size cap blocks hostile JSON before serde can allocate multi-GB
+  heap (Q4-B audit follow-up; defense-in-depth, threat model is
+  user-owned files).
 
 The v1.13.0 / v1.14.1 additions found no defects in fresh code — the
 review-driven `MAX_COUNT` guards on `hash_index::save` / `load` were

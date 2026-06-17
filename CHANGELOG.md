@@ -64,6 +64,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with typed `UnknownRefKind` error, replacing the writer-local
   `ref_kind_bits` helper.
 
+### Security — defense-in-depth cap on `Manifest::load`
+
+- `<index_dir>/manifest.json` now has a 128 MiB hard ceiling (`stat`
+  size-check before `read_to_string`). Loads above the cap return an
+  actionable error instead of allocating multi-GB heap. The threat
+  model is user-owned files (vex never reads remote manifests), so this
+  is defense-in-depth — a corrupted-mid-write file or a manifest
+  crafted to OOM a CI runner that triggers `vex update` automatically
+  is rejected without parsing. The cap comfortably covers monorepos
+  with hundreds of thousands of files plus a dense `imported_by` graph
+  (architect S1 finding, 2026-06-17 audit).
+
 ## [1.17.0] - 2026-06-14
 
 ### Added — Phase 14.10: symbol-rename tracking via content-similarity

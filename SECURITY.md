@@ -7,9 +7,9 @@ are not patched — please upgrade to the latest release before reporting.
 
 | Version | Supported |
 |---------|-----------|
-| 1.15.x  | yes       |
-| 1.14.x  | yes       |
-| < 1.14  | no — upgrade first |
+| 1.17.x  | yes       |
+| 1.16.x  | yes       |
+| < 1.16  | no — upgrade first |
 
 `vex self-update` will fetch the latest GitHub release on Linux, macOS,
 and Windows.
@@ -78,10 +78,13 @@ These are the surfaces we treat as security-relevant:
   (`parse_composite_pattern`) and the JSON manifest at `manifest.json`
   (`Manifest::load`) — both covered by libFuzzer targets
   (`fuzz_pattern_parser`, `fuzz_manifest_load`) and expected to surface
-  `Err` rather than panic on adversarial input. The BM25 hot-path
-  tokenizer (`tokenize_document`) is also fuzzed (`fuzz_tokenize_document`,
-  v1.13.0) since it walks attacker-supplied UTF-8 byte-by-byte during
-  every `vex index`.
+  `Err` rather than panic on adversarial input. `Manifest::load`
+  additionally rejects any file larger than 128 MiB before reading it
+  into memory, so a corrupted-mid-write or maliciously inflated
+  `manifest.json` cannot drive the process to multi-GB heap before the
+  JSON parser fails. The BM25 hot-path tokenizer (`tokenize_document`)
+  is also fuzzed (`fuzz_tokenize_document`, v1.13.0) since it walks
+  attacker-supplied UTF-8 byte-by-byte during every `vex index`.
 - **MCP server (`crates/vex-mcp`)**: JSON-RPC parser, stdio handling,
   path-traversal in tool arguments (`VEX_ROOT` containment), or
   resource exhaustion via malformed `tools/call` payloads.
@@ -113,8 +116,13 @@ If you're embedding vex into a multi-tenant environment:
   **untrusted input** even when you wrote them yourself — they're
   consumed via mmap or parsed without prior validation. The fuzz
   harness covers each binary-input parser, but defence in depth
-  helps. The most recent v1.15.2 release-gate audit (2026-06-08) ran
-  ~853k executions across the four highest-signal targets
+  helps. The most recent release-gate audit (Q4-A/B closure
+  2026-06-17) ran **~76M executions across all 11 then-current
+  targets** with zero crashes — a single latent FST panic
+  surfaced in a dead-code path was fixed before commit and is now
+  guarded by `catch_unwind` (`fuzz_refs_fst` regression coverage).
+  The prior v1.15.2 release-gate audit (2026-06-08) ran ~853k
+  executions across the four highest-signal targets
   (`fuzz_incremental_hnsw`, `fuzz_hash_index_load`, `fuzz_bloom_load`,
   `fuzz_index_reader`) with zero crashes; the v1.14.1 system-wide
   audit (2026-06-05) ran ~5.8M iterations across all then-9 targets
