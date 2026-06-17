@@ -690,3 +690,190 @@ fn cascade_is_noop_for_go_only_project_until_binder_lands() {
         m.imported_by
     );
 }
+
+// ── Test 16 ──────────────────────────────────────────────────────────────────
+//
+// Q4-C × C++: 3-hop chain via `#include "x.h"`. The C++ binder writes
+// cross-file edges through the Pass-2 include resolver
+// (`cpp_includes_processed`); Q4-C must walk those edges transitively.
+
+#[test]
+fn cascade_traverses_three_hop_chain_cpp() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("project");
+    fs::create_dir_all(project_dir.join("src")).unwrap();
+
+    fs::write(
+        project_dir.join("src/a.h"),
+        "#pragma once\nstruct OldName { int v; };\nstruct NewName { int v; };\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("src/b.h"),
+        "#pragma once\n#include \"a.h\"\nstruct BWrapper { int v; };\n\
+         inline BWrapper make_b() { NewName n{1}; return BWrapper{n.v}; }\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("src/c.cpp"),
+        "#include \"b.h\"\nint use_b() { BWrapper w = make_b(); return w.v; }\n",
+    )
+    .unwrap();
+
+    vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+
+    let edges_initial = ref_edge_count(&project_dir);
+    assert!(
+        edges_initial > 0,
+        "C++ binder produced 0 ref_edges — check that .h/.cpp are indexed and the \
+         Pass-2 include resolver ran (cpp_includes_processed = Some(true))"
+    );
+
+    // Confirm both hops landed in imported_by: b.h → a.h AND c.cpp → b.h.
+    let m0 = load_manifest(&project_dir);
+    let b_imports_a = m0
+        .imported_by
+        .iter()
+        .any(|(t, importers)| t.contains("a.h") && importers.iter().any(|p| p.contains("b.h")));
+    let c_imports_b = m0
+        .imported_by
+        .iter()
+        .any(|(t, importers)| t.contains("b.h") && importers.iter().any(|p| p.contains("c.cpp")));
+    assert!(
+        b_imports_a && c_imports_b,
+        "C++ imported_by missing a hop; got: {:?}",
+        m0.imported_by
+    );
+
+    // Edit ONLY a.h — drop OldName. b.h (depth 1) and c.cpp (depth 2)
+    // must both be cascaded via Q4-C.
+    fs::write(
+        project_dir.join("src/a.h"),
+        "#pragma once\nstruct NewName { int v; };\n",
+    )
+    .unwrap();
+
+    let (_total, changed, _deleted) = vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        changed, 1,
+        "only a.h was edited — b.h + c.cpp come via cascade"
+    );
+
+    let edges_after = ref_edge_count(&project_dir);
+    assert!(
+        edges_after >= edges_initial.saturating_sub(1),
+        "C++ transitive cascade dropped refs: before={edges_initial}, after={edges_after}"
+    );
+}
+
+// ── Test 17 ──────────────────────────────────────────────────────────────────
+//
+// Q4-C × C#: 3-hop chain via `using Namespace;`. The C# binder records
+// cross-file edges from `using_directive` clauses + Pass-2 namespace
+// resolution; Q4-C must walk them transitively.
+
+#[test]
+fn cascade_traverses_three_hop_chain_csharp() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("project");
+    fs::create_dir_all(&project_dir).unwrap();
+
+    fs::write(
+        project_dir.join("A.cs"),
+        "namespace MyA {\n\
+            public class OldName { public int V; }\n\
+            public class NewName { public int V; }\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("B.cs"),
+        "using MyA;\n\
+         namespace MyB {\n\
+            public class BWrapper {\n\
+                public int V;\n\
+                public NewName MakeInner() { return new NewName { V = 1 }; }\n\
+            }\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("C.cs"),
+        "using MyB;\n\
+         namespace MyC {\n\
+            public class CUser {\n\
+                public BWrapper Use() { return new BWrapper { V = 2 }; }\n\
+            }\n\
+         }\n",
+    )
+    .unwrap();
+
+    vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+
+    let edges_initial = ref_edge_count(&project_dir);
+    assert!(
+        edges_initial > 0,
+        "C# binder produced 0 ref_edges — check that .cs is indexed and using_directive \
+         resolution wired"
+    );
+
+    let m0 = load_manifest(&project_dir);
+    let b_imports_a = m0
+        .imported_by
+        .iter()
+        .any(|(t, importers)| t.contains("A.cs") && importers.iter().any(|p| p.contains("B.cs")));
+    let c_imports_b = m0
+        .imported_by
+        .iter()
+        .any(|(t, importers)| t.contains("B.cs") && importers.iter().any(|p| p.contains("C.cs")));
+    assert!(
+        b_imports_a && c_imports_b,
+        "C# imported_by missing a hop; got: {:?}",
+        m0.imported_by
+    );
+
+    // Edit ONLY A.cs: drop OldName.
+    fs::write(
+        project_dir.join("A.cs"),
+        "namespace MyA {\n\
+            public class NewName { public int V; }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let (_total, changed, _deleted) = vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        changed, 1,
+        "only A.cs was edited — B.cs + C.cs come via cascade"
+    );
+
+    let edges_after = ref_edge_count(&project_dir);
+    assert!(
+        edges_after >= edges_initial.saturating_sub(1),
+        "C# transitive cascade dropped refs: before={edges_initial}, after={edges_after}"
+    );
+}

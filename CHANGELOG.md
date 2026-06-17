@@ -31,12 +31,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **Rust** (`use crate::a::T`) — 3-hop chain + cycle + star.
   - **TypeScript** (`import { T } from './a'`) — 3-hop chain.
   - **Python** (`from a import T`) — 3-hop chain.
+  - **C++** (`#include "a.h"` via the Pass-2 include resolver) —
+    3-hop chain across a.h → b.h → c.cpp.
+  - **C#** (`using Namespace;` via namespace resolution) — 3-hop
+    chain across `MyA` → `MyB` → `MyC`.
   - **Go** — no binder yet (`scope/mod.rs::bind_refs` falls through
     to `Ok(Vec::new())`); cascade is a documented no-op. A negative-
     control test fires if a Go binder ever lands so coverage is
-    backfilled. C# and C++ binders exist and inherit the BFS path
-    structurally; explicit tests deferred until field reports
-    surface a regression there.
+    backfilled.
 
 ### Added — Phase 11.1.10 (Q4-B): `imported_by` cascade re-parses importers on rename
 
