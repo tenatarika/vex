@@ -260,12 +260,18 @@ pub struct RefEdge {
 impl RefEdge {
     pub const SIZE: usize = std::mem::size_of::<Self>();
 
-    #[allow(dead_code)] // used by `vex usages --strict` in 11.1.3d
+    // ref_kind_bits / column unpack the `col_and_kind` bit-packed field.
+    // Production consumers (`cmd_usages.rs`) only need `from_file_id` +
+    // `line`; the integration suite exercises the bit layout via these
+    // accessors, so deleting them would force tests to inline the same
+    // shift constants. `pub` + `#[allow(dead_code)]` keeps the
+    // documented layout the single source of truth.
+    #[allow(dead_code)] // exercised by integration tests; documents the bit layout
     pub fn ref_kind_bits(&self) -> u8 {
         ((self.col_and_kind >> 24) & 0xFF) as u8
     }
 
-    #[allow(dead_code)] // used by `vex usages --strict` in 11.1.3d
+    #[allow(dead_code)] // exercised by integration tests; documents the bit layout
     pub fn column(&self) -> u32 {
         self.col_and_kind & 0x00FF_FFFF
     }

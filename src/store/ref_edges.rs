@@ -118,14 +118,12 @@ pub fn encode_to_sym_key(to_sym_idx: u32) -> String {
 
 /// Zero-copy reader. Built from mmap byte slices, performs no
 /// allocation per lookup beyond the result `Vec`.
-#[allow(dead_code)] // wired into the CLI dispatch in 11.1.3d
 pub struct RefEdgeReader<'a> {
     fst_map: fst::Map<&'a [u8]>,
     posting_data: &'a [u8],
     edge_data: &'a [u8],
 }
 
-#[allow(dead_code)] // wired into the CLI dispatch in 11.1.3d
 impl<'a> RefEdgeReader<'a> {
     pub fn new(fst_bytes: &'a [u8], posting_bytes: &'a [u8], edge_bytes: &'a [u8]) -> Result<Self> {
         let fst_map =

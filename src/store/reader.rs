@@ -574,13 +574,11 @@ impl IndexReader {
     /// Whether the index carries scope-resolved reference edges. False
     /// for v3/v4 indexes (no v5 section header) and v5 indexes that
     /// were built before 11.1.3b wired the binder into the writer.
-    #[allow(dead_code)] // becomes the dispatch knob in 11.1.3d
     pub fn has_ref_edges(&self) -> bool {
         self.v5_section_header()
             .is_some_and(|h| h.ref_edges_len > 0)
     }
 
-    #[allow(dead_code)] // used by `find_ref_edges_by_symbol` once 11.1.3d wires the CLI
     fn ref_edges_section_bytes(&self) -> Option<(&[u8], &[u8], &[u8])> {
         let v5 = self.v5_section_header()?;
         let mmap = &self.mmap[..];
@@ -614,7 +612,6 @@ impl IndexReader {
     /// vex's threat model says index bytes are user-owned, but
     /// defense-in-depth: corrupt mmap (cosmic ray, half-truncated write,
     /// hostile cache override) shouldn't crash the CLI.
-    #[allow(dead_code)] // wired into the CLI dispatch in 11.1.3d
     pub fn find_ref_edges_by_symbol(&self, sym_idx: u32) -> Vec<super::format::RefEdge> {
         if !self.has_ref_edges() {
             return Vec::new();
@@ -831,7 +828,6 @@ impl IndexReader {
 /// `Some(&[])` when `len == 0` (legitimate empty subsection) and
 /// `None` when `offset + len` would walk past the end of the mmap
 /// (corrupt index — caller treats this as "no ref edges available").
-#[allow(dead_code)] // used by `ref_edges_section_bytes` once 11.1.3d wires the CLI
 fn slice_or_empty(mmap: &[u8], offset: usize, len: usize) -> Option<&[u8]> {
     if len == 0 {
         return Some(&[]);
