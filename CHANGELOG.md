@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-06-17
+
 ### Added — Phase 11.1.11 (Q4-C): transitive cascade via BFS
 
 - `vex update` cascade now follows the `imported_by` reverse graph
