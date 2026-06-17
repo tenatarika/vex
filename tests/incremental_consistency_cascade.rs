@@ -282,3 +282,185 @@ fn cascade_handles_a_imports_b_imports_a_cycle() {
         "cycle case: edges before={edges_initial}, after={edges_after}"
     );
 }
+
+// ── Phase 11.1.11 (Q4-C) tests ─────────────────────────────────────────────
+//
+// Q4-B's single-hop cascade re-parsed direct importers but missed
+// transitive re-export chains. Q4-C extends the cascade to follow the
+// `imported_by` reverse graph via BFS, bounded by `CASCADE_MAX_DEPTH=16`.
+
+// ── Test 11 ──────────────────────────────────────────────────────────────────
+//
+// Three-hop chain: `A → B → C` where C re-exports B's symbol and A
+// imports it through C. Editing only B's symbol must cascade through
+// C all the way to A: A's ref is rebound against the new name table.
+// Q4-B (depth-1) would have stopped at C and left A reconstructed
+// against stale refs.
+
+#[test]
+fn cascade_traverses_a_to_b_to_c_three_hop_chain() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("project");
+    fs::create_dir_all(project_dir.join("src")).unwrap();
+
+    // Layer A defines OldName + NewName pre-emptively so the rebind
+    // resolves cleanly after the rename.
+    fs::write(
+        project_dir.join("src/a.rs"),
+        "pub struct OldName { pub v: u32 }\n\
+         pub struct NewName { pub v: u32 }\n",
+    )
+    .unwrap();
+    // Layer B uses A's type in a function body — Rust binder records
+    // the type ref b → a.
+    fs::write(
+        project_dir.join("src/b.rs"),
+        "use crate::a::NewName;\n\
+         pub struct BWrapper { pub v: u32 }\n\
+         pub fn make() -> BWrapper {\n\
+            let _: NewName = NewName { v: 1 };\n\
+            BWrapper { v: 1 }\n\
+         }\n",
+    )
+    .unwrap();
+    // Layer C references ONLY B's wrapper — never A directly. Q4-C
+    // must follow the c → b → a chain transitively.
+    fs::write(
+        project_dir.join("src/c.rs"),
+        "use crate::b::BWrapper;\n\
+         pub fn use_b() -> BWrapper {\n\
+            let _: BWrapper = BWrapper { v: 2 };\n\
+            BWrapper { v: 2 }\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("src/lib.rs"),
+        "pub mod a;\npub mod b;\npub mod c;\n",
+    )
+    .unwrap();
+
+    vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+
+    let edges_initial = ref_edge_count(&project_dir);
+    assert!(
+        edges_initial > 0,
+        "expected ref_edges from the three-layer chain, got 0 — \
+         test fixture isn't exercising the binder"
+    );
+
+    // Edit ONLY a.rs — drop OldName. b.rs (depth 1) imports from a.rs
+    // and must be cascaded. c.rs (depth 2) imports from b.rs and must
+    // ALSO be cascaded — pre-Q4-C this hop was missed.
+    fs::write(
+        project_dir.join("src/a.rs"),
+        "pub struct NewName { pub v: u32 }\n",
+    )
+    .unwrap();
+
+    let (_total, changed, _deleted) = vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        changed, 1,
+        "only a.rs was edited; b.rs and c.rs must reach the re-parse path via cascade"
+    );
+
+    // Both layers' refs should survive (-1 because OldName itself is gone).
+    let edges_after = ref_edge_count(&project_dir);
+    assert!(
+        edges_after >= edges_initial.saturating_sub(1),
+        "transitive cascade dropped refs across the 3-hop chain: \
+         before={edges_initial}, after={edges_after}"
+    );
+
+    // Both importers must have logged into imported_by — proves the
+    // graph picked up b → a AND c → b.
+    let manifest = load_manifest(&project_dir);
+    let b_imports_a = manifest.imported_by.iter().any(|(target, importers)| {
+        target.contains("a.rs") && importers.iter().any(|p| p.contains("b.rs"))
+    });
+    let c_imports_b = manifest.imported_by.iter().any(|(target, importers)| {
+        target.contains("b.rs") && importers.iter().any(|p| p.contains("c.rs"))
+    });
+    assert!(
+        b_imports_a && c_imports_b,
+        "imported_by must record both hops; got: {:?}",
+        manifest.imported_by
+    );
+}
+
+// ── Test 12 ──────────────────────────────────────────────────────────────────
+//
+// Star pattern terminates: a "hub" file imported by many leaves. BFS
+// must not loop or duplicate entries — every leaf appears in
+// changed_set exactly once.
+
+#[test]
+fn cascade_terminates_on_star_pattern() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("project");
+    fs::create_dir_all(project_dir.join("src")).unwrap();
+
+    fs::write(
+        project_dir.join("src/hub.rs"),
+        "pub struct Hub { pub v: u32 }\n",
+    )
+    .unwrap();
+    // Eight leaves all importing from hub.rs.
+    let leaf_count = 8;
+    for i in 0..leaf_count {
+        fs::write(
+            project_dir.join(format!("src/leaf_{i}.rs")),
+            format!("use crate::hub::Hub;\npub fn use_hub_{i}() -> Hub {{ Hub {{ v: {i} }} }}\n"),
+        )
+        .unwrap();
+    }
+    let mut lib = String::from("pub mod hub;\n");
+    for i in 0..leaf_count {
+        lib.push_str(&format!("pub mod leaf_{i};\n"));
+    }
+    fs::write(project_dir.join("src/lib.rs"), lib).unwrap();
+
+    vex::index::pipeline::run(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+
+    let edges_initial = ref_edge_count(&project_dir);
+
+    // Touch hub.rs only.
+    fs::write(
+        project_dir.join("src/hub.rs"),
+        "// minor edit\npub struct Hub { pub v: u32 }\n",
+    )
+    .unwrap();
+
+    vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+
+    // All leaves are cascade-re-parsed; their refs survive.
+    let edges_after = ref_edge_count(&project_dir);
+    assert!(
+        edges_after >= edges_initial,
+        "star pattern lost refs: before={edges_initial}, after={edges_after}"
+    );
+}

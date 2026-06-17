@@ -610,19 +610,20 @@ exported symbol; the binder will re-walk b.rs and produce a fresh edge.
 This matches the user's intuition: a refactor that touches APIs is the
 right moment to fully reconcile.
 
-**Workaround (still relevant for ≥2 hop chains).** Run `vex index`
-(full rebuild) after any rename of an exported symbol when the
-importers transitively re-export it through ≥1 intermediate file. The
-depth-1 cascade in 11.1.10 doesn't traverse transitive re-exports.
+**Closed in 11.1.11 (Q4-C).** The cascade now follows the `imported_by`
+reverse graph **transitively** via BFS, bounded by
+`CASCADE_MAX_DEPTH = 16`. A `c → b → a` rename where only `a` changes
+re-parses both `b` (depth 1) and `c` (depth 2); deeper chains are
+covered up to the cap. Cycles (`a ↔ b`) terminate via the visited-set
++ "already in changed_set" guard.
 
-**Remaining Q4-B limits (carried into a future Q4-C):**
+**Remaining Q4-C limits:**
 
-1. **Depth-1 only.** `A → B → C` chains where C re-exports a symbol
-   defined in B and A imports the symbol through C: when B renames the
-   symbol, the cascade re-parses C (its direct importer) but NOT A (a
-   transitive importer). For most idiomatic codebases — direct
-   `use foo::Bar` style imports — this is irrelevant. For Python /
-   TypeScript re-export façades it matters.
+1. **Re-export chains deeper than `CASCADE_MAX_DEPTH=16`.** Pathologically
+   deep Python/TypeScript façade trees beyond 16 hops are not followed;
+   the cascade logs a `tracing::warn!` when this happens so the operator
+   knows a `vex index` may still be needed. The cap is generous — every
+   idiomatic codebase observed bottoms out well below it.
 2. **First-update bootstrap.** Pre-11.1.10 manifests have no
    `imported_by`; the first `vex update` after upgrading vex degrades
    to Q4-A behavior (no cascade) but populates the map for the second
@@ -630,7 +631,7 @@ depth-1 cascade in 11.1.10 doesn't traverse transitive re-exports.
 3. **Coarse granularity.** Cascade fires whenever a changed file is in
    the reverse map, even when the edit didn't shift any exports.
    Over-invalidation costs a re-parse per importer; correctness is
-   preserved. Phase 11.1.11 may tighten to per-symbol granularity if
+   preserved. A future phase may tighten to per-symbol granularity if
    profile evidence justifies it.
 
 ---

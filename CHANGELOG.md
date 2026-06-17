@@ -6,6 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Phase 11.1.11 (Q4-C): transitive cascade via BFS
+
+- `vex update` cascade now follows the `imported_by` reverse graph
+  **transitively**. Q4-B (11.1.10) re-parsed direct importers; Q4-C
+  walks the graph via BFS bounded by `CASCADE_MAX_DEPTH = 16`. A
+  `c → b → a` chain where only `a` changes now re-parses both `b`
+  (depth 1) AND `c` (depth 2); `vex usages --strict` recovers refs
+  through Python / TypeScript re-export façades and deep Rust
+  module chains without a full `vex index`.
+- Cycle-safe via visited-set + the existing "already in changed/deleted"
+  guard; star patterns terminate because all leaves are added to the
+  visited set in a single depth pass.
+- Depth saturation (`CASCADE_MAX_DEPTH` hit with a non-empty frontier)
+  emits `tracing::warn!` so the operator can decide whether the
+  pathologically deep chain justifies a full `vex index`. The log line
+  now reports `depths 1..=N` with `N = the deepest level reached`.
+- Closes the "Depth-1 only" item from LIMITATIONS §4d (Q4-B carry-
+  over). No persistent-state schema change — Q4-C piggy-backs on the
+  same `imported_by` map Q4-B built. The recent `index.state` sidecar
+  (audit C1) was the architectural enabler: Q4-C is a pure cascade-
+  algorithm change against the same on-disk shape.
+
 ### Added — Phase 11.1.10 (Q4-B): `imported_by` cascade re-parses importers on rename
 
 - New `Manifest.imported_by: BTreeMap<String, BTreeSet<String>>` records

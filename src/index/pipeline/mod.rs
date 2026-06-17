@@ -542,19 +542,50 @@ fn update_inner(
     // Cascade fixes this by re-parsing importers — their bound_refs
     // get produced fresh against the new name table.
     //
+    // Phase 11.1.11 (Q4-C): cascade now follows the `imported_by`
+    // reverse graph TRANSITIVELY via BFS, bounded by `CASCADE_MAX_DEPTH`.
+    // Q4-B's single hop missed transitive re-export chains (A imports
+    // through B which re-exports from C — editing C left A's refs
+    // stale). The visited-set + frontier-collapse pattern handles
+    // cycles (A↔B) and stars naturally; depth-1 is now a special case
+    // of the depth-N walk with N=1.
+    //
     // Reuses `current_manifest` (post-lock fresh load at line 499)
     // instead of a third re-read: avoids a redundant disk I/O on every
     // `vex update` (watch-mode-hot-path concern) AND avoids reading a
     // pre-lock-stale `imported_by` when a concurrent peer wrote
     // between lock acquisition and the cascade build (third-pass
     // review HIGH).
+    //
+    // Depth cap rationale (16): idiomatic Rust/Go (direct `use foo::Bar`
+    // imports) bottoms out at depth 1; Python/TypeScript re-export
+    // façades typically need 2–4 hops. 16 covers every practical
+    // re-export chain seen in the wild and keeps the worst-case BFS
+    // bounded against pathologically deep stars. Saturating the cap
+    // emits a `tracing::warn!` so the user knows refs at depth > 16
+    // may still need a `vex index`.
+    const CASCADE_MAX_DEPTH: usize = 16;
+    let mut cascade_max_depth_hit: usize = 0;
+    let mut cascade_saturated = false;
     let cascade_paths: Vec<String> = {
         let mut out: Vec<String> = Vec::new();
         if !current_manifest.imported_by.is_empty() {
-            let triggers = changed_set.iter().chain(deleted_set.iter()).copied();
             let mut seen: HashSet<String> = HashSet::new();
-            for trigger in triggers {
-                if let Some(importers) = current_manifest.imported_by.get(trigger) {
+            // Frontier = files at the current BFS depth whose importers
+            // we haven't yet explored. Initial frontier is the changed
+            // + deleted set (depth 0); each loop iteration expands to
+            // the next depth's frontier.
+            let mut frontier: Vec<String> = changed_set
+                .iter()
+                .chain(deleted_set.iter())
+                .map(|s| (*s).to_string())
+                .collect();
+            for depth in 1..=CASCADE_MAX_DEPTH {
+                let mut next: Vec<String> = Vec::new();
+                for trigger in &frontier {
+                    let Some(importers) = current_manifest.imported_by.get(trigger) else {
+                        continue;
+                    };
                     for importer in importers {
                         if changed_set.contains(importer.as_str())
                             || deleted_set.contains(importer.as_str())
@@ -563,9 +594,18 @@ fn update_inner(
                         }
                         if seen.insert(importer.clone()) {
                             out.push(importer.clone());
+                            next.push(importer.clone());
+                            cascade_max_depth_hit = depth;
                         }
                     }
                 }
+                if next.is_empty() {
+                    break;
+                }
+                if depth == CASCADE_MAX_DEPTH && !next.is_empty() {
+                    cascade_saturated = true;
+                }
+                frontier = next;
             }
         } else if current_manifest.imported_by_built.is_none()
             && (!changed_set.is_empty() || !deleted_set.is_empty())
@@ -613,8 +653,17 @@ fn update_inner(
     if !cascade_paths.is_empty() {
         tracing::info!(
             cascade_count = cascade_paths.len(),
-            "vex update cascade: re-parsing {} importer(s) of changed/deleted files (Phase 11.1.10 / Q4-B)",
-            cascade_paths.len()
+            cascade_max_depth = cascade_max_depth_hit,
+            "vex update cascade: re-parsing {} importer(s) of changed/deleted files at depths 1..={} (Phase 11.1.11 / Q4-C)",
+            cascade_paths.len(),
+            cascade_max_depth_hit,
+        );
+    }
+    if cascade_saturated {
+        tracing::warn!(
+            cascade_max_depth = CASCADE_MAX_DEPTH,
+            "vex update cascade hit CASCADE_MAX_DEPTH={CASCADE_MAX_DEPTH}; transitive importers deeper than this were NOT re-parsed. \
+             Refs targeting renamed/deleted symbols via re-export chains longer than {CASCADE_MAX_DEPTH} hops may need a full `vex index`."
         );
     }
 
