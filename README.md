@@ -230,6 +230,7 @@ vex completions zsh > ~/.zfunc/_vex
 | `vex callees <name>` | Direct callees of a function (same fast path). |
 | **`vex paths <from> <to> [--max-hops N]`** | **NEW.** Enumerate all caller chains from `from` to `to` over the persistent call graph. Bounded DFS with cycle prevention; default `--max-hops 6`. |
 | **`vex reachable <target> [--max-hops N] [--limit N]`** | **NEW.** Transitive set of symbols whose callees reach `target`, with the BFS depth labelled per row. Blast-radius analysis. |
+| **`vex tests-for <target> [--max-hops N] [--limit N] [--test-pattern <glob>] [--include-fixtures]`** | **NEW (Phase 13.10).** Test functions that transitively cover `<target>`. Post-filter on top of `vex reachable`: walks the call graph backwards, keeps rows under recognized test-path globs (Rust / Python / TS-JS / Go / Java / Kotlin / C# / C++), stamps each row with a `framework` label (`pytest`, `jest`, `go-test`, …) so an agent can pick the right runner. `--test-pattern <glob>` (repeatable) REPLACES the default set; `--include-fixtures` admits one forward hop of test-path helpers in addition to weakening the name-prefix filter. |
 | **`vex diff --base <rev> [--limit N]`** | **NEW.** Symbol-level diff between an arbitrary git revision and the working tree: added / removed / moved-within-file / body-changed entries. `git diff --no-renames` semantics so a `git mv` surfaces both halves. |
 | **`vex bundle --mode <symbol\|pr-impact\|project> [...]`** | **NEW (v1.9, Phase 13.2).** Unified multi-source bundle — replaces 4 round-trips (`show → callers → callees → similar`) with one. `--mode symbol --symbol Foo` returns body + callers + callees + semantic similar. `--mode pr-impact --base origin/main` returns changed symbols + transitive callers (depth=2 default) + tests. `--mode project [--top-n 30]` returns top-N by reverse call-graph indegree (experimental — see `docs/MCP-SCHEMA.md#bundle-modes-v19` for the response shape and `mode_hints` per-mode keys). Always emits the v1 envelope `{ protocol_version, capabilities, _meta, results }`. |
 | `vex check <name> [name...]` | Fast existence check — which symbols exist in the index? |
@@ -247,7 +248,7 @@ vex completions zsh > ~/.zfunc/_vex
 
 ### Per-query filters (every search-shaped command)
 
-All search-shaped commands (`search`, `usages`, `pattern`, `show`, `grep`, `implementations`, `callers`, `callees`, `paths`, `reachable`, `similar`, `duplicates`, `diff`, `bundle`) accept:
+All search-shaped commands (`search`, `usages`, `pattern`, `show`, `grep`, `implementations`, `callers`, `callees`, `paths`, `reachable`, `tests-for`, `similar`, `duplicates`, `diff`, `bundle`) accept:
 
 - **`--include <glob>` / `--exclude <glob>`** (repeatable, gitignore syntax) — per-call path scoping that doesn't require re-indexing. `--exclude` wins over `--include`. Example: `vex search Foo --include 'src/**' --exclude '**/*.gen.*'`.
 - **`--filter <substring>`** — older path-substring filter, still supported. Composes AND with the globs.
@@ -389,9 +390,9 @@ envelope. Single shape, easy to detect via `protocol_version`:
 
 Pre-v1.11 only `search` and `bundle` returned this envelope; the other
 ~14 subcommands (`show`, `usages`, `pattern`, `grep`, `implementations`,
-`callers`, `callees`, `paths`, `reachable`, `check`, `similar`,
-`duplicates`, `diff`, `outline`, `index`, `update`, `status`, `eval`)
-emitted bare arrays / objects. **Migration**: pre-1.11 `jq '.[0].name'`
+`callers`, `callees`, `paths`, `reachable`, `tests-for`, `check`,
+`similar`, `duplicates`, `diff`, `outline`, `index`, `update`,
+`status`, `eval`) emitted bare arrays / objects. **Migration**: pre-1.11 `jq '.[0].name'`
 or `data[0]['name']` now needs `jq '.results[0].name'` /
 `data['results'][0]['name']`. Detect the envelope via
 `response.get('protocol_version') == 'v1'` to support both shapes

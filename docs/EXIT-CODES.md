@@ -18,10 +18,20 @@ and failed" into a single non-zero, non-one bucket.
 
 **Distinguishes 0 / 1:** `search`, `usages`, `callers`, `callees`,
 `pattern`, `grep`, `show`, `similar`, `duplicates`, `implementations`,
-`paths`, `reachable`, `tests-for`, `diff`, `bundle`.
+`paths`, `reachable`, `tests-for`, `history`, `diff`, `bundle`.
 
 These commands query the index for results. Empty result sets are a
 normal outcome, not an error.
+
+**`vex history` caveat — `--branch <unknown-ref>` exits `2`.** Phase
+14.11 routes non-HEAD `--branch` queries to the walker, which shells
+out to `git log` / `git grep <revision>`. Git surfaces an error for
+revisions it can't resolve; vex propagates that as exit `2` (real
+error from a handler), not `1` (empty result). Pre-14.11 the indexed
+path silently swallowed unknown refs and returned HEAD-time data with
+exit `0` — the new exit code is more honest. Scripts that pass
+user-supplied refs should treat `2` as "bad ref" and recover, not
+abort.
 
 **`vex bundle` caveat — soft-degrades exit `1`.** `--mode project`
 without a call graph (or with `--directory-tree-only` filtering to
