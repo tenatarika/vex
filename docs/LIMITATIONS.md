@@ -251,6 +251,15 @@ $ vex pattern '@$APP.task' --lang python
 $ vex pattern '@celery.shared_task' --lang python
 ```
 
+**`vex tests-for` inherits this.** Phase 13.10's `tests-for` walks the
+same call-graph edges as `vex reachable`, so any test whose call to
+the unit under test goes through macro-expanded code (Rust
+`rstest::rstest` parameter cases, Python `@pytest.mark.parametrize`
+generated variants), a JS `it()` / `describe()` block descriptor, or
+a string-resolved factory is invisible to `tests-for`. Fall back to
+`vex grep '<symbol-name>' tests/` when the heuristic returns less than
+expected.
+
 ---
 
 ## 4. `vex usages` non-strict mode quality varies by language

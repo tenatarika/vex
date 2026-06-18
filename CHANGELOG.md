@@ -6,6 +6,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Phase 13.10: `vex tests-for <Symbol>`
+
+- New CLI command — answers "which tests cover this code?" in one
+  query without grepping the test tree. Built as a post-filter on top
+  of the existing 11.5 `vex reachable` BFS: walks the call graph
+  backwards from `<Symbol>`, then drops rows that don't sit under a
+  recognized test path. Default pattern set covers Rust / Python /
+  TypeScript / JavaScript / Go / Java / Kotlin / C# / C++ test
+  conventions.
+- Each row carries a `framework` label (`pytest`, `jest`, `go-test`,
+  `rust-integration`, `rust-cargo`, `junit`, `kotest`, `xunit`,
+  `gtest`, `unknown`) inferred from the path pattern bucket — an
+  agent can read the field and invoke the right runner without
+  parsing paths itself.
+- Flags: `--max-hops 6` and `--limit 200` mirror `vex reachable`.
+  `--test-pattern <glob>` (repeatable) REPLACES the default set when
+  supplied. `--include-fixtures` expands the result with helpers
+  (non-`test_*`-named symbols) living under matched test paths;
+  off by default. `--include` / `--exclude` scope flags compose.
+- Empty result → exit 1 (mirrors `vex reachable`). Unknown target
+  → exit 1 + empty envelope.
+- LIMITATIONS: macro-generated tests (Rust `rstest::rstest`, Python
+  `parametrize`) and JS `it()`-block descriptors may be invisible
+  when the call-graph parser can't see the expanded form — same
+  caveat that already governs §3 dynamic dispatch.
+
 ### Changed — Phase 14.11: `vex history --branch` on the indexed path
 
 - `vex history <Symbol> --branch <non-HEAD>` now transparently routes

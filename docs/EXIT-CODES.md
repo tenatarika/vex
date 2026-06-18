@@ -18,7 +18,7 @@ and failed" into a single non-zero, non-one bucket.
 
 **Distinguishes 0 / 1:** `search`, `usages`, `callers`, `callees`,
 `pattern`, `grep`, `show`, `similar`, `duplicates`, `implementations`,
-`paths`, `reachable`, `diff`, `bundle`.
+`paths`, `reachable`, `tests-for`, `diff`, `bundle`.
 
 These commands query the index for results. Empty result sets are a
 normal outcome, not an error.

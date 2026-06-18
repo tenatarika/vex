@@ -142,6 +142,7 @@ vex callees "process_event"
 # Multi-hop call graph (v1.7)
 vex paths "main" "process_event"          # all caller chains from main → process_event
 vex reachable "process_event"             # everything that transitively reaches it
+vex tests-for "process_event"             # tests covering process_event (path globs + name heuristic; framework label per row)
 
 # Symbol-level diff against a branch (v1.7)
 vex diff --base main                      # what symbols did this branch change?

@@ -42,6 +42,7 @@ description: Reference for the `vex` code-search CLI — symbol search, usages (
 - `vex callers "function_name"` / `vex callees "function_name"` — direct edges from the persistent call graph (~4ms)
 - `vex paths A B` — all caller chains from A to B (multi-hop, max 6 hops)
 - `vex reachable Target` — every symbol that transitively calls Target
+- `vex tests-for Target` — test functions that transitively cover `Target` (post-filters `reachable` by test-path globs + name heuristic; rows carry a `framework` label so an agent can pick the right runner). `--include-fixtures` to also surface test-path helpers. `--test-pattern '<glob>'` (repeatable) REPLACES the default pattern set.
 
 ## Diff & Similarity
 
