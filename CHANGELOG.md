@@ -6,6 +6,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — Phase 14.11: `vex history --branch` on the indexed path
+
+- `vex history <Symbol> --branch <non-HEAD>` now transparently routes
+  to the walker even when the persistent history sidecar is present.
+  Pre-14.11 the indexed path silently returned HEAD-time data and
+  emitted a `tracing::warn!("phase 14.8: --branch is ignored …")`; the
+  warning is removed and the query is now semantically correct without
+  requiring `--no-index`.
+- `--branch HEAD` (literal) normalizes to absent and keeps the indexed
+  fast path — explicit `--branch HEAD` users see no perf regression.
+- **JSON envelope behaviour change for MCP consumers**: the
+  `_meta.vex.dev/history_mode` field now returns `"walker"` (was
+  `"indexed"`) for `--branch <non-HEAD>` queries. This reflects the
+  path that actually serviced the query and is the documented contract;
+  the prior `"indexed"` value was paired with a silent warning and
+  HEAD-time data, so dispatch logic that branches on it was already
+  unreliable.
+- Closes `docs/LIMITATIONS.md` §4c #1. Walker's "symbol name must still
+  appear at the requested tip" constraint is the only surviving limit
+  on `--branch` queries — same constraint that applied to
+  `--no-index --branch X` pre-14.11.
+- No on-disk format change. Old `index.git_history` (VEXH v1) and
+  `index.rename_chains` (VEXR v1) sidecars load byte-identically.
+
 ## [1.18.0] - 2026-06-17
 
 ### Added — Phase 11.1.11 (Q4-C): transitive cascade via BFS

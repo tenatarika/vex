@@ -728,3 +728,310 @@ fn vex_status_reports_history_line() {
         stdout,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase 14.11 RED tests — `--branch` routing fix
+// ---------------------------------------------------------------------------
+
+/// When a sidecar is present (indexed on `main`) and the user queries a
+/// symbol that only exists on a non-HEAD branch, the indexed path must
+/// transparently fall back to the walker so the symbol is found.
+///
+/// Today (pre-14.11) the indexed path runs against the `main`-time
+/// section, returns an empty result set for the feature-only symbol, and
+/// emits a `tracing::warn!` instead of routing to the walker.
+#[test]
+fn branch_non_head_routes_to_walker_even_with_sidecar() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    init_repo(repo);
+
+    // Commit a symbol on `main` so the sidecar has something to index.
+    commit_file(
+        repo,
+        "src/lib.rs",
+        "pub fn main_only_symbol() -> u8 { 1 }\n",
+        "main: add main_only_symbol",
+    );
+
+    // Create the `feature` branch and commit a symbol unique to it.
+    git(repo, &["checkout", "-q", "-b", "feature"]);
+    commit_file(
+        repo,
+        "src/lib.rs",
+        "pub fn main_only_symbol() -> u8 { 1 }\npub fn feature_unique_symbol() -> u32 { 42 }\n",
+        "feature: add feature_unique_symbol",
+    );
+    let feature_head_sha = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .expect("git rev-parse HEAD")
+            .stdout,
+    )
+    .expect("utf8 sha")
+    .trim()
+    .to_string();
+
+    // Return to main and build the sidecar — it only reflects `main` HEAD.
+    git(repo, &["checkout", "-q", "main"]);
+    vex_in(repo).args(["index", "--history"]).assert().success();
+
+    // Query the feature-only symbol against the `feature` branch.
+    let output = vex_in(repo)
+        .args([
+            "history",
+            "feature_unique_symbol",
+            "--branch",
+            "feature",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("spawn vex history");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "vex history --branch feature must exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let envelope: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("history JSON parse: {e}\nstdout: {stdout}"));
+
+    // Phase 14.11: non-HEAD branch must route to the walker.
+    let mode = envelope
+        .pointer("/_meta/vex.dev~1history_mode")
+        .and_then(|v| v.as_str());
+    assert_eq!(
+        mode,
+        Some("walker"),
+        "Phase 14.11: --branch <non-HEAD> with sidecar present must route to \
+         the walker (mode == \"walker\"). Got {mode:?}. Envelope: {stdout}",
+    );
+
+    let items = envelope
+        .pointer("/results")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !items.is_empty(),
+        "Phase 14.11: `feature_unique_symbol` must appear in results when \
+         queried with --branch feature via the walker path. \
+         Got empty results. Envelope: {stdout}",
+    );
+
+    // Strengthen the branch-scoping assertion: the returned commit_sha
+    // must equal the `feature` branch HEAD. Pure "non-empty" would also
+    // pass if a future walker bug silently scanned `main` and matched a
+    // shared symbol; pinning the SHA proves the walker honoured the ref.
+    let returned_shas: Vec<String> = items
+        .iter()
+        .filter_map(|row| {
+            row.get("commit_sha")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .collect();
+    assert!(
+        returned_shas.iter().any(|s| s == &feature_head_sha),
+        "Phase 14.11: walker must return rows from the `feature` branch HEAD \
+         ({feature_head_sha}). Got commit_shas: {returned_shas:?}. Envelope: {stdout}",
+    );
+}
+
+/// `--branch HEAD` (literal string) must remain on the indexed path when a
+/// sidecar is present. This pins the invariant that the routing guard in
+/// `resolve_mode` (post-14.11) does not accidentally redirect HEAD queries
+/// to the slower walker.
+#[test]
+fn branch_head_explicit_uses_indexed_path() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    init_repo(repo);
+
+    commit_file(
+        repo,
+        "src/lib.rs",
+        "pub fn parse_payment(amount: u64) -> u64 { amount }\n",
+        "c1: add parse_payment",
+    );
+    commit_file(
+        repo,
+        "src/lib.rs",
+        "pub fn parse_payment(amount: u128) -> u128 { amount }\n",
+        "c2: widen parse_payment",
+    );
+
+    vex_in(repo).args(["index", "--history"]).assert().success();
+
+    let output = vex_in(repo)
+        .args([
+            "history",
+            "parse_payment",
+            "--branch",
+            "HEAD",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("spawn vex history");
+
+    assert!(
+        output.status.success(),
+        "vex history --branch HEAD must exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("history JSON parse: {e}\nstdout: {stdout}"));
+
+    // `--branch HEAD` must stay on the indexed path.
+    let mode = envelope
+        .pointer("/_meta/vex.dev~1history_mode")
+        .and_then(|v| v.as_str());
+    assert_eq!(
+        mode,
+        Some("indexed"),
+        "Phase 14.11: --branch HEAD with sidecar present must use the indexed \
+         path (mode == \"indexed\"). Got {mode:?}. Envelope: {stdout}",
+    );
+
+    let items = envelope
+        .pointer("/results")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !items.is_empty(),
+        "parse_payment must be found via indexed path with --branch HEAD. \
+         Envelope: {stdout}",
+    );
+}
+
+/// When `--branch` names a ref that does not exist, the walker shells out to
+/// `git grep` which exits non-zero with a non-empty stderr. The command must
+/// propagate a non-zero exit code and surface a useful error message.
+///
+/// Today (pre-14.11) the indexed path silently swallows `--branch` and
+/// returns HEAD-time data with exit 0 — which is incorrect and misleading.
+#[test]
+fn branch_unknown_ref_surfaces_git_error() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    init_repo(repo);
+
+    commit_file(
+        repo,
+        "src/lib.rs",
+        "pub fn stable_fn() -> u8 { 0 }\n",
+        "c1: add stable_fn",
+    );
+
+    vex_in(repo).args(["index", "--history"]).assert().success();
+
+    let output = vex_in(repo)
+        .args([
+            "history",
+            "stable_fn",
+            "--branch",
+            "does/not/exist",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("spawn vex history");
+
+    // Phase 14.11: an unknown ref must produce a non-zero exit code.
+    assert!(
+        !output.status.success(),
+        "Phase 14.11: --branch <unknown-ref> must exit non-zero. \
+         Got exit 0. stdout: {}  stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // The error message must reference the bad ref name. The walker shells
+    // out to `git`, which always echoes the failing revision back; tightening
+    // the assertion to the literal ref name (rather than the loose word
+    // "git") avoids matching generic errors that happen to contain "git".
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does/not/exist"),
+        "Phase 14.11: stderr must mention the bad ref name `does/not/exist`. \
+         Got: {stderr}",
+    );
+
+    // No thread panic — those indicate a code bug, not a clean user-facing error.
+    assert!(
+        !(stderr.contains("thread '") && stderr.contains("panicked")),
+        "Phase 14.11: vex must not panic on unknown --branch ref. \
+         stderr: {stderr}",
+    );
+}
+
+/// When `--branch <non-HEAD>` is supplied with a sidecar present, no
+/// `"phase 14.8: --branch is ignored"` warning must appear on stderr.
+/// Post-14.11 the command routes to the walker instead of warning and
+/// silently returning stale data.
+#[test]
+fn no_warning_emitted_for_non_head_branch() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    init_repo(repo);
+
+    commit_file(
+        repo,
+        "src/lib.rs",
+        "pub fn index_fn() -> u8 { 0 }\n",
+        "c1: add index_fn",
+    );
+
+    // Create a second branch that also contains the symbol so the walker
+    // finds something real (makes the test more representative than a
+    // symbol-not-found empty-result path).
+    git(repo, &["checkout", "-q", "-b", "some-real-non-head-branch"]);
+    commit_file(
+        repo,
+        "src/lib.rs",
+        "pub fn index_fn() -> u8 { 1 }\n",
+        "branch: bump index_fn",
+    );
+    git(repo, &["checkout", "-q", "main"]);
+
+    vex_in(repo).args(["index", "--history"]).assert().success();
+
+    // Forward regression guard: `RUST_LOG=warn` flips the tracing subscriber
+    // (`EnvFilter::from_default_env()` in `main.rs`) into WARN-emitting mode
+    // so that if any future regression re-introduces a `tracing::warn!` on
+    // the `--branch <non-HEAD>` path, it actually surfaces on stderr and
+    // triggers the assertion below instead of being silently discarded.
+    let output = vex_in(repo)
+        .env("RUST_LOG", "warn")
+        .args([
+            "history",
+            "index_fn",
+            "--branch",
+            "some-real-non-head-branch",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("spawn vex history");
+
+    // Broader than the pre-14.11 wording (`"phase 14.8: --branch is ignored"`)
+    // so a re-introduced warning under a different phase prefix / rewording
+    // still trips the guard. The literal `--branch is ignored` is the load-
+    // bearing fragment of any conceivable "we silently dropped --branch"
+    // warning.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("--branch is ignored"),
+        "Phase 14.11: no `--branch is ignored` warning must appear when \
+         --branch <non-HEAD> is routed to the walker. stderr: {stderr}",
+    );
+}

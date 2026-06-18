@@ -399,18 +399,21 @@ The list below is what the indexed path **does not** cover.
 ### Single ref only — indexed reflects HEAD at index time
 
 The section is built from `HEAD` at the time of `vex index --history`.
-A `vex history <Symbol> --branch origin/feature` request on the
-indexed path is honoured against the HEAD-time section, NOT the
-requested branch. The CLI surfaces this via `tracing::warn!`:
 
-```
-WARN: phase 14.8: --branch is ignored by the indexed path (section
-reflects HEAD at index time). Pass --no-index to query the walker
-against the requested branch.
-```
+**Phase 14.11 (v1.19):** `vex history <Symbol> --branch <non-HEAD>`
+now transparently routes to the walker even when the sidecar is
+present — no `--no-index` required, no warning. `--branch HEAD`
+(literal) normalizes to absent and keeps the indexed fast path.
 
-`--no-index` falls back to the walker, which DOES honour `--branch`.
-A future phase could index multiple refs; not in v1.
+**Surviving walker limitation:** the walker only finds symbols whose
+name still appears at the requested tip (it shells out to
+`git grep <name> <rev>`). A symbol that existed on `feature` and
+was deleted before its current tip is invisible. This is the same
+constraint that already applied to `--no-index --branch X` queries
+pre-14.11; it now applies to every `--branch X` query.
+
+A future phase could index multiple refs (would also close §4c #3
+per-commit time-travel); not in v1.
 
 ### Symbol-rename tracking — qualified (Phase 14.10)
 

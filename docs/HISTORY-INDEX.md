@@ -343,11 +343,21 @@ branches per `manifest.history_tip_sha` vs current HEAD.
 
 ### `vex history <Symbol> [--branch REV] [--no-index]`
 
-Auto-mode selection: indexed if sidecar present, walker otherwise.
-`--no-index` forces walker. `--branch <REV>` only honoured by the
-walker (indexed reflects HEAD at index time; passing `--branch other`
-on the indexed path logs a `tracing::warn!` suggesting `--no-index`
-for branch-specific queries).
+Mode selection (post-Phase-14.11):
+
+1. `--no-index` → walker.
+2. `--branch <non-HEAD>` → walker (sidecar reflects HEAD at index
+   time, so non-HEAD branches transparently fall through to the
+   walker even when the sidecar is present). `--branch HEAD` (literal)
+   normalizes to absent and keeps the indexed path for explicit-HEAD
+   users.
+3. Sidecar present → indexed.
+4. Sidecar absent → walker.
+
+The pre-14.11 `phase 14.8: --branch is ignored …` warning is gone —
+non-HEAD `--branch` is now correct, not warned. The walker's
+"name must still appear at the requested tip" limitation propagates
+(see LIMITATIONS §4c #1).
 
 **Phase 14.9 v1.16.0 flags (Tier A + B):**
 
@@ -618,9 +628,10 @@ Headline items:
 
 - **No symbol-rename tracking**: `foo` renamed to `bar` surfaces as
   two separate symbols. Two-query workflow.
-- **Single ref only**: index built from `HEAD` at build time;
-  `--branch <REV>` on `vex history` is ignored on the indexed path
-  (warned). Use `--no-index` for branch-specific queries.
+- **Single ref only**: index built from `HEAD` at build time.
+  Phase 14.11 (v1.19): `--branch <non-HEAD>` transparently routes
+  to the walker (no warning, no `--no-index` required). Walker's
+  name-must-appear-at-tip limit propagates.
 - **No per-commit time-travel**: `vex callers @sha` not supported —
   this is a symbol-only index, no historical call graph.
 - **Convex-hull commit spans** (architect H1): a blob's

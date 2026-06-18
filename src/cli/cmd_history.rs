@@ -12,6 +12,8 @@
 //!
 //! Mode selection (`HistoryMode::Auto`):
 //!   - `--no-index` → walker (always)
+//!   - `--branch <non-HEAD>` → walker (even if sidecar present; sidecar
+//!     only reflects HEAD at index time)
 //!   - sidecar present → indexed
 //!   - sidecar absent → walker
 //!
@@ -116,13 +118,18 @@ pub(crate) fn history(ctx: &CmdCtx, args: HistoryArgs) -> Result<()> {
     // `--limit` without filters is the common case and stays fast.
     let inner_limit = if filter.is_active() { None } else { limit };
 
+    // `--branch HEAD` is explicit but semantically identical to absent
+    // branch (sidecar already reflects HEAD at index time), so normalize
+    // it to None so `resolve_mode` can take the indexed fast path.
+    let effective_branch = branch.as_deref().filter(|b| *b != "HEAD");
+
     // Pre-resolve mode so we can reject --author on the indexed path
     // BEFORE doing any walker work. Otherwise an --author query with a
     // populated sidecar would run, return rows, then error after the
     // fact. `resolve_mode` returns the opened `HistoryReader` alongside
     // the mode tag so we don't re-mmap inside `run_indexed` (round-2
     // review MEDIUM: double `HistoryReader::open`).
-    let (mode, reader) = resolve_mode(no_index, &root)?;
+    let (mode, reader) = resolve_mode(no_index, effective_branch, &root)?;
 
     if mode == HistoryMode::Indexed && author.is_some() {
         eprintln!(
@@ -138,19 +145,6 @@ pub(crate) fn history(ctx: &CmdCtx, args: HistoryArgs) -> Result<()> {
 
     let mut results = match mode {
         HistoryMode::Indexed => {
-            // Warn when --branch is passed against the indexed path
-            // (same surface as before — section reflects HEAD at index
-            // time).
-            if let Some(b) = branch.as_deref() {
-                if b != "HEAD" {
-                    tracing::warn!(
-                        requested_branch = %b,
-                        "phase 14.8: --branch is ignored by the indexed path \
-                         (section reflects HEAD at index time). Pass --no-index \
-                         to query the v1.16 walker against the requested branch."
-                    );
-                }
-            }
             // Safe to expect: `resolve_mode` returns `Indexed` only
             // when the open succeeded, so `reader` is `Some` here.
             let r = reader
@@ -165,7 +159,7 @@ pub(crate) fn history(ctx: &CmdCtx, args: HistoryArgs) -> Result<()> {
             let chain_reader = open_chain_reader_for_history(&root, r);
             run_indexed(r, chain_reader.as_ref(), &symbol, inner_limit)
         }
-        HistoryMode::Walker => run_walker(&root, &symbol, depth, branch.as_deref(), inner_limit)?,
+        HistoryMode::Walker => run_walker(&root, &symbol, depth, effective_branch, inner_limit)?,
     };
 
     // Apply post-filter. When inactive this is a no-op iterator.
@@ -258,12 +252,19 @@ fn open_chain_reader_for_history(
 /// Pick which path will service the query and, when the indexed path
 /// wins, hand back the already-opened `HistoryReader` so the caller
 /// doesn't re-mmap inside `run_indexed` (round-2 review MEDIUM).
-/// Returns `(Walker, None)` for `--no-index` or absent sidecar.
+/// Returns `(Walker, None)` for `--no-index`, non-HEAD branch, or absent
+/// sidecar.
 fn resolve_mode(
     no_index: bool,
+    effective_branch: Option<&str>,
     root: &std::path::Path,
 ) -> Result<(HistoryMode, Option<HistoryReader>)> {
     if no_index {
+        return Ok((HistoryMode::Walker, None));
+    }
+    // Non-HEAD branches cannot be served by the sidecar (it reflects HEAD
+    // at index time); route to the walker which shells out to git directly.
+    if effective_branch.is_some() {
         return Ok((HistoryMode::Walker, None));
     }
     let sidecar_path = config::git_history_path(root);
