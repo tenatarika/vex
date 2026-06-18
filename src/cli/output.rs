@@ -522,6 +522,71 @@ pub fn print_paths(
     }
 }
 
+/// One row in the `vex tests-for` result set: same shape as
+/// `ReachableMatch` plus a `framework` label inferred from the path.
+#[derive(Debug, Clone)]
+pub struct TestsForRow {
+    pub name: String,
+    pub path: String,
+    pub line: usize,
+    pub depth: usize,
+    pub framework: &'static str,
+}
+
+pub fn print_tests_for(
+    rows: &[TestsForRow],
+    target: &str,
+    format: &super::args::OutputFormat,
+    root: &Path,
+) {
+    match format {
+        super::args::OutputFormat::Json => {
+            let json: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "name": r.name,
+                        "path": r.path,
+                        "line": r.line,
+                        "depth": r.depth,
+                        "framework": r.framework,
+                    })
+                })
+                .collect();
+            print_envelope(&json, capabilities::current(), default_meta_for(root));
+        }
+        super::args::OutputFormat::Text => {
+            if rows.is_empty() {
+                println!("No tests reach \"{target}\"");
+                return;
+            }
+            println!("{} test(s) reach \"{target}\":", rows.len());
+            for r in rows {
+                println!(
+                    "  [{depth}]  {name:<40} ({framework})  {path}:{line}",
+                    depth = r.depth,
+                    name = r.name,
+                    framework = r.framework,
+                    path = r.path,
+                    line = r.line
+                );
+            }
+        }
+        super::args::OutputFormat::Compact => {
+            for r in rows {
+                println!(
+                    "{depth} {framework} {name} {path}:{line}",
+                    depth = r.depth,
+                    framework = r.framework,
+                    name = r.name,
+                    path = r.path,
+                    line = r.line
+                );
+            }
+        }
+    }
+}
+
 pub fn print_reachable(
     matches: &[ReachableMatch],
     target: &str,

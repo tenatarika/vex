@@ -6,6 +6,7 @@ use rayon::prelude::*;
 pub mod bfs;
 pub mod indegree;
 pub mod stdlib_filter;
+pub mod test_patterns;
 
 mod extractor;
 mod queries;

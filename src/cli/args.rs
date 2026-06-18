@@ -882,6 +882,55 @@ docs/GPU_SUPPORT.md §11 — heavy embedders / shared GPU only)."
         scope: ScopeArgs,
     },
 
+    /// Find test functions that transitively reach `target` in the
+    /// persistent call graph. Post-filters `reachable` by test-path
+    /// globs + (optionally) a name heuristic, then stamps a
+    /// `framework` label per row.
+    TestsFor {
+        /// Symbol whose test coverage we want.
+        target: String,
+
+        /// Maximum hops to walk back from `target`.
+        #[arg(long, default_value = "6")]
+        max_hops: usize,
+
+        /// Max results to return
+        #[arg(short, long, default_value = "200")]
+        limit: usize,
+
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Auto-update index if stale (or bootstrap if missing) before
+        /// searching.
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
+
+        /// Glob pattern for test paths. Repeatable. When set, REPLACES
+        /// the default pattern set (does not append).
+        #[arg(long = "test-pattern")]
+        test_pattern: Vec<String>,
+
+        /// Include non-test-named helpers (fixtures) that live under
+        /// test paths. Default: off — only `test_*` / `*Test` names
+        /// are surfaced. When set, ALSO performs a one-hop forward
+        /// callee walk from each surviving test row to admit fixtures
+        /// the test calls into; this can grow the result set beyond
+        /// what plain name-filter weakening would produce (rows are
+        /// still capped by `--limit` and constrained to test-path
+        /// globs).
+        #[arg(long)]
+        include_fixtures: bool,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
+    },
+
     /// Fast existence check: which of the given symbols exist in the index?
     Check {
         /// Symbol names to check (case-insensitive exact match)

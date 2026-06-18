@@ -18,6 +18,7 @@ pub(crate) mod cmd_self_update;
 pub(crate) mod cmd_show;
 pub(crate) mod cmd_similar;
 pub(crate) mod cmd_status;
+pub(crate) mod cmd_tests_for;
 pub(crate) mod cmd_trivial;
 pub(crate) mod cmd_update;
 pub(crate) mod cmd_usages;
@@ -388,6 +389,28 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             path,
             auto_update,
             no_stale_check,
+            scope,
+        ),
+        Commands::TestsFor {
+            target,
+            max_hops,
+            limit,
+            path,
+            auto_update,
+            no_stale_check,
+            test_pattern,
+            include_fixtures,
+            scope,
+        } => cmd_tests_for::tests_for(
+            &ctx,
+            target,
+            max_hops,
+            limit,
+            path,
+            auto_update,
+            no_stale_check,
+            test_pattern,
+            include_fixtures,
             scope,
         ),
         Commands::Check {
