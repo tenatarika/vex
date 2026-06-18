@@ -162,6 +162,27 @@ returns every textual mention. For the inheritance case specifically
 (`class Foo(Bar):`), `vex implementations Bar` is the right tool — it
 captures the supertype reference.
 
+### Inheritance by `vex paths` and `vex reachable` (Phase 11.5)
+
+The multi-hop `vex paths <From> <To>` and `vex reachable <Target>`
+commands traverse the same persistent `CallEdge` section that backs
+`vex callers`. **Every limit in this section propagates to them**:
+- Module-level expressions reach the graph only as synthetic
+  `<module:path>` callers (Phase 14.1 sentinel). A `paths main foo`
+  query that should go through a top-level `foo()` call surfaces with
+  the synthetic caller, not the conceptual "module main".
+- Class-level decorators (Phase 14.6) are visible via the same module
+  sentinel; per-class scoping is not.
+- Dynamic dispatch, string-resolved factories, task-queue `.delay()`
+  bindings, `getattr` reflection, and macro expansions (see §3 below)
+  produce no edges, so they are also invisible to `paths` / `reachable`.
+  A "this caller chain should exist but doesn't" report on `paths`
+  almost always traces back to one of these missing edges.
+
+`vex tests-for <Sym>` (Phase 13.10) is a post-filter on
+`vex reachable`, so it inherits the entire list above on top of its
+own path-pattern + name-heuristic limits.
+
 ---
 
 ## 2. `vex usages` coverage is uneven across languages
