@@ -383,4 +383,40 @@ mod tests {
         let callers = |name: &str| map.get(name).cloned().unwrap_or_default();
         assert_eq!(find_reachable(callers, "B", 6, 5).len(), 5);
     }
+
+    // --- Dangling edges (Phase 11.5 hardening, G3) ---
+
+    /// A `CallEdge` may name a callee whose symbol has been deleted from
+    /// the index (stale section, dynamic-dispatch, FFI). `callers_of`
+    /// returns `Vec::new()` for that name. BFS must terminate that branch
+    /// cleanly: no panic, no infinite frontier, zero paths through the
+    /// dangling node. Pins the behaviour both flavours rely on so a
+    /// future "warn on unknown callee" refactor can't silently start
+    /// surfacing partial chains.
+    #[test]
+    fn dangling_callee_terminates_paths_branch_cleanly() {
+        // A→X exists in the adjacency map; X has NO incoming edges
+        // (dangling intermediate). B is the queried target; no
+        // edge ever lands on B, so paths(A, B) must return empty
+        // rather than hang or panic on the missing X→? frontier.
+        let callers = mock_graph(&[("A", "X", 1)]);
+        let paths = find_paths(&callers, "A", "B", 6, 50);
+        assert!(
+            paths.is_empty(),
+            "dangling X→B edge must yield no path (got: {paths:?})"
+        );
+    }
+
+    #[test]
+    fn dangling_intermediate_does_not_break_reachable() {
+        // X is the target; only A calls X. Querying reachable from X
+        // walks backwards through A. A has no callers (dangling
+        // upstream). BFS must surface A at depth 1 and stop without
+        // re-querying A's empty frontier in an infinite loop.
+        let callers = mock_graph(&[("A", "X", 1)]);
+        let r = find_reachable(callers, "X", 6, 100);
+        assert_eq!(r.len(), 1, "expected 1 caller of X; got {r:?}");
+        assert_eq!(r[0].name, "A");
+        assert_eq!(r[0].depth, 1);
+    }
 }
