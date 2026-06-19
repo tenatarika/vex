@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-06-19
+
 ### Changed — vex-mcp `show` / `check` missing-field errors mention legacy alias
 
 - When an MCP client calls `show` or `check` without the canonical
