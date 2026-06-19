@@ -3910,8 +3910,8 @@ INFO trailing line\n\
         // An LLM agent that hallucinated `symbol` (singular) or sent no
         // matching field at all should see the legacy alias in the
         // error so the recovery is one prompt-of-context away.
-        let err = build_command("show", &json!({}), "/tmp/proj")
-            .expect_err("missing field should error");
+        let err =
+            build_command("show", &json!({}), "/tmp/proj").expect_err("missing field should error");
         let pe = err.downcast_ref::<ParamError>().expect("ParamError");
         assert!(
             pe.0.contains("symbols") && pe.0.contains("symbol") && pe.0.contains("legacy"),
