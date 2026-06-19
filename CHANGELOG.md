@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — vex-mcp `show` / `check` missing-field errors mention legacy alias
+
+- When an MCP client calls `show` or `check` without the canonical
+  `symbols` field, the JSON-RPC `-32602` error now reads
+  `missing required field \`symbols\` (legacy alias \`symbol\`
+  also accepted)` instead of the bare `missing required field
+  \`symbols\``. LLM agents that hallucinated the singular `symbol`
+  (show) or older `names` (check) alias now see the recovery shape
+  in the error itself without needing to re-fetch the tool schema.
+- Implementation: new `ParamError::missing_with_alias` helper in
+  `crates/vex-mcp/src/main.rs`; previously every call-site reached
+  `ParamError::missing` which omitted alias info.
+
 ### Added — Phase 13.10: `vex tests-for <Symbol>`
 
 - New CLI command — answers "which tests cover this code?" in one

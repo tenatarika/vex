@@ -38,6 +38,17 @@ impl ParamError {
     fn missing(field: &str) -> Self {
         Self(format!("missing required field `{field}`"))
     }
+
+    /// For fields that also accept a deprecated alias. Tells the caller
+    /// both names so an LLM agent that hallucinated the alias
+    /// (`symbol` vs `symbols`, `names` vs `symbols`) sees the canonical
+    /// shape without round-tripping back to the schema description.
+    fn missing_with_alias(canonical: &str, legacy: &str) -> Self {
+        Self(format!(
+            "missing required field `{canonical}` \
+             (legacy alias `{legacy}` also accepted)"
+        ))
+    }
 }
 
 /// Required string field. Fails with `-32602` if missing or wrong type.
@@ -992,7 +1003,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
                 deprecated.push("symbol".into());
                 vec![s.to_string()]
             } else {
-                return Err(ParamError::missing("symbols").into());
+                return Err(ParamError::missing_with_alias("symbols", "symbol").into());
             };
             let limit = opt_u64(args, "limit", 1)?;
             let mut extra = symbols;
@@ -1176,7 +1187,7 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
         }
         "check" => {
             let arr = read_canonical_array(args, "symbols", "names", &mut deprecated)?
-                .ok_or_else(|| ParamError::missing("symbols"))?;
+                .ok_or_else(|| ParamError::missing_with_alias("symbols", "names"))?;
             let symbols: Result<Vec<String>> = arr
                 .iter()
                 .enumerate()
@@ -3892,6 +3903,35 @@ INFO trailing line\n\
     #[test]
     fn show_missing_symbols_is_invalid_params() {
         assert_param_error("show", json!({}), "symbols");
+    }
+
+    #[test]
+    fn show_missing_field_error_mentions_legacy_alias_symbol() {
+        // An LLM agent that hallucinated `symbol` (singular) or sent no
+        // matching field at all should see the legacy alias in the
+        // error so the recovery is one prompt-of-context away.
+        let err = build_command("show", &json!({}), "/tmp/proj")
+            .expect_err("missing field should error");
+        let pe = err.downcast_ref::<ParamError>().expect("ParamError");
+        assert!(
+            pe.0.contains("symbols") && pe.0.contains("symbol") && pe.0.contains("legacy"),
+            "show missing-symbols error must mention canonical + legacy + the word \
+             `legacy`; got: {}",
+            pe.0
+        );
+    }
+
+    #[test]
+    fn check_missing_field_error_mentions_legacy_alias_names() {
+        let err = build_command("check", &json!({}), "/tmp/proj")
+            .expect_err("missing field should error");
+        let pe = err.downcast_ref::<ParamError>().expect("ParamError");
+        assert!(
+            pe.0.contains("symbols") && pe.0.contains("names") && pe.0.contains("legacy"),
+            "check missing-symbols error must mention canonical + legacy alias `names`; \
+             got: {}",
+            pe.0
+        );
     }
 
     #[test]
