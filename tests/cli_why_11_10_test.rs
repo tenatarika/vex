@@ -68,8 +68,13 @@ fn usages_why_emits_fst_lookup_trace_with_hit_counts() {
     let tmp = TempDir::new().unwrap();
     write_and_index_rust_project(tmp.path());
 
+    // v1.20.0 (D2): the default non-strict path now strips the row at
+    // the symbol's own definition line. `--include-self` restores the
+    // pre-v1.20 behaviour where the def-site counted as a hit — keep
+    // it here so the "before == after with no path filter" invariant
+    // this test was originally written to pin still applies.
     let assert = vex_in(tmp.path())
-        .args(["usages", "payment_processor", "--why"])
+        .args(["usages", "payment_processor", "--why", "--include-self"])
         .assert()
         .success();
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
@@ -95,7 +100,7 @@ fn usages_why_emits_fst_lookup_trace_with_hit_counts() {
         .as_u64()
         .expect("hits_after_filter must be u64");
     assert!(before >= 1, "expected at least one hit, got: {trace}");
-    // No path filter applied — both counts equal.
+    // No path filter, --include-self preserves the def-site → before == after.
     assert_eq!(before, after, "no-filter case: before == after");
     // Exact hits were found → prefix_suggestions must be absent.
     assert!(

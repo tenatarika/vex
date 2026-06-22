@@ -6,6 +6,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — `usages` (non-strict) strips def-site and prose mentions by default (D2)
+
+- Non-strict `vex usages X` (and the MCP `usages` tool without
+  `strict: true`) now filters two classes of noise the legacy FST
+  lookup used to surface: (1) the row at X's own definition line,
+  and (2) matches in `*.md` / `*.markdown` / `*.txt` / `*.rst` /
+  `*.adoc` files. For refactor-style "find all callers" queries the
+  symbol's own declaration was never a real caller, and CHANGELOG /
+  README mentions are prose, not call sites.
+- Two opt-out flags restore the pre-v1.20 wide-net behaviour:
+  `--include-self` keeps the def-site row, `--include-docs` keeps
+  doc-file matches. The MCP `usages` tool exposes both as `include_self`
+  and `include_docs` boolean args (default false).
+- Strict mode is unaffected — the scope-binder excludes def-sites by
+  construction and doesn't index doc files in the first place.
+- `--why` (and the MCP `_meta.why` trace) gains `def_site_dropped` and
+  `docs_dropped` counters so callers can attribute filter losses
+  correctly. The fields are `skip_if_zero` so the wire format only
+  grows when D2 actually dropped something.
+- This is a behaviour change for existing CLI scripts that piped
+  `usages | grep README.md` to find doc references; add
+  `--include-docs` to restore the old shape.
+
 ## [1.19.1] - 2026-06-22
 
 Hot-fix release addressing two MCP-surface defects reported in an external

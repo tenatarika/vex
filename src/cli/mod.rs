@@ -162,6 +162,8 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_stale_check,
             strict,
             why,
+            include_self,
+            include_docs,
             scope,
             diff,
         } => cmd_usages::usages(
@@ -173,6 +175,8 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_stale_check,
             strict,
             why,
+            include_self,
+            include_docs,
             scope,
             diff,
         ),

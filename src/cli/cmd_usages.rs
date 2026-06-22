@@ -12,6 +12,25 @@ use super::scope;
 use crate::protocol::capabilities;
 use crate::store::reader::IndexReader;
 
+/// Lower-case file extensions whose contents are prose, not code. The
+/// non-strict FST lookup indexes every occurrence of an identifier
+/// across the project; without this filter, README mentions and
+/// CHANGELOG headings of a symbol name leak into "find all callers"
+/// queries. Strict mode is unaffected — the scope-binder doesn't
+/// touch doc files in the first place.
+const DOC_FILE_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "rst", "adoc"];
+
+fn is_doc_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| {
+            DOC_FILE_EXTENSIONS
+                .iter()
+                .any(|&doc_ext| ext.eq_ignore_ascii_case(doc_ext))
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn usages(
     ctx: &CmdCtx<'_>,
@@ -22,6 +41,8 @@ pub(crate) fn usages(
     no_stale_check: bool,
     strict: bool,
     why: bool,
+    include_self: bool,
+    include_docs: bool,
     scope: ScopeArgs,
     diff: DiffFilterArgs,
 ) -> Result<()> {
@@ -88,6 +109,43 @@ pub(crate) fn usages(
     // at zero — the user can tell "no refs at all" from "refs
     // dropped by the filter".
     let hits_before_filter = entries.len();
+
+    // v1.20.0 (D2) — non-strict noise filter. The FST refs index
+    // returns every occurrence of an identifier, including the
+    // symbol's own definition line and prose mentions in
+    // README/CHANGELOG files. Both are noise for "find all callers"
+    // queries; strict mode never had this problem because the
+    // scope-binder excludes def-sites and skips doc files entirely.
+    //
+    // Build the (file_path, line) coordinates of every symbol named
+    // `name` so the filter below can strip those rows. Empty when
+    // `--include-self` is set, when in strict mode, or when the
+    // symbol-FST is missing (pre-v1.8 index).
+    //
+    // Path normalisation invariant: both `read_string(sym.file_offset)`
+    // (here) and `file_paths.get(e.file_id)` (below) read from the same
+    // index built by `crate::store::writer`, which routes every
+    // relative path through `util::paths::to_rel_posix` at write time.
+    // The strings are therefore byte-identical on every platform —
+    // no extra normalisation is needed for the `HashSet` lookup to
+    // hit on Windows. See memory note `reference_windows_path_normalize`.
+    let def_sites: std::collections::HashSet<(String, u32)> = if !strict && !include_self {
+        let mut set = std::collections::HashSet::new();
+        if let Some(sym_fst) = reader.symbol_fst_reader() {
+            for sym_idx in sym_fst.find(&name) {
+                if let Some(sym) = reader.symbol(sym_idx as usize) {
+                    let file_path = reader.read_string(sym.file_offset).to_string();
+                    set.insert((file_path, sym.line));
+                }
+            }
+        }
+        set
+    } else {
+        std::collections::HashSet::new()
+    };
+    let filter_docs = !strict && !include_docs;
+    let mut def_site_dropped = 0usize;
+    let mut docs_dropped = 0usize;
     let entries: Vec<_> = entries
         .into_iter()
         .filter(|e| {
@@ -101,12 +159,43 @@ pub(crate) fn usages(
             // so the trace's `total` reflects the post-diff count
             // exactly like it already reflects the post-scope count.
             let diff_ok = changed_paths.as_ref().is_none_or(|cp| cp.contains(path));
-            filter_ok && scope_ok && diff_ok
+            // Path/scope/diff narrowing happens FIRST. A row that
+            // never would have been displayed in the first place
+            // doesn't get attributed to `def_site_dropped` or
+            // `docs_dropped`; it falls into `diff_dropped` via the
+            // arithmetic below. This keeps the `--why` counters
+            // honest: `def_site_dropped` = "rows that would have
+            // been displayed but were the def-site"; same for docs.
+            if !(filter_ok && scope_ok && diff_ok) {
+                return false;
+            }
+            // D2 — strip def-site + doc rows for the non-strict path.
+            // (Corner case: a symbol defined in a `*.md` file is
+            // also a doc; the `is_doc` check fires first so the row
+            // is counted as `docs_dropped`, not `def_site_dropped`.
+            // To resurrect such a row a user needs BOTH `--include-self`
+            // AND `--include-docs`. Documented in LIMITATIONS §usages-noise.)
+            if def_sites.contains(&(path.to_string(), e.line)) {
+                def_site_dropped += 1;
+                return false;
+            }
+            if filter_docs && is_doc_path(path) {
+                docs_dropped += 1;
+                return false;
+            }
+            true
         })
         .collect();
     let total = entries.len();
     let diff_retained = total;
-    let diff_dropped = hits_before_filter.saturating_sub(total);
+    // diff_dropped reports rows lost to path / scope / diff narrowing
+    // ONLY — def-site and doc filters are reported separately in the
+    // `--why` trace so users can attribute the drop to the right
+    // filter.
+    let diff_dropped = hits_before_filter
+        .saturating_sub(total)
+        .saturating_sub(def_site_dropped)
+        .saturating_sub(docs_dropped);
     let entries: Vec<_> = entries.into_iter().take(limit).collect();
 
     // Prefix-suggestion fallback runs ONLY when no exact hits
@@ -137,6 +226,8 @@ pub(crate) fn usages(
             hits_before_filter,
             hits_after_filter: total,
             prefix_suggestions: prefix_suggestions.as_ref().map(|v| v.len()),
+            def_site_dropped,
+            docs_dropped,
             filter_applied: crate::cli::trace::FilterSnapshot {
                 filter: filter_path.clone(),
                 include: scope.include.clone(),
@@ -215,4 +306,42 @@ pub(crate) fn usages(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_doc_path_accepts_known_prose_extensions() {
+        // Every entry in DOC_FILE_EXTENSIONS must round-trip the check;
+        // mixed-case input must normalise via to_ascii_lowercase.
+        for ext in DOC_FILE_EXTENSIONS {
+            assert!(
+                is_doc_path(&format!("README.{ext}")),
+                "{ext} should be classified as doc"
+            );
+            assert!(
+                is_doc_path(&format!("README.{}", ext.to_ascii_uppercase())),
+                "{ext} (uppercase) should be classified as doc"
+            );
+        }
+    }
+
+    #[test]
+    fn is_doc_path_rejects_code_extensions_and_extension_less_paths() {
+        for code in [
+            "src/lib.rs",
+            "main.py",
+            "App.tsx",
+            "go.mod",
+            "Makefile",
+            "LICENSE",
+        ] {
+            assert!(
+                !is_doc_path(code),
+                "{code} must not be classified as doc — D2 must not strip code paths"
+            );
+        }
+    }
 }

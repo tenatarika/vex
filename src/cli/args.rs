@@ -359,6 +359,27 @@ pub enum Commands {
         #[arg(long)]
         why: bool,
 
+        /// (non-strict only) Keep the row at the symbol's own definition
+        /// line in the results. Pre-v1.20.0 behaviour. By default the
+        /// non-strict FST lookup now strips the def-site row because
+        /// "find all callers" queries don't want the symbol's own
+        /// declaration showing up as a usage. Strict mode never
+        /// included the def-site (scope-binder excludes it by
+        /// construction), so this flag is a no-op when `--strict` is
+        /// set. See `docs/LIMITATIONS.md` §usages-noise.
+        #[arg(long)]
+        include_self: bool,
+
+        /// (non-strict only) Keep matches whose file is a Markdown /
+        /// plain-text / reStructuredText / AsciiDoc document
+        /// (`*.md`, `*.markdown`, `*.txt`, `*.rst`, `*.adoc`). Default
+        /// strips them: CHANGELOG headings + README mentions of a
+        /// symbol are prose, not callers, and they were polluting the
+        /// top of every non-strict result list. Strict mode is
+        /// unaffected (scope-binder doesn't index docs).
+        #[arg(long)]
+        include_docs: bool,
+
         #[command(flatten)]
         scope: ScopeArgs,
 

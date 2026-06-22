@@ -117,7 +117,25 @@ pub struct UsagesTrace {
     /// scope-binder-resolved path has no prefix-fallback today).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prefix_suggestions: Option<usize>,
+    /// v1.20.0 (D2) — count of rows the non-strict path filtered out
+    /// because they matched the queried symbol's own definition line
+    /// (file_path + line equal to `reader.symbol(sym_idx)` for some
+    /// `sym_idx` in `sym_fst.find(name)`). Always `0` on the strict
+    /// path (the binder excludes def-sites by construction) or when
+    /// `--include-self` is set.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub def_site_dropped: usize,
+    /// v1.20.0 (D2) — count of rows the non-strict path filtered out
+    /// because their file extension is a doc / prose format
+    /// (`*.md` / `*.markdown` / `*.txt` / `*.rst` / `*.adoc`). Always
+    /// `0` on the strict path or when `--include-docs` is set.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub docs_dropped: usize,
     pub filter_applied: FilterSnapshot,
+}
+
+fn is_zero_usize(n: &usize) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -165,6 +183,8 @@ mod tests {
             hits_before_filter: 5,
             hits_after_filter: 5,
             prefix_suggestions: None,
+            def_site_dropped: 0,
+            docs_dropped: 0,
             filter_applied: FilterSnapshot::default(),
         };
         let s = serde_json::to_string(&t).unwrap();
@@ -193,6 +213,8 @@ mod tests {
             hits_before_filter: 0,
             hits_after_filter: 0,
             prefix_suggestions: None,
+            def_site_dropped: 0,
+            docs_dropped: 0,
             filter_applied: FilterSnapshot::default(),
         };
         let s = serde_json::to_string(&t).unwrap();
@@ -217,6 +239,8 @@ mod tests {
             hits_before_filter: 0,
             hits_after_filter: 0,
             prefix_suggestions: Some(3),
+            def_site_dropped: 0,
+            docs_dropped: 0,
             filter_applied: FilterSnapshot::default(),
         };
         let s = serde_json::to_string(&t).unwrap();
