@@ -289,6 +289,14 @@ pub enum Commands {
         #[arg(long)]
         no_bm25: bool,
 
+        /// v1.20.0 (D4): drop results whose path is a doc / prose file
+        /// (`*.md`, `*.markdown`, `*.txt`, `*.rst`, `*.adoc`). Default
+        /// off so e.g. searching `README` still finds the README. Pass
+        /// for code-intent queries when CHANGELOG/README headings are
+        /// polluting the top of the result list.
+        #[arg(long)]
+        code_only: bool,
+
         #[command(flatten)]
         meta: MetadataArgs,
 

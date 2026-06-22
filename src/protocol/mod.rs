@@ -33,8 +33,25 @@ pub struct Signals {
     pub fst_hit: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bm25_rank: Option<u32>,
+    /// v1.20.0 (D4) — raw BM25 score from the pre-fusion channel,
+    /// surfaced alongside `bm25_rank` so agents can read absolute
+    /// quality (not just ordinal). `None` when this row did not
+    /// appear in the BM25 channel. Stored as `f64` because BM25 is
+    /// computed in `f64` throughout the search pipeline; contrast
+    /// with `semantic_cosine` which is `f32` because the cosine
+    /// computation is `f32`-native (no precision is lost on the
+    /// downcast for normalized inputs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bm25_score: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_rank: Option<u32>,
+    /// v1.20.0 (D4) — raw cosine similarity (range [-1.0, 1.0],
+    /// typically [0.0, 1.0] post-normalization) from the pre-fusion
+    /// semantic channel. `None` when this row did not appear in the
+    /// semantic channel; absent silently if embeddings are not
+    /// loaded (see `_meta.vex.dev/semantic_channel` for the reason).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_cosine: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fuzzy_distance: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,6 +129,23 @@ pub struct MetaEnvelope {
         skip_serializing_if = "Option::is_none"
     )]
     pub history_mode: Option<&'static str>,
+    /// v1.20.0 (D4) — explicit reason the semantic channel did NOT
+    /// contribute to a search result list. Absent (no key) when the
+    /// semantic channel ran normally. One of:
+    ///   * `"not_requested"` — caller did not pass `--semantic` /
+    ///     `semantic: true`.
+    ///   * `"index_lacks_vectors"` — caller asked for semantic but the
+    ///     index has no embeddings; re-run `vex index --semantic`.
+    ///
+    /// Pre-D4 the semantic channel silently no-op'd in both cases and
+    /// agents couldn't tell whether `semantic_rank: None` on a result
+    /// meant "didn't match" or "channel didn't run". Same `vex.dev/`
+    /// namespace as the other observability fields.
+    #[serde(
+        rename = "vex.dev/semantic_channel",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub semantic_channel: Option<&'static str>,
 }
 
 #[derive(Serialize, Clone, Debug)]

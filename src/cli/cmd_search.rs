@@ -28,6 +28,7 @@ pub(crate) fn search(
     auto_update: bool,
     no_stale_check: bool,
     no_bm25: bool,
+    code_only: bool,
     meta: MetadataArgs,
     why: bool,
     scope: ScopeArgs,
@@ -59,7 +60,15 @@ pub(crate) fn search(
     // is treated identically — a `--since` window can be much narrower
     // than the include/exclude globs, so the same `symbol_count()`
     // ceiling applies.
-    let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() || changed_paths.is_some()
+    // v1.20.0 (D4) — `code_only` joins path_scope/diff in the over-fetch
+    // predicate: on doc-heavy repos a common keyword's top-N BM25 hits can
+    // be mostly `*.md` rows, and dropping them post-fetch without
+    // over-fetching would silently return far fewer than `limit`
+    // requested.
+    let fetch_limit = if filter_path.is_some()
+        || !path_scope.is_empty()
+        || changed_paths.is_some()
+        || code_only
     {
         reader.symbol_count()
     } else {
@@ -115,6 +124,18 @@ pub(crate) fn search(
         Vec::new()
     };
     let mut trace_semantic: Vec<crate::search::SearchResult> = Vec::new();
+
+    // v1.20.0 (D4) — pin the reason the semantic channel did NOT run so
+    // the envelope's `_meta.vex.dev/semantic_channel` can surface it.
+    // `None` when semantic ran successfully (the channel contributed
+    // results, agents can read `signals.semantic_cosine` per row).
+    let semantic_channel_reason: Option<&'static str> = if !semantic {
+        Some("not_requested")
+    } else if !reader.has_vectors() {
+        Some("index_lacks_vectors")
+    } else {
+        None
+    };
 
     let results = if semantic && reader.has_vectors() {
         let embedder_id = resolve_embedder(None, ctx.cfg);
@@ -182,9 +203,15 @@ pub(crate) fn search(
     let post_diff_count = post_diff_results.len();
     let diff_retained = post_diff_count;
     let diff_dropped = pre_diff_count.saturating_sub(post_diff_count);
+    // v1.20.0 (D4) — `--code-only` strips hits in prose-format files
+    // (`*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc`). Default off so a
+    // search for "README" still finds it; agents pass this for
+    // code-intent queries where CHANGELOG / README headings would
+    // otherwise pollute the top of the result list.
     let results: Vec<_> = post_diff_results
         .into_iter()
         .filter(|r| metadata_filter.matches(r.signature.as_deref()))
+        .filter(|r| !code_only || !crate::util::paths::is_doc_path(&r.path))
         .take(limit)
         .collect();
 
@@ -235,6 +262,7 @@ pub(crate) fn search(
             let mut meta = output::build_search_meta(&manifest_path);
             meta.diff_filter =
                 diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped);
+            meta.semantic_channel = semantic_channel_reason;
             output::print_search_envelope(&results, &signals, meta);
         }
         OutputFormat::Text | OutputFormat::Compact => {

@@ -10,7 +10,10 @@ use crate::search::SearchResult;
 /// Per-channel signal slots:
 /// - `fst_hit`: result was produced by the structural / FST channel
 /// - `bm25_rank`: 0-indexed position of the result in the pre-fusion BM25 list
+/// - `bm25_score`: raw BM25 score from the pre-fusion list (v1.20.0, D4)
 /// - `semantic_rank`: 0-indexed position in the pre-fusion semantic list
+/// - `semantic_cosine`: raw cosine similarity from the pre-fusion semantic
+///   list (v1.20.0, D4)
 /// - `fuzzy_distance`: edit distance from the query for fuzzy hits. The current
 ///   `MatchType::Fuzzy` variant carries no distance payload, so this field is
 ///   always `None` until a future enhancement threads the distance through
@@ -18,6 +21,7 @@ use crate::search::SearchResult;
 ///   "not a fuzzy match".
 /// - `rerank_boost`: post-fusion rerank delta, populated by the reranker (not
 ///   set here — that lives in the rerank pipeline).
+#[must_use]
 pub fn build_signals(
     structural: &[SearchResult],
     bm25: &[SearchResult],
@@ -27,37 +31,53 @@ pub fn build_signals(
     // Key: (path, name, line). Value mirrors the Signals slots we can derive
     // from pre-fusion channel lists.
     type Key = (String, String, usize);
-    let mut by_key: HashMap<Key, (bool, Option<u32>, Option<u32>)> = HashMap::new();
+    #[derive(Default, Clone, Copy)]
+    struct Entry {
+        fst_hit: bool,
+        bm25_rank: Option<u32>,
+        bm25_score: Option<f64>,
+        semantic_rank: Option<u32>,
+        semantic_cosine: Option<f32>,
+    }
+    let mut by_key: HashMap<Key, Entry> = HashMap::new();
 
     for r in structural {
         let entry = by_key
             .entry((r.path.clone(), r.name.clone(), r.line))
-            .or_insert((false, None, None));
-        entry.0 = true;
+            .or_default();
+        entry.fst_hit = true;
     }
     for (i, r) in bm25.iter().enumerate() {
         let entry = by_key
             .entry((r.path.clone(), r.name.clone(), r.line))
-            .or_insert((false, None, None));
-        entry.1 = Some(i as u32);
+            .or_default();
+        entry.bm25_rank = Some(i as u32);
+        entry.bm25_score = Some(r.score);
     }
     for (i, r) in semantic.iter().enumerate() {
         let entry = by_key
             .entry((r.path.clone(), r.name.clone(), r.line))
-            .or_insert((false, None, None));
-        entry.2 = Some(i as u32);
+            .or_default();
+        entry.semantic_rank = Some(i as u32);
+        // Pre-fusion semantic SearchResult.score IS the raw cosine
+        // similarity (see `src/search/semantic.rs::search_with_embedder`
+        // — `SearchResult::score` is set to the cosine before fusion).
+        // Stored as f32 because cosines are computed in f32 and the
+        // downcast is lossless for the f32 input range.
+        entry.semantic_cosine = Some(r.score as f32);
     }
 
     merged
         .iter()
         .map(|r| {
             let key = (r.path.clone(), r.name.clone(), r.line);
-            let (fst_hit, bm25_rank, semantic_rank) =
-                by_key.get(&key).copied().unwrap_or((false, None, None));
+            let e = by_key.get(&key).copied().unwrap_or_default();
             Signals {
-                fst_hit,
-                bm25_rank,
-                semantic_rank,
+                fst_hit: e.fst_hit,
+                bm25_rank: e.bm25_rank,
+                bm25_score: e.bm25_score,
+                semantic_rank: e.semantic_rank,
+                semantic_cosine: e.semantic_cosine,
                 // No distance payload on MatchType::Fuzzy yet — see module doc.
                 fuzzy_distance: None,
                 rerank_boost: None,
