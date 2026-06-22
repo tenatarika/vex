@@ -51,27 +51,31 @@ pub(crate) fn init(agents_md: bool, agents_md_only: bool) -> Result<()> {
 /// other vex JSON command emits: `protocol_version`, `capabilities`,
 /// `_meta`, and `results`. See `src/protocol/mod.rs`.
 ///
-/// The matrix lives at `capabilities`; `results` is `null` because this
-/// call is argument-free and has no per-query payload. Echoing the
-/// matrix into `results` would be semantically misleading — agents would
-/// see the capability block twice under two different keys.
-///
-/// Pre-fix this emitted only the top-level `protocol_version` +
-/// `capabilities` pair. The MCP wrapper at
-/// `crates/vex-mcp/src/main.rs` recognised the envelope but produced
-/// `structuredContent: {}` because `envelope_results` was absent — what
-/// the field-test report observed as "`capabilities` returns `{}`".
+/// v1.19.1 (D3): the capability matrix is also mirrored into `results`
+/// so it survives the MCP wrapper's `structuredContent.results` lifting.
+/// Per the MCP spec, `structuredContent` is the LLM-visible payload
+/// channel; pre-fix `results: null` made the dedicated capability tool
+/// report `{"results":null}` to agents — they couldn't see the matrix
+/// even though it was right there at the envelope's top level. Echoing
+/// the matrix into `results` costs a few JSON bytes and is the only
+/// path standard MCP clients actually surface to the model.
 pub(crate) fn capabilities() -> Result<()> {
     // The envelope is built explicitly (rather than going through
     // `print_envelope`) so the `_meta` block stays empty (no project
     // root / manifest is available here) and the `T` payload type can
-    // be `serde_json::Value` for an explicit `null`.
+    // be `serde_json::Value` so `results` carries the same capability
+    // matrix structure as the top-level `capabilities` field.
+    // Clone is required: the `capabilities` field takes the matrix by
+    // value and `results` re-serializes it into JSON. The matrix is a
+    // small fixed-shape struct, so the clone cost is negligible.
+    let caps = crate::protocol::capabilities::current();
     let envelope: crate::protocol::ResponseEnvelope<serde_json::Value> =
         crate::protocol::ResponseEnvelope {
             protocol_version: crate::protocol::PROTOCOL_VERSION,
-            capabilities: crate::protocol::capabilities::current(),
+            capabilities: caps.clone(),
             meta: crate::protocol::MetaEnvelope::default(),
-            results: serde_json::Value::Null,
+            results: serde_json::to_value(&caps)
+                .context("serialize capability matrix into results payload")?,
         };
     println!("{}", serde_json::to_string_pretty(&envelope)?);
     Ok(())

@@ -116,3 +116,47 @@ fn capabilities_command_why_is_supported() {
         out
     );
 }
+
+/// v1.19.1 D3 — the dedicated `capabilities` tool must mirror its
+/// capability matrix into `results`, not leave it `null`. Per the MCP
+/// spec, only `structuredContent.results` (the lifted payload) is
+/// guaranteed to reach the LLM; a `null` payload made the dedicated
+/// capability-negotiation tool report `{"results":null}` to agents in
+/// field testing even though the matrix was right there at the
+/// envelope's top level. Locks the post-fix shape so future edits
+/// don't silently re-null `results`.
+#[test]
+fn capabilities_command_results_carries_capability_matrix() {
+    let tmp = TempDir::new().unwrap();
+    write_minimal_project(tmp.path());
+    let out = run_capabilities(tmp.path());
+
+    // results must be a populated object, not null/empty.
+    let results = out["results"]
+        .as_object()
+        .unwrap_or_else(|| panic!("expected `results` to be a JSON object, got: {out}"));
+    assert!(
+        !results.is_empty(),
+        "expected `results` to carry the capability matrix; got empty object: {out}"
+    );
+
+    // The matrix in `results` must match `capabilities` exactly — same
+    // shape, same booleans, same `bundle_modes` order.
+    assert_eq!(
+        out["results"], out["capabilities"],
+        "post-fix `results` must mirror `capabilities` so the dedicated tool \
+         is visible to MCP clients reading `structuredContent.results`; got: {out}"
+    );
+
+    // Spot-check load-bearing keys so a future bug that returns a
+    // truncated/partial matrix in `results` still trips this test.
+    assert_eq!(
+        out["results"]["signals"].as_bool(),
+        Some(true),
+        "results.signals must mirror capabilities.signals, got: {out}"
+    );
+    assert!(
+        out["results"]["bundle_modes"].is_array(),
+        "results.bundle_modes must be an array, got: {out}"
+    );
+}
