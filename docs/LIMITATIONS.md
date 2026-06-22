@@ -702,6 +702,63 @@ guidance for agents:
 
 ---
 
+## 6. `vex impact` — recommended delete-safety workflow (v1.20.0, F1)
+
+Each of the four reference channels listed above misses something
+different. To answer "is it safe to delete this?" the historical
+recommendation in `pets/CLAUDE.md` was a manual dance:
+
+1. `vex usages X --strict` — binder-resolved real refs.
+2. `vex grep '\bX\b'` — catch string-literal mentions, configs, comments.
+3. `vex callers X` — confirm via call-graph that something actually calls it.
+4. Cross-check the disagreement.
+
+v1.20.0 (F1) collapses that into one call:
+
+```
+vex impact <Symbol>
+```
+
+The command runs all four channels in parallel and joins their counts
+into one verdict:
+
+| Verdict | Rule | Action |
+|---|---|---|
+| `safe` | every channel reports 0 hits | delete is highly likely safe |
+| `unsafe` | strict_refs > 0 OR call_graph_callers > 0 | binder/graph confirmed real usage; do not delete without rewriting call sites |
+| `uncertain` | strict + callers = 0, but FST or grep > 0 | text-only mention (string literal, comment, dynamic dispatch); manual inspection required |
+
+The JSON envelope (`vex impact X --format json`) carries the verdict,
+a one-line `verdict_explanation` quoting the load-bearing channel
+counts, and a per-channel `{ available, count, sample[], truncated }`
+block so an agent can see *where* each channel's hits landed without
+re-running the four sub-commands. Strict refs and the call graph
+report `available: false` (with a `unavailable_reason` string) when
+the index lacks the requisite section (pre-v1.8 / pre-Phase 10.2).
+An unavailable channel's `count: 0` does NOT drag the verdict toward
+`safe` — only `available: true && count == 0` counts as a confirmation.
+
+**Channel-by-channel caveats** (so the verdict can be read accurately):
+
+- **strict_refs** misses everything `vex usages --strict` misses —
+  see §2 (uneven cross-language coverage) and §4 (decorator /
+  property-binding edges).
+- **fst_refs** false-positives on identifier matches in comments and
+  string literals — these inflate `uncertain` verdicts without
+  being real usage.
+- **grep_word_boundary** is the only channel that sees inside string
+  literals and config files. It also catches the def-site itself —
+  vex pre-filters that row out (see D2 in v1.20.0 CHANGELOG).
+- **call_graph_callers** misses dynamic dispatch, reflection, and
+  string-resolved calls — same set as §3.
+
+**Use `vex impact` as the entry point, then drill into the specific
+channel whose count you want to inspect** — each channel sample
+points at file:line so a follow-up `vex show` / `vex usages` /
+`vex grep` lands in seconds.
+
+---
+
 ## Coverage matrix (one-line summary)
 
 | Query | T1 strict | T1 default | T2 (line-scan) | Module-level | Decorator | String-resolved |
