@@ -1063,6 +1063,17 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             if opt_bool(args, "why", false)? {
                 extra.push("--why".into());
             }
+            // v1.20.0 (D2): opt-in escape hatches for the new
+            // non-strict noise filter. Defaults strip def-site + doc
+            // mentions; clients that need the old wide-net behaviour
+            // (e.g. searching for a name across CHANGELOG + README)
+            // set these to true.
+            if opt_bool(args, "include_self", false)? {
+                extra.push("--include-self".into());
+            }
+            if opt_bool(args, "include_docs", false)? {
+                extra.push("--include-docs".into());
+            }
             if let Some(filter) = opt_str(args, "filter")? {
                 extra.extend(["--filter".into(), filter.to_string()]);
             }
@@ -1519,7 +1530,7 @@ fn tool_descriptors() -> Value {
         },
         {
             "name": "usages",
-            "description": "Find every reference to a symbol across the codebase. Prefer over grep for refactor-style `find all callers` queries — grep on a common identifier returns string-literal and comment noise; usages with strict=true uses the scope-binder to resolve real cross-file refs (Rust/TypeScript/Python/C#/C++). Without strict, runs the legacy refs FST (~4ms) but may include text-only matches. Supports `filter` (substring path filter) and `no_stale_check`.",
+            "description": "Find every reference to a symbol across the codebase. Prefer over grep for refactor-style `find all callers` queries — grep on a common identifier returns string-literal and comment noise; usages with strict=true uses the scope-binder to resolve real cross-file refs (Rust/TypeScript/Python/C#/C++). Without strict, runs the legacy refs FST (~4ms) — v1.20.0 also strips the row at the symbol's own definition line and prose mentions in `*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc` (override with `include_self` / `include_docs`).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1527,7 +1538,9 @@ fn tool_descriptors() -> Value {
                     "name": { "type": "string", "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta." },
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "strict": { "type": "boolean", "description": "Use scope-resolved (type-aware) references from the binder — drops string-literal/comment/wrong-scope noise. Recommended for refactor work; falls back to legacy refs FST on languages without binder support.", "default": false },
-                    "why": { "type": "boolean", "description": "Surface a JSON trace under `_meta.why`: mode (strict/fst_lookup), mode_legacy (back-compat alias for v1.9.x consumers, removed in v1.12), hits before/after path filter, prefix-suggestion count when no exact hits, filter snapshot.", "default": false },
+                    "why": { "type": "boolean", "description": "Surface a JSON trace under `_meta.why`: mode (strict/fst_lookup), mode_legacy (back-compat alias for v1.9.x consumers, removed in v1.12), hits before/after path filter, prefix-suggestion count when no exact hits, def_site_dropped / docs_dropped counts (v1.20.0), filter snapshot.", "default": false },
+                    "include_self": { "type": "boolean", "description": "(non-strict only) Keep the row at the symbol's own definition line. v1.20.0+ strips it by default — `find all callers` queries don't want the declaration showing up as a usage. No-op when `strict=true` (the scope-binder excludes the def-site by construction).", "default": false },
+                    "include_docs": { "type": "boolean", "description": "(non-strict only) Keep matches in `*.md` / `*.markdown` / `*.txt` / `*.rst` / `*.adoc` files. v1.20.0+ strips them by default — README/CHANGELOG mentions of a symbol are prose, not callers. No-op when `strict=true`.", "default": false },
                     "filter": { "type": "string", "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns)." },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
@@ -2999,6 +3012,44 @@ INFO trailing line\n\
                 .windows(2)
                 .any(|w| w[0] == "--filter" && w[1] == "src/"),
             "usages filter must surface as --filter; got: {extra:?}"
+        );
+    }
+
+    // v1.20.0 D2: include_self / include_docs opt-in flags
+
+    #[test]
+    fn usages_include_self_pushes_flag() {
+        let extra = args_for("usages", json!({"symbol": "Foo", "include_self": true}));
+        assert!(
+            extra.iter().any(|a| a == "--include-self"),
+            "usages include_self=true must add --include-self; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn usages_include_self_default_omits_flag() {
+        let extra = args_for("usages", json!({"symbol": "Foo"}));
+        assert!(
+            !extra.iter().any(|a| a == "--include-self"),
+            "usages without include_self must NOT add --include-self; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn usages_include_docs_pushes_flag() {
+        let extra = args_for("usages", json!({"symbol": "Foo", "include_docs": true}));
+        assert!(
+            extra.iter().any(|a| a == "--include-docs"),
+            "usages include_docs=true must add --include-docs; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn usages_include_docs_default_omits_flag() {
+        let extra = args_for("usages", json!({"symbol": "Foo"}));
+        assert!(
+            !extra.iter().any(|a| a == "--include-docs"),
+            "usages without include_docs must NOT add --include-docs; got: {extra:?}"
         );
     }
 

@@ -1,5 +1,6 @@
 ---
 source: crates/vex-mcp/src/main.rs
+assertion_line: 2709
 expression: descriptors
 ---
 [
@@ -432,7 +433,7 @@ expression: descriptors
     "name": "show"
   },
   {
-    "description": "Find every reference to a symbol across the codebase. Prefer over grep for refactor-style `find all callers` queries — grep on a common identifier returns string-literal and comment noise; usages with strict=true uses the scope-binder to resolve real cross-file refs (Rust/TypeScript/Python/C#/C++). Without strict, runs the legacy refs FST (~4ms) but may include text-only matches. Supports `filter` (substring path filter) and `no_stale_check`.",
+    "description": "Find every reference to a symbol across the codebase. Prefer over grep for refactor-style `find all callers` queries — grep on a common identifier returns string-literal and comment noise; usages with strict=true uses the scope-binder to resolve real cross-file refs (Rust/TypeScript/Python/C#/C++). Without strict, runs the legacy refs FST (~4ms) — v1.20.0 also strips the row at the symbol's own definition line and prose mentions in `*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc` (override with `include_self` / `include_docs`).",
     "inputSchema": {
       "properties": {
         "auto_update": {
@@ -462,6 +463,16 @@ expression: descriptors
             "type": "string"
           },
           "type": "array"
+        },
+        "include_docs": {
+          "default": false,
+          "description": "(non-strict only) Keep matches in `*.md` / `*.markdown` / `*.txt` / `*.rst` / `*.adoc` files. v1.20.0+ strips them by default — README/CHANGELOG mentions of a symbol are prose, not callers. No-op when `strict=true`.",
+          "type": "boolean"
+        },
+        "include_self": {
+          "default": false,
+          "description": "(non-strict only) Keep the row at the symbol's own definition line. v1.20.0+ strips it by default — `find all callers` queries don't want the declaration showing up as a usage. No-op when `strict=true` (the scope-binder excludes the def-site by construction).",
+          "type": "boolean"
         },
         "limit": {
           "default": 50,
@@ -501,7 +512,7 @@ expression: descriptors
         },
         "why": {
           "default": false,
-          "description": "Surface a JSON trace under `_meta.why`: mode (strict/fst_lookup), mode_legacy (back-compat alias for v1.9.x consumers, removed in v1.12), hits before/after path filter, prefix-suggestion count when no exact hits, filter snapshot.",
+          "description": "Surface a JSON trace under `_meta.why`: mode (strict/fst_lookup), mode_legacy (back-compat alias for v1.9.x consumers, removed in v1.12), hits before/after path filter, prefix-suggestion count when no exact hits, def_site_dropped / docs_dropped counts (v1.20.0), filter snapshot.",
           "type": "boolean"
         }
       },
