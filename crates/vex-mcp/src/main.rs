@@ -1083,6 +1083,20 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             push_diff_scope(&mut extra, args)?;
             ("usages".to_string(), extra)
         }
+        "impact" => {
+            // v1.20.0 (F1) — one-call delete-safety report. Composes
+            // strict refs + FST refs + grep \b<Name>\b + call-graph
+            // callers into a single verdict. No per-channel knobs at
+            // the MCP surface (yet) — the CLI defaults are tuned for
+            // the agent use case.
+            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)?
+                .ok_or_else(|| ParamError::missing("symbol"))?;
+            let mut extra = vec![symbol.to_string()];
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
+            ("impact".to_string(), extra)
+        }
         "grep" => {
             let pattern = req_str(args, "pattern")?;
             let limit = opt_u64(args, "limit", 50)?;
@@ -1550,6 +1564,23 @@ fn tool_descriptors() -> Value {
                     "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
                     "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
                     "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
+                },
+                "required": ["symbol"]
+            }
+        },
+        {
+            "name": "impact",
+            "description": "Delete-safety blast-radius report. Composes four independent reference channels — strict refs (binder-resolved v5 edges), the legacy FST refs, `grep \\b<Name>\\b` against the project, and direct call-graph callers — into a single verdict (`safe` / `unsafe` / `uncertain`). Use this BEFORE proposing to delete or rename a symbol; one call collapses what CLAUDE.md previously documented as a manual dance across usages → grep → callers. Verdict rule: `unsafe` if strict_refs > 0 OR call_graph_callers > 0 (binder/graph confirmed real usage); `uncertain` if only text channels (FST / grep) hit (likely string-dispatch / decorator / comment mentions); `safe` only when every channel reports zero hits. `results` shape: { symbol, verdict, verdict_explanation, channels: { strict_refs, fst_refs, grep_word_boundary, call_graph_callers } } where each channel block has { available, count, sample[], truncated }.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbol": { "type": "string", "description": "Exact symbol name to assess — canonical key." },
+                    "name": { "type": "string", "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta." },
+                    "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable). Applied to every channel — useful for scoping to e.g. `src/**` when assessing a library symbol." },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)." }
                 },
                 "required": ["symbol"]
             }
@@ -3012,6 +3043,62 @@ INFO trailing line\n\
                 .windows(2)
                 .any(|w| w[0] == "--filter" && w[1] == "src/"),
             "usages filter must surface as --filter; got: {extra:?}"
+        );
+    }
+
+    // v1.20.0 F1: impact (delete-safety blast radius)
+
+    #[test]
+    fn impact_uses_symbol_as_positional_argv() {
+        let extra = args_for("impact", json!({"symbol": "Foo"}));
+        assert_eq!(
+            extra.first().map(String::as_str),
+            Some("Foo"),
+            "impact must surface symbol as the first positional argv; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn impact_legacy_name_alias_accepted_as_symbol() {
+        // Pre-v1.7 callers used `name`; the canonical reader treats
+        // it as a deprecated alias for `symbol` (consistent with
+        // every other symbol-keyed tool).
+        let extra = args_for("impact", json!({"name": "Foo"}));
+        assert_eq!(
+            extra.first().map(String::as_str),
+            Some("Foo"),
+            "impact must accept legacy `name` alias; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn impact_passes_scope_flags_through() {
+        let extra = args_for(
+            "impact",
+            json!({"symbol": "Foo", "include": ["src/**"], "exclude": ["tests/**"]}),
+        );
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--include" && w[1] == "src/**"),
+            "impact include must surface as --include <glob>; got: {extra:?}"
+        );
+        assert!(
+            extra
+                .windows(2)
+                .any(|w| w[0] == "--exclude" && w[1] == "tests/**"),
+            "impact exclude must surface as --exclude <glob>; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn impact_descriptor_present_in_tools_list() {
+        let desc = tool_descriptors();
+        let tools = desc.as_array().expect("tool_descriptors must be array");
+        let found = tools.iter().any(|t| t["name"] == "impact");
+        assert!(
+            found,
+            "tool_descriptors() must include an 'impact' entry for v1.20.0 F1; got: {desc}"
         );
     }
 

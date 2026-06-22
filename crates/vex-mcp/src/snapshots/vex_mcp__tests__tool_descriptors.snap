@@ -1,6 +1,6 @@
 ---
 source: crates/vex-mcp/src/main.rs
-assertion_line: 2709
+assertion_line: 2740
 expression: descriptors
 ---
 [
@@ -522,6 +522,54 @@ expression: descriptors
       "type": "object"
     },
     "name": "usages"
+  },
+  {
+    "description": "Delete-safety blast-radius report. Composes four independent reference channels — strict refs (binder-resolved v5 edges), the legacy FST refs, `grep \\b<Name>\\b` against the project, and direct call-graph callers — into a single verdict (`safe` / `unsafe` / `uncertain`). Use this BEFORE proposing to delete or rename a symbol; one call collapses what CLAUDE.md previously documented as a manual dance across usages → grep → callers. Verdict rule: `unsafe` if strict_refs > 0 OR call_graph_callers > 0 (binder/graph confirmed real usage); `uncertain` if only text channels (FST / grep) hit (likely string-dispatch / decorator / comment mentions); `safe` only when every channel reports zero hits. `results` shape: { symbol, verdict, verdict_explanation, channels: { strict_refs, fst_refs, grep_word_boundary, call_graph_callers } } where each channel block has { available, count, sample[], truncated }.",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (repeatable). Applied to every channel — useful for scoping to e.g. `src/**` when assessing a library symbol.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta.",
+          "type": "string"
+        },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "symbol": {
+          "description": "Exact symbol name to assess — canonical key.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "type": "object"
+    },
+    "name": "impact"
   },
   {
     "description": "Regex content search across files (ripgrep-equivalent, no index needed). Use this for searching inside string literals, comments, config values, or any non-symbol text. Prefer search / find_symbol / usages for identifier lookups — those are index-backed (~4ms) while grep is a full-scan and returns raw line matches without symbol context.",
