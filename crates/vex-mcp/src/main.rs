@@ -940,6 +940,11 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             if opt_bool(args, "no_bm25", false)? {
                 extra.push("--no-bm25".into());
             }
+            // v1.20.0 (D4) — opt-in code-intent filter; strips hits in
+            // `*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc` files.
+            if opt_bool(args, "code_only", false)? {
+                extra.push("--code-only".into());
+            }
             push_auto_update(&mut extra, args)?;
             push_no_stale_check(&mut extra, args)?;
             push_scope(&mut extra, args)?;
@@ -1096,6 +1101,92 @@ fn build_command(tool: &str, args: &Value, project_root: &str) -> Result<BuiltCo
             push_no_stale_check(&mut extra, args)?;
             push_scope(&mut extra, args)?;
             ("impact".to_string(), extra)
+        }
+        "tests_for" => {
+            // v1.20.0 (D5) — surface Phase 13.10 `vex tests-for` via MCP.
+            // The CLI subcommand uses the hyphenated form (`tests-for`)
+            // but MCP tool names use underscores per common convention.
+            // Canonical key is `target` (matching the CLI positional);
+            // `symbol` is accepted as a deprecated alias for parity with
+            // every other symbol-keyed tool.
+            let target = read_canonical_str(args, "target", "symbol", &mut deprecated)?
+                .ok_or_else(|| ParamError::missing("target"))?;
+            let max_hops = opt_u64(args, "max_hops", 6)?;
+            let limit = opt_u64(args, "limit", 200)?;
+            let mut extra = vec![
+                target.to_string(),
+                "--max-hops".into(),
+                max_hops.to_string(),
+                "--limit".into(),
+                limit.to_string(),
+            ];
+            if let Some(patterns) = opt_str_array(args, "test_pattern")? {
+                for p in patterns {
+                    extra.extend(["--test-pattern".into(), p.to_string()]);
+                }
+            }
+            if opt_bool(args, "include_fixtures", false)? {
+                extra.push("--include-fixtures".into());
+            }
+            push_auto_update(&mut extra, args)?;
+            push_no_stale_check(&mut extra, args)?;
+            push_scope(&mut extra, args)?;
+            ("tests-for".to_string(), extra)
+        }
+        "history" => {
+            // v1.20.0 (D5) — surface `vex history` via MCP so agents can
+            // ask "every historical version of this symbol" without
+            // shelling out. The CLI's full flag set is exposed for
+            // parity (date / author / kind filters, --diff,
+            // --exact-presence, --no-index).
+            let symbol = read_canonical_str(args, "symbol", "name", &mut deprecated)?
+                .ok_or_else(|| ParamError::missing("symbol"))?;
+            // The CLI rejects `--diff` + `--exact-presence` together
+            // (the diff path groups entries by `(symbol, kind)` which
+            // breaks per-row presence mapping). Validate at the MCP
+            // boundary so the client gets `-32602 Invalid params` with
+            // the canonical shape, not an opaque downstream exit code.
+            if opt_bool(args, "diff", false)? && opt_bool(args, "exact_presence", false)? {
+                return Err(ParamError(
+                    "`diff` and `exact_presence` are mutually exclusive — the diff path \
+                     groups entries by `(symbol, kind)` which would break per-row presence \
+                     mapping. Choose one."
+                        .to_string(),
+                )
+                .into());
+            }
+            let mut extra = vec![symbol.to_string()];
+            if let Some(d) = opt_u64_some(args, "depth")? {
+                extra.extend(["--depth".into(), d.to_string()]);
+            }
+            if let Some(b) = opt_str(args, "branch")? {
+                extra.extend(["--branch".into(), b.to_string()]);
+            }
+            if let Some(l) = opt_u64_some(args, "limit")? {
+                extra.extend(["--limit".into(), l.to_string()]);
+            }
+            if opt_bool(args, "no_index", false)? {
+                extra.push("--no-index".into());
+            }
+            if let Some(s) = opt_str(args, "since")? {
+                extra.extend(["--since".into(), s.to_string()]);
+            }
+            if let Some(u) = opt_str(args, "until")? {
+                extra.extend(["--until".into(), u.to_string()]);
+            }
+            if let Some(a) = opt_str(args, "author")? {
+                extra.extend(["--author".into(), a.to_string()]);
+            }
+            if let Some(k) = opt_str(args, "kind")? {
+                extra.extend(["--kind".into(), k.to_string()]);
+            }
+            if opt_bool(args, "diff", false)? {
+                extra.push("--diff".into());
+            }
+            if opt_bool(args, "exact_presence", false)? {
+                extra.push("--exact-presence".into());
+            }
+            ("history".to_string(), extra)
         }
         "grep" => {
             let pattern = req_str(args, "pattern")?;
@@ -1415,7 +1506,8 @@ fn tool_descriptors() -> Value {
                     "sealed_only": { "type": "boolean", "description": "Keep only sealed (or Java-`final`) types", "default": false },
                     "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
                     "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
-                    "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
+                    "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false },
+                    "code_only": { "type": "boolean", "description": "(v1.20.0 D4) Drop results in prose-format files (`*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc`). Default off so 'README' still finds the README; pass for code-intent queries where CHANGELOG/README headings would pollute the top of the result list.", "default": false }
                 },
                 "required": ["query"]
             }
@@ -1581,6 +1673,50 @@ fn tool_descriptors() -> Value {
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable). Applied to every channel — useful for scoping to e.g. `src/**` when assessing a library symbol." },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)." }
+                },
+                "required": ["symbol"]
+            }
+        },
+        {
+            "name": "tests_for",
+            "description": "Find test functions that transitively cover a target symbol (Phase 13.10). Walks the call graph backwards from `<target>`, keeps rows under recognized test-path globs (Rust / Python / TS-JS / Go / Java / Kotlin / C# / C++), stamps each row with a `framework` label (`pytest`, `jest`, `go-test`, …) so an agent can pick the right runner without parsing paths. Prefer over grep `test.*Foo` — that misses transitively-covered helpers and produces lots of false positives. v1.20.0 (D5) surface — the CLI subcommand exists since v1.19.0 but was MCP-invisible.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": { "type": "string", "description": "Symbol whose test coverage to find — the function/method/class you want to know is tested." },
+                    "symbol": { "type": "string", "description": "DEPRECATED alias for `target`; still accepted, emits a deprecated_args notice in _meta." },
+                    "max_hops": { "type": "integer", "description": "Maximum reverse-call-graph hops from `target`. Default 6.", "default": 6 },
+                    "limit": { "type": "integer", "description": "Max results to return.", "default": 200 },
+                    "test_pattern": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for test paths (repeatable). When set, REPLACES the default pattern set (does NOT append) — pass the full set you want." },
+                    "include_fixtures": { "type": "boolean", "description": "Admit non-test-named helpers (fixtures) under test paths via a one-hop forward callee walk. Default off — only `test_*` / `*Test` names surface.", "default": false },
+                    "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh.", "default": false },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
+                },
+                "required": ["target"]
+            }
+        },
+        {
+            "name": "history",
+            "description": "Every historical version of a symbol reachable from a chosen tip. With `vex index --history` previously run, queries hit a persistent FST sidecar (~ms); without it, shells out to `git log` (~seconds). Indexed mode also finds symbols whose name has been DELETED from HEAD — the walker can't. Use this to inspect how a function's body / signature changed over time, find when a bug was introduced, or recover a deleted symbol's last definition. NOTE: omitting `limit` returns the full history (walker mode is unbounded by default — set `limit` to cap latency on long-lived repos). `exact_presence: true` adds seconds-scale latency per file — only pass when you specifically need the exact commit set, not the convex-hull span. v1.20.0 (D5) surface — the CLI subcommand has existed since v1.15.0 but was MCP-invisible.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbol": { "type": "string", "description": "Symbol name to walk through history. Matched whole-word via `git grep --word-regexp`, then filtered post-parse to exact `name == query`." },
+                    "name": { "type": "string", "description": "DEPRECATED alias for `symbol`; still accepted, emits a deprecated_args notice in _meta." },
+                    "depth": { "type": "integer", "description": "Max commits to walk per file (walker mode). Unbounded by default; bump down on long-lived repos to keep latency in check." },
+                    "branch": { "type": "string", "description": "Restrict the walk to this revision (`refs/heads/foo`, `origin/main`, a SHA). Defaults to `HEAD`." },
+                    "limit": { "type": "integer", "description": "Cap the total result set. Omit for unbounded (walker mode) — set explicitly on long-lived repos to keep latency in check. The walker stops as soon as the limit is reached." },
+                    "no_index": { "type": "boolean", "description": "Force the v1.16 query-time walker even when a `git_history` section is present. Default (`HistoryMode::Auto`) picks the indexed path when available and falls back to the walker otherwise. Use for regression-checking the walker against the indexed path.", "default": false },
+                    "since": { "type": "string", "description": "Keep only entries whose commit date is `>= YYYY-MM-DD` (inclusive)." },
+                    "until": { "type": "string", "description": "Keep only entries whose commit date is `<= YYYY-MM-DD` (inclusive)." },
+                    "author": { "type": "string", "description": "Keep only entries whose commit author contains this substring (case-insensitive). Walker-only — the indexed path rejects this with an error pointing at `no_index: true`." },
+                    "kind": { "type": "string", "description": "Keep only entries whose symbol kind matches exactly (lowercase: `function` / `struct` / `impl` / …)." },
+                    "diff": { "type": "boolean", "description": "Render unified diffs between consecutive historical versions of the same `(symbol, kind)` pair instead of repeating the full body for each entry. Cuts output noise on deep histories. Mutually exclusive with `exact_presence`.", "default": false },
+                    "exact_presence": { "type": "boolean", "description": "For each entry, list the exact set of commits where its blob lived in the file. Defeats the convex-hull span representation (LIMITATIONS §4c #4). Adds latency.", "default": false },
+                    "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" }
                 },
                 "required": ["symbol"]
             }
@@ -3043,6 +3179,166 @@ INFO trailing line\n\
                 .windows(2)
                 .any(|w| w[0] == "--filter" && w[1] == "src/"),
             "usages filter must surface as --filter; got: {extra:?}"
+        );
+    }
+
+    // v1.20.0 D5: tests_for + history MCP tools
+
+    #[test]
+    fn tests_for_target_pushes_positional_argv() {
+        let extra = args_for("tests_for", json!({"target": "Foo"}));
+        assert_eq!(
+            extra.first().map(String::as_str),
+            Some("Foo"),
+            "tests_for must surface target as the first positional argv; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn tests_for_legacy_symbol_alias_accepted() {
+        // Pre-D5 there was no MCP tool, but client code that
+        // hallucinated `symbol` (consistent with every other tool)
+        // should still resolve.
+        let extra = args_for("tests_for", json!({"symbol": "Foo"}));
+        assert_eq!(
+            extra.first().map(String::as_str),
+            Some("Foo"),
+            "tests_for must accept legacy `symbol` alias; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn tests_for_include_fixtures_pushes_flag() {
+        let extra = args_for(
+            "tests_for",
+            json!({"target": "Foo", "include_fixtures": true}),
+        );
+        assert!(
+            extra.iter().any(|a| a == "--include-fixtures"),
+            "tests_for include_fixtures=true must add --include-fixtures; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn tests_for_test_pattern_repeats() {
+        let extra = args_for(
+            "tests_for",
+            json!({"target": "Foo", "test_pattern": ["tests/**", "spec/**"]}),
+        );
+        let pattern_pairs: Vec<_> = extra
+            .windows(2)
+            .filter(|w| w[0] == "--test-pattern")
+            .collect();
+        assert_eq!(
+            pattern_pairs.len(),
+            2,
+            "two test_pattern entries must yield two --test-pattern flags; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn tests_for_descriptor_present_in_tools_list() {
+        let desc = tool_descriptors();
+        let tools = desc.as_array().expect("tool_descriptors must be array");
+        assert!(
+            tools.iter().any(|t| t["name"] == "tests_for"),
+            "tool_descriptors() must include a 'tests_for' entry for v1.20.0 D5; got: {desc}"
+        );
+    }
+
+    #[test]
+    fn history_symbol_pushes_positional_argv() {
+        let extra = args_for("history", json!({"symbol": "Foo"}));
+        assert_eq!(
+            extra.first().map(String::as_str),
+            Some("Foo"),
+            "history must surface symbol as the first positional argv; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn history_diff_flag_propagates() {
+        let extra = args_for("history", json!({"symbol": "Foo", "diff": true}));
+        assert!(
+            extra.iter().any(|a| a == "--diff"),
+            "history diff=true must add --diff; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn history_since_until_author_propagate() {
+        let extra = args_for(
+            "history",
+            json!({"symbol": "Foo", "since": "2026-01-01", "until": "2026-06-22", "author": "alice"}),
+        );
+        for (canonical, value) in [
+            ("--since", "2026-01-01"),
+            ("--until", "2026-06-22"),
+            ("--author", "alice"),
+        ] {
+            assert!(
+                extra.windows(2).any(|w| w[0] == canonical && w[1] == value),
+                "history must surface {canonical} {value}; got: {extra:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn history_diff_and_exact_presence_together_is_invalid_params() {
+        // The CLI rejects this combination at the clap layer (the diff
+        // path groups by `(symbol, kind)` which breaks per-row presence
+        // mapping). The MCP wrapper rejects it earlier so clients see
+        // `-32602 Invalid params` with the canonical recovery shape,
+        // not an opaque downstream exit code.
+        let err = build_command(
+            "history",
+            &json!({"symbol": "Foo", "diff": true, "exact_presence": true}),
+            "/tmp/proj",
+        )
+        .expect_err("diff + exact_presence must surface as invalid params");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error must mention mutual exclusion; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn history_no_index_pushes_flag() {
+        let extra = args_for("history", json!({"symbol": "Foo", "no_index": true}));
+        assert!(
+            extra.iter().any(|a| a == "--no-index"),
+            "history no_index=true must add --no-index; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn history_descriptor_present_in_tools_list() {
+        let desc = tool_descriptors();
+        let tools = desc.as_array().expect("tool_descriptors must be array");
+        assert!(
+            tools.iter().any(|t| t["name"] == "history"),
+            "tool_descriptors() must include a 'history' entry for v1.20.0 D5; got: {desc}"
+        );
+    }
+
+    // v1.20.0 D4: search code_only opt-in
+
+    #[test]
+    fn search_code_only_pushes_flag() {
+        let extra = args_for("search", json!({"query": "foo", "code_only": true}));
+        assert!(
+            extra.iter().any(|a| a == "--code-only"),
+            "search code_only=true must add --code-only; got: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn search_code_only_default_omits_flag() {
+        let extra = args_for("search", json!({"query": "foo"}));
+        assert!(
+            !extra.iter().any(|a| a == "--code-only"),
+            "search without code_only must NOT add --code-only; got: {extra:?}"
         );
     }
 

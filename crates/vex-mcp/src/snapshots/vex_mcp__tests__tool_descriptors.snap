@@ -1,6 +1,6 @@
 ---
 source: crates/vex-mcp/src/main.rs
-assertion_line: 2740
+assertion_line: 2876
 expression: descriptors
 ---
 [
@@ -21,6 +21,11 @@ expression: descriptors
         "changed_only": {
           "default": false,
           "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.",
+          "type": "boolean"
+        },
+        "code_only": {
+          "default": false,
+          "description": "(v1.20.0 D4) Drop results in prose-format files (`*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc`). Default off so 'README' still finds the README; pass for code-intent queries where CHANGELOG/README headings would pollute the top of the result list.",
           "type": "boolean"
         },
         "context_path": {
@@ -570,6 +575,143 @@ expression: descriptors
       "type": "object"
     },
     "name": "impact"
+  },
+  {
+    "description": "Find test functions that transitively cover a target symbol (Phase 13.10). Walks the call graph backwards from `<target>`, keeps rows under recognized test-path globs (Rust / Python / TS-JS / Go / Java / Kotlin / C# / C++), stamps each row with a `framework` label (`pytest`, `jest`, `go-test`, …) so an agent can pick the right runner without parsing paths. Prefer over grep `test.*Foo` — that misses transitively-covered helpers and produces lots of false positives. v1.20.0 (D5) surface — the CLI subcommand exists since v1.19.0 but was MCP-invisible.",
+    "inputSchema": {
+      "properties": {
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist results by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include_fixtures": {
+          "default": false,
+          "description": "Admit non-test-named helpers (fixtures) under test paths via a one-hop forward callee walk. Default off — only `test_*` / `*Test` names surface.",
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 200,
+          "description": "Max results to return.",
+          "type": "integer"
+        },
+        "max_hops": {
+          "default": 6,
+          "description": "Maximum reverse-call-graph hops from `target`. Default 6.",
+          "type": "integer"
+        },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh.",
+          "type": "boolean"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "symbol": {
+          "description": "DEPRECATED alias for `target`; still accepted, emits a deprecated_args notice in _meta.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Symbol whose test coverage to find — the function/method/class you want to know is tested.",
+          "type": "string"
+        },
+        "test_pattern": {
+          "description": "Glob patterns for test paths (repeatable). When set, REPLACES the default pattern set (does NOT append) — pass the full set you want.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "name": "tests_for"
+  },
+  {
+    "description": "Every historical version of a symbol reachable from a chosen tip. With `vex index --history` previously run, queries hit a persistent FST sidecar (~ms); without it, shells out to `git log` (~seconds). Indexed mode also finds symbols whose name has been DELETED from HEAD — the walker can't. Use this to inspect how a function's body / signature changed over time, find when a bug was introduced, or recover a deleted symbol's last definition. NOTE: omitting `limit` returns the full history (walker mode is unbounded by default — set `limit` to cap latency on long-lived repos). `exact_presence: true` adds seconds-scale latency per file — only pass when you specifically need the exact commit set, not the convex-hull span. v1.20.0 (D5) surface — the CLI subcommand has existed since v1.15.0 but was MCP-invisible.",
+    "inputSchema": {
+      "properties": {
+        "author": {
+          "description": "Keep only entries whose commit author contains this substring (case-insensitive). Walker-only — the indexed path rejects this with an error pointing at `no_index: true`.",
+          "type": "string"
+        },
+        "branch": {
+          "description": "Restrict the walk to this revision (`refs/heads/foo`, `origin/main`, a SHA). Defaults to `HEAD`.",
+          "type": "string"
+        },
+        "depth": {
+          "description": "Max commits to walk per file (walker mode). Unbounded by default; bump down on long-lived repos to keep latency in check.",
+          "type": "integer"
+        },
+        "diff": {
+          "default": false,
+          "description": "Render unified diffs between consecutive historical versions of the same `(symbol, kind)` pair instead of repeating the full body for each entry. Cuts output noise on deep histories. Mutually exclusive with `exact_presence`.",
+          "type": "boolean"
+        },
+        "exact_presence": {
+          "default": false,
+          "description": "For each entry, list the exact set of commits where its blob lived in the file. Defeats the convex-hull span representation (LIMITATIONS §4c #4). Adds latency.",
+          "type": "boolean"
+        },
+        "kind": {
+          "description": "Keep only entries whose symbol kind matches exactly (lowercase: `function` / `struct` / `impl` / …).",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Cap the total result set. Omit for unbounded (walker mode) — set explicitly on long-lived repos to keep latency in check. The walker stops as soon as the limit is reached.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "DEPRECATED alias for `symbol`; still accepted, emits a deprecated_args notice in _meta.",
+          "type": "string"
+        },
+        "no_index": {
+          "default": false,
+          "description": "Force the v1.16 query-time walker even when a `git_history` section is present. Default (`HistoryMode::Auto`) picks the indexed path when available and falls back to the walker otherwise. Use for regression-checking the walker against the indexed path.",
+          "type": "boolean"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "since": {
+          "description": "Keep only entries whose commit date is `>= YYYY-MM-DD` (inclusive).",
+          "type": "string"
+        },
+        "symbol": {
+          "description": "Symbol name to walk through history. Matched whole-word via `git grep --word-regexp`, then filtered post-parse to exact `name == query`.",
+          "type": "string"
+        },
+        "until": {
+          "description": "Keep only entries whose commit date is `<= YYYY-MM-DD` (inclusive).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "type": "object"
+    },
+    "name": "history"
   },
   {
     "description": "Regex content search across files (ripgrep-equivalent, no index needed). Use this for searching inside string literals, comments, config values, or any non-symbol text. Prefer search / find_symbol / usages for identifier lookups — those are index-backed (~4ms) while grep is a full-scan and returns raw line matches without symbol context.",

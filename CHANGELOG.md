@@ -6,6 +6,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — `search` exposes raw channel scores + `--code-only` filter (D4)
+
+- Per-result `signals` block in `vex search --format json` now carries
+  `bm25_score` (raw BM25 from the pre-fusion channel) and
+  `semantic_cosine` (raw cosine from the pre-fusion semantic channel)
+  alongside the existing `bm25_rank` / `semantic_rank` ordinals. Agents
+  can now read absolute relevance quality, not just position — previously
+  the only way to tune ranking was eyeballing the fused `score` (RRF
+  reciprocal sums, ~0.009-0.028 band, ordinal-only).
+- `--code-only` (CLI) / `code_only: true` (MCP) drops hits in prose-format
+  files (`*.md` / `*.markdown` / `*.txt` / `*.rst` / `*.adoc`). Default
+  off so `vex search README` still finds READMEs; pass for code-intent
+  queries where CHANGELOG / README headings would otherwise pollute the
+  top of the result list.
+- `_meta.vex.dev/semantic_channel` reports the explicit reason the
+  semantic channel did NOT run, when applicable: `"not_requested"`
+  (caller didn't pass `--semantic`) or `"index_lacks_vectors"`
+  (`--semantic` requested but the index has no embeddings — run
+  `vex index --semantic`). Silent semantic no-ops are now detectable.
+
+### Added — `vex tests-for` and `vex history` surfaced via MCP (D5)
+
+- New `mcp__vex__tests_for` tool wraps the Phase 13.10 CLI command —
+  walks the call graph backward from a target symbol and returns the
+  test functions that transitively cover it, stamped with a `framework`
+  label (`pytest` / `jest` / `go-test` / …). Pre-D5 this was CLI-only,
+  forcing agents to shell out via Bash.
+- New `mcp__vex__history` tool wraps the v1.15.0 + Phase 14.9 CLI
+  command — every historical version of a symbol via the indexed
+  sidecar (~ms) or the query-time walker (~seconds). Full flag parity:
+  `depth` / `branch` / `limit` / `no_index` / `since` / `until` /
+  `author` / `kind` / `diff` / `exact_presence`.
+
 ### Added — `vex impact <Symbol>` blast-radius / delete-safety command (F1)
 
 - New CLI subcommand + MCP tool that collapses the historical
