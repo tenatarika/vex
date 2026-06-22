@@ -8,6 +8,27 @@
 
 use std::path::Path;
 
+/// File extensions whose contents are prose, not code. Used by D2 (`vex usages`
+/// non-strict default) and D4 (`vex search --code-only`) to filter out README /
+/// CHANGELOG / docs noise from refactor-style queries. Lower-case; the
+/// [`is_doc_path`] check handles mixed-case input via `eq_ignore_ascii_case`.
+pub const DOC_FILE_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "rst", "adoc"];
+
+/// `true` when the file at `path` has an extension classified as prose
+/// rather than code (see [`DOC_FILE_EXTENSIONS`]). Mixed-case extensions
+/// (`README.MD`) normalise via `eq_ignore_ascii_case`. Paths without an
+/// extension return `false` (no false positives on `Makefile` / `LICENSE`).
+pub fn is_doc_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| {
+            DOC_FILE_EXTENSIONS
+                .iter()
+                .any(|&doc_ext| ext.eq_ignore_ascii_case(doc_ext))
+        })
+}
+
 /// Strip `root` from `path` and return the relative path as a POSIX-style
 /// string (forward-slash separators on every platform). Returns `None` when
 /// `path` is not under `root` or the resulting bytes are not valid Unicode
@@ -39,6 +60,39 @@ pub fn normalize_to_posix(s: String) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn is_doc_path_accepts_known_prose_extensions() {
+        // Every entry in DOC_FILE_EXTENSIONS must round-trip the check;
+        // mixed-case input must normalise via eq_ignore_ascii_case.
+        for ext in DOC_FILE_EXTENSIONS {
+            assert!(
+                is_doc_path(&format!("README.{ext}")),
+                "{ext} should be classified as doc"
+            );
+            assert!(
+                is_doc_path(&format!("README.{}", ext.to_ascii_uppercase())),
+                "{ext} (uppercase) should be classified as doc"
+            );
+        }
+    }
+
+    #[test]
+    fn is_doc_path_rejects_code_extensions_and_extension_less_paths() {
+        for code in [
+            "src/lib.rs",
+            "main.py",
+            "App.tsx",
+            "go.mod",
+            "Makefile",
+            "LICENSE",
+        ] {
+            assert!(
+                !is_doc_path(code),
+                "{code} must not be classified as doc — D2/D4 filter must not strip code paths"
+            );
+        }
+    }
 
     #[test]
     fn posix_input_is_pass_through() {

@@ -12,24 +12,7 @@ use super::scope;
 use crate::protocol::capabilities;
 use crate::store::reader::IndexReader;
 
-/// Lower-case file extensions whose contents are prose, not code. The
-/// non-strict FST lookup indexes every occurrence of an identifier
-/// across the project; without this filter, README mentions and
-/// CHANGELOG headings of a symbol name leak into "find all callers"
-/// queries. Strict mode is unaffected — the scope-binder doesn't
-/// touch doc files in the first place.
-const DOC_FILE_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "rst", "adoc"];
-
-fn is_doc_path(path: &str) -> bool {
-    std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|ext| {
-            DOC_FILE_EXTENSIONS
-                .iter()
-                .any(|&doc_ext| ext.eq_ignore_ascii_case(doc_ext))
-        })
-}
+use crate::util::paths::is_doc_path;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn usages(
@@ -308,40 +291,6 @@ pub(crate) fn usages(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn is_doc_path_accepts_known_prose_extensions() {
-        // Every entry in DOC_FILE_EXTENSIONS must round-trip the check;
-        // mixed-case input must normalise via to_ascii_lowercase.
-        for ext in DOC_FILE_EXTENSIONS {
-            assert!(
-                is_doc_path(&format!("README.{ext}")),
-                "{ext} should be classified as doc"
-            );
-            assert!(
-                is_doc_path(&format!("README.{}", ext.to_ascii_uppercase())),
-                "{ext} (uppercase) should be classified as doc"
-            );
-        }
-    }
-
-    #[test]
-    fn is_doc_path_rejects_code_extensions_and_extension_less_paths() {
-        for code in [
-            "src/lib.rs",
-            "main.py",
-            "App.tsx",
-            "go.mod",
-            "Makefile",
-            "LICENSE",
-        ] {
-            assert!(
-                !is_doc_path(code),
-                "{code} must not be classified as doc — D2 must not strip code paths"
-            );
-        }
-    }
-}
+// is_doc_path unit tests live next to the function itself in
+// `src/util/paths.rs` (moved here in v1.20.0 D4 so cmd_search and
+// cmd_usages can share one filter).
