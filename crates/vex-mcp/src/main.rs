@@ -443,10 +443,6 @@ fn handle_tools_list() -> Result<Value> {
     }))
 }
 
-// TODO: extract the envelope-lifting block (lines around `is_envelope` /
-// `structuredContent` / `_meta` assembly below) into a pure helper so the
-// `mcp_envelope_lifting_logic_mirrors_handle_tool_call` test can exercise the
-// real code path instead of mirroring it.
 fn handle_tool_call(params: &Option<Value>) -> Result<Value> {
     let params = params
         .as_ref()
@@ -476,7 +472,46 @@ fn handle_tool_call(params: &Option<Value>) -> Result<Value> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    if !output.status.success() {
+    build_mcp_response(
+        output.status.code(),
+        output.status.to_string(),
+        &stdout,
+        &stderr,
+        &built.subcommand,
+        &built.deprecated_args,
+        params,
+    )
+}
+
+/// Pure helper that turns a `vex` subprocess outcome into the JSON-RPC
+/// tool-call `result` value. Extracted from `handle_tool_call` so unit
+/// tests can drive every exit-code / envelope shape without a real
+/// subprocess (resolving the long-standing TODO around the
+/// `mcp_envelope_lifting_logic_mirrors_handle_tool_call` test).
+///
+/// **v1.19.1 (D1)**: exit code 1 is the documented "no results found"
+/// success path per `src/cli/exit_code.rs`. Pre-fix the wrapper
+/// collapsed exit 1 and exit 2 into a single `-32000` failure, so
+/// every clean empty result (`vex usages X --strict` with 0 hits,
+/// `vex search Y` with no matches, etc.) reached the MCP client as
+/// an error. Agents could no longer distinguish "binder confirmed
+/// 0 references → safe to delete" from "tool fell over → I don't
+/// know" — the flagship delete-safety query was unusable. Exit 1 now
+/// falls through to envelope parsing and the LLM sees
+/// `structuredContent.results = []`. Exit 2 (and signal-kill, where
+/// `exit_code` is `None`) still bails as a real error.
+fn build_mcp_response(
+    exit_code: Option<i32>,
+    exit_status_display: String,
+    stdout: &str,
+    stderr: &str,
+    subcommand: &str,
+    deprecated_args: &[String],
+    params: &Value,
+) -> Result<Value> {
+    let is_success = exit_code == Some(0);
+    let is_soft_empty = exit_code == Some(1);
+    if !is_success && !is_soft_empty {
         // Surface stdout alongside stderr — for many vex error paths the
         // JSON-error body is on stdout and stderr only carries the
         // `Error:` prefix line. Truncate so a runaway message can't
@@ -499,14 +534,10 @@ fn handle_tool_call(params: &Option<Value>) -> Result<Value> {
                 format!(" stdout: {trimmed}")
             }
         };
-        anyhow::bail!(
-            "vex {sub} failed ({}): {stderr}{stdout_snippet}",
-            output.status,
-            sub = built.subcommand
-        );
+        anyhow::bail!("vex {subcommand} failed ({exit_status_display}): {stderr}{stdout_snippet}");
     }
 
-    let content: Value = serde_json::from_str(&stdout)
+    let content: Value = serde_json::from_str(stdout)
         .unwrap_or_else(|_| serde_json::json!({ "raw": stdout.trim() }));
 
     // Detect a Phase 13 ResponseEnvelope: `{ protocol_version, capabilities,
@@ -583,13 +614,10 @@ fn handle_tool_call(params: &Option<Value>) -> Result<Value> {
     {
         meta.insert("traceparent".into(), Value::String(tp.to_string()));
     }
-    if !built.deprecated_args.is_empty() {
-        meta.insert(
-            "deprecated_args".into(),
-            serde_json::json!(built.deprecated_args),
-        );
+    if !deprecated_args.is_empty() {
+        meta.insert("deprecated_args".into(), serde_json::json!(deprecated_args));
     }
-    if let Some(trace) = extract_why_trace(&stderr) {
+    if let Some(trace) = extract_why_trace(stderr) {
         meta.insert("why".into(), trace);
     }
     if !meta.is_empty() {
@@ -2389,53 +2417,169 @@ INFO trailing line\n\
         );
     }
 
-    // Tautological mirror — this test re-implements the lifting logic instead
-    // of exercising `handle_tool_call`. Real coverage requires a way to inject
-    // a mock CLI stdout (handle_tool_call currently spawns the vex binary via
-    // `Command::new`). TODO: extract the envelope-lifting block into a pure
-    // helper that takes `(content: Value, params: &Value, deprecated_args,
-    // stderr)` and returns the `result` Value, then port this test to call
-    // that helper directly. Until then this test is ignored so it doesn't
-    // misleadingly pass when the production path regresses.
+    // v1.19.1 — was tautological pre-refactor. Now calls `build_mcp_response`
+    // directly so a regression in the production lifting logic actually
+    // fails the test. Locks the Stage 3 contract that `protocol_version`
+    // and `capabilities` reach top-level `result`.
     #[test]
-    #[ignore = "tautological mirror; real coverage blocked on extracting an envelope-lifting helper from handle_tool_call"]
-    fn mcp_envelope_lifting_logic_mirrors_handle_tool_call() {
-        // When the CLI returns a Phase 13 ResponseEnvelope, the MCP layer must
-        // surface protocol_version at the top level of result (not nested inside
-        // content[0].text only). Replays the lifting logic in handle_tool_call
-        // against a mock envelope to lock the contract in place.
-        let mock_cli_output = serde_json::json!({
+    fn build_mcp_response_lifts_protocol_version_and_capabilities_to_top_level() {
+        let mock_envelope = serde_json::json!({
             "protocol_version": "v1",
-            "capabilities": { "signals": true, "empty_reason": false, "bundle_modes": [], "why": true, "scope_filters": true, "metadata_filters": true, "auto_update": true },
+            "capabilities": {
+                "signals": true, "empty_reason": false, "bundle_modes": [],
+                "why": true, "scope_filters": true, "metadata_filters": true,
+                "auto_update": true, "history_diff": true,
+            },
             "_meta": { "vex.dev/index_age_ms": 42 },
             "results": []
         });
+        let stdout = serde_json::to_string(&mock_envelope).unwrap();
 
-        let mut result = serde_json::json!({
-            "content": [{
-                "type": "text",
-                "text": serde_json::to_string_pretty(&mock_cli_output).unwrap()
-            }]
-        });
-
-        // Mirror the Stage 3 lifting logic from handle_tool_call.
-        if let Some(pv) = mock_cli_output.get("protocol_version") {
-            result["protocol_version"] = pv.clone();
-        }
-        if let Some(caps) = mock_cli_output.get("capabilities") {
-            result["capabilities"] = caps.clone();
-        }
+        let result = build_mcp_response(
+            Some(0),
+            "exit status: 0".to_string(),
+            &stdout,
+            "",
+            "search",
+            &[],
+            &json!({}),
+        )
+        .expect("envelope-shaped success must lift cleanly");
 
         assert_eq!(
             result["protocol_version"].as_str(),
             Some("v1"),
-            "Stage 3 must lift protocol_version to top-level result; current shape is: {}",
-            result
+            "protocol_version must be lifted to top-level result; got: {result}"
+        );
+        assert_eq!(
+            result["capabilities"]["signals"].as_bool(),
+            Some(true),
+            "capabilities must be lifted to top-level result; got: {result}"
         );
         assert!(
-            result["capabilities"]["signals"].as_bool().unwrap_or(false),
-            "Stage 3 must lift capabilities block to top-level result; got: {}",
-            result
+            result["structuredContent"]["results"].is_array(),
+            "structuredContent.results must carry the lifted payload; got: {result}"
+        );
+    }
+
+    /// v1.19.1 D1 — exit code 1 (the documented "no results found"
+    /// CLI contract per `src/cli/exit_code.rs`) must pass through as a
+    /// successful MCP response with `structuredContent.results = []`,
+    /// NOT bail as a JSON-RPC `-32000` failure. Exit code 2 is a real
+    /// error and must still bail with the legacy message shape so MCP
+    /// clients can distinguish "clean 0 hits" from "tool fell over".
+    ///
+    /// Locks the post-fix contract that closed the field-report defect
+    /// where `usages X --strict` with 0 hits became an MCP hard error.
+    #[test]
+    fn build_mcp_response_passes_exit_one_through_and_bails_on_exit_two() {
+        // The CLI emits this exact envelope shape for an empty
+        // `usages --strict` against a real symbol with 0 references
+        // (reproduced live on 2026-06-22 against vex's own index).
+        let empty_envelope = serde_json::json!({
+            "protocol_version": "v1",
+            "capabilities": {
+                "signals": true, "empty_reason": false,
+                "bundle_modes": ["symbol", "pr-impact", "project"],
+                "why": true, "scope_filters": true, "metadata_filters": true,
+                "auto_update": true, "history_diff": true,
+            },
+            "_meta": { "vex.dev/index_age_ms": 5 },
+            "results": []
+        });
+        let stdout_exit1 = serde_json::to_string(&empty_envelope).unwrap();
+
+        // Scenario 1: exit 1 + valid envelope on stdout → success.
+        let ok = build_mcp_response(
+            Some(1),
+            "exit status: 1".to_string(),
+            &stdout_exit1,
+            "VEX_WHY: {\"mode\":\"strict\",\"hits_before_filter\":0,\"hits_after_filter\":0}\n",
+            "usages",
+            &[],
+            &json!({}),
+        )
+        .expect(
+            "exit 1 + envelope must pass through as success — the documented \
+             empty-result contract; pre-fix this bailed as -32000",
+        );
+        assert_eq!(
+            ok["structuredContent"]["results"].as_array().map(Vec::len),
+            Some(0),
+            "exit 1 must surface as structuredContent.results = []; got: {ok}"
+        );
+        assert_eq!(
+            ok["capabilities"]["signals"].as_bool(),
+            Some(true),
+            "envelope capabilities must still lift on exit-1 path; got: {ok}"
+        );
+
+        // Scenario 2: exit 2 + arbitrary error payload → still bails.
+        let err = build_mcp_response(
+            Some(2),
+            "exit status: 2".to_string(),
+            "{\"error\":\"corrupt index\"}",
+            "Error: index corrupted\n",
+            "usages",
+            &[],
+            &json!({}),
+        )
+        .expect_err("exit 2 must continue to bail as a real error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("vex usages failed"),
+            "exit 2 bail must mention the subcommand; got: {msg}"
+        );
+        assert!(
+            msg.contains("corrupt index"),
+            "exit 2 bail must surface stdout/stderr context; got: {msg}"
+        );
+
+        // Scenario 3: signal-kill (exit_code == None) — still bails so an
+        // OOM-killed `vex` doesn't masquerade as an empty result.
+        let err = build_mcp_response(
+            None,
+            "signal: 9 (SIGKILL)".to_string(),
+            "",
+            "",
+            "search",
+            &[],
+            &json!({}),
+        )
+        .expect_err("signal-killed CLI must continue to bail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("vex search failed"),
+            "signal-kill bail must mention the subcommand; got: {msg}"
+        );
+
+        // Scenario 4: exit 1 + malformed stdout (theoretical CLI bug).
+        // The wrapper must still return success (per the exit-code
+        // contract) but without an envelope-shaped `structuredContent`
+        // — `content[0].text` carries `{"raw": "<stdout>"}` so the
+        // client at least sees the raw output. Locks the fallback so a
+        // future "always coerce to envelope" change doesn't silently
+        // turn malformed-stdout into a JSON-RPC error.
+        let ok = build_mcp_response(
+            Some(1),
+            "exit status: 1".to_string(),
+            "not-an-envelope",
+            "",
+            "search",
+            &[],
+            &json!({}),
+        )
+        .expect("exit 1 + malformed stdout must still surface as success");
+        assert!(
+            ok.get("structuredContent").is_none(),
+            "non-envelope stdout must NOT populate structuredContent; got: {ok}"
+        );
+        let text = ok["content"][0]["text"]
+            .as_str()
+            .expect("content[0].text must be present on the fallback path");
+        assert!(
+            text.contains("\"raw\""),
+            "fallback path must surface raw stdout under content[0].text; got: {text}"
         );
     }
 
