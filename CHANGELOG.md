@@ -6,6 +6,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.19.1] - 2026-06-22
+
+Hot-fix release addressing two MCP-surface defects reported in an external
+agent field test against v1.19.0. Both are "engine ahead of surface" bugs —
+the underlying CLI behavior was correct, but the MCP wrapper delivered it
+through the wrong envelope.
+
+### Fixed — vex-mcp passes empty-result envelope as success (D1)
+
+- The MCP wrapper now distinguishes CLI exit code `1` (the documented
+  "no results found" success path per `src/cli/exit_code.rs`) from exit
+  `2` (real error). Pre-fix both collapsed into a single `-32000` JSON-RPC
+  failure, so every clean empty result — `usages X --strict` with zero
+  hits, `search` with no matches, `callers` against an unused symbol —
+  reached the MCP client as an opaque error. Agents could not tell
+  "binder confirmed 0 references → safe to delete" from "tool fell over
+  → I don't know", breaking the flagship delete-safety query.
+- Post-fix exit `1` falls through to envelope parsing: when the CLI
+  emits a well-formed `ResponseEnvelope` (which it does for every
+  built-in subcommand on the empty-result path), `structuredContent.results`
+  carries `[]` and `capabilities` lifts to the top level as on a normal
+  hit. If stdout is unparseable for any reason, the raw text falls back
+  to `content[0].text` as on the exit-0 fallback path. Exit `2` (and
+  signal-kill) still bails with the legacy message shape so real errors
+  stay visible.
+- Implementation: extracted `build_mcp_response` pure helper from
+  `handle_tool_call` in `crates/vex-mcp/src/main.rs` so the exit-code
+  branch is unit-testable without subprocess gymnastics (closes a
+  long-standing TODO around the previously `#[ignore]`d envelope-lift
+  test).
+
+### Fixed — `vex capabilities` mirrors the capability matrix into `results` (D3)
+
+- The dedicated `capabilities` tool now puts its capability matrix into
+  the envelope's `results` field in addition to the top-level
+  `capabilities` field. Pre-fix `results` was `null`, which lifted to
+  `structuredContent.results = null` in the MCP response — and per the
+  MCP spec, `structuredContent` is the LLM-visible payload channel.
+  Agents calling the dedicated capability-negotiation tool saw
+  `{"results":null}` and concluded the tool was dead, even though the
+  matrix shipped on every other tool's envelope.
+- The cost is a few duplicate JSON bytes; the benefit is that the
+  capability-negotiation tool actually surfaces capabilities to the
+  model via the path standard MCP clients read.
+
 ## [1.19.0] - 2026-06-19
 
 ### Changed — vex-mcp `show` / `check` missing-field errors mention legacy alias
