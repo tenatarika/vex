@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-06-22
+
+Coordinated "surface fixes, not engine fixes" release responding to an
+external field-test report against v1.19.0. Four items close one
+diagnostic workflow: D2 cleans up the noise default agents land on when
+they fall back from `--strict`; F1 collapses the manual delete-safety
+dance into one call; D4 makes search ranking auditable; D5 surfaces two
+previously CLI-only commands via MCP.
+
 ### Added — `search` exposes raw channel scores + `--code-only` filter (D4)
 
 - Per-result `signals` block in `vex search --format json` now carries
@@ -26,18 +35,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`--semantic` requested but the index has no embeddings — run
   `vex index --semantic`). Silent semantic no-ops are now detectable.
 
-### Added — `vex tests-for` and `vex history` surfaced via MCP (D5)
+### Added — MCP surface for existing `tests-for` and `history` commands (D5)
 
-- New `mcp__vex__tests_for` tool wraps the Phase 13.10 CLI command —
-  walks the call graph backward from a target symbol and returns the
-  test functions that transitively cover it, stamped with a `framework`
-  label (`pytest` / `jest` / `go-test` / …). Pre-D5 this was CLI-only,
-  forcing agents to shell out via Bash.
-- New `mcp__vex__history` tool wraps the v1.15.0 + Phase 14.9 CLI
-  command — every historical version of a symbol via the indexed
-  sidecar (~ms) or the query-time walker (~seconds). Full flag parity:
+- The existing Phase 13.10 `vex tests-for` CLI command (transitive
+  test coverage) is now reachable from MCP clients via the new
+  `mcp__vex__tests_for` tool. CLI itself unchanged — this is purely a
+  surface fix; pre-D5 agents had to shell out via Bash. Tool args
+  mirror the CLI: `target` / `max_hops` / `limit` / `test_pattern[]` /
+  `include_fixtures`.
+- The existing v1.15.0 + Phase 14.9 `vex history` CLI command
+  (every historical version of a symbol) is now reachable from MCP
+  clients via the new `mcp__vex__history` tool. Full flag parity:
   `depth` / `branch` / `limit` / `no_index` / `since` / `until` /
-  `author` / `kind` / `diff` / `exact_presence`.
+  `author` / `kind` / `diff` / `exact_presence`. The CLI's
+  `diff` + `exact_presence` mutual exclusion is rejected at the MCP
+  boundary as `-32602 Invalid params` instead of an opaque downstream
+  exit code.
 
 ### Added — `vex impact <Symbol>` blast-radius / delete-safety command (F1)
 
