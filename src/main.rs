@@ -3,6 +3,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 mod callgraph;
+mod channel;
 mod cli;
 mod diff;
 mod embed;
