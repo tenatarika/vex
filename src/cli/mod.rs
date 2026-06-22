@@ -8,6 +8,7 @@ pub(crate) mod cmd_eval;
 pub(crate) mod cmd_gpu;
 pub(crate) mod cmd_grep;
 pub(crate) mod cmd_history;
+pub(crate) mod cmd_impact;
 pub(crate) mod cmd_implementations;
 pub(crate) mod cmd_index;
 pub(crate) mod cmd_mcp;
@@ -154,6 +155,13 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             scope,
             diff,
         ),
+        Commands::Impact {
+            name,
+            path,
+            auto_update,
+            no_stale_check,
+            scope,
+        } => cmd_impact::impact(&ctx, name, path, auto_update, no_stale_check, scope),
         Commands::Usages {
             name,
             limit,

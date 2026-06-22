@@ -6,6 +6,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — `vex impact <Symbol>` blast-radius / delete-safety command (F1)
+
+- New CLI subcommand + MCP tool that collapses the historical
+  manual delete-safety dance (strict usages → grep → callers → cross-
+  check disagreement) into one call. Composes four reference
+  channels — strict refs (v5 reference_edges), legacy FST refs,
+  `grep \b<Name>\b` against the project, and direct call-graph
+  callers — into a single verdict (`safe` / `unsafe` / `uncertain`)
+  with a one-line explanation citing the load-bearing channel counts.
+- Verdict rule: `unsafe` if `strict_refs > 0` OR
+  `call_graph_callers > 0` (binder/graph confirms real usage);
+  `uncertain` if only text channels (FST / grep) hit (likely string-
+  dispatch / decorator / comment mention); `safe` only when every
+  channel reports zero hits. An unavailable channel (`available:
+  false`) does NOT drag the verdict toward `safe` — only `available:
+  true && count == 0` counts as a confirmation.
+- JSON envelope carries `{ symbol, verdict, verdict_explanation,
+  channels: { strict_refs, fst_refs, grep_word_boundary,
+  call_graph_callers } }` with per-channel `{ available, count,
+  sample[], truncated }` so an agent can drill into a specific
+  channel's hits without re-running the four sub-commands.
+- Documented in `README.md` (commands table) and
+  `docs/LIMITATIONS.md` §6 (the recommended delete-safety workflow,
+  with per-channel caveats so the verdict can be read accurately).
+
 ### Changed — `usages` (non-strict) strips def-site and prose mentions by default (D2)
 
 - Non-strict `vex usages X` (and the MCP `usages` tool without

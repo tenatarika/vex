@@ -307,6 +307,32 @@ pub enum Commands {
         diff: DiffFilterArgs,
     },
 
+    /// Delete-safety blast-radius report. Composes four independent
+    /// reference channels — strict refs (binder-resolved v5 edges),
+    /// the legacy FST refs, `grep \b<Name>\b` against the project,
+    /// and direct call-graph callers — into a single verdict
+    /// (`safe` / `unsafe` / `uncertain`) so an agent doesn't have to
+    /// hand-assemble safety from four sub-commands. v1.20.0 (F1).
+    Impact {
+        /// Symbol name to assess.
+        name: String,
+
+        /// Project root path (defaults to cwd).
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Auto-update index if stale (or bootstrap if missing) before searching.
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely.
+        #[arg(long)]
+        no_stale_check: bool,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
+    },
+
     /// Find all usages/references of a symbol.
     ///
     /// Default mode reads from the legacy refs FST (identifier mentions on
