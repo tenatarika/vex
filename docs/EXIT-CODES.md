@@ -43,10 +43,19 @@ code is `1` for both "genuinely unreachable" and "soft-degrade" cases
 `results.mode_hints.empty_reason` from the JSON envelope.
 
 **Always `0` on success:** `index`, `update`, `watch`, `self-update`,
-`status`, `outline`, `check`, `init`, `completions`, `eval`.
+`status`, `outline`, `check`, `init`, `completions`, `eval`, `impact`.
 
 These are actions or configuration queries. There is no
 "empty-but-successful" state worth distinguishing from regular success.
+
+**`vex impact` caveat — verdict is in the envelope, not the exit code.**
+`impact` always exits `0` on success (any `safe` / `unsafe` / `uncertain`
+verdict is a successful execution); a real handler error still exits `2`.
+Scripts that gate on impact must read `results.verdict` from the JSON
+envelope, NOT compare against exit `1` the way they would for `search` /
+`usages`. Rationale: the verdict is a structured outcome with three
+states, not a binary "did we find anything?" — collapsing it into the
+0/1 exit code would either lose information or surprise users.
 
 ## Why a side-channel instead of typed handler returns
 

@@ -318,6 +318,15 @@ pub(crate) fn impact(
     };
 
     // ── Channel 2: FST refs (legacy refs FST) ─────────────────────
+    //
+    // INTENTIONALLY does NOT apply `is_doc_path` (the D4 `--code-only`
+    // filter shared via `src/util/paths.rs`). Impact's job is to
+    // surface ALL textual references, including CHANGELOG / README
+    // mentions, so a symbol that's only documented externally
+    // produces an `uncertain` verdict instead of falsely-confident
+    // `safe`. The def-site filter IS applied (declarations aren't
+    // "uses") — that's the only D2-shared filter that makes sense for
+    // impact semantics.
     let fst_refs = match reader.ref_reader() {
         Some(ref_reader) => {
             let hits: Vec<HitLocation> = ref_reader
@@ -342,6 +351,15 @@ pub(crate) fn impact(
     };
 
     // ── Channel 3: grep \b<Name>\b across project ─────────────────
+    //
+    // INTENTIONALLY does NOT apply `is_doc_path` either — same
+    // reasoning as Channel 2. Grep is the broadest channel
+    // specifically to catch what the AST-walking pipelines skip:
+    // string-literal dispatch, configuration files, prose mentions,
+    // macros. Filtering doc paths here would defeat the verdict
+    // logic — a symbol whose only references are in CHANGELOG.md
+    // SHOULD produce `uncertain`, not `safe`. Tested by
+    // `tests/cli_impact_test.rs::impact_verdict_uncertain_when_only_text_mentions_in_docs`.
     let escaped = regex::escape(&name);
     let pattern = format!(r"\b{escaped}\b");
     let grep_hits_raw = crate::grep::search(&root, &pattern, None, GREP_HARD_CAP, ctx.excludes)

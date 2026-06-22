@@ -25,6 +25,15 @@ use super::{
 };
 
 fn signals_semantic(rank_in_similar: u32) -> Signals {
+    // NOTE (v1.20.0 D4): `semantic_cosine` is intentionally left as
+    // `None` here even though `semantic_rank` is populated. The
+    // bundle's `similar`-mode emit path already carries the raw
+    // similarity score in the outer `BundleItem.similarity` field,
+    // and threading it through `Signals` too would duplicate the
+    // datum at two different keys without adding information. Search
+    // (which has no equivalent outer field) IS the canonical home for
+    // `semantic_cosine`. An agent inspecting bundle results should
+    // read `item.similarity`, not `item.signals.semantic_cosine`.
     Signals {
         fst_hit: false,
         semantic_rank: Some(rank_in_similar),

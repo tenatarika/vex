@@ -34,6 +34,10 @@ across every tool.
 | `depth` | integer | Transitive callers walk depth (default 2). | `bundle` (mode: `pr-impact`) |
 | `path_glob` | string | Single path glob applied as a post-rank filter (separate from the universal `include`/`exclude` arrays). | `bundle` (mode: `project`) |
 | `top_n` | integer | Max top-ranked symbols to return (default 30). | `bundle` (mode: `project`) |
+| `target` | string | **Exact symbol name** whose test coverage / blast radius we want — canonical resolution key for `tests_for` (matches the CLI positional). Distinct from `symbol` only in that the intent is "this is what the agent wants to assess", not "this is what to look up". `symbol` is accepted as a deprecated alias. | `tests_for` |
+| `include_self` | boolean | (`usages` non-strict, v1.20.0 D2) Keep the row at the symbol's own definition line. Default `false` — v1.20.0+ strips it because "find all callers" doesn't want the declaration showing up as a usage. No-op under `strict: true`. | `usages` |
+| `include_docs` | boolean | (`usages` non-strict, v1.20.0 D2) Keep matches in `*.md` / `*.markdown` / `*.txt` / `*.rst` / `*.adoc` files. Default `false` — README/CHANGELOG mentions are prose, not callers. No-op under `strict: true`. | `usages` |
+| `code_only` | boolean | (`search`, v1.20.0 D4) Drop hits in prose-format files (`*.md` / `*.markdown` / `*.txt` / `*.rst` / `*.adoc`). Default `false` so `vex search README` still finds READMEs; pass for code-intent queries. Triggers a fetch-limit over-fetch so the post-filtered set still honours `limit`. | `search` |
 
 **Convention** (enforced by the 13.1 snapshot test): tool `description`
 fields lead with action verb + indexed-vs-scan tradeoff + latency hint
@@ -273,6 +277,8 @@ interactive use but off by default in automated pipelines.
   "hits_before_filter": 17,
   "hits_after_filter": 4,
   "prefix_suggestions": null,
+  "def_site_dropped": 1,
+  "docs_dropped": 2,
   "filter_applied": {
     "filter": "src/",
     "include": ["src/**"],
@@ -294,6 +300,17 @@ interactive use but off by default in automated pipelines.
   `Did you mean` prefix-fallback engaged with `n` candidates. `null`
   when there were exact hits OR `--strict` is in use (the strict path
   has no prefix-fallback today).
+- `def_site_dropped` (v1.20.0, D2) — count of rows the non-strict
+  path stripped because they matched the symbol's own definition
+  line. `0` (omitted from JSON via `skip_serializing_if`) on the
+  strict path or when `--include-self` / `include_self: true` is
+  set. Pre-v1.20 there was no def-site filter and every "find all
+  callers" non-strict query surfaced the declaration row as a "use".
+- `docs_dropped` (v1.20.0, D2) — count of rows the non-strict path
+  stripped because their file extension is a doc / prose format
+  (`*.md` / `*.markdown` / `*.txt` / `*.rst` / `*.adoc`). `0`
+  (omitted) on the strict path or when `--include-docs` /
+  `include_docs: true` is set.
 
 ### `similar` trace
 
@@ -395,6 +412,129 @@ ingest CLI stdout should detect the envelope via
 case-insensitive) falls back to the pre-1.9 bare-array shape on every
 `--format json` subcommand. Intended for pipelines that haven't
 migrated yet; slated for removal in v2.0.
+
+## v1.20.0 — new tools and envelope fields
+
+Three new MCP tools landed in v1.20.0, all wrapping existing CLI
+capability via the same spawn-subprocess pattern as every other vex
+MCP tool. All are additive to clients running v1.19.x — the
+`tools/list` response simply gains three entries.
+
+### `impact` (F1)
+
+One-call delete-safety report. Composes four reference channels
+(strict refs, FST refs, grep `\b<Name>\b`, call-graph callers) into
+a single verdict (`safe` / `unsafe` / `uncertain`) with a per-channel
+evidence sample. **Use BEFORE proposing to delete or rename a symbol** —
+one call replaces the historical manual usages → grep → callers dance
+that `pets/CLAUDE.md` documented.
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `symbol` | string | yes | Exact symbol name to assess (canonical). `name` is the deprecated alias. |
+| `project_root` | string | no | Absolute project root (defaults to MCP cwd). |
+| `auto_update` / `no_stale_check` / `include` / `exclude` | — | no | Same role as everywhere else. |
+
+`results` shape:
+
+```json
+{
+  "symbol": "build_mcp_response",
+  "verdict": "unsafe",
+  "verdict_explanation": "binder/graph confirmed real usage (strict_refs=6, call_graph_callers=3). Do not delete without rewriting call sites.",
+  "channels": {
+    "strict_refs":        { "available": true,  "count": 6, "sample": [{"path": "…", "line": 475}, …], "truncated": false },
+    "fst_refs":           { "available": true,  "count": 7, "sample": [...], "truncated": false },
+    "grep_word_boundary": { "available": true,  "count": 8, "sample": [...], "truncated": false },
+    "call_graph_callers": { "available": true,  "count": 3, "sample": [...], "truncated": false }
+  }
+}
+```
+
+Verdict rule (see `src/cli/cmd_impact.rs::derive_verdict`):
+- `unsafe` ⇔ `strict_refs > 0` OR `call_graph_callers > 0` (binder/graph confirmed real usage).
+- `uncertain` ⇔ only `fst_refs` / `grep_word_boundary` hit (likely string-dispatch / decorator / comment mention) OR all binder channels reported `available: false`.
+- `safe` ⇔ every available channel reports `0` AND at least one binder channel ran. An unavailable binder channel's `0` is informationless and downgrades to `uncertain`.
+
+`vex impact` always exits 0 — agents read the verdict from the
+envelope, not the exit code. (See `docs/EXIT-CODES.md` for the
+contrast with other query commands.)
+
+### `tests_for` (D5)
+
+Surfaces the Phase 13.10 CLI command `vex tests-for` via MCP —
+previously CLI-only. Walks the call graph backward from `<target>`,
+keeps rows under recognized test-path globs (Rust / Python / TS-JS /
+Go / Java / Kotlin / C# / C++), stamps each row with a `framework`
+label (`pytest` / `jest` / `go-test` / …).
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `target` | string | yes | Symbol whose test coverage to find. `symbol` is the deprecated alias. |
+| `max_hops` | integer | no | Reverse-call-graph walk depth (default 6). |
+| `limit` | integer | no | Max results (default 200). |
+| `test_pattern` | string[] | no | Glob patterns for test paths; REPLACES the default set when supplied. |
+| `include_fixtures` | boolean | no | Admit one forward hop of test-path helpers (default false). |
+
+### `history` (D5)
+
+Surfaces the v1.15.0 + Phase 14.9 CLI command `vex history` via MCP —
+previously CLI-only. Every historical version of a symbol reachable
+from a chosen tip. With `vex index --history` previously run,
+queries hit a persistent FST sidecar (~ms); without it, shells out
+to `git log` (~seconds). Indexed mode also finds symbols whose name
+has been DELETED from HEAD — the walker can't.
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `symbol` | string | yes | Symbol name to walk through history. `name` is the deprecated alias. |
+| `depth` | integer | no | Max commits to walk per file (walker mode). Unbounded by default. |
+| `branch` | string | no | Restrict the walk to this revision (defaults to HEAD). |
+| `limit` | integer | no | Cap the total result set. Omit for unbounded (long-lived repos: set to keep latency in check). |
+| `no_index` | boolean | no | Force the query-time walker even when a sidecar is present. Default false. |
+| `since` / `until` | string | no | Date filter `YYYY-MM-DD` (inclusive). |
+| `author` | string | no | Walker-only; case-insensitive substring match. Indexed path rejects with an error pointing at `no_index: true`. |
+| `kind` | string | no | Keep entries matching the symbol kind exactly (lowercase). |
+| `diff` | boolean | no | Render unified diffs between consecutive versions of the same `(symbol, kind)` pair. Mutually exclusive with `exact_presence`. |
+| `exact_presence` | boolean | no | Per-entry: list the exact commits where its blob lived in the file. **Adds seconds-scale latency per file** — only pass when you specifically need the exact commit set. |
+
+### Per-result `Signals` (D4)
+
+The `signals` block on each `search` result row gains two raw-score
+fields alongside the existing rank ordinals:
+
+```json
+{
+  "fst_hit": true,
+  "bm25_rank": 2,
+  "bm25_score": 3.033,
+  "semantic_rank": 0,
+  "semantic_cosine": 0.812
+}
+```
+
+- `bm25_score` (`f64`, optional) — raw BM25 score from the
+  pre-fusion channel. `None` when this row did not appear in the
+  BM25 channel.
+- `semantic_cosine` (`f32`, optional) — raw cosine similarity from
+  the pre-fusion semantic channel. `None` when this row did not
+  appear in the semantic channel OR the channel did not run (see
+  `_meta.vex.dev/semantic_channel` for the reason).
+
+### `_meta.vex.dev/semantic_channel` (D4)
+
+New optional envelope field on `search` responses reporting WHY the
+semantic channel did NOT contribute. Absent (no key in `_meta`) when
+the channel ran normally. Values:
+
+- `"not_requested"` — caller did not pass `--semantic` /
+  `semantic: true`.
+- `"index_lacks_vectors"` — caller asked for semantic but the index
+  has no embeddings; re-run `vex index --semantic`.
+
+Pre-v1.20 the semantic channel silently no-op'd in both cases and
+agents couldn't tell whether `semantic_rank: None` on a result
+meant "didn't match" or "channel didn't run".
 
 ## Stability guarantees
 
