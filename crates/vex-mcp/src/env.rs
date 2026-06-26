@@ -4,7 +4,7 @@
 //! Extracted from `main.rs` in the v1.21 split — see
 //! `.claude/Task/v1.21-vex-mcp-split.md`.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 /// v1.12.0 S8.3 — resolve the `vex` binary path and validate it before
 /// `Command::spawn` so a typo'd `VEX_BIN` surfaces a human-readable error
@@ -38,6 +38,7 @@ pub(crate) fn resolve_vex_bin() -> Result<String> {
     // check above is sufficient there.
     #[cfg(unix)]
     {
+        use anyhow::Context;
         use std::os::unix::fs::PermissionsExt;
         let mode = path
             .metadata()
