@@ -337,6 +337,14 @@ pub enum Commands {
         #[arg(long)]
         no_stale_check: bool,
 
+        /// Opt-in: drop text-channel hits in prose-format files
+        /// (`*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc`). Off by default
+        /// so a symbol mentioned only in CHANGELOG still yields
+        /// `Uncertain`; pass when you want a code-only blast radius
+        /// (v1.20.1 — D4 parity with `vex search --code-only`).
+        #[arg(long)]
+        exclude_docs: bool,
+
         #[command(flatten)]
         scope: ScopeArgs,
     },

@@ -239,3 +239,67 @@ fn impact_envelope_carries_full_contracted_shape() {
         );
     }
 }
+
+/// v1.20.1 (D4 parity) — `--exclude-docs` is an opt-in escape hatch for
+/// agents that want a code-only blast radius. Fixture: `payment_processor`
+/// is defined in code but never called; its name is mentioned only in
+/// CHANGELOG.md. A second `other()` call site exists so the indexer
+/// writes the v5 reference_edges + v4 call graph sections (without
+/// either, binder channels report `available: false` and verdict
+/// cannot become `safe`).
+///
+/// Without the flag the text channels catch the prose mention and
+/// `impact_verdict_uncertain_when_only_text_mentions_in_docs` already
+/// covers the `uncertain` path. WITH the flag, FST + grep both report
+/// zero, binder channels confirm zero, and the verdict collapses to
+/// `safe`. Default-off is critical — the existing `uncertain` test
+/// must keep passing.
+#[test]
+fn impact_exclude_docs_strips_prose_mentions_and_flips_verdict_to_safe() {
+    let tmp = TempDir::new().unwrap();
+    write_minimal_index_at(
+        tmp.path(),
+        &[
+            (
+                "src/lib.rs",
+                "pub fn payment_processor() {}\n\
+                 pub fn other() {}\n\
+                 fn caller() { other(); }\n",
+            ),
+            (
+                "CHANGELOG.md",
+                "## Notes\n\nMention of payment_processor here.\n",
+            ),
+        ],
+    );
+
+    // With the opt-in flag: text channels drop the CHANGELOG hit, binder
+    // channels still report 0, so verdict is `safe`.
+    let assert = assert_ran(vex_in(tmp.path()).args([
+        "impact",
+        "payment_processor",
+        "--exclude-docs",
+        "--format",
+        "json",
+    ]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let out: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("impact stdout is not valid JSON: {e}\n---\n{stdout}"));
+    let results = &out["results"];
+
+    assert_eq!(
+        results["verdict"].as_str(),
+        Some("safe"),
+        "exclude_docs must strip the CHANGELOG mention so the verdict collapses to safe, got: {results}"
+    );
+    assert_eq!(
+        results["channels"]["grep_word_boundary"]["count"].as_u64(),
+        Some(0),
+        "grep must report 0 with --exclude-docs (the only hit was in CHANGELOG.md), got: {results}"
+    );
+    assert_eq!(
+        results["channels"]["fst_refs"]["count"].as_u64(),
+        Some(0),
+        "fst_refs must report 0 with --exclude-docs (the only hit was in CHANGELOG.md), got: {results}"
+    );
+}

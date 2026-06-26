@@ -1,6 +1,6 @@
 ---
-source: crates/vex-mcp/src/main.rs
-assertion_line: 2876
+source: crates/vex-mcp/src/tests.rs
+assertion_line: 443
 expression: descriptors
 ---
 [
@@ -543,6 +543,11 @@ expression: descriptors
             "type": "string"
           },
           "type": "array"
+        },
+        "exclude_docs": {
+          "default": false,
+          "description": "(v1.20.1, D4 parity) Opt-in: drop text-channel hits in prose-format files (`*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc`). Default off so a symbol mentioned only in CHANGELOG still yields `uncertain`; pass when you want a code-only blast radius (binder channels are unaffected).",
+          "type": "boolean"
         },
         "include": {
           "description": "Whitelist results by path glob, gitignore syntax (repeatable). Applied to every channel — useful for scoping to e.g. `src/**` when assessing a library symbol.",

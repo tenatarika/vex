@@ -204,7 +204,8 @@ pub(crate) fn tool_descriptors() -> Value {
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable). Applied to every channel — useful for scoping to e.g. `src/**` when assessing a library symbol." },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)." }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)." },
+                    "exclude_docs": { "type": "boolean", "description": "(v1.20.1, D4 parity) Opt-in: drop text-channel hits in prose-format files (`*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc`). Default off so a symbol mentioned only in CHANGELOG still yields `uncertain`; pass when you want a code-only blast radius (binder channels are unaffected).", "default": false }
                 },
                 "required": ["symbol"]
             }

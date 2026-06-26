@@ -109,6 +109,7 @@ pub(crate) fn impact(
     path: Option<std::path::PathBuf>,
     auto_update: bool,
     no_stale_check: bool,
+    exclude_docs: bool,
     scope: ScopeArgs,
 ) -> Result<()> {
     let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
@@ -133,6 +134,7 @@ pub(crate) fn impact(
         def_sites: &def_sites,
         path_scope: &path_scope,
         excludes: ctx.excludes,
+        exclude_docs,
     };
 
     // Run every channel; collect into a vec for the data-driven

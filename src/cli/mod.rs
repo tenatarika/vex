@@ -162,8 +162,17 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             path,
             auto_update,
             no_stale_check,
+            exclude_docs,
             scope,
-        } => cmd_impact::impact(&ctx, name, path, auto_update, no_stale_check, scope),
+        } => cmd_impact::impact(
+            &ctx,
+            name,
+            path,
+            auto_update,
+            no_stale_check,
+            exclude_docs,
+            scope,
+        ),
         Commands::Usages {
             name,
             limit,

@@ -54,12 +54,15 @@ pub(crate) fn build_impact(
 ) -> Result<(String, Vec<String>)> {
     // v1.20.0 (F1) — one-call delete-safety report. Composes
     // strict refs + FST refs + grep \b<Name>\b + call-graph
-    // callers into a single verdict. No per-channel knobs at
-    // the MCP surface (yet) — the CLI defaults are tuned for
-    // the agent use case.
+    // callers into a single verdict.
+    // v1.20.1 — opt-in `exclude_docs` strips text-channel hits in
+    // prose-format paths (D4 parity with `vex search --code-only`).
     let symbol = read_canonical_str(args, "symbol", "name", deprecated)?
         .ok_or_else(|| ParamError::missing("symbol"))?;
     let mut extra = vec![symbol.to_string()];
+    if opt_bool(args, "exclude_docs", false)? {
+        extra.push("--exclude-docs".into());
+    }
     push_auto_update(&mut extra, args)?;
     push_no_stale_check(&mut extra, args)?;
     push_scope(&mut extra, args)?;

@@ -144,6 +144,15 @@ pub struct ChannelContext<'a> {
     pub def_sites: &'a HashSet<(String, u32)>,
     pub path_scope: &'a PathScope,
     pub excludes: &'a [String],
+    /// Opt-in: when true, FST + grep channels drop hits in
+    /// `*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc` paths
+    /// (see [`crate::util::paths::is_doc_path`]). v1.20.1 (D4
+    /// parity with `vex search --code-only`). Off by default —
+    /// the `Uncertain`-verdict story for prose-only mentions
+    /// (e.g. a name appearing only in CHANGELOG) is the whole
+    /// point of `vex impact`; this flag opts out for agents that
+    /// want a code-only blast radius.
+    pub exclude_docs: bool,
 }
 
 /// Trait implemented by each reference channel. Returns
@@ -363,11 +372,13 @@ impl Channel for StrictRefsChannel {
 
 /// Legacy FST identifier scan. Catches every CamelCase / snake_case
 /// occurrence of the name from AST identifier nodes. False-positives
-/// on comments and string literals (Text tier). INTENTIONALLY does
-/// NOT apply `is_doc_path` — impact's job is to surface prose
-/// mentions so a symbol referenced only in CHANGELOG yields
-/// `Uncertain` instead of falsely-confident `Safe`. Def-site filter
-/// IS applied (declarations aren't "uses").
+/// on comments and string literals (Text tier). By default does NOT
+/// apply `is_doc_path` — impact's job is to surface prose mentions
+/// so a symbol referenced only in CHANGELOG yields `Uncertain`
+/// instead of falsely-confident `Safe`. Opt-in `ChannelContext::exclude_docs`
+/// (v1.20.1, D4 parity) strips prose paths for agents that explicitly
+/// want a code-only blast radius. Def-site filter IS always applied
+/// (declarations aren't "uses").
 pub struct FstRefsChannel;
 
 impl Channel for FstRefsChannel {
@@ -394,6 +405,9 @@ impl Channel for FstRefsChannel {
                 if !ctx.path_scope.accept(&path) {
                     return None;
                 }
+                if ctx.exclude_docs && crate::util::paths::is_doc_path(&path) {
+                    return None;
+                }
                 Some(HitLocation { path, line: e.line })
             })
             .collect();
@@ -404,10 +418,12 @@ impl Channel for FstRefsChannel {
 /// Word-boundary regex scan via `crate::grep`. Catches what the
 /// AST-walking pipelines skip: string-literal dispatch, macros,
 /// configuration files, prose mentions. Text tier. Like
-/// `FstRefsChannel`, INTENTIONALLY does NOT apply `is_doc_path` —
+/// `FstRefsChannel`, by default does NOT apply `is_doc_path` —
 /// filtering prose paths here would defeat the `Uncertain` verdict
 /// for symbols whose only references are external (covered by the
 /// integration test `impact_verdict_uncertain_when_only_text_mentions_in_docs`).
+/// Opt-in `ChannelContext::exclude_docs` strips prose paths
+/// for agents that explicitly want a code-only blast radius.
 pub struct GrepWordBoundaryChannel;
 
 impl Channel for GrepWordBoundaryChannel {
@@ -435,6 +451,9 @@ impl Channel for GrepWordBoundaryChannel {
                     return None;
                 }
                 if !ctx.path_scope.accept(&posix) {
+                    return None;
+                }
+                if ctx.exclude_docs && crate::util::paths::is_doc_path(&posix) {
                     return None;
                 }
                 Some(HitLocation { path: posix, line })
