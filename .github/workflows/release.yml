@@ -23,6 +23,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: rui314/setup-mold@v1
         if: matrix.os == 'ubuntu-latest'
+      # rustc (LLVM 17) looks for libclang_rt.osx.a under .../clang/17/lib/darwin,
+      # but recent macos-latest runners ship a newer Xcode whose compiler-rt lives
+      # under a different clang version dir → `ld: library 'clang_rt.osx' not found`.
+      # Point LIBRARY_PATH at the runner's actual clang_rt dir so the linker finds
+      # it regardless of the Xcode/rustc LLVM-major skew.
+      - name: Fix clang_rt.osx linker path (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          rt=$(find -L "$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang" \
+                       /Library/Developer/CommandLineTools/usr/lib/clang \
+                  -name 'libclang_rt.osx.a' 2>/dev/null | head -1)
+          if [ -z "$rt" ]; then echo "::error::libclang_rt.osx.a not found on runner"; exit 1; fi
+          echo "clang_rt dir: $(dirname "$rt")"
+          echo "LIBRARY_PATH=$(dirname "$rt")${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
       - run: cargo fmt --check
         if: matrix.os == 'ubuntu-latest'
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -57,6 +72,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: rui314/setup-mold@v1
         if: matrix.os == 'ubuntu-latest'
+
+      # See the identical step in the `test` job — works around the macOS
+      # rustc(LLVM 17)/Xcode clang_rt version skew that breaks linking.
+      - name: Fix clang_rt.osx linker path (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          rt=$(find -L "$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang" \
+                       /Library/Developer/CommandLineTools/usr/lib/clang \
+                  -name 'libclang_rt.osx.a' 2>/dev/null | head -1)
+          if [ -z "$rt" ]; then echo "::error::libclang_rt.osx.a not found on runner"; exit 1; fi
+          echo "clang_rt dir: $(dirname "$rt")"
+          echo "LIBRARY_PATH=$(dirname "$rt")${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
 
       - name: Build
         # --workspace required: the root Cargo.toml is a hybrid workspace
