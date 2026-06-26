@@ -18,6 +18,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # Xcode 16.3+ dropped the static libclang_rt.osx.a that rustc's link
+      # step references (`-lclang_rt.osx`) → `ld: library 'clang_rt.osx' not
+      # found` on recent macos runners. Pin 16.2, the last Xcode shipping it.
+      - uses: maxim-lobanov/setup-xcode@v1
+        if: runner.os == 'macOS'
+        with:
+          xcode-version: "16.2"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # mold linker on Linux only — rust-lld hits SIGBUS / OOM when
@@ -147,6 +154,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # See the `test` job: pin Xcode 16.2 so the macOS (gpu-coreml) leg links.
+      - uses: maxim-lobanov/setup-xcode@v1
+        if: runner.os == 'macOS'
+        with:
+          xcode-version: "16.2"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --features ${{ matrix.features }}
