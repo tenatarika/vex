@@ -19,14 +19,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      # Xcode 16.3+ dropped the static libclang_rt.osx.a that rustc's linker
-      # invocation references (`-lclang_rt.osx`), so the default Xcode on recent
-      # macos runners fails with `ld: library 'clang_rt.osx' not found`. Pin to
-      # 16.2, the last Xcode that still ships the static compiler-rt archive.
-      - uses: maxim-lobanov/setup-xcode@v1
+      # Modern Xcode (16.3+, and the 26.x on current runners) dropped the static
+      # libclang_rt.osx.a that rustc references via `-lclang_rt.osx`. Homebrew
+      # LLVM still ships it; expose its dir via LIBRARY_PATH so the link resolves.
+      - name: Provide static clang_rt.osx via Homebrew LLVM (macOS)
         if: runner.os == 'macOS'
-        with:
-          xcode-version: "16.2"
+        run: |
+          set -euo pipefail
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          rt=$(find "$(brew --prefix llvm)/lib/clang" -name 'libclang_rt.osx.a' 2>/dev/null | head -1)
+          [ -n "$rt" ] || { echo "::error::libclang_rt.osx.a not found under $(brew --prefix llvm)"; exit 1; }
+          echo "clang_rt dir: $(dirname "$rt")"
+          echo "LIBRARY_PATH=$(dirname "$rt")${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: rui314/setup-mold@v1
@@ -59,13 +63,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      # See the `test` job: pin Xcode 16.2 (last with the static
-      # libclang_rt.osx.a) so the aarch64-apple-darwin link doesn't fail with
-      # `ld: library 'clang_rt.osx' not found` on Xcode 16.3+ runners.
-      - uses: maxim-lobanov/setup-xcode@v1
+      # See the `test` job: expose Homebrew LLVM's static clang_rt.osx so the
+      # aarch64-apple-darwin release link succeeds on Xcode-26 runners.
+      - name: Provide static clang_rt.osx via Homebrew LLVM (macOS)
         if: runner.os == 'macOS'
-        with:
-          xcode-version: "16.2"
+        run: |
+          set -euo pipefail
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          rt=$(find "$(brew --prefix llvm)/lib/clang" -name 'libclang_rt.osx.a' 2>/dev/null | head -1)
+          [ -n "$rt" ] || { echo "::error::libclang_rt.osx.a not found under $(brew --prefix llvm)"; exit 1; }
+          echo "clang_rt dir: $(dirname "$rt")"
+          echo "LIBRARY_PATH=$(dirname "$rt")${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
