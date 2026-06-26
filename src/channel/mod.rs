@@ -106,9 +106,16 @@ pub struct DropCounts {
 pub struct ChannelOutput {
     pub available: bool,
     pub unavailable_reason: Option<String>,
-    /// Raw fetch count before any `path_scope` / `def_site` / `docs`
-    /// filter ran. Survivor count = `hits.len()`; total drops =
-    /// `pre_filter_count - hits.len()`.
+    /// Raw fetch count for THIS channel's domain, before any
+    /// `path_scope` / `def_site` / `docs` filter ran. Survivor count
+    /// = `hits.len()`; total drops attributable to those three
+    /// filters = `pre_filter_count - hits.len()` minus any
+    /// channel-specific exclusions (see below). Note: each channel
+    /// defines its own "domain" — e.g. `TransitiveCallersChannel`
+    /// excludes depth-1 rows from `pre_filter_count` because those
+    /// callers belong to `CallGraphCallersChannel`, not here. Trace
+    /// consumers should NOT cross-sum `pre_filter_count` across
+    /// channels expecting a single global "raw fetch" view.
     pub pre_filter_count: usize,
     /// Post-filter hits in channel-native order. NOT capped to
     /// `SAMPLE_LIMIT` — callers that want the impact wire envelope
@@ -249,6 +256,13 @@ pub struct ChannelContext<'a> {
     /// want a code-only blast radius. cmd_usages mirrors this
     /// (`--include-docs` to opt back in).
     pub exclude_docs: bool,
+    /// BFS hop budget for transitive-callers traversal. v1.21.0:
+    /// `vex impact --depth N` lets agents see the full upstream
+    /// blast radius up to N call-graph hops. `1` (default) is
+    /// "direct callers only" — `TransitiveCallersChannel` reports
+    /// `unavailable` since its job is depth ≥ 2. Bounded at 16
+    /// elsewhere to keep BFS bounded on monorepos.
+    pub depth: u32,
 }
 
 /// Trait implemented by each reference channel. Returns
@@ -679,6 +693,89 @@ impl Channel for CallGraphCallersChannel {
     }
 }
 
+/// Transitive call-graph traversal — `find_reachable` BFS through the
+/// persistent v4 call graph up to `ctx.depth` hops, reporting every
+/// caller at depth ≥ 2 (the direct depth-1 callers stay on
+/// [`CallGraphCallersChannel`]; this channel surfaces the indirect
+/// upstream blast radius). Binder tier — a transitive call edge is
+/// a confirmed structural dependency even though only the
+/// intermediate caller directly references the symbol; deleting the
+/// target still ripples through compilation via the binder-resolved
+/// chain.
+///
+/// `available: false` when `ctx.depth < 2` (the user asked for
+/// direct-only — there is nothing transitive to report) or when the
+/// index lacks the v4 call-graph section. v1.21.0 (`vex impact
+/// --depth N`).
+pub struct TransitiveCallersChannel;
+
+impl Channel for TransitiveCallersChannel {
+    fn name(&self) -> &'static str {
+        "transitive_callers"
+    }
+    fn tier(&self) -> ChannelTier {
+        ChannelTier::Binder
+    }
+    fn run(&self, ctx: &ChannelContext<'_>) -> Result<ChannelOutput> {
+        if ctx.depth < 2 {
+            return Ok(ChannelOutput::unavailable(
+                "transitive walk disabled (--depth=1 — see call_graph_callers for direct callers; \
+                 pass --depth=2 or more to enable)",
+            ));
+        }
+        if !ctx.reader.has_call_graph() {
+            return Ok(ChannelOutput::unavailable(
+                "index has no v4 call graph section (pre-Phase 10.2 index, or empty call-edges) \
+                 — re-run `vex index`",
+            ));
+        }
+        // Borrow the reader for the closure; `find_reachable` calls
+        // `callers_of` once per BFS frontier node, so the closure must
+        // accept `&str` and resolve via the call-graph FST.
+        let reader = ctx.reader;
+        let callers_of = |name: &str| {
+            crate::store::call_graph::find_callers_fast(
+                reader,
+                name,
+                crate::callgraph::CALLERS_FETCH_CAP,
+            )
+        };
+        let matches = crate::callgraph::bfs::find_reachable(
+            callers_of,
+            ctx.symbol,
+            ctx.depth as usize,
+            crate::callgraph::CALLERS_FETCH_CAP,
+        );
+        // Drop depth-1 rows up front so they don't inflate
+        // `pre_filter_count` — direct callers are reported by
+        // `CallGraphCallersChannel`, not here, and counting them as
+        // "pre-filter" here would mislead `--why` trace consumers into
+        // seeing a silent loss with no attributed category. The two
+        // binder channels cover disjoint depth ranges by construction.
+        let transitive: Vec<_> = matches.into_iter().filter(|m| m.depth >= 2).collect();
+        let pre_filter_count = transitive.len();
+        let mut hits = Vec::new();
+        let mut dropped = DropCounts::default();
+        for m in transitive {
+            if !ctx.path_scope.accept(&m.path) {
+                dropped.scope += 1;
+                continue;
+            }
+            let Ok(line) = u32::try_from(m.line) else {
+                continue;
+            };
+            hits.push(HitLocation { path: m.path, line });
+        }
+        Ok(ChannelOutput {
+            available: true,
+            unavailable_reason: None,
+            pre_filter_count,
+            hits,
+            dropped,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -931,6 +1028,7 @@ mod tests {
         assert_eq!(FstRefsChannel.tier(), ChannelTier::Text);
         assert_eq!(GrepWordBoundaryChannel.tier(), ChannelTier::Text);
         assert_eq!(CallGraphCallersChannel.tier(), ChannelTier::Binder);
+        assert_eq!(TransitiveCallersChannel.tier(), ChannelTier::Binder);
     }
 
     #[test]
@@ -941,5 +1039,6 @@ mod tests {
         assert_eq!(FstRefsChannel.name(), "fst_refs");
         assert_eq!(GrepWordBoundaryChannel.name(), "grep_word_boundary");
         assert_eq!(CallGraphCallersChannel.name(), "call_graph_callers");
+        assert_eq!(TransitiveCallersChannel.name(), "transitive_callers");
     }
 }

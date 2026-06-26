@@ -25,7 +25,7 @@ use super::scope;
 use crate::channel::{
     build_def_sites, derive_verdict, CallGraphCallersChannel, Channel, ChannelContext,
     ChannelInvocation, ChannelResult, FstRefsChannel, GrepWordBoundaryChannel, StrictRefsChannel,
-    Verdict,
+    TransitiveCallersChannel, Verdict,
 };
 use crate::protocol::capabilities;
 use crate::store::reader::IndexReader;
@@ -41,7 +41,17 @@ const DEFAULT_CHANNELS: &[&dyn Channel] = &[
     &FstRefsChannel,
     &GrepWordBoundaryChannel,
     &CallGraphCallersChannel,
+    &TransitiveCallersChannel,
 ];
+
+/// Upper bound for `--depth N`. `vex reachable` defaults its hop
+/// budget to 6; `vex impact --depth` allows a more conservative 16
+/// ceiling for delete-safety blast radius (deeper walks are rarely
+/// useful on monorepos and the BFS visited set prevents cycles, but
+/// 16 is the practical cliff). The default value (`1`) is owned by
+/// clap (`default_value = "1"` on the CLI arg) so the constant here
+/// is purely the safety ceiling.
+const MAX_DEPTH: u32 = 16;
 
 /// Wire-format envelope for the four invocation results. v1.21.0
 /// ships a struct (one field per channel) so MCP clients can dot-access
@@ -56,6 +66,10 @@ struct ImpactChannels {
     fst_refs: ChannelResult,
     grep_word_boundary: ChannelResult,
     call_graph_callers: ChannelResult,
+    /// v1.21.0 — transitive callers up to `--depth N` (default 1
+    /// reports `available: false` here so the wire envelope stays
+    /// additive without changing the depth-1 default story).
+    transitive_callers: ChannelResult,
 }
 
 impl ImpactChannels {
@@ -87,6 +101,7 @@ impl ImpactChannels {
             fst_refs: take(&mut invocations, "fst_refs")?,
             grep_word_boundary: take(&mut invocations, "grep_word_boundary")?,
             call_graph_callers: take(&mut invocations, "call_graph_callers")?,
+            transitive_callers: take(&mut invocations, "transitive_callers")?,
         })
     }
 }
@@ -110,8 +125,26 @@ pub(crate) fn impact(
     auto_update: bool,
     no_stale_check: bool,
     exclude_docs: bool,
+    depth: u32,
     scope: ScopeArgs,
 ) -> Result<()> {
+    // Clamp `--depth` to `[1, MAX_DEPTH]`. `0` is meaningless (no
+    // callers ever) and explicit user input above `MAX_DEPTH` would
+    // run the BFS unbounded on monorepos. Silent clamp instead of
+    // bailing — agents that ask for depth=100 still want a useful
+    // answer at depth=16. Emit a `tracing::warn!` on out-of-range so
+    // humans running interactively see the clamp; agents reading
+    // JSON ignore stderr.
+    let original_depth = depth;
+    let depth = depth.clamp(1, MAX_DEPTH);
+    if original_depth != depth {
+        tracing::warn!(
+            requested = original_depth,
+            applied = depth,
+            max = MAX_DEPTH,
+            "vex impact: --depth clamped to [1, {MAX_DEPTH}]"
+        );
+    }
     let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
     let root = resolve_root(path)?.canonicalize()?;
     let index_path = ensure_index_ready(
@@ -136,6 +169,7 @@ pub(crate) fn impact(
         excludes: ctx.excludes,
         filter_def_sites: true,
         exclude_docs,
+        depth,
     };
 
     // Run every channel; collect into a vec for the data-driven
@@ -195,6 +229,7 @@ pub(crate) fn impact(
             print_channel("fst_refs", &report.channels.fst_refs);
             print_channel("grep_word_boundary", &report.channels.grep_word_boundary);
             print_channel("call_graph_callers", &report.channels.call_graph_callers);
+            print_channel("transitive_callers", &report.channels.transitive_callers);
         }
     }
 
@@ -270,6 +305,14 @@ mod tests {
                     line: 4,
                 }]),
             },
+            ChannelInvocation {
+                name: "transitive_callers",
+                tier: ChannelTier::Binder,
+                result: ChannelResult::from_hits(vec![HitLocation {
+                    path: "transitive.rs".into(),
+                    line: 5,
+                }]),
+            },
         ];
         let channels = ImpactChannels::from_invocations(invocations)
             .expect("from_invocations must succeed for a complete invocation list");
@@ -277,6 +320,7 @@ mod tests {
         assert_eq!(channels.fst_refs.sample[0].path, "fst.rs");
         assert_eq!(channels.grep_word_boundary.sample[0].path, "grep.rs");
         assert_eq!(channels.call_graph_callers.sample[0].path, "callers.rs");
+        assert_eq!(channels.transitive_callers.sample[0].path, "transitive.rs");
     }
 
     #[test]
@@ -296,6 +340,7 @@ mod tests {
                 "fst_refs",
                 "grep_word_boundary",
                 "call_graph_callers",
+                "transitive_callers",
             ],
             "DEFAULT_CHANNELS order changed — `verdict_explanation` text and \
              integration test substring assertions will drift"
@@ -322,6 +367,11 @@ mod tests {
             },
             ChannelInvocation {
                 name: "call_graph_callers",
+                tier: ChannelTier::Binder,
+                result: ChannelResult::from_hits(vec![]),
+            },
+            ChannelInvocation {
+                name: "transitive_callers",
                 tier: ChannelTier::Binder,
                 result: ChannelResult::from_hits(vec![]),
             },

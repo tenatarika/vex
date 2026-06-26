@@ -219,6 +219,7 @@ fn impact_envelope_carries_full_contracted_shape() {
         "fst_refs",
         "grep_word_boundary",
         "call_graph_callers",
+        "transitive_callers",
     ] {
         let block = &results["channels"][ch];
         assert!(
@@ -301,5 +302,69 @@ fn impact_exclude_docs_strips_prose_mentions_and_flips_verdict_to_safe() {
         results["channels"]["fst_refs"]["count"].as_u64(),
         Some(0),
         "fst_refs must report 0 with --exclude-docs (the only hit was in CHANGELOG.md), got: {results}"
+    );
+}
+
+/// v1.21.0 — `--depth N` enables the `transitive_callers` channel, BFS
+/// walking the call graph backward from the target. Fixture: a 3-hop
+/// chain `outer -> middle -> leaf`. With `--depth=2` the channel must
+/// surface `outer` (depth-2 caller) on top of `middle` already in
+/// `call_graph_callers` (depth-1).
+#[test]
+fn impact_depth_two_surfaces_transitive_callers() {
+    let tmp = TempDir::new().unwrap();
+    write_minimal_index_at(
+        tmp.path(),
+        &[(
+            "src/lib.rs",
+            "pub fn leaf() {}\n\
+             fn middle() { leaf(); }\n\
+             fn outer() { middle(); }\n",
+        )],
+    );
+
+    // --depth=1 (default): transitive_callers reports unavailable.
+    let baseline = run_impact_json(tmp.path(), "leaf");
+    let baseline_results = &baseline["results"];
+    let baseline_transitive = &baseline_results["channels"]["transitive_callers"];
+    assert_eq!(
+        baseline_transitive["available"].as_bool(),
+        Some(false),
+        "default --depth=1 must leave transitive_callers unavailable, got: {baseline_results}"
+    );
+
+    // --depth=2: transitive_callers surfaces `outer` (depth-2 caller).
+    let assert =
+        assert_ran(vex_in(tmp.path()).args(["impact", "leaf", "--depth", "2", "--format", "json"]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let out: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("impact stdout is not valid JSON: {e}\n---\n{stdout}"));
+    let results = &out["results"];
+
+    let transitive = &results["channels"]["transitive_callers"];
+    assert_eq!(
+        transitive["available"].as_bool(),
+        Some(true),
+        "--depth=2 must make transitive_callers available, got: {results}"
+    );
+    let count = transitive["count"]
+        .as_u64()
+        .expect("transitive_callers.count must be u64");
+    // Fixture is exactly `outer -> middle -> leaf`: `middle` is
+    // depth=1 (covered by `call_graph_callers`, dropped from this
+    // channel by the disjoint-depth filter) and `outer` is depth=2.
+    // Asserting `== 1` locks both the BFS labelling and the depth
+    // filter — a regression that lifted `middle` into the transitive
+    // bucket would surface as count=2.
+    assert_eq!(
+        count, 1,
+        "--depth=2 on the outer->middle->leaf chain must surface exactly one transitive caller \
+         (outer at depth=2; middle at depth=1 stays in call_graph_callers), got count={count}: {results}"
+    );
+    // Sanity: verdict is unsafe (binder channels confirmed real callers).
+    assert_eq!(
+        results["verdict"].as_str(),
+        Some("unsafe"),
+        "leaf has real callers — verdict must be unsafe, got: {results}"
     );
 }

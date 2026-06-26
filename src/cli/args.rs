@@ -345,6 +345,14 @@ pub enum Commands {
         #[arg(long)]
         exclude_docs: bool,
 
+        /// BFS hop budget for transitive callers. `1` (default) reports
+        /// direct callers only via `call_graph_callers`; `≥ 2` enables
+        /// the `transitive_callers` channel, walking the call graph
+        /// backward up to N hops. Silently clamped to `[1, 16]`.
+        /// v1.21.0.
+        #[arg(long, default_value = "1")]
+        depth: u32,
+
         #[command(flatten)]
         scope: ScopeArgs,
     },

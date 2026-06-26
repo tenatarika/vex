@@ -163,6 +163,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             auto_update,
             no_stale_check,
             exclude_docs,
+            depth,
             scope,
         } => cmd_impact::impact(
             &ctx,
@@ -171,6 +172,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             auto_update,
             no_stale_check,
             exclude_docs,
+            depth,
             scope,
         ),
         Commands::Usages {

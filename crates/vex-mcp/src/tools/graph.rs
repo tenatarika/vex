@@ -7,7 +7,9 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::args::{push_auto_update, push_diff_scope, push_no_stale_check, push_scope};
-use crate::params::{opt_bool, opt_str, opt_u64, read_canonical_str, req_str, ParamError};
+use crate::params::{
+    opt_bool, opt_str, opt_u64, opt_u64_some, read_canonical_str, req_str, ParamError,
+};
 
 pub(crate) fn build_usages(
     args: &Value,
@@ -57,11 +59,24 @@ pub(crate) fn build_impact(
     // callers into a single verdict.
     // v1.20.1 — opt-in `exclude_docs` strips text-channel hits in
     // prose-format paths (D4 parity with `vex search --code-only`).
+    // v1.21.0 — `depth: u64` opts into the `transitive_callers` BFS
+    // channel for indirect callers up to N hops.
     let symbol = read_canonical_str(args, "symbol", "name", deprecated)?
         .ok_or_else(|| ParamError::missing("symbol"))?;
     let mut extra = vec![symbol.to_string()];
     if opt_bool(args, "exclude_docs", false)? {
         extra.push("--exclude-docs".into());
+    }
+    if let Some(d) = opt_u64_some(args, "depth")? {
+        // Validate against the descriptor's advertised `[1, 16]`
+        // range up front so MCP clients sending `depth: 0` or
+        // `depth: 100` see a clean `-32602 Invalid params` instead
+        // of a silent CLI-side clamp. The CLI also clamps as a
+        // belt-and-suspenders safety net.
+        if !(1..=16).contains(&d) {
+            return Err(ParamError(format!("`depth` must be between 1 and 16 (got: {d})")).into());
+        }
+        extra.extend(["--depth".into(), d.to_string()]);
     }
     push_auto_update(&mut extra, args)?;
     push_no_stale_check(&mut extra, args)?;

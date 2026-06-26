@@ -88,6 +88,9 @@ pub(crate) fn usages(
         // surface def-sites or process doc files.
         filter_def_sites: !include_self,
         exclude_docs: !include_docs,
+        // cmd_usages never runs the call-graph channels, so depth is
+        // a no-op here. Pass `1` (the impact default) for clarity.
+        depth: 1,
     };
 
     // `--strict` reads from the v5 reference_edges section

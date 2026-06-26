@@ -537,6 +537,12 @@ expression: descriptors
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
           "type": "boolean"
         },
+        "depth": {
+          "description": "(v1.21.0) BFS hop budget for transitive callers. `1` (default) reports direct callers only via `call_graph_callers`; `>= 2` enables the `transitive_callers` channel, walking the call graph backward up to N hops. Silently clamped to `[1, 16]`. Use to see the full upstream blast radius (`outer -> middle -> leaf` chain surfaces `outer` at depth=2).",
+          "maximum": 16,
+          "minimum": 1,
+          "type": "integer"
+        },
         "exclude": {
           "description": "Blacklist results by path glob; wins over include (repeatable).",
           "items": {

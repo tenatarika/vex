@@ -205,7 +205,8 @@ pub(crate) fn tool_descriptors() -> Value {
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable). Applied to every channel — useful for scoping to e.g. `src/**` when assessing a library symbol." },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)." },
-                    "exclude_docs": { "type": "boolean", "description": "(v1.20.1, D4 parity) Opt-in: drop text-channel hits in prose-format files (`*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc`). Default off so a symbol mentioned only in CHANGELOG still yields `uncertain`; pass when you want a code-only blast radius (binder channels are unaffected).", "default": false }
+                    "exclude_docs": { "type": "boolean", "description": "(v1.20.1, D4 parity) Opt-in: drop text-channel hits in prose-format files (`*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc`). Default off so a symbol mentioned only in CHANGELOG still yields `uncertain`; pass when you want a code-only blast radius (binder channels are unaffected).", "default": false },
+                    "depth": { "type": "integer", "description": "(v1.21.0) BFS hop budget for transitive callers. `1` (default) reports direct callers only via `call_graph_callers`; `>= 2` enables the `transitive_callers` channel, walking the call graph backward up to N hops. Silently clamped to `[1, 16]`. Use to see the full upstream blast radius (`outer -> middle -> leaf` chain surfaces `outer` at depth=2).", "minimum": 1, "maximum": 16 }
                 },
                 "required": ["symbol"]
             }
