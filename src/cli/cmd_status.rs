@@ -100,18 +100,18 @@ pub(crate) fn status(
                 // v1.14 marker — None on pre-1.14 manifests, Some(true)
                 // from v1.14+. Serialised as a literal bool so scripts
                 // can `jq '.cpp_includes_processed'` without unwrapping.
-                "cpp_includes_processed": manifest.cpp_includes_processed.unwrap_or(false),
+                "cpp_includes_processed": manifest.state.cpp_includes_processed.unwrap_or(false),
                 // v1.15.0 B1.2 marker — None on pre-1.15 manifests means
                 // the body_tokens sidecar isn't on disk, so the next
                 // `vex update` will fall back to full HNSW rebuild.
                 // Same `jq`-friendly bool projection.
-                "body_tokens_persisted": manifest.body_tokens_persisted.unwrap_or(false),
+                "body_tokens_persisted": manifest.state.body_tokens_persisted.unwrap_or(false),
                 // v1.17 Phase 14.8 — sticky sentinel + counts. ISO date
                 // when section is present, null otherwise. Agents can
                 // `jq '.history_indexed_at // empty'` to branch on
                 // section presence without unwrapping.
-                "history_indexed_at": manifest.history_indexed_at,
-                "history": manifest.history,
+                "history_indexed_at": manifest.state.history_indexed_at,
+                "history": manifest.state.history,
                 // Phase 14.9 Tier B.6 — surface submodule presence and
                 // git_history sidecar size so JSON consumers can
                 // compute the §4c #5 ratio themselves.
@@ -199,7 +199,7 @@ pub(crate) fn status(
             // v1.14: surface the C++ include-resolution marker. Pre-v1.14
             // indexes lack the field; we render an actionable hint instead
             // of a blank "no" so users know how to opt in.
-            match manifest.cpp_includes_processed {
+            match manifest.state.cpp_includes_processed {
                 Some(true) => println!("C++ includes: yes"),
                 Some(false) | None => {
                     println!("C++ includes: no (run `vex index` to enable cross-file C++ refs)")
@@ -208,7 +208,7 @@ pub(crate) fn status(
             // v1.15.0 B1.2: surface the body_tokens sidecar marker. Pre-v1.15
             // indexes lack the file → the next `vex update` falls back to a
             // full HNSW rebuild instead of the incremental path.
-            match manifest.body_tokens_persisted {
+            match manifest.state.body_tokens_persisted {
                 Some(true) => println!("Body tokens: yes (incremental HNSW update enabled)"),
                 Some(false) | None => {
                     println!("Body tokens: no (run `vex index` to enable incremental HNSW update)")
@@ -218,7 +218,7 @@ pub(crate) fn status(
             // shapes: present + stats (the typical post-build case),
             // present-but-no-stats (defensive — should not happen
             // since Step 5 always pairs them), and absent.
-            match (&manifest.history_indexed_at, &manifest.history) {
+            match (&manifest.state.history_indexed_at, &manifest.state.history) {
                 (Some(date), Some(stats)) => {
                     println!(
                         "History:    indexed at {date} ({} commits, {} blobs, {} entries)",
@@ -251,7 +251,7 @@ pub(crate) fn status(
             // index.git_history). Three shapes: present with chains,
             // present-but-empty (history indexed, no renames detected
             // — common on small / young repos), and absent.
-            match (&manifest.history_indexed_at, &chain_header) {
+            match (&manifest.state.history_indexed_at, &chain_header) {
                 (Some(_), Some(h)) if h.chain_count > 0 => {
                     println!(
                         "Rename chains: {} chains, {} members (threshold {:.2}, body-Jaccard ≥ {:.2})",
@@ -327,7 +327,7 @@ pub(crate) fn status(
             // Phase 14.9 Tier B.6 — submodule + size-ratio warnings,
             // gated on history being indexed (these are facts about
             // the indexed snapshot, not the project at large).
-            if manifest.history_indexed_at.is_some() {
+            if manifest.state.history_indexed_at.is_some() {
                 if has_submodules {
                     println!(
                         "            ⚠ this repo has submodules — their history is NOT \

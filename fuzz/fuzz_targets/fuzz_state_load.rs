@@ -6,8 +6,9 @@
 //! The sidecar is opened on every `Manifest::load` (i.e. every `vex
 //! update`, `vex status`, `vex search` against a stale index). A
 //! malformed sidecar must NEVER panic — corruption returns `Err` and
-//! the loader logs a warning + falls back to the JSON manifest's
-//! inline state fields.
+//! the loader logs a warning + leaves `Manifest::state` default (the
+//! next `vex update` re-derives it; v1.21 dropped the JSON inline
+//! fallback).
 //!
 //! Surfaces under test: 12-byte header (magic + version + payload_len),
 //! `MAX_PAYLOAD_BYTES` cap before the `Vec<u8>` allocation,

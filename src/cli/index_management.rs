@@ -99,8 +99,8 @@ pub(crate) fn handle_staleness(
                     // Phase 14.8 sticky-via-manifest: inherit the prior
                     // section decision so auto-update on a history-
                     // enabled project doesn't silently drop it.
-                    with_history: manifest.history_indexed_at.is_some(),
-                    history_depth: manifest.history_depth,
+                    with_history: manifest.state.history_indexed_at.is_some(),
+                    history_depth: manifest.state.history_depth,
                     drop_history: false,
                     // v1.15.1: auto-update never drops the semantic
                     // channel — a failed semantic rebuild keeps prior

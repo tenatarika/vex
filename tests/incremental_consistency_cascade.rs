@@ -87,13 +87,17 @@ fn cascade_re_parses_importer_when_only_target_file_changes() {
 
     // imported_by must record b.rs imports from a.rs.
     let manifest0 = load_manifest(&project_dir);
-    let m0_has_b_imports_a = manifest0.imported_by.iter().any(|(target, importers)| {
-        target.contains("a.rs") && importers.iter().any(|p| p.contains("b.rs"))
-    });
+    let m0_has_b_imports_a = manifest0
+        .state
+        .imported_by
+        .iter()
+        .any(|(target, importers)| {
+            target.contains("a.rs") && importers.iter().any(|p| p.contains("b.rs"))
+        });
     assert!(
         m0_has_b_imports_a,
         "imported_by should record b.rs imports from a.rs; got: {:?}",
-        manifest0.imported_by
+        manifest0.state.imported_by
     );
 
     // Edit ONLY a.rs — drop OldName entirely. b.rs is now in the
@@ -129,13 +133,17 @@ fn cascade_re_parses_importer_when_only_target_file_changes() {
 
     // imported_by must persist across the cascade update.
     let manifest1 = load_manifest(&project_dir);
-    let m1_has_b_imports_a = manifest1.imported_by.iter().any(|(target, importers)| {
-        target.contains("a.rs") && importers.iter().any(|p| p.contains("b.rs"))
-    });
+    let m1_has_b_imports_a = manifest1
+        .state
+        .imported_by
+        .iter()
+        .any(|(target, importers)| {
+            target.contains("a.rs") && importers.iter().any(|p| p.contains("b.rs"))
+        });
     assert!(
         m1_has_b_imports_a,
         "imported_by must survive the cascade update; got: {:?}",
-        manifest1.imported_by
+        manifest1.state.imported_by
     );
 }
 
@@ -172,10 +180,10 @@ fn first_update_post_upgrade_populates_imported_by() {
     let canonical = project_dir.canonicalize().unwrap();
     let manifest_path = vex::util::config::manifest_path(&canonical);
     let mut m = vex::index::manifest::Manifest::load(&manifest_path).unwrap();
-    m.imported_by.clear();
+    m.state.imported_by.clear();
     m.save(&manifest_path).unwrap();
     assert!(
-        load_manifest(&project_dir).imported_by.is_empty(),
+        load_manifest(&project_dir).state.imported_by.is_empty(),
         "test setup: imported_by should be empty after manual clear"
     );
 
@@ -199,17 +207,18 @@ fn first_update_post_upgrade_populates_imported_by() {
 
     let m_after = load_manifest(&project_dir);
     assert!(
-        !m_after.imported_by.is_empty(),
+        !m_after.state.imported_by.is_empty(),
         "first update post-upgrade should re-populate imported_by; got empty"
     );
     assert!(
         m_after
+            .state
             .imported_by
             .iter()
             .any(|(target, importers)| target.contains("a.rs")
                 && importers.iter().any(|p| p.contains("b.rs"))),
         "imported_by should record b.rs → a.rs after first update; got: {:?}",
-        m_after.imported_by
+        m_after.state.imported_by
     );
 }
 
@@ -387,16 +396,24 @@ fn cascade_traverses_a_to_b_to_c_three_hop_chain() {
     // Both importers must have logged into imported_by — proves the
     // graph picked up b → a AND c → b.
     let manifest = load_manifest(&project_dir);
-    let b_imports_a = manifest.imported_by.iter().any(|(target, importers)| {
-        target.contains("a.rs") && importers.iter().any(|p| p.contains("b.rs"))
-    });
-    let c_imports_b = manifest.imported_by.iter().any(|(target, importers)| {
-        target.contains("b.rs") && importers.iter().any(|p| p.contains("c.rs"))
-    });
+    let b_imports_a = manifest
+        .state
+        .imported_by
+        .iter()
+        .any(|(target, importers)| {
+            target.contains("a.rs") && importers.iter().any(|p| p.contains("b.rs"))
+        });
+    let c_imports_b = manifest
+        .state
+        .imported_by
+        .iter()
+        .any(|(target, importers)| {
+            target.contains("b.rs") && importers.iter().any(|p| p.contains("c.rs"))
+        });
     assert!(
         b_imports_a && c_imports_b,
         "imported_by must record both hops; got: {:?}",
-        manifest.imported_by
+        manifest.state.imported_by
     );
 }
 
@@ -520,18 +537,18 @@ fn cascade_traverses_three_hop_chain_typescript() {
 
     // Confirm both hops landed in imported_by: b → a AND c → b.
     let m0 = load_manifest(&project_dir);
-    let b_imports_a = m0
-        .imported_by
-        .iter()
-        .any(|(t, importers)| t.contains("a.ts") && importers.iter().any(|p| p.contains("b.ts")));
-    let c_imports_b = m0
-        .imported_by
-        .iter()
-        .any(|(t, importers)| t.contains("b.ts") && importers.iter().any(|p| p.contains("c.ts")));
+    let b_imports_a =
+        m0.state.imported_by.iter().any(|(t, importers)| {
+            t.contains("a.ts") && importers.iter().any(|p| p.contains("b.ts"))
+        });
+    let c_imports_b =
+        m0.state.imported_by.iter().any(|(t, importers)| {
+            t.contains("b.ts") && importers.iter().any(|p| p.contains("c.ts"))
+        });
     assert!(
         b_imports_a && c_imports_b,
         "TS imported_by missing a hop; got: {:?}",
-        m0.imported_by
+        m0.state.imported_by
     );
 
     // Edit ONLY a.ts: drop OldName. b.ts (depth 1) and c.ts (depth 2)
@@ -608,18 +625,18 @@ fn cascade_traverses_three_hop_chain_python() {
     );
 
     let m0 = load_manifest(&project_dir);
-    let b_imports_a = m0
-        .imported_by
-        .iter()
-        .any(|(t, importers)| t.contains("a.py") && importers.iter().any(|p| p.contains("b.py")));
-    let c_imports_b = m0
-        .imported_by
-        .iter()
-        .any(|(t, importers)| t.contains("b.py") && importers.iter().any(|p| p.contains("c.py")));
+    let b_imports_a =
+        m0.state.imported_by.iter().any(|(t, importers)| {
+            t.contains("a.py") && importers.iter().any(|p| p.contains("b.py"))
+        });
+    let c_imports_b =
+        m0.state.imported_by.iter().any(|(t, importers)| {
+            t.contains("b.py") && importers.iter().any(|p| p.contains("c.py"))
+        });
     assert!(
         b_imports_a && c_imports_b,
         "Python imported_by missing a hop; got: {:?}",
-        m0.imported_by
+        m0.state.imported_by
     );
 
     // Edit ONLY a.py: drop OldName.
@@ -684,10 +701,10 @@ fn cascade_is_noop_for_go_only_project_until_binder_lands() {
     // should be added alongside the TS / Python tests.
     let m = load_manifest(&project_dir);
     assert!(
-        m.imported_by.is_empty(),
+        m.state.imported_by.is_empty(),
         "Go has no binder yet (see scope/mod.rs::bind_refs); imported_by must stay empty. \
          Got: {:?} — if you wired a Go binder, replace this test with a 3-hop chain.",
-        m.imported_by
+        m.state.imported_by
     );
 }
 
@@ -738,17 +755,18 @@ fn cascade_traverses_three_hop_chain_cpp() {
     // Confirm both hops landed in imported_by: b.h → a.h AND c.cpp → b.h.
     let m0 = load_manifest(&project_dir);
     let b_imports_a = m0
+        .state
         .imported_by
         .iter()
         .any(|(t, importers)| t.contains("a.h") && importers.iter().any(|p| p.contains("b.h")));
-    let c_imports_b = m0
-        .imported_by
-        .iter()
-        .any(|(t, importers)| t.contains("b.h") && importers.iter().any(|p| p.contains("c.cpp")));
+    let c_imports_b =
+        m0.state.imported_by.iter().any(|(t, importers)| {
+            t.contains("b.h") && importers.iter().any(|p| p.contains("c.cpp"))
+        });
     assert!(
         b_imports_a && c_imports_b,
         "C++ imported_by missing a hop; got: {:?}",
-        m0.imported_by
+        m0.state.imported_by
     );
 
     // Edit ONLY a.h — drop OldName. b.h (depth 1) and c.cpp (depth 2)
@@ -836,18 +854,18 @@ fn cascade_traverses_three_hop_chain_csharp() {
     );
 
     let m0 = load_manifest(&project_dir);
-    let b_imports_a = m0
-        .imported_by
-        .iter()
-        .any(|(t, importers)| t.contains("A.cs") && importers.iter().any(|p| p.contains("B.cs")));
-    let c_imports_b = m0
-        .imported_by
-        .iter()
-        .any(|(t, importers)| t.contains("B.cs") && importers.iter().any(|p| p.contains("C.cs")));
+    let b_imports_a =
+        m0.state.imported_by.iter().any(|(t, importers)| {
+            t.contains("A.cs") && importers.iter().any(|p| p.contains("B.cs"))
+        });
+    let c_imports_b =
+        m0.state.imported_by.iter().any(|(t, importers)| {
+            t.contains("B.cs") && importers.iter().any(|p| p.contains("C.cs"))
+        });
     assert!(
         b_imports_a && c_imports_b,
         "C# imported_by missing a hop; got: {:?}",
-        m0.imported_by
+        m0.state.imported_by
     );
 
     // Edit ONLY A.cs: drop OldName.

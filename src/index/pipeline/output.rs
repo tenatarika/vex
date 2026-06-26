@@ -381,13 +381,13 @@ pub(super) fn write_output_locked(
     } else if opts.with_history {
         let prior_tip = prior_manifest_for_history
             .as_ref()
-            .and_then(|m| m.history_tip_sha.clone());
+            .and_then(|m| m.state.history_tip_sha.clone());
         let prior_stats = prior_manifest_for_history
             .as_ref()
-            .and_then(|m| m.history.clone());
+            .and_then(|m| m.state.history.clone());
         let prior_depth = prior_manifest_for_history
             .as_ref()
-            .and_then(|m| m.history_depth);
+            .and_then(|m| m.state.history_depth);
         let current_tip = rev_parse_head(root);
 
         // Branch 2: no-op fast path. Requires (sidecar present) AND
@@ -621,36 +621,6 @@ pub(super) fn write_output_locked(
         // no-embeddings case keeps pre-1.13 readers happy and avoids
         // a misleading "normalized: true" for an empty vector array.
         vectors_normalized: (!vectors.is_empty()).then_some(true),
-        // v1.14: unconditional `Some(true)` — every index written by this
-        // build performed Pass-2 C++ include resolution. The flag is a
-        // version marker, not a project-content predicate (pure-Rust
-        // projects still get `Some(true)` because the resolver ran over
-        // an empty C++ set). Pre-1.14 manifests have `None` and `vex
-        // status` surfaces that as "re-run `vex index` to enable".
-        cpp_includes_processed: Some(true),
-        // v1.15.0 B1.2: gated on the actual sidecar save outcome.
-        // `Some(true)` when the file is on disk; `Some(false)` when the
-        // save failed (full disk, permission error, rename race);
-        // `None` only for pre-v1.15 manifests. `vex status` reads this
-        // and renders accordingly — gating on the real outcome keeps
-        // the diagnostic honest. Either `Some(false)` or `None`
-        // triggers the same fallback: next `vex update` reconstructs
-        // body_tokens as `None`, embed cache misses for unchanged
-        // symbols, full HNSW rebuild.
-        body_tokens_persisted: Some(body_tokens_saved),
-        // Phase 14.8 — populated only on successful sidecar write
-        // (gated by `history_manifest_fields.is_some()`). Sticky
-        // sentinel: `history_indexed_at.is_some()` IS the predicate
-        // `vex status` / `vex update` use to decide "section present
-        // and usable" (architect L3).
-        history_indexed_at: history_manifest_fields
-            .as_ref()
-            .map(|f| f.indexed_at.clone()),
-        history_tip_sha: history_manifest_fields
-            .as_ref()
-            .and_then(|f| f.tip_sha.clone()),
-        history_depth: history_manifest_fields.as_ref().and_then(|f| f.depth),
-        history: history_manifest_fields.as_ref().map(|f| f.stats.clone()),
         // Phase 14.10 — gated on the actual sidecar write outcome (see
         // `rename_chains_built` initialisation comment above). `None`
         // when chain detection wasn't reached, `Some(true)` on a
@@ -659,16 +629,44 @@ pub(super) fn write_output_locked(
         // `vex status` provenance matches disk state.
         rename_chains_built,
         rename_chains_minilm_tiebreak_hits,
-        // Phase 11.1.10 (Q4-B) — reverse import map for cascade. Empty
-        // for full-rebuild + binder-less projects; populated whenever
-        // the writer's resolution loop or Q4-A reconstruction observed
-        // at least one cross-file edge.
-        imported_by: writer_meta.imported_by,
-        // Sentinel: this writer ran the Q4-B path. Distinguishes
-        // pre-11.1.10 manifests (`None`) from manifests written by a
-        // Q4-B-aware writer that observed no edges (`Some(true)` +
-        // empty `imported_by`).
-        imported_by_built: Some(true),
+        // v1.21 — incremental-rebuild state, persisted to the
+        // `index.state` sidecar (NOT this JSON). See `Manifest::state`.
+        state: crate::index::incremental_state::IncrementalState {
+            // v1.14: unconditional `Some(true)` — every index written by
+            // this build performed Pass-2 C++ include resolution. Version
+            // marker, not a project-content predicate (pure-Rust projects
+            // still get `Some(true)`). Pre-1.14 indexes have `None`.
+            cpp_includes_processed: Some(true),
+            // v1.15.0 B1.2: gated on the actual sidecar save outcome.
+            // `Some(true)` when the file is on disk; `Some(false)` when
+            // the save failed; `None` only for pre-v1.15 indexes. Either
+            // `Some(false)` or `None` triggers the same fallback on the
+            // next `vex update`: body_tokens reconstructed as `None`,
+            // embed-cache misses for unchanged symbols, full HNSW rebuild.
+            body_tokens_persisted: Some(body_tokens_saved),
+            // Phase 14.8 — populated only on successful sidecar write
+            // (gated by `history_manifest_fields.is_some()`). Sticky
+            // sentinel: `history_indexed_at.is_some()` IS the predicate
+            // `vex status` / `vex update` use to decide "section present
+            // and usable" (architect L3).
+            history_indexed_at: history_manifest_fields
+                .as_ref()
+                .map(|f| f.indexed_at.clone()),
+            history_tip_sha: history_manifest_fields
+                .as_ref()
+                .and_then(|f| f.tip_sha.clone()),
+            history_depth: history_manifest_fields.as_ref().and_then(|f| f.depth),
+            history: history_manifest_fields.as_ref().map(|f| f.stats.clone()),
+            // Phase 11.1.10 (Q4-B) — reverse import map for cascade.
+            // Empty for full-rebuild + binder-less projects; populated
+            // whenever the writer's resolution loop or Q4-A reconstruction
+            // observed at least one cross-file edge.
+            imported_by: writer_meta.imported_by,
+            // Sentinel: this writer ran the Q4-B path. Distinguishes
+            // pre-11.1.10 indexes (`None`) from a Q4-B-aware writer that
+            // observed no edges (`Some(true)` + empty `imported_by`).
+            imported_by_built: Some(true),
+        },
     };
     manifest.save(&manifest_path)?;
     Ok(())

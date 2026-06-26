@@ -11,15 +11,21 @@
 //! measurable cost on watch-mode hot paths.
 //!
 //! This module relocates those fields to a binary sidecar in bincode
-//! form. `Manifest` still owns the fields as struct members (the 50+
-//! call sites in production + tests would otherwise churn) — only the
-//! storage layer changes:
+//! form. v1.18 first moved the *storage* (the fields stayed flat on
+//! `Manifest`, shuttled via a hand-written capture/apply pair); v1.21
+//! nested them into `Manifest::state: IncrementalState`, deleting the
+//! shuttle. The on-disk wire format (this sidecar + the JSON manifest)
+//! is unchanged by the v1.21 nesting.
 //!
 //! - `Manifest::save` writes JSON without these fields
-//!   (`#[serde(skip_serializing)]`) and writes the sidecar in parallel.
-//! - `Manifest::load` reads JSON, then layers the sidecar's values on
-//!   top. Pre-v1.18 indexes have no sidecar; the JSON `#[serde(default)]`
-//!   fallbacks preserve their state.
+//!   (`Manifest::state` is `#[serde(skip_serializing)]`) and writes the
+//!   sidecar from `self.state`.
+//! - `Manifest::load` reads JSON, then overlays the sidecar into
+//!   `manifest.state` (sidecar wins). The sidecar is the SOLE store:
+//!   pre-v1.18 indexes have no sidecar and carried these fields inline
+//!   in JSON, but post-v1.21 those inline keys are unknown and silently
+//!   ignored — `state` stays default and the next `vex update`
+//!   re-derives `imported_by` (the re-bootstrap contract).
 //!
 //! ## Format (binary, little-endian)
 //!
@@ -55,10 +61,10 @@ const VERSION: u32 = 1;
 /// otherwise allocate the payload `Vec` before failing).
 const MAX_PAYLOAD_BYTES: u32 = 256 * 1024 * 1024;
 
-/// Mirror of the manifest fields that are now persisted out-of-band.
-/// Names match the `Manifest` field names so the load/save methods can
-/// shuttle values via `manifest.field = state.field` without naming-
-/// translation logic.
+/// The incremental-rebuild state persisted out-of-band, nested into
+/// `Manifest` as the `state` field (v1.21). Field names mirror the
+/// historical flat `Manifest` fields so call sites read naturally as
+/// `manifest.state.imported_by` etc.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct IncrementalState {
     pub imported_by: BTreeMap<String, BTreeSet<String>>,

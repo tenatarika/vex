@@ -143,16 +143,16 @@ fn manifest_options_cover(manifest: &Manifest, opts: IndexOptions, embedder_id: 
     // Phase 14.8 Step 5b: history coverage gates the skip path so a
     // `vex update --no-history` actually drops the sidecar instead of
     // short-circuiting before write_output_locked even runs.
-    if opts.drop_history && manifest.history_indexed_at.is_some() {
+    if opts.drop_history && manifest.state.history_indexed_at.is_some() {
         // We owe a drop — section still on disk. Don't skip.
         return false;
     }
-    if opts.with_history && manifest.history_indexed_at.is_none() {
+    if opts.with_history && manifest.state.history_indexed_at.is_none() {
         // User wants history but the prior index has no section. Don't
         // skip — write_output_locked needs to build it.
         return false;
     }
-    if opts.with_history && opts.history_depth != manifest.history_depth {
+    if opts.with_history && opts.history_depth != manifest.state.history_depth {
         // Explicit cap changed (e.g. `--history-depth 50` after a prior
         // unbounded build). The fast-path inside write_output_locked
         // would also reject this; rejecting here avoids the skip path
@@ -569,7 +569,7 @@ fn update_inner(
     let mut cascade_saturated = false;
     let cascade_paths: Vec<String> = {
         let mut out: Vec<String> = Vec::new();
-        if !current_manifest.imported_by.is_empty() {
+        if !current_manifest.state.imported_by.is_empty() {
             let mut seen: HashSet<String> = HashSet::new();
             // Frontier = files at the current BFS depth whose importers
             // we haven't yet explored. Initial frontier is the changed
@@ -583,7 +583,7 @@ fn update_inner(
             for depth in 1..=CASCADE_MAX_DEPTH {
                 let mut next: Vec<String> = Vec::new();
                 for trigger in &frontier {
-                    let Some(importers) = current_manifest.imported_by.get(trigger) else {
+                    let Some(importers) = current_manifest.state.imported_by.get(trigger) else {
                         continue;
                     };
                     for importer in importers {
@@ -607,7 +607,7 @@ fn update_inner(
                 }
                 frontier = next;
             }
-        } else if current_manifest.imported_by_built.is_none()
+        } else if current_manifest.state.imported_by_built.is_none()
             && (!changed_set.is_empty() || !deleted_set.is_empty())
         {
             // Bootstrap signal: only fire when the field is *absent*

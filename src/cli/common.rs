@@ -253,7 +253,7 @@ pub(crate) fn build_index_options(
     // `--history` always wins; `--no-history` always wins.
     // Otherwise: prior `history_indexed_at = Some(_)` → with_history=true.
     let history_was_indexed = manifest
-        .and_then(|m| m.history_indexed_at.as_ref())
+        .and_then(|m| m.state.history_indexed_at.as_ref())
         .is_some();
     let resolved_with_history = if no_history {
         false
@@ -263,7 +263,8 @@ pub(crate) fn build_index_options(
         history_was_indexed
     };
     // Sticky depth: inherit from manifest if user didn't pass --history-depth.
-    let resolved_history_depth = history_depth.or_else(|| manifest.and_then(|m| m.history_depth));
+    let resolved_history_depth =
+        history_depth.or_else(|| manifest.and_then(|m| m.state.history_depth));
 
     pipeline::IndexOptions {
         with_embeddings: with_semantic,

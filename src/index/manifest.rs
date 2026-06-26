@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -13,6 +13,16 @@ const MAX_MANIFEST_BYTES: u64 = 128 * 1024 * 1024;
 
 /// Manifest tracks file hashes for incremental indexing.
 /// Stored as JSON next to the index file.
+///
+/// INVARIANT — never add `#[serde(deny_unknown_fields)]` to this struct.
+/// Pre-v1.18 manifests carried the incremental-state fields (`imported_by`,
+/// `history_*`, `cpp_includes_processed`, `body_tokens_persisted`) inline at
+/// the top level. Those are now nested under `state` (sidecar-persisted), so
+/// on a pre-v1.18 JSON they appear as *unknown* top-level keys. Silently
+/// ignoring them is the migration contract: the loader leaves `state`
+/// default and the next `vex update` re-derives it (see `state` field doc).
+/// `deny_unknown_fields` would turn that graceful re-bootstrap into a hard
+/// load failure.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Manifest {
     /// Map of relative file path → content hash
@@ -74,81 +84,6 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vectors_normalized: Option<bool>,
 
-    /// v1.14: `Some(true)` when this index was built with Pass-2 C++
-    /// `#include "..."` resolution (`src/store/include_resolver.rs` BFS).
-    /// `None` on pre-1.14 manifests means strict C++ cross-file refs were
-    /// not produced — `vex usages --strict <symbol>` will silently
-    /// under-report for C++ codebases until the next `vex index`. The
-    /// flag is purely a version marker; it does not encode whether the
-    /// project has any C++ files (a pure-Rust project still gets
-    /// `Some(true)` because the resolver ran trivially over an empty
-    /// C++ set).
-    ///
-    /// v1.18 audit C1: persisted in `index.state` (binary sidecar), not
-    /// JSON. The `skip_serializing` opt-out keeps `#[serde(default)]`
-    /// active for back-compat reads of pre-v1.18 manifests that still
-    /// carry the field in JSON.
-    #[serde(default, skip_serializing)]
-    pub cpp_includes_processed: Option<bool>,
-
-    /// v1.15.0 B1.2: `Some(true)` when this index was built with the
-    /// `index.bodytokens` sidecar persisted. Required so the next
-    /// `vex update`'s `reconstruct_unchanged` can restore body_tokens
-    /// for unchanged symbols, which keeps `context_hash` stable across
-    /// fresh-parse / reconstruct boundary and enables the B1.2
-    /// incremental HNSW path. `None` on pre-1.15 manifests means the
-    /// sidecar isn't present — `vex update` falls back to body-less
-    /// hashes and full HNSW rebuild. The flag is a version marker; a
-    /// pure non-semantic index still gets `Some(true)` because the
-    /// sidecar write is unconditional.
-    ///
-    /// v1.18 audit C1: persisted in `index.state` (see same-named note
-    /// on `cpp_includes_processed`).
-    #[serde(default, skip_serializing)]
-    pub body_tokens_persisted: Option<bool>,
-
-    /// v1.17 Phase 14.8 — ISO-date sentinel: `Some(<YYYY-MM-DD>)` when
-    /// this index was built with the `index.git_history` sidecar
-    /// present, `None` otherwise. Used by `vex update --history`'s
-    /// sticky-rebuild logic and by `vex status` to surface "history
-    /// indexed at X". Architect L3 (sticky-via-sentinel): no separate
-    /// boolean — `history_indexed_at.is_some()` IS the predicate.
-    ///
-    /// v1.18 audit C1: persisted in `index.state`.
-    #[serde(default, skip_serializing)]
-    pub history_indexed_at: Option<String>,
-
-    /// v1.17 Phase 14.8 — full SHA of the commit the history section
-    /// was indexed at (typically `HEAD` at build time). Required by
-    /// Step 5+ incremental update for `git merge-base --is-ancestor
-    /// <prior_tip> <new_tip>` force-push detection (architect H3) and
-    /// for `<prior_tip>..<new_tip>` range walking. `None` on pre-14.8
-    /// manifests or when `--no-history` was passed. Not surfaced in
-    /// `vex status` — it's an internal-state field.
-    ///
-    /// v1.18 audit C1: persisted in `index.state`.
-    #[serde(default, skip_serializing)]
-    pub history_tip_sha: Option<String>,
-
-    /// v1.17 Phase 14.8 — sticky cap from `--history-depth N`. Read
-    /// by `vex update --history` so the user doesn't have to repeat
-    /// the flag on every incremental rebuild. `None` = unbounded
-    /// walk (or pre-14.8 manifest).
-    ///
-    /// v1.18 audit C1: persisted in `index.state`.
-    #[serde(default, skip_serializing)]
-    pub history_depth: Option<usize>,
-
-    /// v1.17 Phase 14.8 — populated counts for the section, surfaced
-    /// by `vex status` (text + JSON) so users + agents can see at a
-    /// glance whether the section is non-trivial. Mirrors the build-
-    /// time `HistorySection` shape. `None` on pre-14.8 manifests or
-    /// when `--history` was not opted into.
-    ///
-    /// v1.18 audit C1: persisted in `index.state`.
-    #[serde(default, skip_serializing)]
-    pub history: Option<HistoryStats>,
-
     /// v1.17 Phase 14.10 — `Some(true)` when the `index.rename_chains`
     /// sidecar was successfully written during this build, `Some(false)`
     /// when the write was attempted but failed (builder error, disk
@@ -170,48 +105,25 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rename_chains_minilm_tiebreak_hits: Option<u32>,
 
-    /// Phase 11.1.10 (Q4-B) — reverse map of cross-file imports.
-    /// `imported_by[target_file_path]` is the set of files that
-    /// reference (via type-aware binder) at least one symbol defined
-    /// in `target_file_path`. Used by `vex update` to cascade-invalidate
-    /// importers when a target file changes — the cascade re-parses
-    /// those files (rather than reconstructing their ref_edges via
-    /// Q4-A) so refs targeting renamed/deleted symbols get fresh
-    /// resolution against the new name table.
+    /// Incremental-rebuild state persisted out-of-band in the
+    /// `index.state` binary sidecar (`src/index/incremental_state.rs`),
+    /// NOT in this JSON manifest. Holds the reverse-import cascade map
+    /// (`imported_by`), the history-section provenance (`history_*`),
+    /// and the writer sentinels (`cpp_includes_processed`,
+    /// `body_tokens_persisted`, `imported_by_built`). These were
+    /// flattened onto `Manifest` through v1.17; v1.18 moved them to the
+    /// sidecar to keep `vex update`'s JSON parse off the O(cross-file-
+    /// edges) `imported_by` map. v1.21 nested them here so the loader no
+    /// longer hand-shuttles each field.
     ///
-    /// Flat (not `Option`) per rust-reviewer Q7 must-fix: an empty map
-    /// is the natural "no edges to cascade" state, identical to a
-    /// pre-11.1.10 manifest deserialized with `#[serde(default)]`.
-    /// Removing the `Option` flattens the call site to a single
-    /// `manifest.imported_by` access without unwrap_or_default litter.
-    ///
-    /// BTreeMap + BTreeSet (not Hash equivalents) so encoding is sorted
-    /// → byte-identical sidecars across runs given identical inputs.
-    ///
-    /// v1.18 audit C1: persisted in `index.state` (binary sidecar) — the
-    /// JSON manifest no longer carries this field on save. The primary
-    /// motivation for the split is this map's O(cross-file-edges) size,
-    /// which previously dominated `vex update`'s JSON parse cost.
-    /// `#[serde(default)]` still allows reads of pre-v1.18 JSON
-    /// manifests that carry the field inline.
+    /// `#[serde(default, skip_serializing)]`: never written to JSON
+    /// (the sidecar is the sole store) and absent on load until
+    /// [`Manifest::load`] overlays the sidecar. On a pre-v1.18 JSON the
+    /// old inline keys are ignored (see struct-level invariant) and this
+    /// stays default — the next `vex update` re-derives `imported_by`
+    /// via a one-time full cross-file pass.
     #[serde(default, skip_serializing)]
-    pub imported_by: BTreeMap<String, BTreeSet<String>>,
-
-    /// Phase 11.1.10 (Q4-B) writer provenance flag. `Some(true)` when a
-    /// vex ≥ 1.18 writer produced this manifest (regardless of whether
-    /// `imported_by` ended up empty — a binder-less project or one with
-    /// no cross-file refs legitimately writes an empty map). `None` on
-    /// pre-11.1.10 manifests where the field didn't exist.
-    ///
-    /// Distinguishing "writer didn't run yet (pre-11.1.10)" from
-    /// "writer ran and saw no edges" lets `vex update` skip the
-    /// bootstrap warning on the steady-state empty case (Go-only repos,
-    /// fresh projects, etc.). Without this sentinel we'd false-positive
-    /// every update on those projects.
-    ///
-    /// v1.18 audit C1: persisted in `index.state`.
-    #[serde(default, skip_serializing)]
-    pub imported_by_built: Option<bool>,
+    pub state: crate::index::incremental_state::IncrementalState,
 }
 
 /// Counts surfaced from the `git_history` section into the manifest
@@ -253,20 +165,25 @@ impl Manifest {
         let data = std::fs::read_to_string(path).context("read manifest")?;
         let mut manifest: Manifest = serde_json::from_str(&data).context("parse manifest")?;
 
-        // v1.18 audit C1: layer the binary state sidecar on top of the
-        // JSON-loaded manifest. The sidecar wins when present (it's the
-        // post-v1.18 source of truth); when absent we keep whatever the
-        // JSON load already deserialised — that's the pre-v1.18
-        // back-compat path. Sidecar load failures degrade to "treat as
-        // absent" + tracing warn rather than failing the whole load.
+        // v1.18 audit C1 / v1.21: overlay the binary state sidecar onto
+        // the JSON-loaded manifest. The sidecar is the sole store for
+        // `manifest.state`; when present its contents win. When absent
+        // (pre-v1.18 index, or first build) `state` stays default — the
+        // next `vex update` re-derives it. Sidecar load failures degrade
+        // to "treat as absent" + tracing warn rather than failing the
+        // whole load. NOTE: pre-v1.18 JSON carried these fields inline;
+        // those keys are now unknown and silently ignored (see the
+        // struct-level no-`deny_unknown_fields` invariant), so a stale
+        // index re-bootstraps rather than surfacing dead inline values.
         let state_path = state_path_for(path);
         if state_path.exists() {
             match crate::index::incremental_state::load(&state_path) {
-                Ok(state) => apply_state(&mut manifest, state),
+                Ok(state) => manifest.state = state,
                 Err(e) => tracing::warn!(
                     path = %state_path.display(),
                     error = %e,
-                    "index.state sidecar load failed; falling back to JSON-only manifest fields"
+                    "index.state sidecar load failed; incremental state resets to default \
+                     (next `vex update` re-derives imported_by)"
                 ),
             }
         }
@@ -274,20 +191,25 @@ impl Manifest {
     }
 
     /// Atomic write: write to .tmp, then rename to avoid corruption on
-    /// crash. v1.18 audit C1 — the state fields go to the
-    /// `index.state` sidecar in addition to the JSON write. JSON wins
-    /// the rename first so a crash between the two leaves the older
-    /// (or absent) sidecar, which the loader's "sidecar wins when
-    /// present" rule handles correctly: at worst a single re-bootstrap
-    /// on the next update.
+    /// crash. The incremental state (`self.state`) goes to the
+    /// `index.state` sidecar — it is NOT in the JSON. JSON wins the
+    /// rename first; a crash between the JSON rename and the sidecar
+    /// write leaves the older (or absent) sidecar. Because the sidecar
+    /// is now the *sole* store for `state` (no JSON inline fallback as
+    /// of v1.21), that window means a clean loss of the new state →
+    /// the loader sees default `state` and the next `vex update`
+    /// re-derives `imported_by` via a one-time full cross-file pass.
+    /// This graceful re-bootstrap covers a *crash* (process death) only:
+    /// a runtime I/O failure from the sidecar write propagates via `?`
+    /// and fails the whole save, exactly as the JSON write does (the
+    /// JSON manifest is already committed by that point).
     pub fn save(&self, path: &Path) -> Result<()> {
         let data = serde_json::to_string(self)?;
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, data).context("write manifest tmp")?;
         std::fs::rename(&tmp, path).context("rename manifest")?;
-        let state = capture_state(self);
         let state_path = state_path_for(path);
-        crate::index::incremental_state::save(&state_path, &state)
+        crate::index::incremental_state::save(&state_path, &self.state)
             .context("write index.state sidecar")?;
         Ok(())
     }
@@ -301,30 +223,6 @@ fn state_path_for(manifest_path: &Path) -> std::path::PathBuf {
         Some(dir) => dir.join("index.state"),
         None => Path::new("index.state").to_path_buf(),
     }
-}
-
-fn capture_state(m: &Manifest) -> crate::index::incremental_state::IncrementalState {
-    crate::index::incremental_state::IncrementalState {
-        imported_by: m.imported_by.clone(),
-        imported_by_built: m.imported_by_built,
-        cpp_includes_processed: m.cpp_includes_processed,
-        body_tokens_persisted: m.body_tokens_persisted,
-        history_indexed_at: m.history_indexed_at.clone(),
-        history_tip_sha: m.history_tip_sha.clone(),
-        history_depth: m.history_depth,
-        history: m.history.clone(),
-    }
-}
-
-fn apply_state(m: &mut Manifest, s: crate::index::incremental_state::IncrementalState) {
-    m.imported_by = s.imported_by;
-    m.imported_by_built = s.imported_by_built;
-    m.cpp_includes_processed = s.cpp_includes_processed;
-    m.body_tokens_persisted = s.body_tokens_persisted;
-    m.history_indexed_at = s.history_indexed_at;
-    m.history_tip_sha = s.history_tip_sha;
-    m.history_depth = s.history_depth;
-    m.history = s.history;
 }
 
 /// Determine which files need re-indexing.
@@ -375,6 +273,8 @@ pub fn diff_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::incremental_state::IncrementalState;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn detects_new_files() {
@@ -426,12 +326,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("manifest.json");
         let m = Manifest {
-            cpp_includes_processed: Some(true),
+            state: IncrementalState {
+                cpp_includes_processed: Some(true),
+                ..Default::default()
+            },
             ..Manifest::default()
         };
         m.save(&path).unwrap();
         let back = Manifest::load(&path).unwrap();
-        assert_eq!(back.cpp_includes_processed, Some(true));
+        assert_eq!(back.state.cpp_includes_processed, Some(true));
     }
 
     #[test]
@@ -442,7 +345,7 @@ mod tests {
         // `Option<bool>` field already follows.
         let pre_v1_14_json = r#"{"files": {}}"#;
         let m: Manifest = serde_json::from_str(pre_v1_14_json).unwrap();
-        assert_eq!(m.cpp_includes_processed, None);
+        assert_eq!(m.state.cpp_includes_processed, None);
     }
 
     #[test]
@@ -450,19 +353,22 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("manifest.json");
         let m = Manifest {
-            body_tokens_persisted: Some(true),
+            state: IncrementalState {
+                body_tokens_persisted: Some(true),
+                ..Default::default()
+            },
             ..Manifest::default()
         };
         m.save(&path).unwrap();
         let back = Manifest::load(&path).unwrap();
-        assert_eq!(back.body_tokens_persisted, Some(true));
+        assert_eq!(back.state.body_tokens_persisted, Some(true));
     }
 
     #[test]
     fn body_tokens_persisted_defaults_none_on_pre_v1_15_manifest() {
         let pre_json = r#"{"files": {}}"#;
         let m: Manifest = serde_json::from_str(pre_json).unwrap();
-        assert_eq!(m.body_tokens_persisted, None);
+        assert_eq!(m.state.body_tokens_persisted, None);
     }
 
     #[test]
@@ -470,22 +376,25 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("manifest.json");
         let m = Manifest {
-            history_indexed_at: Some("2026-06-08".to_string()),
-            history_tip_sha: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
-            history_depth: Some(500),
-            history: Some(HistoryStats {
-                commit_count: 378,
-                blob_count: 1498,
-                entry_count: 38_999,
-                depth_capped: Some(false),
-            }),
+            state: IncrementalState {
+                history_indexed_at: Some("2026-06-08".to_string()),
+                history_tip_sha: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+                history_depth: Some(500),
+                history: Some(HistoryStats {
+                    commit_count: 378,
+                    blob_count: 1498,
+                    entry_count: 38_999,
+                    depth_capped: Some(false),
+                }),
+                ..Default::default()
+            },
             ..Manifest::default()
         };
         m.save(&path).unwrap();
         let back = Manifest::load(&path).unwrap();
-        assert_eq!(back.history_indexed_at.as_deref(), Some("2026-06-08"));
-        assert_eq!(back.history_depth, Some(500));
-        let stats = back.history.expect("history sub-object present");
+        assert_eq!(back.state.history_indexed_at.as_deref(), Some("2026-06-08"));
+        assert_eq!(back.state.history_depth, Some(500));
+        let stats = back.state.history.expect("history sub-object present");
         assert_eq!(stats.commit_count, 378);
         assert_eq!(stats.blob_count, 1498);
         assert_eq!(stats.entry_count, 38_999);
@@ -495,24 +404,29 @@ mod tests {
     #[test]
     fn history_fields_default_none_on_pre_v17_manifest() {
         // Pre-Phase 14.8 manifests have no `history_*` keys. All four
-        // must deserialise as None.
-        let pre_json = r#"{"files":{},"cpp_includes_processed":true}"#;
+        // must default to None under the nested `state`.
+        let pre_json = r#"{"files":{}}"#;
         let m: Manifest = serde_json::from_str(pre_json).unwrap();
-        assert_eq!(m.history_indexed_at, None);
-        assert_eq!(m.history_tip_sha, None);
-        assert_eq!(m.history_depth, None);
-        assert!(m.history.is_none());
+        assert_eq!(m.state.history_indexed_at, None);
+        assert_eq!(m.state.history_tip_sha, None);
+        assert_eq!(m.state.history_depth, None);
+        assert!(m.state.history.is_none());
     }
 
     #[test]
-    fn pre_v1_18_inline_state_fields_load_via_json_fallback() {
-        // Migration safety: a pre-v1.18 JSON manifest carries state
-        // fields inline (no sidecar exists yet). `Manifest::load` must
-        // surface those fields from the JSON #[serde(default)] path.
+    fn pre_v1_18_inline_state_fields_are_ignored_and_rebootstrap() {
+        // v1.21 migration contract (was `..._load_via_json_fallback`):
+        // a pre-v1.18 JSON manifest carries the state fields INLINE at
+        // the top level and has no `index.state` sidecar. After nesting
+        // those fields under `state`, the inline keys are now *unknown*
+        // top-level keys. `Manifest::load` must ignore them (no
+        // `deny_unknown_fields` — see struct invariant) and leave
+        // `state` default. The dead inline values do NOT surface; the
+        // next `vex update` re-derives `imported_by` from scratch.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("manifest.json");
         let legacy_json = r#"{
-            "files": {},
+            "files": {"src/a.rs": 7},
             "cpp_includes_processed": true,
             "body_tokens_persisted": true,
             "imported_by": {"src/a.rs": ["src/b.rs"]},
@@ -529,13 +443,16 @@ mod tests {
         }"#;
         std::fs::write(&path, legacy_json).unwrap();
         let m = Manifest::load(&path).unwrap();
-        assert_eq!(m.cpp_includes_processed, Some(true));
-        assert_eq!(m.body_tokens_persisted, Some(true));
-        assert_eq!(m.imported_by_built, Some(true));
-        assert_eq!(m.history_indexed_at.as_deref(), Some("2026-06-08"));
-        assert_eq!(m.history_depth, Some(250));
-        assert!(m.imported_by.contains_key("src/a.rs"));
-        assert!(m.history.is_some());
+        // Non-state fields still load normally.
+        assert_eq!(m.files.get("src/a.rs"), Some(&7));
+        // Every moved field is back to default — re-bootstrap contract.
+        assert_eq!(m.state.cpp_includes_processed, None);
+        assert_eq!(m.state.body_tokens_persisted, None);
+        assert_eq!(m.state.imported_by_built, None);
+        assert_eq!(m.state.history_indexed_at, None);
+        assert_eq!(m.state.history_depth, None);
+        assert!(m.state.history.is_none());
+        assert!(m.state.imported_by.is_empty());
     }
 
     #[test]
@@ -547,10 +464,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("manifest.json");
         let m = Manifest {
-            cpp_includes_processed: Some(true),
-            body_tokens_persisted: Some(true),
-            history_indexed_at: Some("2026-06-08".to_string()),
-            imported_by_built: Some(true),
+            state: IncrementalState {
+                cpp_includes_processed: Some(true),
+                body_tokens_persisted: Some(true),
+                history_indexed_at: Some("2026-06-08".to_string()),
+                imported_by_built: Some(true),
+                ..Default::default()
+            },
             ..Manifest::default()
         };
         m.save(&path).unwrap();
@@ -694,5 +614,102 @@ mod tests {
             msg.contains("parse"),
             "expected JSON parse error past the size guard, got: {msg}"
         );
+    }
+
+    #[test]
+    fn retained_json_fields_keep_flat_shape_and_omit_none() {
+        // v1.21: the JSON-resident concerns stayed FLAT (the flatten-
+        // grouping design was rejected — reviewer C1). So
+        // `skip_serializing_if = "Option::is_none"` is honored verbatim:
+        // a None opt-out emits NO key, not `"call_graph": null`. This
+        // locks the byte shape flatten would have broken.
+        let json = serde_json::to_string(&Manifest::default()).unwrap();
+        for key in [
+            "git_head",
+            "embedder_id",
+            "call_graph",
+            "bm25",
+            "pattern_index",
+            "pattern_index_full",
+            "vectors_normalized",
+            "rename_chains_built",
+            "rename_chains_minilm_tiebreak_hits",
+            "indexed_at",
+        ] {
+            assert!(
+                !json.contains(key),
+                "None field {key} must be omitted (no null), got: {json}"
+            );
+        }
+        // `state` never serialises regardless of contents.
+        assert!(
+            !json.contains("\"state\""),
+            "state must never appear in JSON, got: {json}"
+        );
+
+        // Populated opt-outs appear flat at the top level (not nested).
+        let populated = Manifest {
+            call_graph: Some(false),
+            bm25: Some(true),
+            ..Manifest::default()
+        };
+        let json = serde_json::to_string(&populated).unwrap();
+        assert!(json.contains("\"call_graph\":false"), "got: {json}");
+        assert!(json.contains("\"bm25\":true"), "got: {json}");
+    }
+
+    #[test]
+    fn sidecar_state_wins_over_default_on_load() {
+        // The `index.state` sidecar is the sole store for `state`; the
+        // JSON carries none of it, and `load` overlays the sidecar.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let mut imported_by = BTreeMap::new();
+        imported_by.insert(
+            "src/a.rs".to_string(),
+            BTreeSet::from(["src/b.rs".to_string()]),
+        );
+        let m = Manifest {
+            state: IncrementalState {
+                imported_by_built: Some(true),
+                imported_by,
+                ..Default::default()
+            },
+            ..Manifest::default()
+        };
+        m.save(&path).unwrap();
+        // JSON alone carries no state.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("imported_by"), "got: {raw}");
+        // load overlays the sidecar → state is restored.
+        let back = Manifest::load(&path).unwrap();
+        assert_eq!(back.state.imported_by_built, Some(true));
+        assert!(back.state.imported_by.contains_key("src/a.rs"));
+    }
+
+    #[test]
+    fn modern_json_without_sidecar_loads_default_state() {
+        // Crash-window contract: if the process dies between the JSON
+        // rename and the sidecar write, the next load sees a v1.21 JSON
+        // (no state keys) and NO `index.state` on disk. `state` must
+        // come back default so `vex update` re-bootstraps — no panic,
+        // no stale carry-over.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("manifest.json");
+        // A modern manifest serialises with state omitted; write it,
+        // then delete the sidecar to simulate the interrupted write.
+        Manifest {
+            files: HashMap::from([("src/a.rs".to_string(), 7u64)]),
+            ..Manifest::default()
+        }
+        .save(&path)
+        .unwrap();
+        std::fs::remove_file(state_path_for(&path)).unwrap();
+
+        let back = Manifest::load(&path).unwrap();
+        assert_eq!(back.files.get("src/a.rs"), Some(&7));
+        assert!(back.state.imported_by.is_empty());
+        assert_eq!(back.state.imported_by_built, None);
+        assert_eq!(back.state.history_indexed_at, None);
     }
 }

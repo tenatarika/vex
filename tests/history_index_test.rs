@@ -201,11 +201,11 @@ fn index_history_persisted_in_manifest() {
         .unwrap_or_else(|e| panic!("Manifest::load failed for {}: {e}", manifest_path.display()));
 
     assert!(
-        manifest.history_indexed_at.is_some(),
+        manifest.state.history_indexed_at.is_some(),
         "Phase 14.8: manifest at {} must carry `history_indexed_at = Some(_)` \
          after `vex index --history` (Step 5 plumbing). Got: {:?}",
         manifest_path.display(),
-        manifest.history_indexed_at,
+        manifest.state.history_indexed_at,
     );
 }
 
@@ -338,7 +338,7 @@ fn history_depth_caps_globally() {
     // v1.18 audit C1: `history` migrated into the `index.state` binary
     // sidecar. `Manifest::load` layers it back over the JSON so the test
     // stays storage-agnostic.
-    let commits = manifest.history.as_ref().map(|h| h.commit_count);
+    let commits = manifest.state.history.as_ref().map(|h| h.commit_count);
     assert_eq!(
         commits,
         Some(2),
@@ -586,9 +586,9 @@ fn no_history_drops_sidecar_and_manifest_fields() {
     let manifest = vex::index::manifest::Manifest::load(&manifest_path)
         .unwrap_or_else(|e| panic!("Manifest::load failed for {}: {e}", manifest_path.display()));
     assert!(
-        manifest.history_indexed_at.is_none(),
+        manifest.state.history_indexed_at.is_none(),
         "history_indexed_at should be None in manifest after --no-history. Got: {:?}",
-        manifest.history_indexed_at,
+        manifest.state.history_indexed_at,
     );
 
     // cmd_history falls back to walker — advertised via meta.

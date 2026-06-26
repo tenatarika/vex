@@ -179,16 +179,18 @@ fn bake_v115_index(dir: &Path) -> PathBuf {
         pattern_index: Some(true),
         pattern_index_full: Some(true),
         vectors_normalized: Some(true),
-        cpp_includes_processed: Some(true),
-        body_tokens_persisted: Some(true),
-        history_indexed_at: None,
-        history_tip_sha: None,
-        history_depth: None,
-        history: None,
         rename_chains_built: None,
         rename_chains_minilm_tiebreak_hits: None,
-        imported_by: Default::default(),
-        imported_by_built: None,
+        state: vex::index::incremental_state::IncrementalState {
+            cpp_includes_processed: Some(true),
+            body_tokens_persisted: Some(true),
+            history_indexed_at: None,
+            history_tip_sha: None,
+            history_depth: None,
+            history: None,
+            imported_by: Default::default(),
+            imported_by_built: None,
+        },
     };
     manifest
         .save(&cache_root.join("manifest.json"))
@@ -261,5 +263,5 @@ fn vex_update_semantic_with_one_added_file_takes_incremental_hnsw_path() {
     // the update wrote a fresh sidecar successfully.
     let manifest =
         Manifest::load(&cache_root.join("manifest.json")).expect("manifest load post-update");
-    assert_eq!(manifest.body_tokens_persisted, Some(true));
+    assert_eq!(manifest.state.body_tokens_persisted, Some(true));
 }
