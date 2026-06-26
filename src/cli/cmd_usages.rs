@@ -1,6 +1,16 @@
 //! `vex usages` — find references to a symbol via the refs FST (default)
 //! or the v5 reference_edges section (`--strict`). Extracted from
 //! `cli/mod.rs` in S1 Group D.2.
+//!
+//! Phase 2 (v1.21): the ref-fetching + def-site / scope / docs filtering
+//! routes through [`StrictRefsChannel`] / [`FstRefsChannel`] in the
+//! `channel` module so the binder / FST split shares one implementation
+//! with `vex impact`. Only `filter_path` and `diff` (the cmd_usages-
+//! specific filters that don't fit the channel abstraction) are applied
+//! locally, and the prefix-suggestion fallback stays here because it's
+//! a query-shape concern, not a reference-resolution one.
+
+use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 
@@ -9,10 +19,11 @@ use super::common::{diff_filter_meta, resolve_diff_filter, resolve_root, CmdCtx}
 use super::index_management::ensure_index_ready;
 use super::output::print_envelope;
 use super::scope;
+use crate::channel::{
+    build_def_sites, Channel, ChannelContext, FstRefsChannel, HitLocation, StrictRefsChannel,
+};
 use crate::protocol::capabilities;
 use crate::store::reader::IndexReader;
-
-use crate::util::paths::is_doc_path;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn usages(
@@ -42,10 +53,6 @@ pub(crate) fn usages(
     )?;
 
     let reader = IndexReader::open(&index_path).context("open index")?;
-    let ref_reader = reader
-        .ref_reader()
-        .context("no refs in index — re-run `vex index` to rebuild")?;
-    let file_paths = reader.file_paths();
     // Mode label is fixed up front so `--why` can record which
     // path the lookup took even when the post-filter list is
     // empty.
@@ -57,137 +64,100 @@ pub(crate) fn usages(
     let trace_mode: &'static str = if strict { "strict" } else { "fst_lookup" };
     let trace_mode_legacy: &'static str = if strict { "strict" } else { "text_scan" };
 
+    let file_paths = reader.file_paths();
+    // Build def_sites only when the FST channel will consult it
+    // (non-strict mode honours `--include-self`). Empty map in
+    // strict mode — the binder excludes def-sites by construction.
+    let def_sites = if !strict {
+        build_def_sites(&reader, &name)
+    } else {
+        HashMap::new()
+    };
+
+    let channel_ctx = ChannelContext {
+        reader: &reader,
+        root: &root,
+        symbol: &name,
+        file_paths: &file_paths,
+        def_sites: &def_sites,
+        path_scope: &path_scope,
+        excludes: ctx.excludes,
+        // v1.20.0 (D2) — non-strict defaults strip def-site + doc
+        // mentions. `--include-self` / `--include-docs` opt back in.
+        // Strict mode ignores both knobs: the scope-binder doesn't
+        // surface def-sites or process doc files.
+        filter_def_sites: !include_self,
+        exclude_docs: !include_docs,
+    };
+
     // `--strict` reads from the v5 reference_edges section
     // (binder-resolved refs only). The legacy FST still backs
     // the non-strict path because it captures identifiers in
     // every supported language, including the 16 without a
     // scope binder yet.
-    let entries: Vec<crate::store::refs_fst::RefEntry> = if strict {
-        if !reader.has_ref_edges() {
+    let output = if strict {
+        StrictRefsChannel.run(&channel_ctx)?
+    } else {
+        FstRefsChannel.run(&channel_ctx)?
+    };
+
+    // Preserve the v1.20.x bail messages so existing scripts +
+    // docs still match. The channel reports the same conditions
+    // via `available: false`; we convert into an `anyhow::bail!`
+    // here so the CLI exit-code contract is unchanged.
+    if !output.available {
+        if strict {
             anyhow::bail!(
                 "--strict needs a v5 index with reference_edges (this index is v{} or has no resolved refs). Re-run `vex index` to rebuild.",
                 reader.header().version
             );
         }
-        let sym_fst = reader
-            .symbol_fst_reader()
-            .context("symbol FST missing — re-run `vex index` to rebuild for --strict")?;
-        let sym_indices = sym_fst.find(&name);
-        let mut out = Vec::new();
-        for sym_idx in sym_indices {
-            for edge in reader.find_ref_edges_by_symbol(sym_idx) {
-                out.push(crate::store::refs_fst::RefEntry {
-                    file_id: edge.from_file_id,
-                    line: edge.line,
-                });
-            }
-        }
-        out
-    } else {
-        ref_reader.find(&name)
-    };
-    // Capture the un-filtered hit count up front for `--why`.
-    // Doing it here (rather than after the chain) keeps the
-    // filter-loss visible in the trace even when `total` ends
-    // at zero — the user can tell "no refs at all" from "refs
-    // dropped by the filter".
-    let hits_before_filter = entries.len();
+        anyhow::bail!("no refs in index — re-run `vex index` to rebuild");
+    }
 
-    // v1.20.0 (D2) — non-strict noise filter. The FST refs index
-    // returns every occurrence of an identifier, including the
-    // symbol's own definition line and prose mentions in
-    // README/CHANGELOG files. Both are noise for "find all callers"
-    // queries; strict mode never had this problem because the
-    // scope-binder excludes def-sites and skips doc files entirely.
-    //
-    // Build the (file_path, line) coordinates of every symbol named
-    // `name` so the filter below can strip those rows. Empty when
-    // `--include-self` is set, when in strict mode, or when the
-    // symbol-FST is missing (pre-v1.8 index).
-    //
-    // Path normalisation invariant: both `read_string(sym.file_offset)`
-    // (here) and `file_paths.get(e.file_id)` (below) read from the same
-    // index built by `crate::store::writer`, which routes every
-    // relative path through `util::paths::to_rel_posix` at write time.
-    // The strings are therefore byte-identical on every platform —
-    // no extra normalisation is needed for the `HashSet` lookup to
-    // hit on Windows. See memory note `reference_windows_path_normalize`.
-    let def_sites: std::collections::HashSet<(String, u32)> = if !strict && !include_self {
-        let mut set = std::collections::HashSet::new();
-        if let Some(sym_fst) = reader.symbol_fst_reader() {
-            for sym_idx in sym_fst.find(&name) {
-                if let Some(sym) = reader.symbol(sym_idx as usize) {
-                    let file_path = reader.read_string(sym.file_offset).to_string();
-                    set.insert((file_path, sym.line));
-                }
-            }
-        }
-        set
-    } else {
-        std::collections::HashSet::new()
-    };
-    let filter_docs = !strict && !include_docs;
-    let mut def_site_dropped = 0usize;
-    let mut docs_dropped = 0usize;
-    let entries: Vec<_> = entries
+    // Capture the un-filtered hit count and channel-reported drop
+    // counters before applying cmd_usages-specific filters.
+    let hits_before_filter = output.pre_filter_count;
+    let def_site_dropped = output.dropped.def_site;
+    let docs_dropped = output.dropped.docs;
+
+    // Apply `filter_path` (substring) and `diff` (changed-path set)
+    // on the channel's surviving hits. These two filters are
+    // command-specific and stay outside the channel abstraction;
+    // see `reference_v1_20_deferred_debt.md` Phase 2 spec.
+    let post_filter: Vec<HitLocation> = output
+        .hits
         .into_iter()
-        .filter(|e| {
-            let path = match file_paths.get(e.file_id as usize) {
-                Some(p) => p.as_str(),
-                None => return false,
-            };
-            let filter_ok = filter_path.as_deref().is_none_or(|fp| path.contains(fp));
-            let scope_ok = path_scope.accept(path);
+        .filter(|h| {
+            let filter_ok = filter_path.as_deref().is_none_or(|fp| h.path.contains(fp));
             // Phase 13.7-D3: apply diff filter alongside path filters
             // so the trace's `total` reflects the post-diff count
             // exactly like it already reflects the post-scope count.
-            let diff_ok = changed_paths.as_ref().is_none_or(|cp| cp.contains(path));
-            // Path/scope/diff narrowing happens FIRST. A row that
-            // never would have been displayed in the first place
-            // doesn't get attributed to `def_site_dropped` or
-            // `docs_dropped`; it falls into `diff_dropped` via the
-            // arithmetic below. This keeps the `--why` counters
-            // honest: `def_site_dropped` = "rows that would have
-            // been displayed but were the def-site"; same for docs.
-            if !(filter_ok && scope_ok && diff_ok) {
-                return false;
-            }
-            // D2 — strip def-site + doc rows for the non-strict path.
-            // (Corner case: a symbol defined in a `*.md` file is
-            // also a doc; the `is_doc` check fires first so the row
-            // is counted as `docs_dropped`, not `def_site_dropped`.
-            // To resurrect such a row a user needs BOTH `--include-self`
-            // AND `--include-docs`. Documented in LIMITATIONS §usages-noise.)
-            if def_sites.contains(&(path.to_string(), e.line)) {
-                def_site_dropped += 1;
-                return false;
-            }
-            if filter_docs && is_doc_path(path) {
-                docs_dropped += 1;
-                return false;
-            }
-            true
+            let diff_ok = changed_paths.as_ref().is_none_or(|cp| cp.contains(&h.path));
+            filter_ok && diff_ok
         })
         .collect();
-    let total = entries.len();
+    let total = post_filter.len();
     let diff_retained = total;
-    // diff_dropped reports rows lost to path / scope / diff narrowing
-    // ONLY — def-site and doc filters are reported separately in the
-    // `--why` trace so users can attribute the drop to the right
-    // filter.
+    // `diff_dropped` reports residual drops not attributed to
+    // def_site or docs. With the Phase 2 channel migration this
+    // residual now ALSO includes channel-side `dropped.scope`
+    // (path_scope glob misses) — preserving the v1.20.x shape of
+    // the `--why` trace where "diff_dropped" means
+    // "everything not def_site / not docs".
     let diff_dropped = hits_before_filter
         .saturating_sub(total)
         .saturating_sub(def_site_dropped)
         .saturating_sub(docs_dropped);
-    let entries: Vec<_> = entries.into_iter().take(limit).collect();
+    let entries: Vec<HitLocation> = post_filter.into_iter().take(limit).collect();
 
     // Prefix-suggestion fallback runs ONLY when no exact hits
     // and only against the FST-lookup path (strict-mode doesn't
-    // have a prefix counterpart today). We resolve it once
-    // here so both the Text print and the `--why` trace use
-    // the same vector — without double-querying the FST.
+    // have a prefix counterpart today). Stays outside the channel
+    // abstraction — it's a query-shape concern (did-you-mean), not
+    // a reference-resolution one.
     let prefix_suggestions = if entries.is_empty() && !strict {
-        Some(ref_reader.find_by_prefix(&name))
+        reader.ref_reader().map(|rr| rr.find_by_prefix(&name))
     } else {
         None
     };
@@ -225,14 +195,10 @@ pub(crate) fn usages(
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = entries
                 .iter()
-                .map(|e| {
-                    let path = file_paths
-                        .get(e.file_id as usize)
-                        .map(|s| s.as_str())
-                        .unwrap_or("?");
+                .map(|h| {
                     serde_json::json!({
-                        "path": path,
-                        "line": e.line,
+                        "path": h.path,
+                        "line": h.line,
                     })
                 })
                 .collect();
@@ -264,12 +230,8 @@ pub(crate) fn usages(
                 }
             } else {
                 println!("{name}: {total} usages (showing {})", entries.len());
-                for e in &entries {
-                    let path = file_paths
-                        .get(e.file_id as usize)
-                        .map(|s| s.as_str())
-                        .unwrap_or("?");
-                    println!("  {path}:{}", e.line);
+                for h in &entries {
+                    println!("  {}:{}", h.path, h.line);
                 }
             }
         }

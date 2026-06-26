@@ -134,21 +134,24 @@ pub(crate) fn impact(
         def_sites: &def_sites,
         path_scope: &path_scope,
         excludes: ctx.excludes,
+        filter_def_sites: true,
         exclude_docs,
     };
 
     // Run every channel; collect into a vec for the data-driven
-    // verdict. Channels report `Ok(ChannelResult::unavailable(...))`
+    // verdict. Channels report `Ok(ChannelOutput::unavailable(...))`
     // when they can't run (pre-v1.8 index, missing call graph), so an
     // `Err` here is a genuine fault (I/O failure, corrupt regex) and
-    // bubbles up to the caller.
+    // bubbles up to the caller. Phase 2: the trait now returns
+    // `ChannelOutput` (full hits + drop counters); the wire envelope
+    // takes the `SAMPLE_LIMIT` cap via `ChannelResult::from_output`.
     let invocations: Vec<ChannelInvocation> = DEFAULT_CHANNELS
         .iter()
         .map(|ch| {
             Ok::<_, anyhow::Error>(ChannelInvocation {
                 name: ch.name(),
                 tier: ch.tier(),
-                result: ch.run(&channel_ctx)?,
+                result: ChannelResult::from_output(ch.run(&channel_ctx)?),
             })
         })
         .collect::<Result<_>>()?;

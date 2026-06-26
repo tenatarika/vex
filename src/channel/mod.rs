@@ -38,7 +38,7 @@
 //! on the receiver side (`ImpactChannels`); see
 //! `cmd_impact::ImpactChannels::from_invocations` for the bridge.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -78,6 +78,57 @@ pub struct HitLocation {
     pub line: u32,
 }
 
+/// Per-category drop counters reported by each channel. Used by
+/// `vex usages --why` to attribute filter losses to the right cause
+/// (def-site vs prose path vs scope glob) so the agent can see why
+/// `hits_before_filter` shrank to `hits_after_filter`.
+///
+/// `scope` counts rows dropped by `path_scope` (include/exclude
+/// globs); `def_site` counts the symbol's own declaration row
+/// (controlled by `ChannelContext::filter_def_sites`); `docs` counts
+/// prose-path rows (controlled by `ChannelContext::exclude_docs`).
+/// Drops accumulate in that order — a row that fails `scope` does
+/// not also bump `def_site` even if it would have.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DropCounts {
+    pub def_site: usize,
+    pub docs: usize,
+    pub scope: usize,
+}
+
+/// Primary channel output: every surviving hit (un-truncated, in
+/// channel order) plus per-category drop counters and the raw
+/// pre-filter count. `ChannelResult` wraps this for the impact wire
+/// envelope; cmd_usages reads it directly to paginate, apply
+/// command-specific filters (filter_path, diff), and emit the
+/// `--why` trace.
+#[derive(Debug)]
+pub struct ChannelOutput {
+    pub available: bool,
+    pub unavailable_reason: Option<String>,
+    /// Raw fetch count before any `path_scope` / `def_site` / `docs`
+    /// filter ran. Survivor count = `hits.len()`; total drops =
+    /// `pre_filter_count - hits.len()`.
+    pub pre_filter_count: usize,
+    /// Post-filter hits in channel-native order. NOT capped to
+    /// `SAMPLE_LIMIT` — callers that want the impact wire envelope
+    /// take the cap via `ChannelResult::from_output`.
+    pub hits: Vec<HitLocation>,
+    pub dropped: DropCounts,
+}
+
+impl ChannelOutput {
+    pub fn unavailable(reason: &str) -> Self {
+        Self {
+            available: false,
+            unavailable_reason: Some(reason.to_string()),
+            pre_filter_count: 0,
+            hits: Vec::new(),
+            dropped: DropCounts::default(),
+        }
+    }
+}
+
 /// Output of a channel run: whether it could execute, how many hits,
 /// a bounded sample, and a truncation marker. Serialized to the wire
 /// as `ImpactChannels.<name>: ChannelResult` so the field shape is
@@ -105,6 +156,11 @@ pub struct ChannelResult {
 }
 
 impl ChannelResult {
+    /// Test-only convenience: build an unavailable `ChannelResult`
+    /// (mirrors the old pre-Phase-2 shape). Production paths go
+    /// through [`Self::from_output`] which lifts a
+    /// [`ChannelOutput::unavailable`].
+    #[cfg(test)]
     pub fn unavailable(reason: &str) -> Self {
         Self {
             available: false,
@@ -115,6 +171,11 @@ impl ChannelResult {
         }
     }
 
+    /// Test-only convenience: build a successful `ChannelResult`
+    /// from a raw hit list (mirrors the old pre-Phase-2 shape).
+    /// Production paths go through [`Self::from_output`] which
+    /// preserves `ChannelOutput`'s drop counters for `vex usages`.
+    #[cfg(test)]
     pub fn from_hits(mut hits: Vec<HitLocation>) -> Self {
         let count = hits.len();
         let truncated = count > SAMPLE_LIMIT;
@@ -124,6 +185,32 @@ impl ChannelResult {
             unavailable_reason: None,
             count,
             sample: hits,
+            truncated,
+        }
+    }
+
+    /// Lift a [`ChannelOutput`] into the impact wire-envelope shape:
+    /// take the first [`SAMPLE_LIMIT`] hits and mark `truncated` when
+    /// more were dropped. Unavailable outputs pass through unchanged.
+    pub fn from_output(out: ChannelOutput) -> Self {
+        if !out.available {
+            return Self {
+                available: false,
+                unavailable_reason: out.unavailable_reason,
+                count: 0,
+                sample: Vec::new(),
+                truncated: false,
+            };
+        }
+        let count = out.hits.len();
+        let truncated = count > SAMPLE_LIMIT;
+        let mut sample = out.hits;
+        sample.truncate(SAMPLE_LIMIT);
+        Self {
+            available: true,
+            unavailable_reason: None,
+            count,
+            sample,
             truncated,
         }
     }
@@ -137,13 +224,21 @@ pub struct ChannelContext<'a> {
     pub root: &'a Path,
     pub symbol: &'a str,
     pub file_paths: &'a [String],
-    /// Def-site set used by FST + grep channels to strip the
+    /// Def-site map used by FST + grep channels to strip the
     /// symbol's own declaration row (declarations are not "uses").
     /// Pre-computed once via [`build_def_sites`] so each channel
-    /// avoids duplicate symbol-FST lookups.
-    pub def_sites: &'a HashSet<(String, u32)>,
+    /// avoids duplicate symbol-FST lookups. Borrow-friendly shape
+    /// (Phase 2 H2): the channel checks `def_sites.get(path).map_or(false,
+    /// |lines| lines.contains(&line))` — no `String` clone per row.
+    pub def_sites: &'a HashMap<&'a str, HashSet<u32>>,
     pub path_scope: &'a PathScope,
     pub excludes: &'a [String],
+    /// Whether channels should strip the symbol's own definition row.
+    /// `vex impact` uses `true` (a declaration is not a "use"); the
+    /// `--include-self` escape hatch on `vex usages` toggles it to
+    /// `false`. Strict / call-graph channels ignore the flag (they
+    /// exclude def-sites by construction).
+    pub filter_def_sites: bool,
     /// Opt-in: when true, FST + grep channels drop hits in
     /// `*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc` paths
     /// (see [`crate::util::paths::is_doc_path`]). v1.20.1 (D4
@@ -151,19 +246,25 @@ pub struct ChannelContext<'a> {
     /// the `Uncertain`-verdict story for prose-only mentions
     /// (e.g. a name appearing only in CHANGELOG) is the whole
     /// point of `vex impact`; this flag opts out for agents that
-    /// want a code-only blast radius.
+    /// want a code-only blast radius. cmd_usages mirrors this
+    /// (`--include-docs` to opt back in).
     pub exclude_docs: bool,
 }
 
 /// Trait implemented by each reference channel. Returns
-/// `Ok(ChannelResult)` even when the channel could not run — that
-/// shape goes into the wire envelope. Reserve `Err` for genuinely
+/// `Ok(ChannelOutput)` even when the channel could not run — that
+/// shape carries the full hit list, the raw pre-filter count, and
+/// per-category drop counters. Callers (cmd_impact, cmd_usages)
+/// choose how to present it: `vex impact` lifts via
+/// [`ChannelResult::from_output`] for the wire envelope (`count` +
+/// `sample[:SAMPLE_LIMIT]`); `vex usages` reads `hits` directly to
+/// paginate and emit the `--why` trace. Reserve `Err` for genuinely
 /// unexpected failures (I/O errors, regex compile failures) that
-/// should abort the whole impact query.
+/// should abort the whole query.
 pub trait Channel: Sync {
     fn name(&self) -> &'static str;
     fn tier(&self) -> ChannelTier;
-    fn run(&self, ctx: &ChannelContext<'_>) -> Result<ChannelResult>;
+    fn run(&self, ctx: &ChannelContext<'_>) -> Result<ChannelOutput>;
 }
 
 /// Data-driven verdict input: one slot per channel that ran. The
@@ -177,28 +278,48 @@ pub struct ChannelInvocation {
     pub result: ChannelResult,
 }
 
-/// Build the `(file_path, line)` set of the queried symbol's own
+/// Build the `path → {line_numbers}` map of the queried symbol's own
 /// definitions. Used by FST + grep channels to strip declarations
 /// from their hit counts (a declaration is not a "use"). Shared so
-/// the symbol-FST lookup happens once per `vex impact` invocation,
-/// not per channel.
+/// the symbol-FST lookup happens once per query, not per channel.
+///
+/// **H2 (Phase 2)**: the map is keyed on `&str` borrowed from
+/// `IndexReader::read_string`, so each channel does
+/// `def_sites.get(path_str).is_some_and(|lines| lines.contains(&line))`
+/// without cloning the path on every row. Pre-fix the channels paid
+/// two `String` clones per fetched row (one for the def-site lookup
+/// tuple, one for the surviving `HitLocation`); now only the
+/// surviving rows pay one clone.
 ///
 /// Path normalisation invariant: the strings here come from
 /// `read_string(sym.file_offset)`, which the writer routed through
 /// `util::paths::to_rel_posix`. Match against `file_paths.get(...)`
 /// values is byte-identical on every platform.
 #[must_use]
-pub fn build_def_sites(reader: &IndexReader, symbol: &str) -> HashSet<(String, u32)> {
-    let mut set = HashSet::new();
+pub fn build_def_sites<'a>(
+    reader: &'a IndexReader,
+    symbol: &str,
+) -> HashMap<&'a str, HashSet<u32>> {
+    let mut map: HashMap<&'a str, HashSet<u32>> = HashMap::new();
     if let Some(sym_fst) = reader.symbol_fst_reader() {
         for sym_idx in sym_fst.find(symbol) {
             if let Some(sym) = reader.symbol(sym_idx as usize) {
-                let file_path = reader.read_string(sym.file_offset).to_string();
-                set.insert((file_path, sym.line));
+                let file_path: &str = reader.read_string(sym.file_offset);
+                map.entry(file_path).or_default().insert(sym.line);
             }
         }
     }
-    set
+    map
+}
+
+/// `true` when the (path, line) coordinate is in the def-site set.
+/// Helper so each channel doesn't repeat the
+/// `Option<&HashSet>::map_or` dance.
+#[inline]
+fn is_def_site(def_sites: &HashMap<&str, HashSet<u32>>, path: &str, line: u32) -> bool {
+    def_sites
+        .get(path)
+        .is_some_and(|lines| lines.contains(&line))
 }
 
 /// Three-valued impact verdict. Wire serialisation uses snake_case
@@ -338,9 +459,9 @@ impl Channel for StrictRefsChannel {
     fn tier(&self) -> ChannelTier {
         ChannelTier::Binder
     }
-    fn run(&self, ctx: &ChannelContext<'_>) -> Result<ChannelResult> {
+    fn run(&self, ctx: &ChannelContext<'_>) -> Result<ChannelOutput> {
         if !ctx.reader.has_ref_edges() {
-            return Ok(ChannelResult::unavailable(
+            return Ok(ChannelOutput::unavailable(
                 "index has no v5 reference_edges section (pre-v1.8 index, or no binder coverage \
                  for this project's languages) — re-run `vex index` to rebuild",
             ));
@@ -349,15 +470,23 @@ impl Channel for StrictRefsChannel {
             .reader
             .symbol_fst_reader()
             .context("symbol FST missing — re-run `vex index` to rebuild")?;
+        // Binder edges exclude def-sites and doc paths by construction
+        // (scope-binder walks AST nodes inside source files), so
+        // `filter_def_sites` and `exclude_docs` are no-ops here. Only
+        // `path_scope` applies, which we count as `dropped.scope`.
         let mut hits = Vec::new();
+        let mut pre_filter_count = 0usize;
+        let mut dropped = DropCounts::default();
         for sym_idx in sym_fst.find(ctx.symbol) {
             for edge in ctx.reader.find_ref_edges_by_symbol(sym_idx) {
+                pre_filter_count += 1;
                 let path = ctx
                     .file_paths
                     .get(edge.from_file_id as usize)
                     .cloned()
                     .unwrap_or_else(|| "?".to_string());
                 if !ctx.path_scope.accept(&path) {
+                    dropped.scope += 1;
                     continue;
                 }
                 hits.push(HitLocation {
@@ -366,7 +495,13 @@ impl Channel for StrictRefsChannel {
                 });
             }
         }
-        Ok(ChannelResult::from_hits(hits))
+        Ok(ChannelOutput {
+            available: true,
+            unavailable_reason: None,
+            pre_filter_count,
+            hits,
+            dropped,
+        })
     }
 }
 
@@ -388,30 +523,49 @@ impl Channel for FstRefsChannel {
     fn tier(&self) -> ChannelTier {
         ChannelTier::Text
     }
-    fn run(&self, ctx: &ChannelContext<'_>) -> Result<ChannelResult> {
+    fn run(&self, ctx: &ChannelContext<'_>) -> Result<ChannelOutput> {
         let Some(ref_reader) = ctx.reader.ref_reader() else {
-            return Ok(ChannelResult::unavailable(
+            return Ok(ChannelOutput::unavailable(
                 "index has no refs FST — re-run `vex index`",
             ));
         };
-        let hits: Vec<HitLocation> = ref_reader
-            .find(ctx.symbol)
-            .into_iter()
-            .filter_map(|e| {
-                let path = ctx.file_paths.get(e.file_id as usize).cloned()?;
-                if ctx.def_sites.contains(&(path.clone(), e.line)) {
-                    return None;
-                }
-                if !ctx.path_scope.accept(&path) {
-                    return None;
-                }
-                if ctx.exclude_docs && crate::util::paths::is_doc_path(&path) {
-                    return None;
-                }
-                Some(HitLocation { path, line: e.line })
-            })
-            .collect();
-        Ok(ChannelResult::from_hits(hits))
+        let raw = ref_reader.find(ctx.symbol);
+        let pre_filter_count = raw.len();
+        let mut hits = Vec::new();
+        let mut dropped = DropCounts::default();
+        for e in raw {
+            // Borrow the path slice for filter checks — H2 fix: skip
+            // the per-row `String` clone we used to pay before
+            // filters. Only surviving rows pay one clone for the
+            // `HitLocation`.
+            let Some(path) = ctx.file_paths.get(e.file_id as usize) else {
+                continue;
+            };
+            let path_str: &str = path.as_str();
+            if !ctx.path_scope.accept(path_str) {
+                dropped.scope += 1;
+                continue;
+            }
+            if ctx.filter_def_sites && is_def_site(ctx.def_sites, path_str, e.line) {
+                dropped.def_site += 1;
+                continue;
+            }
+            if ctx.exclude_docs && crate::util::paths::is_doc_path(path_str) {
+                dropped.docs += 1;
+                continue;
+            }
+            hits.push(HitLocation {
+                path: path.clone(),
+                line: e.line,
+            });
+        }
+        Ok(ChannelOutput {
+            available: true,
+            unavailable_reason: None,
+            pre_filter_count,
+            hits,
+            dropped,
+        })
     }
 }
 
@@ -433,33 +587,43 @@ impl Channel for GrepWordBoundaryChannel {
     fn tier(&self) -> ChannelTier {
         ChannelTier::Text
     }
-    fn run(&self, ctx: &ChannelContext<'_>) -> Result<ChannelResult> {
+    fn run(&self, ctx: &ChannelContext<'_>) -> Result<ChannelOutput> {
         let escaped = regex::escape(ctx.symbol);
         let pattern = format!(r"\b{escaped}\b");
         let raw = crate::grep::search(ctx.root, &pattern, None, GREP_HARD_CAP, ctx.excludes)
             .context("grep word-boundary scan")?;
-        let hits: Vec<HitLocation> = raw
-            .into_iter()
-            .filter_map(|m| {
-                // Normalize grep's native-separator relative path to
-                // POSIX so the def-site HashSet (built from
-                // index-stored POSIX paths) matches on Windows too.
-                let posix =
-                    to_rel_posix(&ctx.root.join(&m.path), ctx.root).unwrap_or(m.path.clone());
-                let line = u32::try_from(m.line).ok()?;
-                if ctx.def_sites.contains(&(posix.clone(), line)) {
-                    return None;
-                }
-                if !ctx.path_scope.accept(&posix) {
-                    return None;
-                }
-                if ctx.exclude_docs && crate::util::paths::is_doc_path(&posix) {
-                    return None;
-                }
-                Some(HitLocation { path: posix, line })
-            })
-            .collect();
-        Ok(ChannelResult::from_hits(hits))
+        let pre_filter_count = raw.len();
+        let mut hits = Vec::new();
+        let mut dropped = DropCounts::default();
+        for m in raw {
+            // Normalize grep's native-separator relative path to
+            // POSIX so the def-site HashMap (keyed on index-stored
+            // POSIX paths) matches on Windows too.
+            let posix = to_rel_posix(&ctx.root.join(&m.path), ctx.root).unwrap_or(m.path.clone());
+            let Ok(line) = u32::try_from(m.line) else {
+                continue;
+            };
+            if !ctx.path_scope.accept(&posix) {
+                dropped.scope += 1;
+                continue;
+            }
+            if ctx.filter_def_sites && is_def_site(ctx.def_sites, &posix, line) {
+                dropped.def_site += 1;
+                continue;
+            }
+            if ctx.exclude_docs && crate::util::paths::is_doc_path(&posix) {
+                dropped.docs += 1;
+                continue;
+            }
+            hits.push(HitLocation { path: posix, line });
+        }
+        Ok(ChannelOutput {
+            available: true,
+            unavailable_reason: None,
+            pre_filter_count,
+            hits,
+            dropped,
+        })
     }
 }
 
@@ -476,9 +640,9 @@ impl Channel for CallGraphCallersChannel {
     fn tier(&self) -> ChannelTier {
         ChannelTier::Binder
     }
-    fn run(&self, ctx: &ChannelContext<'_>) -> Result<ChannelResult> {
+    fn run(&self, ctx: &ChannelContext<'_>) -> Result<ChannelOutput> {
         if !ctx.reader.has_call_graph() {
-            return Ok(ChannelResult::unavailable(
+            return Ok(ChannelOutput::unavailable(
                 "index has no v4 call graph section (pre-Phase 10.2 index, or empty call-edges) \
                  — re-run `vex index`",
             ));
@@ -488,17 +652,30 @@ impl Channel for CallGraphCallersChannel {
             ctx.symbol,
             crate::callgraph::CALLERS_FETCH_CAP,
         );
-        let hits: Vec<HitLocation> = callers
-            .into_iter()
-            .filter_map(|m| {
-                if !ctx.path_scope.accept(&m.path) {
-                    return None;
-                }
-                let line = u32::try_from(m.line).ok()?;
-                Some(HitLocation { path: m.path, line })
-            })
-            .collect();
-        Ok(ChannelResult::from_hits(hits))
+        // Call-graph edges resolve to function-body sites; def-sites
+        // and doc paths are excluded by construction, so
+        // `filter_def_sites` and `exclude_docs` are no-ops here.
+        // Only `path_scope` applies.
+        let pre_filter_count = callers.len();
+        let mut hits = Vec::new();
+        let mut dropped = DropCounts::default();
+        for m in callers {
+            if !ctx.path_scope.accept(&m.path) {
+                dropped.scope += 1;
+                continue;
+            }
+            let Ok(line) = u32::try_from(m.line) else {
+                continue;
+            };
+            hits.push(HitLocation { path: m.path, line });
+        }
+        Ok(ChannelOutput {
+            available: true,
+            unavailable_reason: None,
+            pre_filter_count,
+            hits,
+            dropped,
+        })
     }
 }
 
