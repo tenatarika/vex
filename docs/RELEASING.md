@@ -93,7 +93,10 @@ git commit -am "docs: prepare vX.Y.Z release notes"
 
 # 2. Bump the version in Cargo.toml.
 $EDITOR Cargo.toml
-cargo build --release  # so Cargo.lock matches even though it's gitignored
+cargo build --release  # updates the `vex` entry in Cargo.lock to match
+# The ROOT Cargo.lock IS tracked (only fuzz/Cargo.lock is gitignored).
+# Stage it alongside Cargo.toml or CI's `--locked` build fails with
+# "Cargo.lock needs to be updated". `-am` covers it (lock is tracked).
 git commit -am "chore: bump version to X.Y.Z"
 
 # 3. Tag and push.
