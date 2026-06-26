@@ -6,6 +6,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-06-26
+
+Two `vex impact` capabilities on top of an internal architecture pass.
+The blast-radius command gains a code-only mode and transitive-caller
+depth; under the hood the reference channels moved behind a `Channel`
+trait, the MCP entrypoint was decomposed, and the incremental-rebuild
+state was extracted out of the `Manifest` god-object. No on-disk format
+break — the JSON manifest and `index.state` sidecar stay byte-compatible.
+
+### Added — `vex impact` code-only mode + transitive callers
+
+- `--exclude-docs` (CLI) / `exclude_docs: true` (MCP) drops prose-format
+  mentions (`*.md` / `*.txt` / …) from the blast radius so a symbol that
+  only appears in a CHANGELOG flips from `uncertain` to `safe`. Off by
+  default — D4 parity with `vex search --code-only`.
+- `--depth N` (CLI, clamped `1..16`) / `depth` (MCP) walks the call graph
+  backward to report indirect callers at depth ≥ 2 via the new
+  `TransitiveCallersChannel`. Depth-1 direct callers stay on the existing
+  channel; the two binder channels cover disjoint depth ranges so the
+  verdict never double-counts.
+
+### Changed — internal architecture (no user-visible behaviour change)
+
+- Reference channels now live behind a `Channel` trait
+  (`ChannelTier { Binder, Text }` + `ChannelContext` + data-driven
+  `derive_verdict`), so adding channel N+1 (e.g. a Go binder) is a
+  data-only change. `vex impact` wire format is byte-identical.
+- `crates/vex-mcp/src/main.rs` decomposed 4652 → 221 LOC across
+  protocol / params / env / response / args / descriptors / tools
+  modules. Wire format byte-identical (snapshot-locked).
+- `cmd_usages` migrated onto the `Channel` trait; the FST `def_sites`
+  lookup switched to a borrow-friendly `HashMap<&str, HashSet<u32>>`,
+  saving ~1k clones per `vex impact`.
+- The `Manifest` god-object shed its 8 dual-homed incremental-state
+  fields into a nested `state: IncrementalState`, deleting the
+  hand-written `capture_state` / `apply_state` shuttle. Pre-v1.18
+  manifests that carried these fields inline in JSON now re-bootstrap on
+  the next `vex update` instead of surfacing stale inline values.
+
 ## [1.20.0] - 2026-06-22
 
 Coordinated "surface fixes, not engine fixes" release responding to an
