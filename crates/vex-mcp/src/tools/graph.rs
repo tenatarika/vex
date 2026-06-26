@@ -1,0 +1,200 @@
+//! Graph- and reference-shaped tools: usages, callers, callees, paths,
+//! reachable, impact, implementations, diff.
+//!
+//! Extracted from `main.rs::build_command` in the v1.21 split.
+
+use anyhow::Result;
+use serde_json::Value;
+
+use crate::args::{push_auto_update, push_diff_scope, push_no_stale_check, push_scope};
+use crate::params::{opt_bool, opt_str, opt_u64, read_canonical_str, req_str, ParamError};
+
+pub(crate) fn build_usages(
+    args: &Value,
+    _project_root: &str,
+    deprecated: &mut Vec<String>,
+) -> Result<(String, Vec<String>)> {
+    let symbol = read_canonical_str(args, "symbol", "name", deprecated)?
+        .ok_or_else(|| ParamError::missing("symbol"))?;
+    let limit = opt_u64(args, "limit", 50)?;
+    let mut extra = vec![symbol.to_string(), "--limit".into(), limit.to_string()];
+    if opt_bool(args, "strict", false)? {
+        extra.push("--strict".into());
+    }
+    // 11.10: structured trace via stderr — picked up by
+    // `extract_why_trace` and surfaced under `_meta.why`.
+    if opt_bool(args, "why", false)? {
+        extra.push("--why".into());
+    }
+    // v1.20.0 (D2): opt-in escape hatches for the new
+    // non-strict noise filter. Defaults strip def-site + doc
+    // mentions; clients that need the old wide-net behaviour
+    // (e.g. searching for a name across CHANGELOG + README)
+    // set these to true.
+    if opt_bool(args, "include_self", false)? {
+        extra.push("--include-self".into());
+    }
+    if opt_bool(args, "include_docs", false)? {
+        extra.push("--include-docs".into());
+    }
+    if let Some(filter) = opt_str(args, "filter")? {
+        extra.extend(["--filter".into(), filter.to_string()]);
+    }
+    push_auto_update(&mut extra, args)?;
+    push_no_stale_check(&mut extra, args)?;
+    push_scope(&mut extra, args)?;
+    push_diff_scope(&mut extra, args)?;
+    Ok(("usages".to_string(), extra))
+}
+
+pub(crate) fn build_impact(
+    args: &Value,
+    _project_root: &str,
+    deprecated: &mut Vec<String>,
+) -> Result<(String, Vec<String>)> {
+    // v1.20.0 (F1) — one-call delete-safety report. Composes
+    // strict refs + FST refs + grep \b<Name>\b + call-graph
+    // callers into a single verdict. No per-channel knobs at
+    // the MCP surface (yet) — the CLI defaults are tuned for
+    // the agent use case.
+    let symbol = read_canonical_str(args, "symbol", "name", deprecated)?
+        .ok_or_else(|| ParamError::missing("symbol"))?;
+    let mut extra = vec![symbol.to_string()];
+    push_auto_update(&mut extra, args)?;
+    push_no_stale_check(&mut extra, args)?;
+    push_scope(&mut extra, args)?;
+    Ok(("impact".to_string(), extra))
+}
+
+pub(crate) fn build_implementations(
+    args: &Value,
+    project_root: &str,
+    deprecated: &mut Vec<String>,
+) -> Result<(String, Vec<String>)> {
+    let symbol = read_canonical_str(args, "symbol", "name", deprecated)?
+        .ok_or_else(|| ParamError::missing("symbol"))?;
+    let limit = opt_u64(args, "limit", 50)?;
+    let mut extra = vec![
+        symbol.to_string(),
+        "--path".into(),
+        project_root.to_string(),
+        "--limit".into(),
+        limit.to_string(),
+    ];
+    push_auto_update(&mut extra, args)?;
+    push_no_stale_check(&mut extra, args)?;
+    push_scope(&mut extra, args)?;
+    push_diff_scope(&mut extra, args)?;
+    Ok(("implementations".to_string(), extra))
+}
+
+pub(crate) fn build_callers(
+    args: &Value,
+    project_root: &str,
+    deprecated: &mut Vec<String>,
+) -> Result<(String, Vec<String>)> {
+    let symbol = read_canonical_str(args, "symbol", "name", deprecated)?
+        .ok_or_else(|| ParamError::missing("symbol"))?;
+    let limit = opt_u64(args, "limit", 50)?;
+    let mut extra = vec![
+        symbol.to_string(),
+        "--path".into(),
+        project_root.to_string(),
+        "--limit".into(),
+        limit.to_string(),
+    ];
+    push_auto_update(&mut extra, args)?;
+    push_no_stale_check(&mut extra, args)?;
+    push_scope(&mut extra, args)?;
+    push_diff_scope(&mut extra, args)?;
+    Ok(("callers".to_string(), extra))
+}
+
+pub(crate) fn build_callees(
+    args: &Value,
+    project_root: &str,
+    deprecated: &mut Vec<String>,
+) -> Result<(String, Vec<String>)> {
+    let symbol = read_canonical_str(args, "symbol", "name", deprecated)?
+        .ok_or_else(|| ParamError::missing("symbol"))?;
+    let limit = opt_u64(args, "limit", 50)?;
+    let mut extra = vec![
+        symbol.to_string(),
+        "--path".into(),
+        project_root.to_string(),
+        "--limit".into(),
+        limit.to_string(),
+    ];
+    push_auto_update(&mut extra, args)?;
+    push_no_stale_check(&mut extra, args)?;
+    push_scope(&mut extra, args)?;
+    push_diff_scope(&mut extra, args)?;
+    Ok(("callees".to_string(), extra))
+}
+
+pub(crate) fn build_paths(
+    args: &Value,
+    project_root: &str,
+    _deprecated: &mut Vec<String>,
+) -> Result<(String, Vec<String>)> {
+    let from = req_str(args, "from")?;
+    let to = req_str(args, "to")?;
+    let max_hops = opt_u64(args, "max_hops", 6)?;
+    let max_paths = opt_u64(args, "max_paths", 50)?;
+    let mut extra = vec![
+        from.to_string(),
+        to.to_string(),
+        "--path".into(),
+        project_root.to_string(),
+        "--max-hops".into(),
+        max_hops.to_string(),
+        "--max-paths".into(),
+        max_paths.to_string(),
+    ];
+    push_auto_update(&mut extra, args)?;
+    push_no_stale_check(&mut extra, args)?;
+    push_scope(&mut extra, args)?;
+    Ok(("paths".to_string(), extra))
+}
+
+pub(crate) fn build_reachable(
+    args: &Value,
+    project_root: &str,
+    _deprecated: &mut Vec<String>,
+) -> Result<(String, Vec<String>)> {
+    let target = req_str(args, "target")?;
+    let max_hops = opt_u64(args, "max_hops", 6)?;
+    let limit = opt_u64(args, "limit", 200)?;
+    let mut extra = vec![
+        target.to_string(),
+        "--path".into(),
+        project_root.to_string(),
+        "--max-hops".into(),
+        max_hops.to_string(),
+        "--limit".into(),
+        limit.to_string(),
+    ];
+    push_auto_update(&mut extra, args)?;
+    push_no_stale_check(&mut extra, args)?;
+    push_scope(&mut extra, args)?;
+    Ok(("reachable".to_string(), extra))
+}
+
+pub(crate) fn build_diff(
+    args: &Value,
+    project_root: &str,
+    _deprecated: &mut Vec<String>,
+) -> Result<(String, Vec<String>)> {
+    let base = req_str(args, "base")?;
+    let limit = opt_u64(args, "limit", 500)?;
+    let mut extra = vec![
+        "--base".into(),
+        base.to_string(),
+        "--path".into(),
+        project_root.to_string(),
+        "--limit".into(),
+        limit.to_string(),
+    ];
+    push_scope(&mut extra, args)?;
+    Ok(("diff".to_string(), extra))
+}
