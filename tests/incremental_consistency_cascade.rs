@@ -663,28 +663,32 @@ fn cascade_traverses_three_hop_chain_python() {
 
 // ── Test 15 ──────────────────────────────────────────────────────────────────
 //
-// Q4-C × Go (negative control): Go has no binder (see
-// `src/parse/scope/mod.rs::bind_refs` match arms). `imported_by` stays
-// empty for Go-only projects → cascade is a documented no-op.
-// Correctness IS preserved (nothing to drop), but this test exists to
-// pin the "no cascade for Go" contract: if a future binder lands,
-// it'll fail this test and force a coverage update.
+// Q4-C × Go: 3-hop within-package chain. The Go binder
+// (`src/parse/scope/go.rs`) emits Unresolved cross-file refs that Pass-2's
+// single-candidate fallback links into `imported_by`; Q4-C must walk those
+// edges transitively. (Replaced the pre-binder negative control that
+// asserted Go produced no cascade.)
 
 #[test]
-fn cascade_is_noop_for_go_only_project_until_binder_lands() {
+fn cascade_traverses_three_hop_chain_go() {
     let tmp = TempDir::new().unwrap();
     let project_dir = tmp.path().join("project");
     fs::create_dir_all(&project_dir).unwrap();
 
     fs::write(
         project_dir.join("a.go"),
-        "package main\n\ntype NewName struct{ V int }\n",
+        "package main\n\ntype OldName struct{ V int }\ntype NewName struct{ V int }\n",
     )
     .unwrap();
     fs::write(
         project_dir.join("b.go"),
         "package main\n\ntype BWrapper struct{ V int }\n\n\
-         func makeB() BWrapper {\n    _ = NewName{V: 1}\n    return BWrapper{}\n}\n",
+         func MakeB() BWrapper {\n    _ = NewName{V: 1}\n    return BWrapper{}\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("c.go"),
+        "package main\n\nfunc UseB() int {\n    W := MakeB()\n    return W.V\n}\n",
     )
     .unwrap();
 
@@ -696,15 +700,53 @@ fn cascade_is_noop_for_go_only_project_until_binder_lands() {
     )
     .unwrap();
 
-    // Go binder is absent — imported_by must stay empty. If this fires,
-    // a Go binder landed and `cascade_traverses_three_hop_chain_go`
-    // should be added alongside the TS / Python tests.
-    let m = load_manifest(&project_dir);
+    let edges_initial = ref_edge_count(&project_dir);
     assert!(
-        m.state.imported_by.is_empty(),
-        "Go has no binder yet (see scope/mod.rs::bind_refs); imported_by must stay empty. \
-         Got: {:?} — if you wired a Go binder, replace this test with a 3-hop chain.",
-        m.state.imported_by
+        edges_initial > 0,
+        "Go binder produced 0 ref_edges — check scope/go.rs is wired in bind_refs"
+    );
+
+    // Both hops must land in imported_by: b.go → a.go (NewName) AND
+    // c.go → b.go (MakeB).
+    let m0 = load_manifest(&project_dir);
+    let b_imports_a =
+        m0.state.imported_by.iter().any(|(t, importers)| {
+            t.contains("a.go") && importers.iter().any(|p| p.contains("b.go"))
+        });
+    let c_imports_b =
+        m0.state.imported_by.iter().any(|(t, importers)| {
+            t.contains("b.go") && importers.iter().any(|p| p.contains("c.go"))
+        });
+    assert!(
+        b_imports_a && c_imports_b,
+        "Go imported_by missing a hop; got: {:?}",
+        m0.state.imported_by
+    );
+
+    // Edit ONLY a.go — drop OldName. b.go (depth 1) and c.go (depth 2)
+    // must both be cascaded via Q4-C.
+    fs::write(
+        project_dir.join("a.go"),
+        "package main\n\ntype NewName struct{ V int }\n",
+    )
+    .unwrap();
+
+    let (_total, changed, _deleted) = vex::index::pipeline::update(
+        &project_dir,
+        vex::index::pipeline::IndexOptions::default(),
+        "minilm-l6-v2",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        changed, 1,
+        "only a.go was edited — b.go + c.go come via cascade"
+    );
+
+    let edges_after = ref_edge_count(&project_dir);
+    assert!(
+        edges_after >= edges_initial.saturating_sub(1),
+        "Go transitive cascade dropped refs: before={edges_initial}, after={edges_after}"
     );
 }
 

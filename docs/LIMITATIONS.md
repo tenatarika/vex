@@ -409,6 +409,52 @@ Cross-file resolution for C# goes through two paths:
 
 ---
 
+## 4a.2 Go cross-file resolution
+
+Go gained a scope binder so `vex usages --strict`, `vex impact`, and the
+update cascade work on Go repos (before, Go had no binder and strict refs
+were always unavailable). Like C#, there is no include graph; resolution
+goes through:
+
+- **Within-package, cross-file** — Go files in a directory sharing a
+  `package` see each other's symbols by bare name. A bare `Helper()` call
+  referencing a function in a sibling file is `Unresolved` in the binder
+  and linked by Pass-2's single-candidate fallback (resolves only if the
+  name is unique corpus-wide).
+- **Cross-package `pkg.Symbol`** — in `util.DoThing()` the operand `util`
+  is filtered (see below), but the trailing `DoThing` is a by-name ref
+  that resolves to the unique `DoThing` symbol across packages. vex does
+  not match the import path to the target package — it resolves by symbol
+  name, so an unrelated `DoThing` in a third package makes it ambiguous.
+
+**What does NOT resolve cross-file in Go:**
+
+- **Unexported lowercase calls** — `is_meaningful_identifier` drops
+  pure-lowercase identifiers without an underscore (`spin()`, `parse()`,
+  package aliases like `mr`) before resolution, to keep the ref table
+  free of prose nouns. Exported (`Spin`, `Println`) and snake_case names
+  resolve; unexported single-word lowercase calls are invisible to
+  `--strict`.
+- **Ambiguous names** — when the same exported name is defined in two
+  packages, the single-candidate fallback declines (no edge), same as C#.
+- **`var` / `const` / `range` / type-switch bindings** — best-effort:
+  these names are walked as refs rather than bound as locals, so a
+  capitalized package-level `var Config = …` referenced elsewhere may
+  resolve oddly. Function/method *input* params, receivers, and `:=`
+  short vars ARE bound correctly. **Named return values** (`func F()
+  (Out int)`) are walked for their type but not bound as locals — like
+  the lowercase-call gap this only matters for the rare capitalized
+  named return. Variadic params (`elems ...T`) ARE bound.
+- **Generic type parameters** (`func F[K comparable]()`, `type Set[T
+  any]`) — not bound; the `type_parameters` clause is not walked. Single-
+  and two-letter names (`T`, `K`) are filtered out before resolution, so
+  a phantom ref only arises for a 3+ char mixed-case constraint name
+  referenced in the body.
+- **Dot imports (`. "strings"`)** — names imported unqualified are not
+  bound; bare references to them rely on the unique-candidate fallback.
+
+---
+
 ## 4b. B1.2 incremental HNSW — first-update cold start (v1.15.0)
 
 **What works:** from v1.15.0, `vex update --semantic` performs an
