@@ -6,14 +6,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [1.21.0] - 2026-06-26
+## [1.21.0] - 2026-06-27
 
-Two `vex impact` capabilities on top of an internal architecture pass.
-The blast-radius command gains a code-only mode and transitive-caller
-depth; under the hood the reference channels moved behind a `Channel`
-trait, the MCP entrypoint was decomposed, and the incremental-rebuild
-state was extracted out of the `Manifest` god-object. No on-disk format
-break — the JSON manifest and `index.state` sidecar stay byte-compatible.
+Two `vex impact` capabilities on top of an internal architecture pass,
+plus a new Go scope binder. The blast-radius command gains a code-only
+mode and transitive-caller depth; Go repos now get `--strict` / `impact`
+/ cascade resolution; under the hood the reference channels moved behind
+a `Channel` trait, the MCP entrypoint was decomposed, and the
+incremental-rebuild state was extracted out of the `Manifest`
+god-object. No on-disk format break — the JSON manifest and `index.state`
+sidecar stay byte-compatible.
+
+### Added — Go scope binder + C#/C++ binder coverage
+
+- New Go scope binder (`src/parse/scope/go.rs`): bare cross-file calls
+  emit `Unresolved` refs that Pass-2's single-candidate fallback links,
+  so `vex usages --strict`, `vex impact`, and the Q4-C update cascade now
+  work on Go repos (previously Go had no binder and strict refs were
+  always unavailable). Binds functions, methods, receivers, params
+  (including variadic `...T`), `:=` short vars, and `pkg.Symbol` /
+  `recv.Method` selectors; `import` aliases resolve cross-package by name.
+  Limitations (unexported lowercase calls, generics, named returns,
+  ambiguous names) documented in LIMITATIONS §4a.2.
+- C# strict-refs E2E coverage + C++ 3-hop cascade tests, with cross-file
+  resolution limits documented.
 
 ### Added — `vex impact` code-only mode + transitive callers
 
