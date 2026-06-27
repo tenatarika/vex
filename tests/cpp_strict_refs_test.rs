@@ -103,6 +103,45 @@ fn transitive_include_via_two_hops() {
 }
 
 #[test]
+fn transitive_include_via_three_hops() {
+    // a.cpp → b.h → c.h → d.h. The symbol lives in d.h; a.cpp only
+    // includes b.h. docs/LIMITATIONS.md and the v1.14 design claim
+    // "3-hop chains work", but the suite only proved depth-2
+    // (`transitive_include_via_two_hops`). This pins the deeper chain so a
+    // BFS depth regression (e.g. an accidental visited-set off-by-one or a
+    // depth cap) is caught. Audit 2026-06-27, gap H2.
+    let tmp = TempDir::new().unwrap();
+    write_local_cache_config(tmp.path());
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("d.h"),
+        "#pragma once\nint deepest_fn();\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("c.h"),
+        "#pragma once\n#include \"d.h\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("b.h"),
+        "#pragma once\n#include \"c.h\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("a.cpp"),
+        "#include \"b.h\"\nint main() { return deepest_fn(); }\n",
+    )
+    .unwrap();
+
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let assert = assert_ran(vex_in(tmp.path()).args(["usages", "deepest_fn", "--strict"]));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert_contains_call_site(&stdout, "src/a.cpp", 2);
+}
+
+#[test]
 fn cycle_in_includes_does_not_hang() {
     // A.h ⇄ B.h mutual include (real before `#pragma once` is processed;
     // also real with guard-macro patterns that the resolver doesn't

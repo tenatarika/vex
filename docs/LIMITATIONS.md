@@ -328,15 +328,24 @@ file that defines a symbol with the matching name.
   only `util.h` in the project; ambiguous matches break ties as
   same-dir > shortest-path-from-root > alphabetical (deterministic
   rather than always-correct).
+- **Class member methods (v1.14.1+)** — `gw.Charge()` and
+  `app::Gateway::static_method()` resolve cross-file: the SCM query
+  now indexes method declarations and inline definitions as
+  `SymbolKind::Method`, so Pass-2 finds them by name. Covered by
+  `tests/cpp_strict_refs_test.rs`.
 
 **What still does NOT resolve cross-file in C++:**
 
-- **Class member methods** — `gw.Charge()` where `Charge` is a
-  method of `class Gateway`. The scope binder emits a
-  `field_identifier` ref for `Charge` but the symbol extractor
-  treats class members as nested-scope, not top-level. v1.14 only
-  fixes the `BindTarget::Unresolved → free symbol` path. Pending
-  scope-binder work.
+- **Ambiguous same-name picks** — basename fallback and the
+  `name_to_global` lookup resolve to the *first* / tie-broken match
+  when two headers or two symbols share a name across directories. The
+  pick is deterministic, not always correct; vex does not model the
+  `-I` search order that would disambiguate.
+- **Operator overloads** — `operator==`, `operator()`, etc. The
+  operator token is not an `identifier` node, so no ref is emitted and
+  the call appears to have zero strict usages.
+- **Multiple declarators** — in `int a, b, c;` only the first
+  declarator is bound; refs to `b` / `c` may stay unresolved.
 - **System headers** — `#include <vector>`, `#include <string>`.
   Tree-sitter classifies these as `system_lib_string`; the parser
   filters them out so `std::vector` stays `Unresolved`. The vex
@@ -359,6 +368,44 @@ the line `C++ includes: yes` (text) / `"cpp_includes_processed": true`
 (JSON) marks indexes that ran Pass-2. Pre-v1.14 indexes show
 `C++ includes: no (run \`vex index\` to enable cross-file C++ refs)`
 — rebuild to pick up the resolver.
+
+---
+
+## 4a.1 C# cross-file resolution
+
+C# has no `#include` graph (it uses assembly / project references that
+live outside the source tree), so there is no C++-style Pass-2 BFS.
+Cross-file resolution for C# goes through two paths:
+
+- **`using` alias / `using static`** — `using G = App.Lib.Gateway;` and
+  `using static System.Math;` bind a name via `BindTarget::Imported`,
+  resolved against the last path segment.
+- **Single-candidate fallback** — a bare reference (e.g. `new Gateway()`
+  after a plain `using App.Lib;` namespace import) is `Unresolved`, then
+  resolves **only if exactly one** symbol of that name exists in the
+  whole corpus. This is the dominant real-world path and is covered by
+  `tests/csharp_strict_refs_test.rs`.
+
+**What does NOT resolve cross-file in C#:**
+
+- **Ambiguous names** — when two classes/methods share a name (e.g. a
+  `Widget` in namespace `A` and another in `B`), the single-candidate
+  fallback declines rather than guess, so the reference produces **no
+  strict edge**. `vex usages --strict Widget` simply omits the call
+  site. (If *every* ref in the project is ambiguous the
+  `reference_edges` section is empty and `--strict` reports it needs a
+  rebuild — re-running `vex index` won't change an inherently ambiguous
+  corpus.)
+- **Namespace wildcard imports** — `using App.Lib;` does not itself bind
+  member names; bare references only resolve via the unique-candidate
+  fallback above, never by namespace membership.
+- **Partial classes** — each `partial class Foo { … }` is a separate
+  symbol; members are not merged across files, so a cross-file ref to a
+  member declared in another `partial` part may not resolve.
+- **Extension methods** — `x.M()` where `M` is an extension method on a
+  foreign type is not resolved to the extension's defining class.
+- **Generic type parameters / destructuring** — deferred, same as the
+  other binders.
 
 ---
 
