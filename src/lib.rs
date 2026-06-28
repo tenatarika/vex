@@ -16,3 +16,4 @@ pub mod search;
 pub mod store;
 pub mod util;
 pub mod watch;
+pub mod workspace;
