@@ -320,6 +320,12 @@ pub enum Commands {
 
         #[command(flatten)]
         diff: DiffFilterArgs,
+
+        /// Search every repo in a `.vex-workspace.toml` (found at or above
+        /// cwd), grouping results by repo. `--why` / per-result JSON
+        /// signals are single-repo only. See docs/MULTIREPO.md.
+        #[arg(long)]
+        workspace: bool,
     },
 
     /// Delete-safety blast-radius report. Composes four independent

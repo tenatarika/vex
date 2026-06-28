@@ -152,6 +152,75 @@ fn check_workspace_json_lists_repos_and_names() {
 }
 
 #[test]
+fn search_workspace_groups_results_by_repo() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(&root.join("beta").join("b.rs"), "pub fn beta_thing() {}\n");
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["search", "alpha_thing", "--workspace"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Both members get a section header; the hit lands under alpha.
+    assert!(stdout.contains("── alpha ──"), "alpha section: {stdout}");
+    assert!(stdout.contains("── beta ──"), "beta section: {stdout}");
+    assert!(stdout.contains("alpha_thing"), "alpha hit: {stdout}");
+    // beta has no `alpha_thing` symbol.
+    let beta_section = stdout.split("── beta ──").nth(1).unwrap_or("");
+    assert!(
+        beta_section.contains("No results"),
+        "beta should report no results: {stdout}"
+    );
+}
+
+#[test]
+fn search_workspace_json_groups_by_repo() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\nname = \"A\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["search", "alpha_thing", "--workspace", "--format", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"A\""),
+        "json should name member A: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"repos\""),
+        "json should group by repo: {stdout}"
+    );
+}
+
+#[test]
 fn index_workspace_without_manifest_errors() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();

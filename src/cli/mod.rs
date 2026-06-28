@@ -141,6 +141,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             why,
             scope,
             diff,
+            workspace,
         } => cmd_search::search(
             &ctx,
             query,
@@ -158,6 +159,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             why,
             scope,
             diff,
+            workspace,
         ),
         Commands::Impact {
             name,
