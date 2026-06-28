@@ -148,7 +148,13 @@ impl Language {
     pub fn has_ast_ref_filter(&self) -> bool {
         matches!(
             self,
-            Self::Rust | Self::TypeScript | Self::Python | Self::CSharp | Self::Cpp
+            Self::Rust
+                | Self::TypeScript
+                | Self::Python
+                | Self::CSharp
+                | Self::Cpp
+                | Self::Go
+                | Self::Java
         )
     }
 

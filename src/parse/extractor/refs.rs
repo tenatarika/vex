@@ -128,6 +128,8 @@ fn is_comment_kind(kind: &str, lang: Language) -> bool {
         Language::TypeScript | Language::Python | Language::CSharp | Language::Cpp => {
             kind == "comment"
         }
+        Language::Go => kind == "comment",
+        Language::Java => matches!(kind, "line_comment" | "block_comment"),
         _ => false,
     }
 }
@@ -157,6 +159,11 @@ fn is_plain_string_kind(kind: &str, lang: Language) -> bool {
             kind,
             "string_literal" | "raw_string_literal" | "char_literal"
         ),
+        Language::Go => matches!(
+            kind,
+            "interpreted_string_literal" | "raw_string_literal" | "rune_literal"
+        ),
+        Language::Java => matches!(kind, "string_literal" | "character_literal" | "text_block"),
         _ => false,
     }
 }
@@ -222,4 +229,48 @@ pub(super) fn scan_identifiers(line: &str) -> Vec<&str> {
         }
     }
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(content: &str, lang: Language) -> Vec<String> {
+        extract_references_ast(content, lang)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.name)
+            .collect()
+    }
+
+    #[test]
+    fn go_ast_filter_drops_comment_and_string_idents() {
+        let src = "package main\n// MentionInComment is prose\nfunc Run() {\n\ts := \"AlsoInString\"\n\t_ = s\n}\n";
+        let got = names(src, Language::Go);
+        assert!(
+            !got.iter().any(|n| n == "MentionInComment"),
+            "comment ident must be dropped: {got:?}"
+        );
+        assert!(
+            !got.iter().any(|n| n == "AlsoInString"),
+            "string ident must be dropped: {got:?}"
+        );
+        // A real code ref still survives.
+        assert!(got.iter().any(|n| n == "Run"), "got: {got:?}");
+    }
+
+    #[test]
+    fn java_ast_filter_drops_comment_and_string_idents() {
+        let src = "class Widget {\n  // MentionInComment prose\n  void run() {\n    String s = \"AlsoInString\";\n  }\n}\n";
+        let got = names(src, Language::Java);
+        assert!(
+            !got.iter().any(|n| n == "MentionInComment"),
+            "comment ident must be dropped: {got:?}"
+        );
+        assert!(
+            !got.iter().any(|n| n == "AlsoInString"),
+            "string ident must be dropped: {got:?}"
+        );
+        assert!(got.iter().any(|n| n == "Widget"), "got: {got:?}");
+    }
 }

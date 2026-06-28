@@ -192,8 +192,8 @@ language:
 
 | Tier | Languages | Extraction |
 | --- | --- | --- |
-| T1 (AST identifier walk) | Rust, TypeScript, Python, C#, C++ | Walk every `identifier` node in the AST, skipping comments and string literals. Captures inheritance refs (`class Foo(Bar):` → `Bar`), call targets, type annotations, all real usages. |
-| T2 (line-scan regex) | the other 14 languages | Regex over each line: any identifier-shaped token becomes a ref. Higher false-positive rate (matches text inside strings / comments depending on whitespace), but covers grammars without an AST filter yet. |
+| T1 (AST identifier walk) | Rust, TypeScript, Python, C#, C++, Go, Java | Walk every `identifier` node in the AST, skipping comments and string literals. Captures inheritance refs (`class Foo(Bar):` → `Bar`), call targets, type annotations, all real usages. |
+| T2 (line-scan regex) | the other 12 languages | Regex over each line: any identifier-shaped token becomes a ref. Higher false-positive rate (matches text inside strings / comments depending on whitespace), but covers grammars without an AST filter yet. |
 
 **`--strict` is the precision upgrade** for T1 languages (Phase 11.1,
 shipped in v1.8.0). It reads the v5 `reference_edges` section produced
@@ -290,10 +290,10 @@ When the index has no `reference_edges` section (built with
 falls back to the legacy refs FST. Quality notes:
 
 - **T1 languages with `has_ast_ref_filter`** (Rust, TypeScript, Python,
-  C#, C++): refs come from an AST walk that skips comments and plain
-  string literals. False-positive rate is low; identifier collisions
-  across scopes still produce noise.
-- **T2 languages** (everything else — Go, Java, Kotlin, Swift, PHP,
+  C#, C++, Go, Java): refs come from an AST walk that skips comments and
+  plain string literals. False-positive rate is low; identifier
+  collisions across scopes still produce noise.
+- **T2 languages** (everything else — Kotlin, Swift, PHP,
   Ruby, etc.): refs come from a regex line-scan. Strings are not
   skipped. False positives where the symbol name appears in a doc
   comment, log message, or template literal.
@@ -452,6 +452,52 @@ goes through:
   referenced in the body.
 - **Dot imports (`. "strings"`)** — names imported unqualified are not
   bound; bare references to them rely on the unique-candidate fallback.
+
+---
+
+## 4a.3 Java cross-file resolution
+
+Java gained a scope binder so `vex usages --strict`, `vex impact`, and the
+update cascade work on Java repos (before, Java had no binder and strict
+refs were always unavailable). Like C#, there is no include graph;
+resolution goes through:
+
+- **Same-package, cross-file** — Java classes in a package see each
+  other by simple name. A `Helper.doWork()` call referencing a method in
+  a sibling file is `Unresolved` in the binder and linked by Pass-2's
+  single-candidate fallback (resolves only if `doWork` is unique
+  corpus-wide).
+- **Single-type imports** — `import a.b.C;` binds the tail `C`; a later
+  `C.member()` resolves `C` to the import and `member` to the unique
+  symbol by name. `import static a.b.C.method;` binds `method`. vex
+  resolves by symbol name, not by matching the import path to a package,
+  so an unrelated same-named symbol elsewhere makes it ambiguous.
+- **Lowercase-package noise is free-filtered** — `is_meaningful_identifier`
+  drops the `java`/`util` segments of a qualified `java.util.List`, so
+  qualified names can be walked generically without leaking package refs.
+
+**What does NOT resolve cross-file in Java:**
+
+- **Unexported lowercase calls** — pure-lowercase-without-underscore
+  idents (`run()`, `parse()`) are dropped before resolution.
+  Capitalized, camelCase (`doWork`), and snake_case names resolve.
+- **Wildcard imports (`import a.b.*;`)** — like C# `using a.b;`, the
+  unqualified members stay `Unresolved` unless uniquely named; the
+  import itself binds nothing.
+- **Ambiguous names** — when the same name is defined in two classes, the
+  single-candidate fallback declines (no edge), same as C#.
+- **Generic type parameters** (`<T extends Comparable<T>>`) — not bound;
+  single-/two-letter names are filtered anyway.
+- **Lambda params, enhanced-`for` loop vars, `catch` params,
+  try-with-resources vars** — best-effort (walked as refs, not bound),
+  harmless for idiomatic lowercase names; a capitalized one becomes a
+  phantom `Unresolved` ref. Method/constructor params (incl. varargs
+  `T...`), record components, and local vars ARE bound.
+- **Anonymous classes / `enum_constant` bodies** — an anonymous class
+  body (`new Runnable() { … }`) is contained in its own scope so members
+  don't leak outward, but they resolve only locally (never promoted to
+  `ModuleSymbol`, and not visible cross-file). Per-constant enum bodies
+  are walked in the enum's class scope rather than a dedicated child.
 
 ---
 
