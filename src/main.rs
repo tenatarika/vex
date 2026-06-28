@@ -20,6 +20,7 @@ mod search;
 mod store;
 mod util;
 mod watch;
+mod workspace;
 
 use cli::args::Cli;
 

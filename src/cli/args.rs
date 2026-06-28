@@ -242,6 +242,13 @@ pub enum Commands {
         /// (cpu | auto | cuda | directml | coreml). Mutually exclusive with --gpu/--no-gpu.
         #[arg(long, value_name = "DEVICE", conflicts_with_all = ["gpu", "no_gpu"])]
         device: Option<String>,
+
+        /// Index every repo declared in a `.vex-workspace.toml` (found at or
+        /// above `--path`/cwd). Each member is indexed into its own per-repo
+        /// index dir. Per-member `cache_dir`/`local_cache` is unsupported in
+        /// workspace mode (see docs/MULTIREPO.md).
+        #[arg(long)]
+        workspace: bool,
     },
 
     /// Search symbols by name or semantics

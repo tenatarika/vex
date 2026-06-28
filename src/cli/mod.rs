@@ -105,6 +105,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             gpu,
             no_gpu,
             device,
+            workspace,
         } => cmd_index::index(
             &ctx,
             path,
@@ -122,6 +123,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             gpu,
             no_gpu,
             device,
+            workspace,
         ),
         Commands::Search {
             query,
