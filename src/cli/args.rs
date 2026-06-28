@@ -1026,6 +1026,12 @@ docs/GPU_SUPPORT.md §11 — heavy embedders / shared GPU only)."
         /// Skip staleness check entirely
         #[arg(long)]
         no_stale_check: bool,
+
+        /// Check the names across every repo in a `.vex-workspace.toml`
+        /// (found at or above `--path`/cwd), reporting which repos define
+        /// each name. See docs/MULTIREPO.md.
+        #[arg(long)]
+        workspace: bool,
     },
 
     /// Find symbols semantically similar to a given symbol (requires --semantic index)

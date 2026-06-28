@@ -74,6 +74,84 @@ fn index_workspace_indexes_each_member_into_its_own_index() {
 }
 
 #[test]
+fn check_workspace_reports_which_repos_define_a_symbol() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(&root.join("beta").join("b.rs"), "pub fn beta_thing() {}\n");
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    // `alpha_thing` lives only in member alpha; the text line tags the repo.
+    let out = vex_in(root, &cache)
+        .args(["check", "alpha_thing", "--workspace"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("+ alpha_thing") && stdout.contains("alpha"),
+        "alpha_thing should be found and attributed to member alpha: {stdout}"
+    );
+    assert!(
+        !stdout.contains("beta"),
+        "alpha_thing must not be attributed to member beta: {stdout}"
+    );
+
+    // A name in no member resolves to a miss.
+    let miss = vex_in(root, &cache)
+        .args(["check", "ghost_thing", "--workspace"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&miss.stdout).contains("- ghost_thing"),
+        "absent name should print a miss"
+    );
+}
+
+#[test]
+fn check_workspace_json_lists_repos_and_names() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\nname = \"A\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["check", "alpha_thing", "--workspace", "--format", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"A\""),
+        "json should name member A: {stdout}"
+    );
+    assert!(
+        stdout.contains("alpha_thing") && stdout.contains("\"exists\""),
+        "json should carry the name + exists flag: {stdout}"
+    );
+}
+
+#[test]
 fn index_workspace_without_manifest_errors() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();

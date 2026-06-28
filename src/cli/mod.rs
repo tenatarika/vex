@@ -445,7 +445,8 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             path,
             auto_update,
             no_stale_check,
-        } => cmd_check::check(&ctx, names, path, auto_update, no_stale_check),
+            workspace,
+        } => cmd_check::check(&ctx, names, path, auto_update, no_stale_check, workspace),
 
         Commands::Similar {
             name,
