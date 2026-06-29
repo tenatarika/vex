@@ -916,10 +916,10 @@ for the design. Known limits of the shipped MVP:
 - **`vex search --why` is single-repo only** — it is a hard clap conflict
   with `--workspace`. Per-result JSON `signals` are likewise omitted from
   workspace output.
-- **Staleness is reported globally, not per-member.** The `_meta.stale` /
-  `stale_reason` envelope fields are first-write-wins across members: if
-  one member's index is stale, the reason is attributed to the whole
-  workspace run. Per-member staleness is a future fix.
+- **Staleness is reported per-member.** Each member's stale-index reason
+  is captured independently and surfaced as a per-repo `stale_reason` in
+  JSON (and a stderr advisory in text); the top-level envelope meta is not
+  used for per-member staleness. (`grep` has no index, so no staleness.)
 - **Sequential, all-or-nothing.** Members are processed one at a time
   (rayon parallelism is *within* each member's build/scan); a hard failure
   on one member aborts the run.
