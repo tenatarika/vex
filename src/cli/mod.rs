@@ -233,6 +233,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             gpu,
             no_gpu,
             device,
+            workspace,
         } => cmd_update::update(
             &ctx,
             path,
@@ -249,6 +250,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             gpu,
             no_gpu,
             device,
+            workspace,
         ),
         Commands::Outline { file, kind } => {
             cmd_outline::cmd_outline(&file, kind.as_deref(), &ctx.format)

@@ -566,6 +566,84 @@ fn callees_workspace_json_groups_by_repo() {
 }
 
 #[test]
+fn update_workspace_refreshes_each_member() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(&root.join("beta").join("b.rs"), "pub fn beta_thing() {}\n");
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    // Add a new symbol to alpha, then update the workspace.
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\npub fn alpha_added() {}\n",
+    );
+    let out = vex_in(root, &cache)
+        .args(["update", "--workspace"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "update --workspace should succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("alpha"), "alpha listed: {stdout}");
+    assert!(stdout.contains("beta"), "beta listed: {stdout}");
+
+    // The new symbol resolves in alpha's refreshed index.
+    let chk = vex_in(root, &cache)
+        .args(["check", "alpha_added", "--path", "alpha"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&chk.stdout).contains("+ alpha_added"),
+        "update should have indexed the new symbol"
+    );
+}
+
+#[test]
+fn update_workspace_json_lists_repos() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\nname = \"A\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["update", "--workspace", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"A\""),
+        "json should name member A: {stdout}"
+    );
+    assert!(
+        stdout.contains("total_changed"),
+        "json should carry a total: {stdout}"
+    );
+}
+
+#[test]
 fn index_workspace_without_manifest_errors() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();

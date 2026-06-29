@@ -582,6 +582,12 @@ pub enum Commands {
         /// (cpu | auto | cuda | directml | coreml). Mutually exclusive with --gpu/--no-gpu.
         #[arg(long, value_name = "DEVICE", conflicts_with_all = ["gpu", "no_gpu"])]
         device: Option<String>,
+
+        /// Incrementally update every repo in a `.vex-workspace.toml`
+        /// (found at or above `--path`/cwd), reporting per-repo changes.
+        /// See docs/MULTIREPO.md.
+        #[arg(long)]
+        workspace: bool,
     },
 
     /// Show structure of a file (symbols, kinds, lines)

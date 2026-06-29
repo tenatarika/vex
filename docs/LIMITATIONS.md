@@ -900,9 +900,9 @@ points at file:line so a follow-up `vex show` / `vex usages` /
 
 ## 7. `--workspace` (multi-repo) caveats
 
-`vex index / search / check / grep / usages / impact / callers / callees /
-reachable --workspace` fan a command across every repo declared in the
-nearest `.vex-workspace.toml`.
+`vex index / update / search / check / grep / usages / impact / callers /
+callees / reachable --workspace` fan a command across every repo declared
+in the nearest `.vex-workspace.toml`.
 Each member keeps its own per-repo index; results are grouped by repo. See
 `docs/MULTIREPO.md` for the design. Known limits of the shipped MVP:
 
@@ -928,6 +928,12 @@ Each member keeps its own per-repo index; results are grouped by repo. See
   on one member aborts the run.
 - **`local_cache` / hash-less cache layouts are rejected** in workspace
   mode — every member would otherwise alias to the same flat index dir.
+- **No orphaned-index reconciliation.** `vex update --workspace` refreshes
+  every declared member, but removing a member from `.vex-workspace.toml`
+  does not clean its old index dir. `index_dir` is keyed by canonical path
+  on a cache shared with standalone `vex index`, so an "orphaned" dir may
+  still be a live standalone index — auto-deleting it would be unsafe. A
+  declared member whose path no longer exists is rejected at load.
 
 ---
 
