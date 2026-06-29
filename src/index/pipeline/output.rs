@@ -281,6 +281,7 @@ pub(super) fn write_output_locked(
         &lang_fingerprints,
         &artefacts.reconstructed_refs,
         &artefacts.old_file_paths,
+        &artefacts.reconstructed_unresolved_refs,
         &index_path,
     )
     .context("write index")?;

@@ -11,4 +11,5 @@ pub mod ref_edges;
 pub mod refs_fst;
 pub mod rename_chains;
 pub mod symbol_fst;
+pub mod unresolved_refs;
 pub mod writer;

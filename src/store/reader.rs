@@ -4,7 +4,8 @@ use anyhow::{bail, Context, Result};
 use memmap2::Mmap;
 
 use super::format::{
-    CallEdge, CallGraphHeader, Header, PatternSkeletonHeader, SymbolRecord, V5SectionHeader,
+    CallEdge, CallGraphHeader, Header, PatternSkeletonHeader, SymbolRecord, UnresolvedRefsHeader,
+    V5SectionHeader,
 };
 
 /// Memory-mapped index reader. Zero-copy access to symbols and strings.
@@ -632,6 +633,109 @@ impl IndexReader {
             );
             Vec::new()
         })
+    }
+
+    /// Read the v7 [`UnresolvedRefsHeader`] when present. Returns `None`
+    /// for v3..v6 indexes or when the bytes after the
+    /// [`PatternSkeletonHeader`] don't fit / aren't aligned.
+    pub fn unresolved_refs_header(&self) -> Option<&UnresolvedRefsHeader> {
+        if !self.header().has_unresolved_refs_header() {
+            return None;
+        }
+        let offset = Header::SIZE
+            .checked_add(CallGraphHeader::SIZE)?
+            .checked_add(V5SectionHeader::SIZE)?
+            .checked_add(PatternSkeletonHeader::SIZE)?;
+        let end = offset.checked_add(UnresolvedRefsHeader::SIZE)?;
+        if end > self.mmap.len() {
+            return None;
+        }
+        let ptr = unsafe { self.mmap.as_ptr().add(offset) };
+        if ptr.align_offset(std::mem::align_of::<UnresolvedRefsHeader>()) != 0 {
+            return None;
+        }
+        // SAFETY: bounds + alignment checked. UnresolvedRefsHeader is #[repr(C)].
+        Some(unsafe { &*(ptr as *const UnresolvedRefsHeader) })
+    }
+
+    /// Whether the index carries unresolved-by-name reference edges (v7+,
+    /// multi-repo Phase 6). False for v3..v6 indexes and v7 indexes whose
+    /// Pass-2 left nothing unresolved.
+    pub fn has_unresolved_refs(&self) -> bool {
+        self.unresolved_refs_header()
+            .is_some_and(|h| h.unresolved_edges_len > 0)
+    }
+
+    fn unresolved_refs_section_bytes(&self) -> Option<(&[u8], &[u8], &[u8])> {
+        let h = self.unresolved_refs_header()?;
+        let mmap = &self.mmap[..];
+        let edges = slice_or_empty(
+            mmap,
+            h.unresolved_edges_offset as usize,
+            h.unresolved_edges_len as usize,
+        )?;
+        let fst = slice_or_empty(
+            mmap,
+            h.unresolved_fst_offset as usize,
+            h.unresolved_fst_len as usize,
+        )?;
+        let post = slice_or_empty(
+            mmap,
+            h.unresolved_postings_offset as usize,
+            h.unresolved_postings_len as usize,
+        )?;
+        Some((edges, fst, post))
+    }
+
+    /// Look up every persisted unresolved reference edge recorded for
+    /// `name` (case-insensitive). Returns an empty `Vec` when the index has
+    /// no unresolved-refs section, the FST misses the key, or the bytes
+    /// don't validate. FST traversal is wrapped in `catch_unwind` for the
+    /// same defense-in-depth reason as [`Self::find_ref_edges_by_symbol`].
+    pub fn find_unresolved_refs_by_name(&self, name: &str) -> Vec<super::format::UnresolvedRef> {
+        if !self.has_unresolved_refs() {
+            return Vec::new();
+        }
+        let Some((edges, fst, post)) = self.unresolved_refs_section_bytes() else {
+            return Vec::new();
+        };
+        let Ok(reader) = super::unresolved_refs::UnresolvedRefReader::new(fst, post, edges) else {
+            return Vec::new();
+        };
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reader.find_by_name(name)))
+            .unwrap_or_else(|_| {
+                tracing::warn!(
+                    name,
+                    "unresolved_refs FST traversal panicked on corrupt bytes; returning empty result"
+                );
+                Vec::new()
+            })
+    }
+
+    /// Every `(name, UnresolvedRef)` pair recorded in this index, FST-key
+    /// order. Empty when there is no unresolved-refs section. Used by the
+    /// `vex update` carry-forward (`reconstruct_unchanged`) so unchanged
+    /// files keep their cross-repo unresolved refs across incremental
+    /// updates. FST traversal is wrapped in `catch_unwind` for the same
+    /// defense-in-depth reason as [`Self::find_ref_edges_by_symbol`].
+    pub fn unresolved_refs_all(&self) -> Vec<(String, super::format::UnresolvedRef)> {
+        if !self.has_unresolved_refs() {
+            return Vec::new();
+        }
+        let Some((edges, fst, post)) = self.unresolved_refs_section_bytes() else {
+            return Vec::new();
+        };
+        let Ok(reader) = super::unresolved_refs::UnresolvedRefReader::new(fst, post, edges) else {
+            return Vec::new();
+        };
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reader.iter_all())).unwrap_or_else(
+            |_| {
+                tracing::warn!(
+                    "unresolved_refs FST traversal panicked on corrupt bytes; returning empty result"
+                );
+                Vec::new()
+            },
+        )
     }
 
     /// Number of call edges recorded in this index, 0 when absent.

@@ -21,7 +21,7 @@ use rayon::prelude::*;
 
 use crate::index::hasher;
 use crate::index::symbols::{ParsedFile, ParsedSymbol, RawCallEdge, SymbolKind};
-use crate::index::types::ReconstructedRef;
+use crate::index::types::{ReconstructedRef, ReconstructedUnresolvedRef};
 use crate::parse;
 use crate::parse::language::Language;
 use crate::parse::scope::RefKind;
@@ -39,6 +39,9 @@ pub(super) struct ReconstructionResult {
     /// Old-index file_paths table, kept so the writer can resolve
     /// `ReconstructedRef.from_file_id` → path → new file_id.
     pub old_file_paths: Vec<String>,
+    /// Unresolved-by-name refs carried forward from unchanged files
+    /// (multi-repo Phase 6). Empty when the old index predates v7.
+    pub reconstructed_unresolved_refs: Vec<ReconstructedUnresolvedRef>,
 }
 
 /// Reconstruct ParsedFile + vectors for unchanged files from the existing index.
@@ -290,11 +293,53 @@ pub(super) fn reconstruct_unchanged(
         }
     }
 
+    // Multi-repo Phase 6: carry forward unresolved-by-name refs for
+    // unchanged files. Without this, the first `vex update` would drop
+    // every unchanged file's unresolved refs (they live in the new v7
+    // section, NOT the resolved RefEdge section the loop above reads),
+    // silently breaking cross-repo strict usages. Simpler than the
+    // resolved carry-forward: the name IS the key — no re-resolution, no
+    // path-tiebreak — so we just re-emit with the OLD from_file_id, which
+    // the writer maps to the new file_id exactly like `reconstructed_refs`.
+    let mut reconstructed_unresolved_refs: Vec<ReconstructedUnresolvedRef> = Vec::new();
+    if reader.has_unresolved_refs() {
+        let mut name_intern: HashMap<String, Arc<str>> = HashMap::new();
+        for (name, edge) in reader.unresolved_refs_all() {
+            let Some(from_path) = old_file_paths.get(edge.from_file_id as usize) else {
+                continue;
+            };
+            // Changed/deleted files re-emit fresh unresolved refs through
+            // the parse path this turn — skip their stale carry-forward.
+            if changed.contains(from_path.as_str()) || deleted.contains(from_path.as_str()) {
+                continue;
+            }
+            if name.is_empty() {
+                continue;
+            }
+            let name_arc = if let Some(a) = name_intern.get(&name) {
+                a.clone()
+            } else {
+                let a: Arc<str> = Arc::from(name.as_str());
+                name_intern.insert(name, a.clone());
+                a
+            };
+            let kind = RefKind::try_from((edge.col_and_kind >> 24) as u8).unwrap_or(RefKind::Value);
+            reconstructed_unresolved_refs.push(ReconstructedUnresolvedRef {
+                from_file_id: edge.from_file_id,
+                name: name_arc,
+                line: edge.line,
+                col: edge.col_and_kind & 0x00FF_FFFF,
+                kind,
+            });
+        }
+    }
+
     ReconstructionResult {
         parsed_files,
         vectors,
         reconstructed_refs,
         old_file_paths,
+        reconstructed_unresolved_refs,
     }
 }
 

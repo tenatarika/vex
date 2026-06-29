@@ -726,6 +726,7 @@ fn update_inner(
             crate::index::types::IndexBuildArtefacts {
                 reconstructed_refs: recon.reconstructed_refs,
                 old_file_paths: recon.old_file_paths,
+                reconstructed_unresolved_refs: recon.reconstructed_unresolved_refs,
             },
         )
     } else {

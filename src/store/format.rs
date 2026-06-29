@@ -1,11 +1,12 @@
 //! Binary index file format specification.
 //!
-//! Layout (v6 — current):
+//! Layout (v7 — current):
 //! ```text
 //! [Header]                  fixed (168 B) - magic, version, counts, section offsets
 //! [CallGraphHeader]         fixed (128 B) - call graph section offsets (v4+)
 //! [V5SectionHeader]         fixed (48  B) - ref edges section offsets (v5+)
 //! [PatternSkeletonHeader]   fixed (168 B) - pattern skeleton section offsets + fingerprints (v6+)
+//! [UnresolvedRefsHeader]    fixed (48  B) - unresolved-by-name ref section offsets (v7+)
 //! [Symbols Section]         variable      - fixed-size symbol records
 //! [Vectors Section]         variable      - dense f32 arrays (vector_dim each)
 //! [Strings Section]         variable      - deduplicated string pool
@@ -26,6 +27,9 @@
 //! [Kind Path Arena]         variable      - kind-name path entries (v6+)
 //! [Ident Pool]              variable      - length-prefixed UTF-8 identifier strings (v6+)
 //! [File Index]              variable      - per-file skeleton lookup (v6+)
+//! [Unresolved Edges]        variable      - fixed-size UnresolvedRef records (v7+)
+//! [Unresolved Edges FST]    variable      - fst::Map (lowercased name → posting offset) (v7+)
+//! [Unresolved Edges Posts]  variable      - posting lists (count, [edge_idx]) (v7+)
 //! ```
 //!
 //! Layout v3 (legacy, still readable): same as v4 minus `CallGraphHeader`
@@ -34,7 +38,7 @@
 //! and v4 — version dispatch happens at the reader.
 
 pub const MAGIC: &[u8; 4] = b"VEXI";
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 /// Oldest format version this build can still open for read.
 /// v3 and v4 indexes continue to read without the v5-only sections —
 /// `vex usages --strict` will refuse, everything else still works.
@@ -98,6 +102,14 @@ impl Header {
     /// immediately after the [`V5SectionHeader`]. v3/v4/v5 indexes do not.
     pub fn has_pattern_skeleton_header(&self) -> bool {
         self.version >= 6
+    }
+
+    /// Whether this index format carries an [`UnresolvedRefsHeader`]
+    /// immediately after the [`PatternSkeletonHeader`]. v3..v6 indexes do
+    /// not — cross-repo strict-usages fallback (multi-repo Phase 6) is
+    /// unavailable on those until `vex index` rebuilds at v7.
+    pub fn has_unresolved_refs_header(&self) -> bool {
+        self.version >= 7
     }
 }
 
@@ -211,6 +223,41 @@ impl PatternSkeletonHeader {
     pub const SIZE: usize = std::mem::size_of::<Self>();
 }
 
+/// Section offsets and lengths for the v7-only sections (unresolved-by-name
+/// reference edges, multi-repo Phase 6). Located in the file at exactly
+/// `Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE +
+/// PatternSkeletonHeader::SIZE` when `header.version >= 7`. Absent from
+/// v3..v6 files.
+///
+/// These are the references a member's own Pass-2 (`writer.rs` `name_to_global`
+/// loop) left **unresolved** — `Imported`/`Unresolved` targets whose name has
+/// no definition in *this* index. They are dropped from the resolved
+/// [`V5SectionHeader`] `RefEdge` section but persisted here keyed by **name**
+/// so a workspace query can re-resolve them against a sibling member that does
+/// define the symbol (gtags-style ordered fallback). Exactly 6 `u64` fields
+/// (SIZE == 48), same shape as [`V5SectionHeader`] — DO NOT add fields without
+/// updating the `symbols_offset` chain in `writer.rs`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UnresolvedRefsHeader {
+    /// Raw fixed-size [`UnresolvedRef`] records (12 bytes each). Record
+    /// count is `unresolved_edges_len / UnresolvedRef::SIZE`.
+    pub unresolved_edges_offset: u64,
+    pub unresolved_edges_len: u64,
+    /// FST keyed on the **lowercased** referenced name. Values are u64
+    /// offsets into `unresolved_postings`.
+    pub unresolved_fst_offset: u64,
+    pub unresolved_fst_len: u64,
+    /// Posting lists: for each name key, a `[u32 count][u32 edge_idx;
+    /// count]` block indexing into the `UnresolvedRef` records.
+    pub unresolved_postings_offset: u64,
+    pub unresolved_postings_len: u64,
+}
+
+impl UnresolvedRefsHeader {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+}
+
 /// One on-disk skeleton record (24 bytes, `#[repr(C)]`).
 ///
 /// Fields are ordered to avoid implicit `#[repr(C)]` padding:
@@ -266,6 +313,34 @@ impl RefEdge {
     // accessors, so deleting them would force tests to inline the same
     // shift constants. `pub` + `#[allow(dead_code)]` keeps the
     // documented layout the single source of truth.
+    #[allow(dead_code)] // exercised by integration tests; documents the bit layout
+    pub fn ref_kind_bits(&self) -> u8 {
+        ((self.col_and_kind >> 24) & 0xFF) as u8
+    }
+
+    #[allow(dead_code)] // exercised by integration tests; documents the bit layout
+    pub fn column(&self) -> u32 {
+        self.col_and_kind & 0x00FF_FFFF
+    }
+}
+
+/// One unresolved-by-name reference edge (v7+, multi-repo Phase 6). Same
+/// shape as [`RefEdge`] minus `to_sym_idx` — the referenced name is the FST
+/// key in [`UnresolvedRefsHeader`], not stored on the record. `from_file_id`
+/// indexes the file table; `line` is 1-based; `col_and_kind` packs an 8-bit
+/// `RefKind` discriminant in the upper byte and a 24-bit column in the lower
+/// three bytes (identical to `RefEdge`). 12 bytes, `align_of == 4`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UnresolvedRef {
+    pub from_file_id: u32,
+    pub line: u32,
+    pub col_and_kind: u32,
+}
+
+impl UnresolvedRef {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+
     #[allow(dead_code)] // exercised by integration tests; documents the bit layout
     pub fn ref_kind_bits(&self) -> u8 {
         ((self.col_and_kind >> 24) & 0xFF) as u8

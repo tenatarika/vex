@@ -6,13 +6,15 @@ use anyhow::{ensure, Context, Result};
 
 use super::call_graph::{build_callees_fst, build_callers_fst, CallEdgeBuilder};
 use super::format::{
-    CallEdge, CallGraphHeader, Header, PatternSkeletonHeader, SymbolRecord, V5SectionHeader, MAGIC,
-    VECTOR_DIM, VERSION,
+    CallEdge, CallGraphHeader, Header, PatternSkeletonHeader, SymbolRecord, UnresolvedRefsHeader,
+    V5SectionHeader, MAGIC, VECTOR_DIM, VERSION,
 };
 use super::include_resolver;
 use super::pattern_skeletons::build_pattern_skeleton_section;
 use super::ref_edges::{build_ref_edges_section, RefEdgeBuilder};
+use super::unresolved_refs::{build_unresolved_section, UnresolvedRefBuilder};
 use super::{refs_fst, symbol_fst};
+use crate::parse::extractor::is_meaningful_identifier;
 use crate::parse::scope::BindTarget;
 // RefKind ↔ u8 encoding lives at the scope module (`impl From<RefKind>
 // for u8` + `impl TryFrom<u8> for RefKind`) so reconstruction and the
@@ -157,6 +159,7 @@ pub fn write_index_with_call_graph(
         &[],
         &[], // reconstructed_refs — full rebuild path
         &[], // old_file_paths
+        &[], // reconstructed_unresolved_refs
         output,
     )
     .map(|_meta| ())
@@ -186,6 +189,7 @@ pub fn write_index_with_call_graph_and_skeletons(
         &[],
         &[], // reconstructed_refs — full rebuild path
         &[], // old_file_paths
+        &[], // reconstructed_unresolved_refs
         output,
     )
     .map(|_meta| ())
@@ -220,6 +224,10 @@ pub(crate) fn write_index_with_call_graph_and_skeletons_and_fingerprints(
     // map `ReconstructedRef.from_file_id` → path → new file_id via
     // this writer's freshly-built `file_ids`.
     old_file_paths: &[String],
+    // Multi-repo Phase 6 — unresolved-by-name refs carried forward from
+    // unchanged files. Empty for full `vex index`. Mapped to new file_ids
+    // and appended to the v7 unresolved-refs section after the per-file loop.
+    reconstructed_unresolved_refs: &[crate::index::types::ReconstructedUnresolvedRef],
     output: &Path,
 ) -> Result<NewIndexMetadata> {
     // Pre-validate every vector before opening the temp file. The header's
@@ -250,6 +258,7 @@ pub(crate) fn write_index_with_call_graph_and_skeletons_and_fingerprints(
         lang_fingerprints,
         reconstructed_refs,
         old_file_paths,
+        reconstructed_unresolved_refs,
     ) {
         Ok(meta) => meta,
         Err(e) => {
@@ -286,6 +295,7 @@ fn write_index_to(
     lang_fingerprints: &[(u8, u32)],
     reconstructed_refs: &[crate::index::types::ReconstructedRef],
     old_file_paths: &[String],
+    reconstructed_unresolved_refs: &[crate::index::types::ReconstructedUnresolvedRef],
 ) -> Result<NewIndexMetadata> {
     let mut strings = StringPool::new();
     let mut records = Vec::new();
@@ -449,6 +459,12 @@ fn write_index_to(
     };
 
     let mut ref_edge_builders: Vec<RefEdgeBuilder> = Vec::new();
+    // Multi-repo Phase 6: refs the Pass-2 loop below leaves unresolved —
+    // `Imported`/`Unresolved` targets whose name has no local definition.
+    // Dropped from the resolved `RefEdge` section, persisted by name in the
+    // v7 unresolved-refs section so a workspace query can re-resolve them
+    // against a sibling member (gtags-style ordered fallback).
+    let mut unresolved_ref_builders: Vec<UnresolvedRefBuilder> = Vec::new();
     // Phase 11.1.10 (Q4-B): accumulate (target_fid, from_fid) pairs for
     // `imported_by`. Materialized to BTreeMap<String, BTreeSet<String>>
     // after the loop closes via `file_paths_new`. Storing fids (not
@@ -559,6 +575,28 @@ fn write_index_to(
                                 imported_by_pairs.push((target_fid, file_id));
                             }
                         }
+                    }
+                } else {
+                    // Multi-repo Phase 6: the ref resolved to no local symbol.
+                    // Capture it by name IFF it is a genuine cross-file
+                    // candidate (`Imported`/`Unresolved` — never `Local`, and
+                    // `ModuleSymbol` always resolves so never reaches here),
+                    // the name is defined NOWHERE locally (a name with ≥1
+                    // local def is not the cross-repo case), and the name is
+                    // a meaningful identifier (drops `get`/`total` noise that
+                    // would bloat the section). `name_to_global` is raw-keyed
+                    // (built from `sym_entries`), so this gate is raw-vs-raw.
+                    if matches!(r.target, BindTarget::Imported(_) | BindTarget::Unresolved)
+                        && !name_to_global.contains_key(r.name.as_str())
+                        && is_meaningful_identifier(&r.name)
+                    {
+                        unresolved_ref_builders.push(UnresolvedRefBuilder {
+                            name: r.name.clone(),
+                            from_file_id: file_id,
+                            line: r.line as u32,
+                            col: r.col as u32,
+                            kind: u8::from(r.kind),
+                        });
                     }
                 }
             }
@@ -688,6 +726,29 @@ fn write_index_to(
     let (ref_edge_bytes, ref_edge_fst_bytes, ref_edge_post_bytes) =
         build_ref_edges_section(&ref_edge_builders)?;
 
+    // Multi-repo Phase 6 — carry forward unchanged files' unresolved refs.
+    // Map each one's OLD from_file_id → OLD path → NEW file_id (mirrors the
+    // `reconstructed_refs` block above). No name re-resolution: the name IS
+    // the FST key, so carry it through verbatim. A source file that didn't
+    // survive into the new index drops silently.
+    for rr in reconstructed_unresolved_refs {
+        let Some(from_path) = old_file_paths.get(rr.from_file_id as usize) else {
+            continue;
+        };
+        let Some(&new_from_file_id) = file_ids.get(from_path) else {
+            continue;
+        };
+        unresolved_ref_builders.push(UnresolvedRefBuilder {
+            name: rr.name.to_string(),
+            from_file_id: new_from_file_id,
+            line: rr.line,
+            col: rr.col,
+            kind: u8::from(rr.kind),
+        });
+    }
+    let (unresolved_edge_bytes, unresolved_fst_bytes, unresolved_post_bytes) =
+        build_unresolved_section(&unresolved_ref_builders)?;
+
     // Build v6 pattern skeleton section (empty slice → all-zero header fields,
     // non-empty → populated sub-sections). The version bump to v6 is
     // unconditional — presence of the header is what gates Inc 5's prefilter.
@@ -695,15 +756,16 @@ fn write_index_to(
     let (skel_section, skel_fingerprints) =
         build_pattern_skeleton_section(pattern_skeletons, &mut no_intern_fn, lang_fingerprints)?;
 
-    // Calculate section offsets — v6 places CallGraphHeader, V5SectionHeader,
-    // and PatternSkeletonHeader immediately after the base Header, so Symbols
-    // starts at:
+    // Calculate section offsets — v7 places CallGraphHeader, V5SectionHeader,
+    // PatternSkeletonHeader, and UnresolvedRefsHeader immediately after the
+    // base Header, so Symbols starts at:
     //   Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE
-    //   + PatternSkeletonHeader::SIZE
+    //   + PatternSkeletonHeader::SIZE + UnresolvedRefsHeader::SIZE
     let cg_header_offset = Header::SIZE as u64;
     let v5_header_offset = cg_header_offset + CallGraphHeader::SIZE as u64;
     let pat_header_offset = v5_header_offset + V5SectionHeader::SIZE as u64;
-    let symbols_offset = pat_header_offset + PatternSkeletonHeader::SIZE as u64;
+    let unres_header_offset = pat_header_offset + PatternSkeletonHeader::SIZE as u64;
+    let symbols_offset = unres_header_offset + UnresolvedRefsHeader::SIZE as u64;
     let symbols_size = records.len() * SymbolRecord::SIZE;
 
     let vectors_offset = symbols_offset + symbols_size as u64;
@@ -760,6 +822,24 @@ fn write_index_to(
     let skel_ident_pool_len = skel_section.ident_pool.len() as u64;
     let skel_file_index_offset = skel_ident_pool_offset + skel_ident_pool_len;
     let skel_file_index_len = skel_section.file_index.len() as u64;
+
+    // v7 unresolved_refs sub-sections. Align the edges array to 4 bytes so
+    // UnresolvedRef (align_of == 4) can be cast from the mmap.
+    let unresolved_unaligned = skel_file_index_offset + skel_file_index_len;
+    let unresolved_edges_offset = (unresolved_unaligned + 3) & !3u64;
+    let unresolved_edges_pad = (unresolved_edges_offset - unresolved_unaligned) as usize;
+    let unresolved_edges_len = unresolved_edge_bytes.len() as u64;
+    let unresolved_fst_offset = unresolved_edges_offset + unresolved_edges_len;
+    let unresolved_postings_offset = unresolved_fst_offset + unresolved_fst_bytes.len() as u64;
+
+    let unresolved_refs_header = UnresolvedRefsHeader {
+        unresolved_edges_offset,
+        unresolved_edges_len,
+        unresolved_fst_offset,
+        unresolved_fst_len: unresolved_fst_bytes.len() as u64,
+        unresolved_postings_offset,
+        unresolved_postings_len: unresolved_post_bytes.len() as u64,
+    };
 
     let pat_skel_header = PatternSkeletonHeader {
         skeletons_offset: skel_records_offset,
@@ -866,6 +946,19 @@ fn write_index_to(
     };
     w.write_all(pat_skel_bytes)?;
 
+    // v7: UnresolvedRefsHeader immediately after PatternSkeletonHeader.
+    // All-zero LENGTHS when nothing was unresolved (offsets still point at
+    // the post-skeleton position; `has_unresolved_refs()` gates on len > 0,
+    // so the sub-section writes at the end are then no-ops). SAFETY:
+    // #[repr(C)] fixed layout.
+    let unres_header_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            &unresolved_refs_header as *const UnresolvedRefsHeader as *const u8,
+            UnresolvedRefsHeader::SIZE,
+        )
+    };
+    w.write_all(unres_header_bytes)?;
+
     for rec in &records {
         // SAFETY: SymbolRecord is #[repr(C)] with fixed layout
         let bytes: &[u8] = unsafe {
@@ -941,6 +1034,14 @@ fn write_index_to(
     w.write_all(&skel_section.kind_path_arena)?;
     w.write_all(&skel_section.ident_pool)?;
     w.write_all(&skel_section.file_index)?;
+
+    // v7 unresolved_refs sub-sections, 4-byte aligned before the records.
+    if unresolved_edges_pad > 0 {
+        w.write_all(&[0u8; 3][..unresolved_edges_pad])?;
+    }
+    w.write_all(&unresolved_edge_bytes)?;
+    w.write_all(&unresolved_fst_bytes)?;
+    w.write_all(&unresolved_post_bytes)?;
 
     // Flush the BufWriter, then recover the inner File so we can fsync it
     // before the caller atomic-renames. Without sync_all() between flush

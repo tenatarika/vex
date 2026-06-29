@@ -58,10 +58,10 @@ fn write_and_open(tmp: &TempDir, parsed: &[ParsedFile], edges: &[CallEdgeBuilder
 
 #[test]
 fn current_version_is_5() {
-    // Bumped from 5 to 6 in 11.4 Inc 3 (adds PatternSkeletonHeader for
-    // the structural-pattern prefilter). v3/v4/v5 indexes still open
+    // Bumped to 7 in multi-repo Phase 6 (adds UnresolvedRefsHeader for
+    // cross-repo strict-usages fallback). v3..v6 indexes still open
     // because MIN_SUPPORTED_VERSION stays at 3.
-    assert_eq!(VERSION, 6);
+    assert_eq!(VERSION, 7);
 }
 
 #[test]

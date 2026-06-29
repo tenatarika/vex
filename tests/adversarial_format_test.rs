@@ -504,12 +504,12 @@ fn open_missing_file_error_includes_path() {
 // All offsets stay zero in 11.1.3a; the section payload itself lands in 11.1.3b.
 // ---------------------------------------------------------------------------
 
-/// `VERSION` is the version this build writes. After 11.4 Inc 3 it must be 6
-/// and the v6 layout places a `PatternSkeletonHeader` immediately after the
-/// existing `V5SectionHeader`.
+/// `VERSION` is the version this build writes. Multi-repo Phase 6 bumps it
+/// to 7 and appends an `UnresolvedRefsHeader` immediately after the
+/// `PatternSkeletonHeader`.
 #[test]
 fn version_is_five_after_format_bump() {
-    assert_eq!(VERSION, 6, "11.4 Inc 3 bumps the writer to v6");
+    assert_eq!(VERSION, 7, "multi-repo Phase 6 bumps the writer to v7");
 }
 
 /// A v5 file truncated *exactly* at the end of the CallGraphHeader (i.e.,

@@ -35,6 +35,24 @@ pub(crate) struct ReconstructedRef {
     pub kind: RefKind,
 }
 
+/// Reconstructed unresolved-by-name ref fed from `reconstruct_unchanged`
+/// into the writer (multi-repo Phase 6). Simpler than [`ReconstructedRef`]:
+/// the FST key IS the name, so there is no target to re-resolve and no
+/// `target_path` tiebreak — the writer just carries the name forward into
+/// the v7 unresolved-refs section. Without this, every `vex update` drops
+/// every unchanged file's unresolved refs, silently breaking cross-repo
+/// strict usages after one routine update.
+#[derive(Debug, Clone)]
+pub(crate) struct ReconstructedUnresolvedRef {
+    /// `file_id` of the unchanged source file in the OLD index's file table.
+    pub from_file_id: u32,
+    /// The referenced (unresolved) name, interned across edges.
+    pub name: Arc<str>,
+    pub line: u32,
+    pub col: u32,
+    pub kind: RefKind,
+}
+
 /// Cross-stage handoff for the incremental-update path. Bundles the
 /// Q4-A reconstruction outputs that flow from `pipeline::update` into
 /// `store::writer` together so the writer signature stays a single
@@ -54,4 +72,7 @@ pub(crate) struct IndexBuildArtefacts {
     /// NEW index's file_id via its own file_ids map. Empty on a full
     /// rebuild.
     pub old_file_paths: Vec<String>,
+    /// Reconstructed unresolved-by-name refs from unchanged files during
+    /// `vex update` (multi-repo Phase 6). Empty on a full rebuild.
+    pub reconstructed_unresolved_refs: Vec<ReconstructedUnresolvedRef>,
 }
