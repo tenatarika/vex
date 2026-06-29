@@ -310,7 +310,17 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             path,
             scope,
             diff,
-        } => cmd_grep::grep(&ctx, pattern, limit, filter_path, path, scope, diff),
+            workspace,
+        } => cmd_grep::grep(
+            &ctx,
+            pattern,
+            limit,
+            filter_path,
+            path,
+            scope,
+            diff,
+            workspace,
+        ),
         Commands::Implementations {
             name,
             path,

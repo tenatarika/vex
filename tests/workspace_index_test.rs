@@ -221,6 +221,70 @@ fn search_workspace_json_groups_by_repo() {
 }
 
 #[test]
+fn grep_workspace_groups_matches_by_repo() {
+    // grep scans the filesystem directly — no `vex index` needed first.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "fn f() { let NEEDLE = 1; }\n",
+    );
+    write(
+        &root.join("beta").join("b.rs"),
+        "fn g() { let other = 2; }\n",
+    );
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+
+    let out = vex_in(root, &cache)
+        .args(["grep", "NEEDLE", "--workspace"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("── alpha ──"), "alpha section: {stdout}");
+    assert!(stdout.contains("── beta ──"), "beta section: {stdout}");
+    assert!(stdout.contains("NEEDLE"), "alpha match text: {stdout}");
+    // The needle is only in alpha; beta's section reports no matches.
+    let beta_section = stdout.split("── beta ──").nth(1).unwrap_or("");
+    assert!(
+        beta_section.contains("No matches"),
+        "beta should report no matches: {stdout}"
+    );
+}
+
+#[test]
+fn grep_workspace_json_groups_by_repo() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "fn f() { let NEEDLE = 1; }\n",
+    );
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\nname = \"A\"\n",
+    );
+
+    let out = vex_in(root, &cache)
+        .args(["grep", "NEEDLE", "--workspace", "--format", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"A\""),
+        "json should name member A: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"matches\"") && stdout.contains("NEEDLE"),
+        "json should carry matches: {stdout}"
+    );
+}
+
+#[test]
 fn index_workspace_without_manifest_errors() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();

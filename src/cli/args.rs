@@ -724,6 +724,11 @@ pub enum Commands {
 
         #[command(flatten)]
         diff: DiffFilterArgs,
+
+        /// Grep every repo in a `.vex-workspace.toml` (found at or above
+        /// `--path`/cwd), grouping matches by repo. See docs/MULTIREPO.md.
+        #[arg(long)]
+        workspace: bool,
     },
 
     /// Show index statistics
