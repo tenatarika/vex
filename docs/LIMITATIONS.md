@@ -900,16 +900,18 @@ points at file:line so a follow-up `vex show` / `vex usages` /
 
 ## 7. `--workspace` (multi-repo) caveats
 
-`vex index / search / check / grep --workspace` fan a command across every
-repo declared in the nearest `.vex-workspace.toml`. Each member keeps its
-own per-repo index; results are grouped by repo. See `docs/MULTIREPO.md`
-for the design. Known limits of the shipped MVP:
+`vex index / search / check / grep / usages / impact --workspace` fan a
+command across every repo declared in the nearest `.vex-workspace.toml`.
+Each member keeps its own per-repo index; results are grouped by repo. See
+`docs/MULTIREPO.md` for the design. Known limits of the shipped MVP:
 
 - **No cross-repo symbol resolution.** Each member resolves refs within
-  itself. `--strict` usages, the call graph, and `impact` (none of which
-  have `--workspace` yet) would not see a usage in repo B of a symbol
-  defined in repo A. Per-repo only by design (merging corpora would
-  *reduce* binder precision via more ambiguous-name collisions).
+  itself, so `usages` / `impact --workspace` will NOT see a usage in repo
+  B of a symbol defined in repo A — each repo's verdict / usage list is
+  scoped to that repo. Per-repo only by design (merging corpora would
+  *reduce* binder precision via more ambiguous-name collisions). With
+  `--strict`, a member whose index predates v5 is reported as
+  `unavailable` for that repo rather than aborting the whole run.
 - **`--limit` is per-member, not a total.** A 3-member workspace with
   `--limit 20` can return up to 60 results. There is no unified cross-repo
   ranking — results are grouped per repo, each ranked within its own index.

@@ -169,6 +169,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             exclude_docs,
             depth,
             scope,
+            workspace,
         } => cmd_impact::impact(
             &ctx,
             name,
@@ -178,6 +179,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             exclude_docs,
             depth,
             scope,
+            workspace,
         ),
         Commands::Usages {
             name,
@@ -191,6 +193,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             include_docs,
             scope,
             diff,
+            workspace,
         } => cmd_usages::usages(
             &ctx,
             name,
@@ -204,6 +207,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             include_docs,
             scope,
             diff,
+            workspace,
         ),
         Commands::Pattern {
             pattern,

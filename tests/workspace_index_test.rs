@@ -344,6 +344,133 @@ fn search_workspace_conflicts_with_why() {
 }
 
 #[test]
+fn usages_workspace_groups_by_repo() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\npub fn caller() { alpha_thing(); }\n",
+    );
+    write(&root.join("beta").join("b.rs"), "pub fn beta_thing() {}\n");
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["usages", "alpha_thing", "--workspace"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("── alpha ──"), "alpha section: {stdout}");
+    assert!(stdout.contains("── beta ──"), "beta section: {stdout}");
+    // The call site in alpha is a usage; beta has no alpha_thing.
+    assert!(
+        stdout.contains("alpha/a.rs") || stdout.contains("a.rs"),
+        "alpha usage: {stdout}"
+    );
+    let beta_section = stdout.split("── beta ──").nth(1).unwrap_or("");
+    assert!(
+        beta_section.contains("No usages"),
+        "beta should report no usages: {stdout}"
+    );
+}
+
+#[test]
+fn usages_workspace_conflicts_with_why() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n",
+    );
+    let out = vex_in(root, &cache)
+        .args(["usages", "alpha_thing", "--workspace", "--why"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "--workspace + --why must be a clap conflict"
+    );
+}
+
+#[test]
+fn impact_workspace_reports_per_repo_verdict() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(&root.join("beta").join("b.rs"), "pub fn beta_thing() {}\n");
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["impact", "alpha_thing", "--workspace"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("── alpha ──"), "alpha section: {stdout}");
+    assert!(stdout.contains("── beta ──"), "beta section: {stdout}");
+    // Each repo gets its own verdict line.
+    assert!(
+        stdout.matches("verdict:").count() >= 2,
+        "one verdict per repo: {stdout}"
+    );
+}
+
+#[test]
+fn impact_workspace_json_lists_repo_verdicts() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\nname = \"A\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["impact", "alpha_thing", "--workspace", "--format", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"A\""),
+        "json should name member A: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"verdict\""),
+        "json should carry a verdict: {stdout}"
+    );
+}
+
+#[test]
 fn index_workspace_without_manifest_errors() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();

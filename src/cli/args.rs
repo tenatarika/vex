@@ -368,6 +368,13 @@ pub enum Commands {
 
         #[command(flatten)]
         scope: ScopeArgs,
+
+        /// Assess the symbol in every repo of a `.vex-workspace.toml`
+        /// (found at or above `--path`/cwd), one verdict per repo.
+        /// Cross-repo references are NOT seen (each repo resolves within
+        /// itself). See docs/MULTIREPO.md.
+        #[arg(long)]
+        workspace: bool,
     },
 
     /// Find all usages/references of a symbol.
@@ -448,6 +455,13 @@ pub enum Commands {
 
         #[command(flatten)]
         diff: DiffFilterArgs,
+
+        /// Find usages in every repo of a `.vex-workspace.toml` (found at
+        /// or above cwd), grouped by repo. References are resolved
+        /// per-repo — a usage in repo B of a symbol defined in repo A is
+        /// NOT seen. `--why` is single-repo only. See docs/MULTIREPO.md.
+        #[arg(long, conflicts_with = "why")]
+        workspace: bool,
     },
 
     /// Find code matching a structural AST pattern (like ast-grep)

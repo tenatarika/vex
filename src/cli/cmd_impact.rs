@@ -14,7 +14,9 @@
 //! classification rule. `docs/LIMITATIONS.md` §6 documents the
 //! user-facing verdict contract.
 
-use anyhow::{Context, Result};
+use std::path::Path;
+
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use super::args::{OutputFormat, ScopeArgs};
@@ -29,6 +31,8 @@ use crate::channel::{
 };
 use crate::protocol::capabilities;
 use crate::store::reader::IndexReader;
+use crate::util::config::VexConfig;
+use crate::workspace;
 
 /// Default channel set in invocation order. Order matters for the
 /// `verdict_explanation` text — "unavailable: ..." and "X of Y
@@ -127,6 +131,7 @@ pub(crate) fn impact(
     exclude_docs: bool,
     depth: u32,
     scope: ScopeArgs,
+    workspace: bool,
 ) -> Result<()> {
     // Clamp `--depth` to `[1, MAX_DEPTH]`. `0` is meaningless (no
     // callers ever) and explicit user input above `MAX_DEPTH` would
@@ -146,58 +151,33 @@ pub(crate) fn impact(
         );
     }
     let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+
+    if workspace {
+        return impact_workspace(
+            ctx,
+            &name,
+            path,
+            auto_update,
+            no_stale_check,
+            exclude_docs,
+            depth,
+            &path_scope,
+        );
+    }
+
     let root = resolve_root(path)?.canonicalize()?;
-    let index_path = ensure_index_ready(
+    let report = build_report(
         &root,
+        ctx.cfg,
+        ctx.excludes,
+        ctx.local_cache_active,
+        &name,
         auto_update,
         no_stale_check,
-        false,
-        ctx.local_cache_active,
-        ctx.cfg,
-    )?;
-    let reader = IndexReader::open(&index_path).context("open index")?;
-    let file_paths = reader.file_paths();
-    let def_sites = build_def_sites(&reader, &name);
-
-    let channel_ctx = ChannelContext {
-        reader: &reader,
-        root: &root,
-        symbol: &name,
-        file_paths: &file_paths,
-        def_sites: &def_sites,
-        path_scope: &path_scope,
-        excludes: ctx.excludes,
-        filter_def_sites: true,
         exclude_docs,
         depth,
-    };
-
-    // Run every channel; collect into a vec for the data-driven
-    // verdict. Channels report `Ok(ChannelOutput::unavailable(...))`
-    // when they can't run (pre-v1.8 index, missing call graph), so an
-    // `Err` here is a genuine fault (I/O failure, corrupt regex) and
-    // bubbles up to the caller. Phase 2: the trait now returns
-    // `ChannelOutput` (full hits + drop counters); the wire envelope
-    // takes the `SAMPLE_LIMIT` cap via `ChannelResult::from_output`.
-    let invocations: Vec<ChannelInvocation> = DEFAULT_CHANNELS
-        .iter()
-        .map(|ch| {
-            Ok::<_, anyhow::Error>(ChannelInvocation {
-                name: ch.name(),
-                tier: ch.tier(),
-                result: ChannelResult::from_output(ch.run(&channel_ctx)?),
-            })
-        })
-        .collect::<Result<_>>()?;
-
-    let (verdict, verdict_explanation) = derive_verdict(&invocations);
-    let channels = ImpactChannels::from_invocations(invocations)?;
-    let report = ImpactReport {
-        symbol: name.clone(),
-        verdict,
-        verdict_explanation,
-        channels,
-    };
+        &path_scope,
+    )?;
 
     // Verdict alone never triggers `signal_no_results` — even `safe`
     // is a meaningful answer that the exit code should reflect as
@@ -214,25 +194,175 @@ pub(crate) fn impact(
                 super::output::default_meta_for(&root),
             );
         }
-        OutputFormat::Text | OutputFormat::Compact => {
-            println!("impact: {}", report.symbol);
-            println!(
-                "  verdict: {} — {}",
-                match report.verdict {
-                    Verdict::Safe => "safe",
-                    Verdict::Unsafe => "unsafe",
-                    Verdict::Uncertain => "uncertain",
-                },
-                report.verdict_explanation
-            );
-            print_channel("strict_refs", &report.channels.strict_refs);
-            print_channel("fst_refs", &report.channels.fst_refs);
-            print_channel("grep_word_boundary", &report.channels.grep_word_boundary);
-            print_channel("call_graph_callers", &report.channels.call_graph_callers);
-            print_channel("transitive_callers", &report.channels.transitive_callers);
-        }
+        OutputFormat::Text | OutputFormat::Compact => print_report_text(&report),
     }
 
+    Ok(())
+}
+
+/// Run every channel against one repo and derive its verdict.
+#[allow(clippy::too_many_arguments)]
+fn build_report(
+    root: &Path,
+    cfg: &VexConfig,
+    excludes: &[String],
+    local_cache_active: bool,
+    name: &str,
+    auto_update: bool,
+    no_stale_check: bool,
+    exclude_docs: bool,
+    depth: u32,
+    path_scope: &scope::PathScope,
+) -> Result<ImpactReport> {
+    let index_path = ensure_index_ready(
+        root,
+        auto_update,
+        no_stale_check,
+        false,
+        local_cache_active,
+        cfg,
+    )?;
+    let reader = IndexReader::open(&index_path).context("open index")?;
+    let file_paths = reader.file_paths();
+    let def_sites = build_def_sites(&reader, name);
+
+    let channel_ctx = ChannelContext {
+        reader: &reader,
+        root,
+        symbol: name,
+        file_paths: &file_paths,
+        def_sites: &def_sites,
+        path_scope,
+        excludes,
+        filter_def_sites: true,
+        exclude_docs,
+        depth,
+    };
+
+    // Run every channel; collect into a vec for the data-driven
+    // verdict. Channels report `Ok(ChannelOutput::unavailable(...))`
+    // when they can't run (pre-v1.8 index, missing call graph), so an
+    // `Err` here is a genuine fault (I/O failure, corrupt regex) and
+    // bubbles up to the caller.
+    let invocations: Vec<ChannelInvocation> = DEFAULT_CHANNELS
+        .iter()
+        .map(|ch| {
+            Ok::<_, anyhow::Error>(ChannelInvocation {
+                name: ch.name(),
+                tier: ch.tier(),
+                result: ChannelResult::from_output(ch.run(&channel_ctx)?),
+            })
+        })
+        .collect::<Result<_>>()?;
+
+    let (verdict, verdict_explanation) = derive_verdict(&invocations);
+    let channels = ImpactChannels::from_invocations(invocations)?;
+    Ok(ImpactReport {
+        symbol: name.to_string(),
+        verdict,
+        verdict_explanation,
+        channels,
+    })
+}
+
+fn print_report_text(report: &ImpactReport) {
+    println!("impact: {}", report.symbol);
+    println!(
+        "  verdict: {} — {}",
+        match report.verdict {
+            Verdict::Safe => "safe",
+            Verdict::Unsafe => "unsafe",
+            Verdict::Uncertain => "uncertain",
+        },
+        report.verdict_explanation
+    );
+    print_channel("strict_refs", &report.channels.strict_refs);
+    print_channel("fst_refs", &report.channels.fst_refs);
+    print_channel("grep_word_boundary", &report.channels.grep_word_boundary);
+    print_channel("call_graph_callers", &report.channels.call_graph_callers);
+    print_channel("transitive_callers", &report.channels.transitive_callers);
+}
+
+/// `vex impact --workspace`: assess the symbol in every member, one verdict
+/// per repo. Cross-repo refs are invisible (each member resolves within
+/// itself) — see `docs/LIMITATIONS.md` §7.
+#[allow(clippy::too_many_arguments)]
+fn impact_workspace(
+    ctx: &CmdCtx<'_>,
+    name: &str,
+    path: Option<std::path::PathBuf>,
+    auto_update: bool,
+    no_stale_check: bool,
+    exclude_docs: bool,
+    depth: u32,
+    path_scope: &scope::PathScope,
+) -> Result<()> {
+    // A hash-less cache layout aliases every member to one index dir.
+    if ctx.local_cache_active {
+        bail!(
+            "workspace mode does not support local_cache / a hash-less cache dir — \
+             members would collide into one index dir; use the platform cache"
+        );
+    }
+
+    let start_dir = resolve_root(path)?;
+    let ws = workspace::Workspace::find_and_load(&start_dir)?;
+    let base = ws.base().to_path_buf();
+
+    // Per-member verdict + stale reason (reset before loop, take after each).
+    crate::cli::stale_signal::reset();
+    let mut per_repo: Vec<(String, ImpactReport, Option<String>)> =
+        Vec::with_capacity(ws.members.len());
+    for m in &ws.members {
+        let member_cfg = crate::util::config::load_config(&m.root)?;
+        let report = build_report(
+            &m.root,
+            &member_cfg,
+            &member_cfg.exclude,
+            false,
+            name,
+            auto_update,
+            no_stale_check,
+            exclude_docs,
+            depth,
+            path_scope,
+        )?;
+        let stale = crate::cli::stale_signal::take();
+        per_repo.push((m.display_name.clone(), report, stale));
+    }
+
+    match ctx.format {
+        OutputFormat::Json => {
+            let repos: Vec<_> = per_repo
+                .iter()
+                .map(|(repo, report, stale)| {
+                    let mut obj = serde_json::to_value(report).unwrap_or_default();
+                    obj["repo"] = serde_json::json!(repo);
+                    if let Some(reason) = stale {
+                        obj["stale_reason"] = serde_json::json!(reason);
+                    }
+                    obj
+                })
+                .collect();
+            print_envelope(
+                serde_json::json!({
+                    "workspace": ws.file.to_string_lossy(),
+                    "repos": repos,
+                }),
+                capabilities::current(),
+                super::output::default_meta_for(&base),
+            );
+        }
+        OutputFormat::Text | OutputFormat::Compact => {
+            for (repo, report, stale) in &per_repo {
+                println!("── {repo} ──");
+                if let Some(reason) = stale {
+                    eprintln!("  (stale: {reason})");
+                }
+                print_report_text(report);
+            }
+        }
+    }
     Ok(())
 }
 
