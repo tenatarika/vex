@@ -419,16 +419,21 @@ fn search_workspace(ctx: &CmdCtx<'_>, req: &SearchReq<'_>) -> Result<()> {
     let ws = workspace::Workspace::find_and_load(&start_dir)?;
     let base = ws.base().to_path_buf();
 
-    // Per member: (display_name, results). `want_prefusion = false` — the
-    // workspace envelope carries no per-result signals/trace. `local_cache`
-    // is off in workspace mode; the member's own .vex.toml drives staleness.
-    let mut per_repo: Vec<(String, Vec<SearchResult>)> = Vec::with_capacity(ws.members.len());
+    // Per member: (display_name, results, stale_reason). `want_prefusion =
+    // false` — the workspace envelope carries no per-result signals/trace.
+    // The stale reason is captured PER MEMBER (reset before, take after) so
+    // a stale member's reason is not misattributed to the whole workspace
+    // via the global signal.
+    crate::cli::stale_signal::reset();
+    let mut per_repo: Vec<(String, Vec<SearchResult>, Option<String>)> =
+        Vec::with_capacity(ws.members.len());
     let mut any = false;
     for m in &ws.members {
         let member_cfg = config::load_config(&m.root)?;
         let outcome = produce_results(&m.root, &member_cfg, false, req, false, false)?;
+        let stale = crate::cli::stale_signal::take();
         any |= !outcome.results.is_empty();
-        per_repo.push((m.display_name.clone(), outcome.results));
+        per_repo.push((m.display_name.clone(), outcome.results, stale));
     }
     if !any {
         crate::cli::exit_code::signal_no_results();
@@ -438,7 +443,13 @@ fn search_workspace(ctx: &CmdCtx<'_>, req: &SearchReq<'_>) -> Result<()> {
         OutputFormat::Json => {
             let repos: Vec<_> = per_repo
                 .iter()
-                .map(|(repo, results)| serde_json::json!({ "repo": repo, "results": results }))
+                .map(|(repo, results, stale)| {
+                    let mut obj = serde_json::json!({ "repo": repo, "results": results });
+                    if let Some(reason) = stale {
+                        obj["stale_reason"] = serde_json::json!(reason);
+                    }
+                    obj
+                })
                 .collect();
             output::print_envelope(
                 serde_json::json!({
@@ -450,8 +461,11 @@ fn search_workspace(ctx: &CmdCtx<'_>, req: &SearchReq<'_>) -> Result<()> {
             );
         }
         OutputFormat::Text | OutputFormat::Compact => {
-            for (repo, results) in &per_repo {
+            for (repo, results, stale) in &per_repo {
                 println!("── {repo} ──");
+                if let Some(reason) = stale {
+                    eprintln!("  (stale: {reason})");
+                }
                 if results.is_empty() {
                     println!("  No results for \"{}\"", req.query);
                 } else {

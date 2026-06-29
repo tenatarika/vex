@@ -185,10 +185,13 @@ fn check_workspace(
     let ws = workspace::Workspace::find_and_load(&start_dir)?;
     let base = ws.base().to_path_buf();
 
-    // Per member: (display_name, results). `local_cache_active` is false in
-    // workspace mode (guarded above), and the member's own .vex.toml drives
-    // staleness/auto-update.
-    let mut per_repo: Vec<(String, Vec<(String, bool)>)> = Vec::with_capacity(ws.members.len());
+    // The member's own .vex.toml drives staleness/auto-update;
+    // `local_cache_active` is false in workspace mode (guarded above). The
+    // stale reason is captured PER MEMBER (reset before the loop, take after
+    // each) so one member's stale index is not misattributed to the whole
+    // workspace via the global signal.
+    super::stale_signal::reset();
+    let mut per_repo: Vec<RepoCheck> = Vec::with_capacity(ws.members.len());
     for m in &ws.members {
         let member_cfg = crate::util::config::load_config(&m.root)?;
         let results = check_in_root(
@@ -199,19 +202,28 @@ fn check_workspace(
             &member_cfg,
             false,
         )?;
-        per_repo.push((m.display_name.clone(), results));
+        per_repo.push(RepoCheck {
+            repo: m.display_name.clone(),
+            results,
+            stale: super::stale_signal::take(),
+        });
     }
 
     match ctx.format {
         OutputFormat::Json => {
             let repos: Vec<_> = per_repo
                 .iter()
-                .map(|(repo, results)| {
-                    let names: Vec<_> = results
+                .map(|rc| {
+                    let names: Vec<_> = rc
+                        .results
                         .iter()
                         .map(|(name, found)| serde_json::json!({ "name": name, "exists": found }))
                         .collect();
-                    serde_json::json!({ "repo": repo, "names": names })
+                    let mut obj = serde_json::json!({ "repo": rc.repo, "names": names });
+                    if let Some(reason) = &rc.stale {
+                        obj["stale_reason"] = serde_json::json!(reason);
+                    }
+                    obj
                 })
                 .collect();
             print_envelope(
@@ -229,8 +241,8 @@ fn check_workspace(
             for name in &names {
                 let hits: Vec<&str> = per_repo
                     .iter()
-                    .filter(|(_, results)| results.iter().any(|(n, f)| n == name && *f))
-                    .map(|(repo, _)| repo.as_str())
+                    .filter(|rc| rc.results.iter().any(|(n, f)| n == name && *f))
+                    .map(|rc| rc.repo.as_str())
                     .collect();
                 if hits.is_empty() {
                     println!("- {name}");
@@ -238,7 +250,21 @@ fn check_workspace(
                     println!("+ {name}  [{}]", hits.join(", "));
                 }
             }
+            // Per-member staleness → stderr advisory (keeps the stdout
+            // name list clean).
+            for rc in &per_repo {
+                if let Some(reason) = &rc.stale {
+                    eprintln!("warning: {} index may be stale: {reason}", rc.repo);
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// One workspace member's `check` outcome.
+struct RepoCheck {
+    repo: String,
+    results: Vec<(String, bool)>,
+    stale: Option<String>,
 }

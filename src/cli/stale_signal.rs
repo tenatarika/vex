@@ -47,6 +47,22 @@ pub(crate) fn current() -> Option<String> {
     STALE_REASON.lock().ok().and_then(|s| s.clone())
 }
 
+/// Read **and clear** the slot in one lock. The `--workspace` fanout calls
+/// this after each member so the next member starts clean and a stale
+/// reason is attributed to the member that produced it, not the whole run.
+pub(crate) fn take() -> Option<String> {
+    STALE_REASON.lock().ok().and_then(|mut s| s.take())
+}
+
+/// Clear the slot (production sibling of `reset_for_test`). The workspace
+/// fanout clears once before its member loop so a signal set during
+/// dispatch can't leak onto the first member.
+pub(crate) fn reset() {
+    if let Ok(mut slot) = STALE_REASON.lock() {
+        *slot = None;
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
     if let Ok(mut slot) = STALE_REASON.lock() {
@@ -84,6 +100,19 @@ mod tests {
             Some("first failure"),
             "first set wins (idempotent-first-wins contract)"
         );
+
+        // `take` returns the reason AND clears the slot (per-member capture).
+        assert_eq!(
+            take().as_deref(),
+            Some("first failure"),
+            "take returns the reason"
+        );
+        assert!(current().is_none(), "take must clear the slot");
+
+        // `reset` clears the slot (production sibling of reset_for_test).
+        set("another");
+        reset();
+        assert!(current().is_none(), "reset must clear the slot");
 
         reset_for_test();
         assert!(
