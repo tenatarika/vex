@@ -1,9 +1,19 @@
 # Multi-Repository Index — Design
 
-Status: **DESIGN / RESEARCH** (no code yet). Author pass 2026-06-28,
-revised after architect + rust-reviewer design review (folded in: the
+Status: **PHASES 1, 3, 4a SHIPPED** (2026-06-29). `.vex-workspace.toml`
+manifest + resolver, `vex index --workspace`, and `vex search / check /
+grep --workspace` are implemented (see §8 for per-phase status). Design
+pass 2026-06-28, revised after architect + rust-reviewer review (the
 `CacheResolver` workspace-root/member-root split, hidden-static catalogue,
 phase-4 split, cross-repo Pass-2 non-conflict, ranking/HNSW-recall risks).
+
+**Shipped MVP limitations** (also in `docs/LIMITATIONS.md`): members are
+indexed/queried sequentially; results are grouped per-repo with no unified
+cross-repo ranking; cross-repo `--strict`/call-graph refs are invisible
+(each member resolves within itself); `vex search --why` and per-result
+JSON `signals` are single-repo only (`--why` is a clap conflict with
+`--workspace`); `--limit` is per-member (totals up to N×limit);
+hash-less cache layouts (`local_cache`) are rejected in workspace mode.
 
 This document proposes a "workspace" mode that lets one `vex` invocation
 index and search across several independent repositories (e.g. a folder
@@ -253,16 +263,20 @@ the per-repo parallel build. Categorically outside the constraint.
 
 ## 8. Phased plan
 
-1. **Workspace manifest + resolver** — parse `.vex-workspace.toml`,
-   canonicalize, map to per-repo cache dirs. Reject overlaps.
-2. **De-globalize the cache override** — per-root `CacheLayout` resolver
-   replacing `CACHE_OVERRIDE: OnceLock`.
-3. **`vex index --workspace`** — index/refresh all members (reuses
-   per-repo pipeline + staleness).
+1. ✅ **Workspace manifest + resolver** (`src/workspace/mod.rs`) — parse
+   `.vex-workspace.toml`, canonicalize, map to per-repo cache dirs. Reject
+   overlaps + per-member cache overrides. `Workspace::find_and_load` is the
+   single entry point all `--workspace` commands share.
+2. **De-globalize the cache override** — deferred. MVP rejects hash-less
+   layouts (`local_cache`) in workspace mode instead, so the global
+   `CACHE_OVERRIDE: OnceLock` is left intact.
+3. ✅ **`vex index --workspace`** — indexes every member into its own dir
+   (reuses the per-repo pipeline; each member uses its own `.vex.toml`).
 4. **Read-side fanout** — split by risk class:
-   - **4a — `search` / `check` / `grep`**: pure text/name fanout, zero
-     semantic gap. Add `repo` to result + `--format json` + the per-member
-     `STALE_REASON` fix. Lowest risk; genuinely format-free.
+   - ✅ **4a — `search` / `check` / `grep`**: shipped. Attribution is at the
+     OUTPUT layer (group-by-repo), NOT a `repo` field on result structs —
+     this sidestepped a 61-site ripple. `STALE_REASON` per-member fix was
+     NOT done (still global first-write-wins — documented in LIMITATIONS).
    - **4b — `usages` / `impact` / call-graph**: fanout is correct but a
      *semantic* change — a usage in repo B of a symbol defined in repo A
      is **missing**. Document the "results are per-repo; cross-repo refs

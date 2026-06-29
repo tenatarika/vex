@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{bail, Context, Result};
 
 use super::args::OutputFormat;
 use super::common::{resolve_root, CmdCtx};
@@ -159,6 +159,11 @@ fn check_in_root(
 /// `vex check --workspace`: probe each name across every member of the
 /// nearest `.vex-workspace.toml`, reporting which repos define it. Each
 /// member uses its own `.vex.toml` for staleness/auto-update.
+///
+/// Text output is name-centric (`+ name  [repoA, repoB]`) rather than the
+/// per-repo `── repo ──` sections that `search`/`grep --workspace` use:
+/// "which repos define X?" is the question `check` answers, so pivoting on
+/// the name reads better. Intentional divergence.
 fn check_workspace(
     ctx: &CmdCtx<'_>,
     names: Vec<String>,
@@ -166,24 +171,23 @@ fn check_workspace(
     auto_update: bool,
     no_stale_check: bool,
 ) -> Result<()> {
+    // A hash-less cache layout (`local_cache` / a bare `--cache-dir`) routes
+    // every member's `index_dir` to the same flat dir — they would all read
+    // the first member's index. Refuse, matching `vex index --workspace`.
+    if ctx.local_cache_active {
+        bail!(
+            "workspace mode does not support local_cache / a hash-less cache dir — \
+             members would collide into one index dir; use the platform cache"
+        );
+    }
+
     let start_dir = resolve_root(path)?;
-    let ws_file = workspace::find_workspace_file(&start_dir).ok_or_else(|| {
-        anyhow!(
-            "no {} found at or above {}",
-            workspace::WORKSPACE_FILE,
-            start_dir.display()
-        )
-    })?;
-    let ws = workspace::Workspace::load(&ws_file)?;
-    let base = ws
-        .file
-        .parent()
-        .expect("canonicalized workspace file has a parent directory")
-        .to_path_buf();
+    let ws = workspace::Workspace::find_and_load(&start_dir)?;
+    let base = ws.base().to_path_buf();
 
     // Per member: (display_name, results). `local_cache_active` is false in
-    // workspace mode (the index command rejects hash-less layouts), and the
-    // member's own .vex.toml drives staleness/auto-update.
+    // workspace mode (guarded above), and the member's own .vex.toml drives
+    // staleness/auto-update.
     let mut per_repo: Vec<(String, Vec<(String, bool)>)> = Vec::with_capacity(ws.members.len());
     for m in &ws.members {
         let member_cfg = crate::util::config::load_config(&m.root)?;

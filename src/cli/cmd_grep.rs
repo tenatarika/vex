@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 
 use super::args::{DiffFilterArgs, OutputFormat, ScopeArgs};
 use super::common::{resolve_diff_filter, resolve_root, CmdCtx};
@@ -135,20 +135,11 @@ fn grep_workspace(
     scope: &ScopeArgs,
     diff: &DiffFilterArgs,
 ) -> Result<()> {
+    // No local_cache guard here: `grep` scans the filesystem and never
+    // touches an index dir, so a hash-less cache layout is harmless.
     let start_dir = resolve_root(path)?;
-    let ws_file = workspace::find_workspace_file(&start_dir).ok_or_else(|| {
-        anyhow!(
-            "no {} found at or above {}",
-            workspace::WORKSPACE_FILE,
-            start_dir.display()
-        )
-    })?;
-    let ws = workspace::Workspace::load(&ws_file)?;
-    let base = ws
-        .file
-        .parent()
-        .expect("canonicalized workspace file has a parent directory")
-        .to_path_buf();
+    let ws = workspace::Workspace::find_and_load(&start_dir)?;
+    let base = ws.base().to_path_buf();
 
     let mut per_repo: Vec<(String, Vec<GrepMatch>)> = Vec::with_capacity(ws.members.len());
     let mut any = false;

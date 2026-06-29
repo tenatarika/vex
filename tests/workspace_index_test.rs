@@ -285,6 +285,65 @@ fn grep_workspace_json_groups_by_repo() {
 }
 
 #[test]
+fn search_workspace_rejects_local_cache_layout() {
+    // A hash-less cache (local_cache) would alias every member to one dir.
+    // The guard must reject it before any query runs (review HIGH-1).
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(&root.join(".vex.toml"), "local_cache = true\n");
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n",
+    );
+
+    let mut cmd = Command::cargo_bin("vex").unwrap();
+    cmd.current_dir(root);
+    cmd.env_remove("VEX_CACHE_DIR"); // let local_cache take effect
+    let out = cmd
+        .args(["search", "alpha_thing", "--workspace"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "should reject local_cache in workspace"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("local_cache"),
+        "error should mention local_cache: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn search_workspace_conflicts_with_why() {
+    // `--why` is single-repo only; clap must reject the combination rather
+    // than silently dropping the trace (review HIGH).
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n",
+    );
+    let out = vex_in(root, &cache)
+        .args(["search", "alpha_thing", "--workspace", "--why"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "--workspace + --why must be a clap conflict"
+    );
+}
+
+#[test]
 fn index_workspace_without_manifest_errors() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();

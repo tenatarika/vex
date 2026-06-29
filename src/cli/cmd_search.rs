@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{bail, Context, Result};
 
 use super::args::{DiffFilterArgs, MetadataArgs, OutputFormat, ScopeArgs};
 use super::common::{
@@ -405,20 +405,19 @@ fn produce_results(
 /// ranking only (no cross-repo unified score); `--why` and per-result
 /// JSON `signals` are single-repo features and are not emitted here.
 fn search_workspace(ctx: &CmdCtx<'_>, req: &SearchReq<'_>) -> Result<()> {
+    // A hash-less cache layout routes every member's `index_dir` to the same
+    // flat dir — they would all read the first member's index. Refuse,
+    // matching `vex index --workspace`.
+    if ctx.local_cache_active {
+        bail!(
+            "workspace mode does not support local_cache / a hash-less cache dir — \
+             members would collide into one index dir; use the platform cache"
+        );
+    }
+
     let start_dir = resolve_root(None)?;
-    let ws_file = workspace::find_workspace_file(&start_dir).ok_or_else(|| {
-        anyhow!(
-            "no {} found at or above {}",
-            workspace::WORKSPACE_FILE,
-            start_dir.display()
-        )
-    })?;
-    let ws = workspace::Workspace::load(&ws_file)?;
-    let base = ws
-        .file
-        .parent()
-        .expect("canonicalized workspace file has a parent directory")
-        .to_path_buf();
+    let ws = workspace::Workspace::find_and_load(&start_dir)?;
+    let base = ws.base().to_path_buf();
 
     // Per member: (display_name, results). `want_prefusion = false` — the
     // workspace envelope carries no per-result signals/trace. `local_cache`

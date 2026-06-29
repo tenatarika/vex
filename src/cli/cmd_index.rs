@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 
 use super::args::OutputFormat;
 use super::common::{
@@ -212,21 +212,8 @@ fn index_workspace(
     }
 
     let start_dir = resolve_root(path)?;
-    let ws_file = workspace::find_workspace_file(&start_dir).ok_or_else(|| {
-        anyhow!(
-            "no {} found at or above {}",
-            workspace::WORKSPACE_FILE,
-            start_dir.display()
-        )
-    })?;
-    let ws = workspace::Workspace::load(&ws_file)?;
-    // `ws.file` is canonical, so it always has a parent (mirrors the
-    // `expect` in `Workspace::load`).
-    let base = ws
-        .file
-        .parent()
-        .expect("canonicalized workspace file has a parent directory")
-        .to_path_buf();
+    let ws = workspace::Workspace::find_and_load(&start_dir)?;
+    let base = ws.base().to_path_buf();
 
     let start = Instant::now();
     let mut results = Vec::with_capacity(ws.members.len());

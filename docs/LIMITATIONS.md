@@ -898,6 +898,36 @@ points at file:line so a follow-up `vex show` / `vex usages` /
 
 ---
 
+## 7. `--workspace` (multi-repo) caveats
+
+`vex index / search / check / grep --workspace` fan a command across every
+repo declared in the nearest `.vex-workspace.toml`. Each member keeps its
+own per-repo index; results are grouped by repo. See `docs/MULTIREPO.md`
+for the design. Known limits of the shipped MVP:
+
+- **No cross-repo symbol resolution.** Each member resolves refs within
+  itself. `--strict` usages, the call graph, and `impact` (none of which
+  have `--workspace` yet) would not see a usage in repo B of a symbol
+  defined in repo A. Per-repo only by design (merging corpora would
+  *reduce* binder precision via more ambiguous-name collisions).
+- **`--limit` is per-member, not a total.** A 3-member workspace with
+  `--limit 20` can return up to 60 results. There is no unified cross-repo
+  ranking — results are grouped per repo, each ranked within its own index.
+- **`vex search --why` is single-repo only** — it is a hard clap conflict
+  with `--workspace`. Per-result JSON `signals` are likewise omitted from
+  workspace output.
+- **Staleness is reported globally, not per-member.** The `_meta.stale` /
+  `stale_reason` envelope fields are first-write-wins across members: if
+  one member's index is stale, the reason is attributed to the whole
+  workspace run. Per-member staleness is a future fix.
+- **Sequential, all-or-nothing.** Members are processed one at a time
+  (rayon parallelism is *within* each member's build/scan); a hard failure
+  on one member aborts the run.
+- **`local_cache` / hash-less cache layouts are rejected** in workspace
+  mode — every member would otherwise alias to the same flat index dir.
+
+---
+
 ## Coverage matrix (one-line summary)
 
 | Query | T1 strict | T1 default | T2 (line-scan) | Module-level | Decorator | String-resolved |

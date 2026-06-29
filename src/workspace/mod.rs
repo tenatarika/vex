@@ -21,7 +21,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 
 use crate::util::config::{self, VexConfig};
@@ -75,6 +75,29 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// Walk up from `start` to the nearest [`WORKSPACE_FILE`] and load it.
+    /// The single entry point every `--workspace` command uses, so the
+    /// "no manifest found" wording lives in exactly one place.
+    pub fn find_and_load(start: &Path) -> Result<Workspace> {
+        let ws_file = find_workspace_file(start).ok_or_else(|| {
+            anyhow!(
+                "no {} found at or above {}",
+                WORKSPACE_FILE,
+                start.display()
+            )
+        })?;
+        Workspace::load(&ws_file)
+    }
+
+    /// The directory the manifest lives in — members were resolved relative
+    /// to it. Always present: [`Workspace::load`] canonicalizes `file`, so
+    /// it is never the filesystem root.
+    pub fn base(&self) -> &Path {
+        self.file
+            .parent()
+            .expect("canonicalized workspace file has a parent directory")
+    }
+
     /// Parse and resolve a workspace manifest at `file`. Enforces the
     /// module invariants; returns an error describing the first violation.
     pub fn load(file: &Path) -> Result<Workspace> {
