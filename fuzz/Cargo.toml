@@ -95,5 +95,10 @@ name = "fuzz_state_load"
 path = "fuzz_targets/fuzz_state_load.rs"
 doc = false
 
+[[bin]]
+name = "fuzz_unresolved_refs"
+path = "fuzz_targets/fuzz_unresolved_refs.rs"
+doc = false
+
 [workspace]
 members = ["."]
