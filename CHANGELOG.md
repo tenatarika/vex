@@ -6,6 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — cross-repo strict-usages resolution (multi-repo Phase 6)
+
+- `vex usages <name> --strict --workspace` now resolves references across
+  repos via a gtags-style ordered fallback. A binder-confirmed reference in
+  repo B to a symbol defined in repo A — previously dropped because B's
+  Pass-2 left it unresolved — is surfaced and attributed to the first
+  member (declared order) that defines the name. Rendered as a distinct
+  **name-resolved** sub-tier so single-repo `--strict` binder precision is
+  not diluted: `cross-repo → repoA (name-resolved)` in text;
+  `cross_repo_usages` + `resolves_to` + `confidence: "name"` in JSON. Fires
+  only when some member owns the name, so typos / dynamic names stay silent.
+- Index format **v6 → v7**: new `UnresolvedRefsHeader` persists the
+  unresolved-by-name refs each member's Pass-2 drops, keyed by name. v3..v6
+  indexes still open (`MIN_SUPPORTED_VERSION` unchanged); the section is
+  absent until `vex index` rebuilds at v7. `vex update` carries unchanged
+  files' unresolved refs forward, so cross-repo strict usages survives
+  incremental updates.
+- Scope: `impact --workspace`, the call graph, and non-strict `usages`
+  remain per-repo (non-strict already crosses repos via FST name fanout;
+  `callers` already crosses repos via callee-name keying). See
+  `docs/MULTIREPO-PHASE6.md` and LIMITATIONS §7.
+
 ## [1.21.0] - 2026-06-27
 
 Two `vex impact` capabilities on top of an internal architecture pass,

@@ -337,6 +337,101 @@ fn usages_in_root(
     })
 }
 
+/// Whether `reader`'s index defines a symbol named exactly `name`
+/// (case-insensitive). Cross-repo owner detection — the member holding the
+/// definition that another member's unresolved refs resolve to.
+fn member_defines(reader: &IndexReader, name: &str) -> bool {
+    let Some(sym_fst) = reader.symbol_fst_reader() else {
+        return false;
+    };
+    let lower = name.to_lowercase();
+    sym_fst.find(name).into_iter().any(|idx| {
+        reader
+            .symbol(idx as usize)
+            .is_some_and(|r| reader.read_string(r.name_offset).to_lowercase() == lower)
+    })
+}
+
+/// Compute the gtags-style cross-repo fallback for `vex usages --strict
+/// --workspace`. Returns `(owner_display, member_display → cross-repo hits)`.
+///
+/// Opens each member's index read-only (already ensured by the main fanout
+/// loop) and finds the first member, in declared order, that defines `name`
+/// (the owner). For every member that does NOT define `name`, its persisted
+/// unresolved-by-name refs to `name` are surfaced — these are the refs the
+/// member's own Pass-2 dropped because the symbol lives in a sibling repo.
+/// Empty `(None, {})` when not strict, no member owns `name`, or no v7
+/// unresolved sections exist (pre-v7 members are simply skipped).
+fn cross_repo_usages(
+    ws: &workspace::Workspace,
+    name: &str,
+    strict: bool,
+    limit: usize,
+    filter_path: Option<&str>,
+    path_scope: &scope::PathScope,
+) -> (Option<String>, HashMap<String, Vec<HitLocation>>) {
+    let mut cross: HashMap<String, Vec<HitLocation>> = HashMap::new();
+    if !strict {
+        return (None, cross);
+    }
+    // Open every member's index once here for the cross-repo pass. NOTE:
+    // the main fanout loop already opened+dropped each reader inside
+    // `usages_in_root`, so this is a second open per member. Reusing the
+    // first-pass readers (the §9 two-phase orchestration) is a tracked
+    // follow-up (Phase 6.1, docs/MULTIREPO-PHASE6.md §8) — negligible for
+    // strict-mode workspace sizes, and correctness is unaffected.
+    // A member that DEFINES `name` cannot also have `name` in its
+    // unresolved section: the writer capture gate
+    // (`!name_to_global.contains_key`) excludes any name with a local def,
+    // so skipping owners below never drops a cross-repo hit.
+    let opened: Vec<(String, bool, IndexReader)> = ws
+        .members
+        .iter()
+        .filter_map(|m| {
+            let r = IndexReader::open(&crate::util::config::index_path(&m.root)).ok()?;
+            let defines = member_defines(&r, name);
+            Some((m.display_name.clone(), defines, r))
+        })
+        .collect();
+
+    let owner = opened
+        .iter()
+        .find(|(_, defines, _)| *defines)
+        .map(|(display, _, _)| display.clone());
+    if owner.is_none() {
+        // Nothing defines `name` anywhere in the workspace — surfacing
+        // unresolved refs now would just echo typos / dynamic names.
+        return (None, cross);
+    }
+
+    for (display, defines, reader) in &opened {
+        if *defines {
+            // Owner's refs to `name` are already in-repo strict hits.
+            continue;
+        }
+        let file_paths = reader.file_paths();
+        let hits: Vec<HitLocation> = reader
+            .find_unresolved_refs_by_name(name)
+            .into_iter()
+            .filter_map(|e| {
+                let path = file_paths.get(e.from_file_id as usize)?.clone();
+                if !path_scope.accept(&path) {
+                    return None;
+                }
+                if filter_path.is_some_and(|f| !path.contains(f)) {
+                    return None;
+                }
+                Some(HitLocation { path, line: e.line })
+            })
+            .take(limit)
+            .collect();
+        if !hits.is_empty() {
+            cross.insert(display.clone(), hits);
+        }
+    }
+    (owner, cross)
+}
+
 /// `vex usages --workspace`: find usages in every member, grouped by repo.
 /// References resolve per-repo — a usage in repo B of a symbol defined in
 /// repo A is NOT seen (see `docs/LIMITATIONS.md` §7). `--why` is a clap
@@ -392,6 +487,22 @@ fn usages_workspace(
         any |= outcome.available && !outcome.entries.is_empty();
         per_repo.push((m.display_name.clone(), outcome, stale));
     }
+
+    // Cross-repo strict fallback (multi-repo Phase 6). A binder-confirmed
+    // ref to `name` living in a member that does NOT define `name` is
+    // dropped from that member's own resolved ref-edges; recover it from
+    // the member's v7 unresolved-by-name section, attributed to the first
+    // member (declared order) that DOES define `name`. These are
+    // name-resolved, NOT full-binder-confirmed, so they render as a
+    // distinct sub-tier — single-repo `--strict` precision is not diluted.
+    // Skips the `diff` filter (per-member changed-path sets don't compose
+    // across repos); `path_scope` + `filter_path` still apply.
+    let (cross_owner, cross_by_repo) =
+        cross_repo_usages(&ws, name, strict, limit, filter_path, path_scope);
+    if cross_by_repo.values().any(|h| !h.is_empty()) {
+        any = true;
+    }
+
     if !any {
         crate::cli::exit_code::signal_no_results();
     }
@@ -416,6 +527,14 @@ fn usages_workspace(
                     }
                     if let Some(reason) = stale {
                         obj["stale_reason"] = serde_json::json!(reason);
+                    }
+                    if let Some(hits) = cross_by_repo.get(repo) {
+                        obj["cross_repo_usages"] = serde_json::json!(hits
+                            .iter()
+                            .map(|h| serde_json::json!({ "path": h.path, "line": h.line }))
+                            .collect::<Vec<_>>());
+                        obj["resolves_to"] = serde_json::json!(cross_owner);
+                        obj["confidence"] = serde_json::json!("name");
                     }
                     obj
                 })
@@ -449,6 +568,13 @@ fn usages_workspace(
                         outcome.entries.len()
                     );
                     for h in &outcome.entries {
+                        println!("    {}:{}", h.path, h.line);
+                    }
+                }
+                if let Some(hits) = cross_by_repo.get(repo) {
+                    let owner = cross_owner.as_deref().unwrap_or("?");
+                    println!("  cross-repo → {owner} (name-resolved):");
+                    for h in hits {
                         println!("    {}:{}", h.path, h.line);
                     }
                 }

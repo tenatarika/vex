@@ -287,7 +287,13 @@ the per-repo parallel build. Categorically outside the constraint.
    reconciliation**: index missing/stale members, warn on orphaned index
    dirs from removed/moved members (moved → new canonical path → new
    xxh3 → new dir, old one orphaned).
-6. **(Opt.) cross-repo fallback resolution** (§7 option B).
+6. ✅ **Cross-repo fallback resolution** (§7 option B) — `usages --strict
+   --workspace` gtags-style ordered fallback. Index format v6 → v7 adds an
+   `UnresolvedRefsHeader` persisting by-name the refs a member's Pass-2
+   dropped; a workspace strict query re-resolves them against the first
+   member (declared order) that defines the name, tagged as a distinct
+   name-resolved sub-tier. Full design + review resolutions in
+   `docs/MULTIREPO-PHASE6.md`.
 7. **(Opt.) workspace watch mode.**
 
 Phases 1–4 are the MVP and require **no binary-format change**.

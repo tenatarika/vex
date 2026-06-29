@@ -699,3 +699,219 @@ fn index_workspace_json_lists_every_member() {
         "json should carry a total: {stdout}"
     );
 }
+
+// ── Multi-repo Phase 6: cross-repo strict-usages fallback ──────────────────
+
+/// `alpha` defines `shared_helper`; `beta` calls it without defining it.
+/// `usages shared_helper --strict --workspace` must surface beta's call site
+/// as a name-resolved cross-repo hit attributed to alpha, even though beta's
+/// own Pass-2 left the ref unresolved (it lives in a sibling repo).
+#[test]
+fn usages_strict_workspace_surfaces_cross_repo_ref() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn shared_helper() {}\n",
+    );
+    write(
+        &root.join("beta").join("b.rs"),
+        "pub fn beta_caller() { shared_helper(); }\n",
+    );
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["usages", "shared_helper", "--strict", "--workspace"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // beta's call site surfaces as a cross-repo hit resolving to alpha.
+    assert!(
+        stdout.contains("cross-repo → alpha"),
+        "beta's call should resolve cross-repo to alpha: {stdout}"
+    );
+    let beta_section = stdout.split("── beta ──").nth(1).unwrap_or("");
+    assert!(
+        beta_section.contains("b.rs"),
+        "cross-repo hit should point at beta/b.rs: {stdout}"
+    );
+}
+
+/// JSON surface: a cross-repo member object carries `cross_repo_usages`,
+/// `resolves_to`, and `confidence: "name"` (the distinct sub-tier).
+#[test]
+fn usages_strict_workspace_cross_repo_json_tier() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn shared_helper() {}\n",
+    );
+    write(
+        &root.join("beta").join("b.rs"),
+        "pub fn beta_caller() { shared_helper(); }\n",
+    );
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args([
+            "usages",
+            "shared_helper",
+            "--strict",
+            "--workspace",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Whitespace-insensitive value assertions (tolerant of pretty-printing):
+    // the cross-repo tier must resolve to alpha and be tagged name-resolved.
+    let compact: String = stdout.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(compact.contains("cross_repo_usages"), "json tier: {stdout}");
+    assert!(
+        compact.contains("\"resolves_to\":\"alpha\""),
+        "resolves_to must equal alpha: {stdout}"
+    );
+    assert!(
+        compact.contains("\"confidence\":\"name\""),
+        "confidence must equal name: {stdout}"
+    );
+}
+
+/// First-hit-wins owner attribution: when two members define the symbol,
+/// a third member's cross-repo refs resolve to the FIRST-declared owner,
+/// and each owner still renders its own in-repo strict section.
+#[test]
+fn usages_strict_workspace_multiple_owners_first_wins() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(&root.join("alpha").join("a.rs"), "pub fn dup_fn() {}\n");
+    write(&root.join("beta").join("b.rs"), "pub fn dup_fn() {}\n");
+    write(
+        &root.join("gamma").join("g.rs"),
+        "pub fn gamma_caller() { dup_fn(); }\n",
+    );
+    // alpha declared before beta → alpha is the first-hit owner.
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n\n[[repo]]\npath = \"gamma\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["usages", "dup_fn", "--strict", "--workspace"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("cross-repo → alpha"),
+        "gamma's call resolves to the first-declared owner alpha: {stdout}"
+    );
+    assert!(
+        !stdout.contains("cross-repo → beta"),
+        "beta must not be the attributed owner (alpha declared first): {stdout}"
+    );
+}
+
+/// A name defined NOWHERE in the workspace must NOT surface unresolved refs
+/// (no owner → the fallback stays silent, preserving strict precision).
+#[test]
+fn usages_strict_workspace_no_owner_no_cross_repo() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() { mystery_absent_fn(); }\n",
+    );
+    write(&root.join("beta").join("b.rs"), "pub fn beta_thing() {}\n");
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["usages", "mystery_absent_fn", "--strict", "--workspace"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("cross-repo →"),
+        "no member defines mystery_absent_fn — fallback must stay silent: {stdout}"
+    );
+}
+
+/// Carry-forward: after a `vex update` that re-indexes beta because one of
+/// its files changed, the UNCHANGED file's cross-repo unresolved ref must
+/// still surface. Guards the §6 regression where the Q4-A reconstruction
+/// (resolved RefEdges only) would silently drop unresolved refs.
+#[test]
+fn usages_strict_workspace_cross_repo_survives_update() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn shared_helper() {}\n",
+    );
+    // b.rs holds the cross-repo ref and stays UNCHANGED; b2.rs is the file
+    // we mutate to force beta's incremental update.
+    write(
+        &root.join("beta").join("b.rs"),
+        "pub fn beta_caller() { shared_helper(); }\n",
+    );
+    write(&root.join("beta").join("b2.rs"), "pub fn beta_other() {}\n");
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    // Change b2.rs only, then incrementally update the workspace.
+    write(
+        &root.join("beta").join("b2.rs"),
+        "pub fn beta_other() {}\npub fn beta_added() {}\n",
+    );
+    vex_in(root, &cache)
+        .args(["update", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["usages", "shared_helper", "--strict", "--workspace"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("cross-repo → alpha"),
+        "cross-repo ref from the unchanged b.rs must survive `vex update`: {stdout}"
+    );
+}

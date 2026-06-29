@@ -906,16 +906,33 @@ in the nearest `.vex-workspace.toml`.
 Each member keeps its own per-repo index; results are grouped by repo. See
 `docs/MULTIREPO.md` for the design. Known limits of the shipped MVP:
 
-- **No cross-repo symbol resolution.** Each member resolves refs within
-  itself, so `usages` / `impact --workspace` will NOT see a usage in repo
-  B of a symbol defined in repo A — each repo's verdict / usage list is
-  scoped to that repo. Per-repo only by design (merging corpora would
-  *reduce* binder precision via more ambiguous-name collisions). With
-  `--strict`, a member whose index predates v5 is reported as
+- **Cross-repo resolution is limited to `usages --strict` (Phase 6).**
+  `vex usages <name> --strict --workspace` performs a gtags-style ordered
+  fallback: a binder-confirmed reference in repo B to a symbol defined in
+  repo A IS surfaced, attributed to the owning repo and tagged as a
+  distinct **name-resolved** sub-tier (`cross-repo → repoA (name-resolved)`
+  in text; `cross_repo_usages` + `resolves_to` + `confidence: "name"` in
+  JSON). It fires only when some member defines the name (first-hit-wins
+  owner in declared order), so truly-undefined names / typos stay silent
+  and single-repo `--strict` binder precision is not diluted. Caveats: (a)
+  it is *name-resolved*, weaker than in-repo binder-confirmed refs; (b)
+  import aliases (`use a::Foo as Bar`) key on the alias used at the call
+  site; (c) the `diff` / `--base` filter is NOT applied to cross-repo hits
+  (per-member changed-path sets don't compose); (d) requires v7 member
+  indexes — pre-v7 members are skipped (re-run `vex index`). **Everything
+  else stays per-repo:** `impact --workspace`, the call graph, and `usages`
+  non-strict scope each member's result to that member (non-strict already
+  finds names in every repo via FST fanout; `callers` already crosses repos
+  because it is keyed by callee name). Merging corpora is still avoided —
+  it would *reduce* binder precision via more ambiguous-name collisions.
+  With `--strict`, a member whose index predates v5 is reported as
   `unavailable` for that repo rather than aborting the whole run.
 - **`--limit` is per-member, not a total.** A 3-member workspace with
   `--limit 20` can return up to 60 results. There is no unified cross-repo
   ranking — results are grouped per repo, each ranked within its own index.
+  With `usages --strict --workspace`, the cross-repo sub-tier adds its own
+  per-member `--limit` budget on top of the regular per-member hits, so the
+  effective ceiling is higher still (regular + cross-repo per non-owner).
 - **`vex search --why` is single-repo only** — it is a hard clap conflict
   with `--workspace`. Per-result JSON `signals` are likewise omitted from
   workspace output.
