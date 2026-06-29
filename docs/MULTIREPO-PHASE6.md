@@ -172,12 +172,15 @@ reconcile" seam). Full reconstruction parity is a follow-up.
   name-resolved sub-tier (`(name-resolved)` / `confidence: "name"`), so
   single-repo `--strict` binder-confidence is never silently diluted.
 - **Update degradation** — see §6 (resolved: carry-forward, §9).
-- **Double-open (tracked follow-up, Phase 6.1)** — `cross_repo_usages` opens
-  each member's reader a second time after the main fanout loop's
-  `usages_in_root` opened+dropped it. Negligible for strict-mode workspace
-  sizes; the §9 two-phase reader-reuse refactor is deferred. Correctness is
-  unaffected (a member's index opening in pass 1 but not pass 2 is
-  practically impossible — same file, same process).
+- **Double-open — RESOLVED (Phase 6.1).** `usages_workspace` is now a
+  two-phase orchestration: phase 1 runs `ensure_index_ready` + opens each
+  member's reader ONCE (capturing stale + owner status), phase 2 reuses the
+  held readers for both the per-repo outcome (`usages_from_reader`) and the
+  cross-repo lookup (`cross_repo_hits`). The render path was split into
+  `render_workspace_json` / `render_workspace_text`. Single-repo `usages`
+  stays byte-identical (still via `usages_in_root`, which now wraps
+  `usages_from_reader`). Bonus: cross-repo hits share the member's reader,
+  so its `stale_reason` already covers them.
 
 ## 9. Review resolutions (architect + rust-reviewer, locked before scaffold)
 
