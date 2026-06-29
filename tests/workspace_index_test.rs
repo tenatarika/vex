@@ -7,6 +7,76 @@ use std::path::Path;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
+/// Smoke test for `vex watch --workspace` (Phase 7): it is long-running, so
+/// rather than depend on event-delivery timing we spawn it, poll for both
+/// members' initial index files (the startup build), then kill it. Guards
+/// against startup regressions (resolver not installed, panic, member-loop
+/// bug) without flaky event-timing assertions.
+#[test]
+fn watch_workspace_builds_initial_member_indexes() {
+    use std::process::{Command as ProcCommand, Stdio};
+    use std::time::{Duration, Instant};
+
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(&root.join("beta").join("b.rs"), "pub fn beta_thing() {}\n");
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+
+    let bin = assert_cmd::cargo::cargo_bin("vex");
+    let mut child = ProcCommand::new(bin)
+        .args(["watch", "--workspace"])
+        .current_dir(root)
+        .env("VEX_CACHE_DIR", &cache)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn vex watch --workspace");
+
+    // Both members' indexes live under the platform cache, hashed by their
+    // canonical root. Poll the cache tree for two `index.vex` files.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let count_indexes = || -> usize { walk_count_index_vex(&cache) };
+    let mut built = 0;
+    while Instant::now() < deadline {
+        built = count_indexes();
+        if built >= 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        built >= 2,
+        "watch --workspace should build both members' initial indexes (found {built})"
+    );
+}
+
+/// Recursively count `index.vex` files under `dir` (test helper).
+fn walk_count_index_vex(dir: &Path) -> usize {
+    let mut n = 0;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            n += walk_count_index_vex(&path);
+        } else if path.file_name().and_then(|s| s.to_str()) == Some("index.vex") {
+            n += 1;
+        }
+    }
+    n
+}
+
 fn vex_in(dir: &Path, cache: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(dir);

@@ -340,6 +340,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_call_graph,
             no_bm25,
             no_pattern_index,
+            workspace,
         } => cmd_watch::watch(
             &ctx,
             path,
@@ -350,6 +351,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_call_graph,
             no_bm25,
             no_pattern_index,
+            workspace,
         ),
         Commands::Show {
             symbols,

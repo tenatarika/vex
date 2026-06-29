@@ -297,7 +297,13 @@ the per-repo parallel build. Categorically outside the constraint.
    member (declared order) that defines the name, tagged as a distinct
    name-resolved sub-tier. Full design + review resolutions in
    `docs/MULTIREPO-PHASE6.md`.
-7. **(Opt.) workspace watch mode.**
+7. ✅ **Workspace watch mode** — `vex watch --workspace` builds every
+   member's initial index, then watches all member roots from one debouncer
+   and routes each changed file to its owning member's incremental update
+   (shared `WatchLoop` core with single-repo watch). Member set frozen at
+   startup; concurrency handled by the existing per-root `IndexLock` +
+   atomic-rename (no new machinery). Full design in
+   `docs/MULTIREPO-PHASE7.md`.
 
 Phases 1–4 are the MVP and require **no binary-format change**.
 
@@ -329,9 +335,10 @@ Phases 1–4 are the MVP and require **no binary-format change**.
 - **Path filters across members** — `--filter-path` / `--scope` globs match
   rel-paths; confirm they apply per-member (rel-to-member-root) for MVP, or
   whether a `repo:path` qualifier is needed to scope a glob to one member.
-- **Concurrent read + write (watch phase only)** — N open mmap readers
-  while a workspace update rewrites a member needs the existing
-  atomic-rename + drop-old-`IndexReader` protocol. Not an MVP concern
-  (watch is phase 7); note as a constraint.
+- **Concurrent read + write (watch)** — ✅ RESOLVED by phase 7. A
+  concurrent `vex search --workspace` reading member X while
+  `watch --workspace` rewrites it is safe via the existing per-root
+  `IndexLock` + atomic-rename (`.tmp` → `fs::rename`) + drop-old-mmap
+  protocol — no new machinery. See `docs/MULTIREPO-PHASE7.md` §5.
 - **Scale ceiling** — fanout is linear in N. Fine for tens of repos;
   thousands would want zoekt-style compound packing (explicit non-goal).

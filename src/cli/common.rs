@@ -59,7 +59,8 @@ pub(crate) fn extract_workspace_flag(cmd: &Commands) -> bool {
         | Commands::Callers { workspace, .. }
         | Commands::Callees { workspace, .. }
         | Commands::Reachable { workspace, .. }
-        | Commands::Check { workspace, .. } => *workspace,
+        | Commands::Check { workspace, .. }
+        | Commands::Watch { workspace, .. } => *workspace,
         _ => false,
     }
 }

@@ -4,47 +4,147 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use notify::{EventKind, RecursiveMode};
-use notify_debouncer_full::{new_debouncer, DebouncedEvent};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode};
+use notify_debouncer_full::{new_debouncer, DebouncedEvent, Debouncer, RecommendedCache};
 
 use crate::index::pipeline;
 use crate::parse::language::Language;
 
 const DEBOUNCE_MS: u64 = 500;
 
-/// Watch a project directory for changes and trigger incremental re-indexing.
-/// Blocks until SIGINT (Ctrl+C).
+/// One workspace member to watch (multi-repo Phase 7). `root` is the
+/// canonical `workspace::Member.root` verbatim — the routing invariant
+/// (`event_path.starts_with(root)`) depends on it being the exact path
+/// handed to `debouncer.watch` (docs/MULTIREPO-PHASE7.md §9).
+pub(crate) struct MemberWatch {
+    pub(crate) root: PathBuf,
+    pub(crate) display_name: String,
+    pub(crate) opts: pipeline::IndexOptions,
+    pub(crate) embedder_id: String,
+    pub(crate) excludes: Vec<String>,
+}
+
+/// Shared event-loop core for single-repo and workspace watch. Owns the
+/// debouncer, the delivery channel, and the armed-directory set; `run`
+/// drains/merges batches, evicts + re-arms directories, applies the
+/// relevance filter, then hands each relevant batch to a caller-supplied
+/// `dispatch` (which owns the `pipeline::update` call + its summary print,
+/// so the core stays format-agnostic).
 ///
-/// ## v1.12.0 H10 — UX hardening
-///
-/// Three behaviours that the original implementation got wrong under
-/// real-world editing patterns are pinned here:
-///
-/// 1. **Batch coalescing.** The debouncer collapses rapid-fire events
-///    within a 500 ms window into one delivery, but the mpsc channel
-///    in front of it queues those deliveries while a long re-index is
-///    in flight. Without draining, every queued delivery triggers a
-///    redundant `pipeline::update`. After `rx.recv()` we `try_iter()`
-///    every pending delivery and merge them — N debouncer batches
-///    become one update.
-///
-/// 2. **`.gitignore` re-eval.** The relevance filter previously only
-///    accepted source-file events (by extension). A change to
-///    `.gitignore` itself would be dropped, so an un-ignored file
-///    would stay invisible until the next *source* edit happened to
-///    nudge `pipeline::update` into re-walking. We now treat
-///    `.gitignore` (and any nested `.gitignore`) as a relevant event,
-///    which calls into `pipeline::update`'s `discover_files`
-///    path — the `ignore::WalkBuilder` honours the freshly-edited
-///    rules on every call.
-///
-/// 3. **New-dir re-arm.** notify's `RecursiveMode::Recursive` only
-///    recurses *at watch time* on the inotify backend (Linux); new
-///    sub-directories created during the watch session are invisible.
-///    `Create(Folder)` events now call back into the debouncer's
-///    inner watcher to add the new directory. macOS FSEvents and
-///    Windows ReadDirectoryChangesW both auto-recurse, so the
-///    re-arm is a no-op there but the call is harmless.
+/// ## v1.12.0 H10 behaviours preserved here
+/// 1. **Batch coalescing** — `try_recv`-drain every queued debouncer
+///    delivery and merge, so N rapid saves become one dispatch.
+/// 2. **`.gitignore` re-eval** — `is_event_batch_relevant` treats any
+///    `.gitignore` as relevant (the walker honours fresh rules each call).
+/// 3. **New-dir re-arm** — Linux inotify is non-recursive at watch time;
+///    `Create(Folder)` re-arms the inner watcher, deduped via `armed_dirs`
+///    (the upstream `FileIdMap::add_path` runs an O(subtree) walk).
+struct WatchLoop {
+    debouncer: Debouncer<RecommendedWatcher, RecommendedCache>,
+    rx: mpsc::Receiver<Vec<DebouncedEvent>>,
+    armed_dirs: HashSet<PathBuf>,
+    /// The permanent roots passed to `new` (single-repo: one; workspace: the
+    /// member roots). Never evicted from `armed_dirs`; re-arm of new dirs is
+    /// scoped to descendants of these.
+    watched_roots: Vec<PathBuf>,
+}
+
+impl WatchLoop {
+    /// Create the debouncer and arm every `root` recursively.
+    fn new(roots: &[PathBuf]) -> Result<Self> {
+        let (tx, rx) = mpsc::channel();
+        let mut debouncer = new_debouncer(
+            Duration::from_millis(DEBOUNCE_MS),
+            None,
+            move |result: std::result::Result<Vec<DebouncedEvent>, Vec<notify::Error>>| match result
+            {
+                Ok(events) => {
+                    let _ = tx.send(events);
+                }
+                Err(errors) => {
+                    for e in errors {
+                        eprintln!("Watch error: {e}");
+                    }
+                }
+            },
+        )
+        .context("create file watcher")?;
+
+        let mut armed_dirs = HashSet::new();
+        for r in roots {
+            debouncer
+                .watch(r, RecursiveMode::Recursive)
+                .with_context(|| format!("start watching {}", r.display()))?;
+            armed_dirs.insert(r.clone());
+        }
+        Ok(Self {
+            debouncer,
+            rx,
+            armed_dirs,
+            watched_roots: roots.to_vec(),
+        })
+    }
+
+    /// Block on the watcher until SIGINT, calling `dispatch` once per
+    /// relevant (merged) batch. `dispatch` runs on this thread (it is
+    /// `FnMut`, NOT `Send`/`'static`) and must handle its own update
+    /// errors (log + continue) — single-repo and workspace both want a
+    /// transient update failure to keep the watch alive.
+    fn run(&mut self, mut dispatch: impl FnMut(&[DebouncedEvent])) {
+        while let Ok(events) = self.rx.recv() {
+            // H10 fix 1 — drain + merge every queued batch before reacting.
+            let mut all_events: Vec<DebouncedEvent> = events;
+            while let Ok(more) = self.rx.try_recv() {
+                all_events.extend(more);
+            }
+
+            // Evict removed dirs BEFORE re-arm so delete-then-recreate
+            // re-arms. A permanent watched root (member root) is NEVER
+            // evicted — that would silently stop watching one member while
+            // the rest keep working; warn instead (set is frozen at start).
+            for gone_dir in extract_removed_directories(&all_events) {
+                if self.watched_roots.contains(&gone_dir) {
+                    tracing::warn!(
+                        dir = %gone_dir.display(),
+                        "watched root removed; restart `vex watch` to drop it from the set"
+                    );
+                    continue;
+                }
+                self.armed_dirs.remove(&gone_dir);
+            }
+
+            // H10 fix 3 — re-arm new dirs, scoped to descendants of a
+            // watched root (skip workspace-root / between-member scratch so
+            // we don't pay the upstream O(subtree) walk on un-owned trees).
+            for new_dir in extract_new_directories(&all_events) {
+                if !self.watched_roots.iter().any(|r| new_dir.starts_with(r)) {
+                    continue;
+                }
+                if !self.armed_dirs.insert(new_dir.clone()) {
+                    continue;
+                }
+                if let Err(e) = self.debouncer.watch(&new_dir, RecursiveMode::Recursive) {
+                    eprintln!(
+                        "Watch error: failed to arm new directory {}: {e}",
+                        new_dir.display()
+                    );
+                    self.armed_dirs.remove(&new_dir);
+                }
+            }
+
+            if !is_event_batch_relevant(&all_events) {
+                continue;
+            }
+            dispatch(&all_events);
+        }
+    }
+}
+
+/// Watch a single project directory for changes and trigger incremental
+/// re-indexing. Blocks until SIGINT (Ctrl+C). The batch-coalescing /
+/// `.gitignore` re-eval / new-dir re-arm behaviours (v1.12.0 H10) live in
+/// [`WatchLoop`]; this is a thin wrapper that supplies a whole-root
+/// `pipeline::update` dispatch.
 pub fn watch(
     root: &Path,
     opts: pipeline::IndexOptions,
@@ -60,88 +160,9 @@ pub fn watch(
         root.display()
     );
 
-    let (tx, rx) = mpsc::channel();
-
-    let mut debouncer = new_debouncer(
-        Duration::from_millis(DEBOUNCE_MS),
-        None,
-        move |result: std::result::Result<Vec<DebouncedEvent>, Vec<notify::Error>>| match result {
-            Ok(events) => {
-                let _ = tx.send(events);
-            }
-            Err(errors) => {
-                for e in errors {
-                    eprintln!("Watch error: {e}");
-                }
-            }
-        },
-    )
-    .context("create file watcher")?;
-
-    debouncer
-        .watch(&root, RecursiveMode::Recursive)
-        .context("start watching")?;
-
-    // H10 fix 3 follow-up (rust-reviewer N8) — track every path we've
-    // armed so repeated `Create(Folder)` events for the same path don't
-    // call `debouncer.watch(p, …)` on every batch. The upstream
-    // `notify-debouncer-full::watch` runs an O(subtree) `WalkDir` inside
-    // `FileIdMap::add_path` each time it's invoked (its own `data.roots`
-    // dedupe runs AFTER that walk), so long sessions that keep recreating
-    // the same scratch dir would do real work on every re-arm. Track our
-    // own armed set so we short-circuit before the upstream call.
-    let mut armed_dirs: HashSet<PathBuf> = HashSet::new();
-    armed_dirs.insert(root.clone());
-
-    while let Ok(events) = rx.recv() {
-        // H10 fix 1 — drain every queued debouncer batch and merge them
-        // before reacting. Avoids N redundant updates when the user
-        // saves several files in rapid succession or while a long
-        // initial update is still running.
-        let mut all_events: Vec<DebouncedEvent> = events;
-        while let Ok(more) = rx.try_recv() {
-            all_events.extend(more);
-        }
-
-        // Evict `Remove(Folder)`'d paths from `armed_dirs` BEFORE the
-        // re-arm loop so a `delete-then-recreate` scratch-dir pattern
-        // (rust-reviewer SHOULD-FIX) lets the re-arm fire again on the
-        // re-created path. Without this, `armed_dirs.insert` returns
-        // `false` on the recreate and the new directory silently stays
-        // un-watched for the rest of the session.
-        for gone_dir in extract_removed_directories(&all_events) {
-            armed_dirs.remove(&gone_dir);
-        }
-
-        // H10 fix 3 — re-arm notify on every newly-created directory.
-        // On the inotify backend (Linux) `RecursiveMode::Recursive`
-        // does not auto-watch subdirs that didn't exist when `watch`
-        // was first called. Re-arming the inner watcher is idempotent
-        // on backends that already cover this (FSEvents, RDCW), so
-        // the call is safe to make unconditionally — but we still
-        // dedupe against `armed_dirs` so we don't pay the upstream
-        // `FileIdMap::add_path` walk on a path we've already armed
-        // (rust-reviewer N8).
-        for new_dir in extract_new_directories(&all_events) {
-            if !armed_dirs.insert(new_dir.clone()) {
-                continue;
-            }
-            if let Err(e) = debouncer.watch(&new_dir, RecursiveMode::Recursive) {
-                eprintln!(
-                    "Watch error: failed to arm new directory {}: {e}",
-                    new_dir.display()
-                );
-                // Roll the path back out of `armed_dirs` so a retry
-                // (e.g. the dir was momentarily missing) can still
-                // succeed on a later batch.
-                armed_dirs.remove(&new_dir);
-            }
-        }
-
-        if !is_event_batch_relevant(&all_events) {
-            continue;
-        }
-
+    let mut watch_loop = WatchLoop::new(std::slice::from_ref(&root))?;
+    watch_loop.run(|_batch| {
+        // Whole-root update — single-repo ignores per-path routing.
         let start = std::time::Instant::now();
         match pipeline::update(&root, opts, embedder_id, excludes) {
             Ok((total, changed, deleted)) => {
@@ -156,9 +177,101 @@ pub fn watch(
                 eprintln!("Update error: {e:#}");
             }
         }
-    }
+    });
 
     Ok(())
+}
+
+/// `vex watch --workspace` (multi-repo Phase 7): build each member's initial
+/// index, then watch every member root from one debouncer, routing a changed
+/// file to its OWNING member's incremental update. All-or-nothing on the
+/// initial build (matches `index --workspace`); the member set is frozen at
+/// startup. Concurrency: each `pipeline::update(m.root)` takes its own
+/// per-root `IndexLock` and writes atomically (`.tmp` → rename), so a
+/// concurrent cross-process reader is safe — no new machinery here.
+pub(crate) fn watch_workspace(members: Vec<MemberWatch>) -> Result<()> {
+    if members.is_empty() {
+        anyhow::bail!("workspace declares no members to watch");
+    }
+
+    println!("Building initial indexes for {} members...", members.len());
+    for m in &members {
+        // Routing invariant: the watched root must be canonical so notify's
+        // echoed event paths `starts_with` it (docs/MULTIREPO-PHASE7.md §9).
+        // `unwrap_or(true)` is deliberate: a `canonicalize` failure means the
+        // dir was removed between workspace load and now (a benign race) —
+        // don't panic the debug build over it; the `pipeline::run` below
+        // surfaces the real error. We only want to catch an EXISTING but
+        // non-canonical root.
+        debug_assert!(
+            m.root.canonicalize().map(|c| c == m.root).unwrap_or(true),
+            "MemberWatch.root must be canonical: {}",
+            m.root.display()
+        );
+        let (count, _rebuilt) = pipeline::run(&m.root, m.opts, &m.embedder_id, &m.excludes)
+            .with_context(|| format!("initial index for workspace member {:?}", m.display_name))?;
+        println!("  {} ({count} symbols)", m.display_name);
+    }
+
+    let roots: Vec<PathBuf> = members.iter().map(|m| m.root.clone()).collect();
+    println!(
+        "Watching {} workspace members. Press Ctrl+C to stop.",
+        members.len()
+    );
+
+    let mut watch_loop = WatchLoop::new(&roots)?;
+    watch_loop.run(|batch| {
+        // Route the relevant changed paths to their owning members, then
+        // update each affected member ONCE.
+        for idx in route_changed_paths(&members, batch) {
+            let m = &members[idx];
+            let start = std::time::Instant::now();
+            match pipeline::update(&m.root, m.opts, &m.embedder_id, &m.excludes) {
+                Ok((total, changed, deleted)) => {
+                    if changed > 0 || deleted > 0 {
+                        println!(
+                            "[{:.1?}] {}: {changed} changed, {deleted} deleted, {total} total",
+                            start.elapsed(),
+                            m.display_name
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Update error ({}): {e:#}", m.display_name);
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Map a batch's relevant changed paths to the indices of the members that
+/// own them (deduped, in first-seen order). A path belongs to member `m`
+/// when `path.starts_with(&m.root)`; members are disjoint
+/// (`workspace::reject_overlaps`) so each path maps to at most one member.
+/// Paths under no member (between members, or workspace-root files) and
+/// non-relevant paths (not source / not `.gitignore`) are dropped.
+fn route_changed_paths(members: &[MemberWatch], events: &[DebouncedEvent]) -> Vec<usize> {
+    let mut affected: Vec<usize> = Vec::new();
+    for e in events {
+        for p in &e.event.paths {
+            let relevant = is_source_path(p)
+                || matches!(p.file_name().and_then(|n| n.to_str()), Some(".gitignore"));
+            if !relevant {
+                continue;
+            }
+            // `starts_with` is COMPONENT-wise (so `/ws/foo-ext` does not
+            // match root `/ws/foo`); on canonical paths this is the correct
+            // ownership test.
+            if let Some(idx) = members.iter().position(|m| p.starts_with(&m.root)) {
+                if !affected.contains(&idx) {
+                    affected.push(idx);
+                }
+            }
+        }
+    }
+    affected
 }
 
 /// True when any event in `events` should cause a re-index. Recognises
@@ -233,6 +346,81 @@ mod tests {
     use notify::event::{CreateKind, Event, RemoveKind};
     use notify_debouncer_full::DebouncedEvent;
     use std::time::Instant;
+
+    fn member(root: &str) -> MemberWatch {
+        MemberWatch {
+            root: PathBuf::from(root),
+            display_name: root.rsplit('/').next().unwrap_or(root).to_string(),
+            opts: pipeline::IndexOptions::default(),
+            embedder_id: String::new(),
+            excludes: Vec::new(),
+        }
+    }
+
+    fn modify(path: &str) -> DebouncedEvent {
+        evt(
+            EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+            vec![PathBuf::from(path)],
+        )
+    }
+
+    #[test]
+    fn route_maps_path_to_owning_member() {
+        let members = [member("/ws/alpha"), member("/ws/beta")];
+        // A file two levels deep under alpha routes to member 0.
+        let affected = route_changed_paths(&members, &[modify("/ws/alpha/src/a.rs")]);
+        assert_eq!(affected, vec![0]);
+    }
+
+    #[test]
+    fn route_ignores_paths_under_no_member() {
+        let members = [member("/ws/alpha"), member("/ws/beta")];
+        // A source file at the workspace root (between members) owns nobody.
+        // `/ws/alpha-ext` must NOT match `/ws/alpha` (component-wise prefix).
+        let affected = route_changed_paths(
+            &members,
+            &[modify("/ws/top.rs"), modify("/ws/alpha-ext/x.rs")],
+        );
+        assert!(affected.is_empty(), "got {affected:?}");
+    }
+
+    #[test]
+    fn route_dedupes_and_covers_multiple_members() {
+        let members = [member("/ws/alpha"), member("/ws/beta")];
+        // Two files in alpha + one in beta → [0, 1], alpha not duplicated.
+        let affected = route_changed_paths(
+            &members,
+            &[
+                modify("/ws/alpha/a.rs"),
+                modify("/ws/alpha/b.rs"),
+                modify("/ws/beta/c.rs"),
+            ],
+        );
+        assert_eq!(affected, vec![0, 1]);
+    }
+
+    #[test]
+    fn route_drops_non_source_paths() {
+        let members = [member("/ws/alpha")];
+        // A non-source file under alpha is not relevant → no member affected.
+        let affected = route_changed_paths(&members, &[modify("/ws/alpha/target/bin")]);
+        assert!(affected.is_empty(), "got {affected:?}");
+        // But a `.gitignore` under alpha IS relevant.
+        let gi = route_changed_paths(&members, &[modify("/ws/alpha/.gitignore")]);
+        assert_eq!(gi, vec![0]);
+    }
+
+    #[test]
+    fn route_workspace_root_gitignore_owns_nobody() {
+        // A `.gitignore` at the workspace ROOT (between members) is relevant
+        // batch-wide but belongs to no member, so routing is a no-op (no
+        // member re-indexes). Documents the otherwise-surprising silence.
+        let members = [member("/ws/alpha"), member("/ws/beta")];
+        let affected = route_changed_paths(&members, &[modify("/ws/.gitignore")]);
+        assert!(affected.is_empty(), "got {affected:?}");
+    }
 
     fn evt(kind: EventKind, paths: Vec<PathBuf>) -> DebouncedEvent {
         DebouncedEvent {

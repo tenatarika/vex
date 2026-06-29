@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — `vex watch --workspace` (multi-repo Phase 7)
+
+- `vex watch --workspace` builds the initial index for every
+  `.vex-workspace.toml` member, then keeps each member incrementally fresh
+  from one watcher — a changed file is routed to its owning member's
+  `pipeline::update` (only affected members re-index). Each member uses its
+  own `.vex.toml` (opts/embedder/excludes/cache via the Phase 2 resolver).
+  The single-repo and workspace watchers now share a `WatchLoop` event-loop
+  core (debounce-coalesce, `.gitignore` re-eval, new-dir re-arm). The member
+  set is frozen at startup; concurrency relies on the existing per-root
+  `IndexLock` + atomic-rename — no new machinery. See
+  `docs/MULTIREPO-PHASE7.md`.
+
 ### Added — per-member cache layouts in a workspace (multi-repo Phase 2)
 
 - A `.vex-workspace.toml` member may now keep its own `cache_dir` /

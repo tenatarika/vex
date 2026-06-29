@@ -956,6 +956,12 @@ Each member keeps its own per-repo index; results are grouped by repo. See
   the command re-reads it; a member added between the two reads routes to the
   shared default for that run (re-run to pick it up). `VEX_CACHE_DIR` /
   `--cache-dir` still override every member (env/CLI beat a member's config).
+- **`vex watch --workspace` member set is frozen at startup.** The watcher
+  builds every member's initial index, then routes changed files to the
+  owning member's incremental update. The member list is read once at start —
+  editing `.vex-workspace.toml` mid-watch (adding/removing a member) is not
+  honoured until restart; a deleted member root logs a warning rather than
+  silently going dark. New source subdirs INSIDE a member are picked up.
 - **No orphaned-index reconciliation.** `vex update --workspace` refreshes
   every declared member, but removing a member from `.vex-workspace.toml`
   does not clean its old index dir. `index_dir` is keyed by canonical path

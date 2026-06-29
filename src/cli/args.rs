@@ -637,6 +637,13 @@ pub enum Commands {
         /// build and subsequent incremental updates.
         #[arg(long)]
         no_pattern_index: bool,
+
+        /// Watch every repo declared in a `.vex-workspace.toml` (found at or
+        /// above `--path`/cwd): build each member's initial index, then keep
+        /// each incrementally fresh, routing a changed file to its owning
+        /// member. See docs/MULTIREPO.md.
+        #[arg(long)]
+        workspace: bool,
     },
 
     /// Show the full body of a symbol (function, class, struct, etc.)
