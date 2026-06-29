@@ -471,6 +471,101 @@ fn impact_workspace_json_lists_repo_verdicts() {
 }
 
 #[test]
+fn callers_workspace_groups_by_repo() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\npub fn caller() { alpha_thing(); }\n",
+    );
+    write(&root.join("beta").join("b.rs"), "pub fn beta_thing() {}\n");
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["callers", "alpha_thing", "--workspace"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("── alpha ──"), "alpha section: {stdout}");
+    assert!(stdout.contains("── beta ──"), "beta section: {stdout}");
+    // `caller` is the only caller of alpha_thing, and it's in alpha.
+    assert!(stdout.contains("caller"), "alpha caller: {stdout}");
+}
+
+#[test]
+fn reachable_workspace_groups_by_repo() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\npub fn caller() { alpha_thing(); }\n",
+    );
+    write(&root.join("beta").join("b.rs"), "pub fn beta_thing() {}\n");
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["reachable", "alpha_thing", "--workspace"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("── alpha ──"), "alpha section: {stdout}");
+    assert!(stdout.contains("── beta ──"), "beta section: {stdout}");
+    assert!(
+        stdout.contains("caller"),
+        "alpha reaches via caller: {stdout}"
+    );
+}
+
+#[test]
+fn callees_workspace_json_groups_by_repo() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\npub fn caller() { alpha_thing(); }\n",
+    );
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\nname = \"A\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    let out = vex_in(root, &cache)
+        .args(["callees", "caller", "--workspace", "--format", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"A\""),
+        "json should name member A: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"callees\""),
+        "json keyed by callees: {stdout}"
+    );
+}
+
+#[test]
 fn index_workspace_without_manifest_errors() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();

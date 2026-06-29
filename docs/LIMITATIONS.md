@@ -900,8 +900,9 @@ points at file:line so a follow-up `vex show` / `vex usages` /
 
 ## 7. `--workspace` (multi-repo) caveats
 
-`vex index / search / check / grep / usages / impact --workspace` fan a
-command across every repo declared in the nearest `.vex-workspace.toml`.
+`vex index / search / check / grep / usages / impact / callers / callees /
+reachable --workspace` fan a command across every repo declared in the
+nearest `.vex-workspace.toml`.
 Each member keeps its own per-repo index; results are grouped by repo. See
 `docs/MULTIREPO.md` for the design. Known limits of the shipped MVP:
 

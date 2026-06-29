@@ -351,6 +351,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             no_stale_check,
             scope,
             diff,
+            workspace,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             cmd_callgraph::cmd_callgraph(
@@ -364,6 +365,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
                 true, // include_stdlib: irrelevant for callers (filter is callees-only)
                 &path_scope,
                 &diff,
+                workspace,
             )
         }
         Commands::Callees {
@@ -375,6 +377,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             include_stdlib,
             scope,
             diff,
+            workspace,
         } => {
             let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
             cmd_callgraph::cmd_callgraph(
@@ -388,6 +391,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
                 include_stdlib,
                 &path_scope,
                 &diff,
+                workspace,
             )
         }
         Commands::Diff {
@@ -424,6 +428,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             auto_update,
             no_stale_check,
             scope,
+            workspace,
         } => cmd_callgraph::reachable(
             &ctx,
             target,
@@ -433,6 +438,7 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             auto_update,
             no_stale_check,
             scope,
+            workspace,
         ),
         Commands::TestsFor {
             target,

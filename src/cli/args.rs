@@ -854,6 +854,12 @@ docs/GPU_SUPPORT.md §11 — heavy embedders / shared GPU only)."
 
         #[command(flatten)]
         diff: DiffFilterArgs,
+
+        /// Find callers in every repo of a `.vex-workspace.toml` (found at
+        /// or above `--path`/cwd), grouped by repo. Call edges resolve
+        /// per-repo (a caller in repo B is not seen). See docs/MULTIREPO.md.
+        #[arg(long)]
+        workspace: bool,
     },
 
     /// Find all functions called by a given function. Uses the persistent call
@@ -894,6 +900,12 @@ docs/GPU_SUPPORT.md §11 — heavy embedders / shared GPU only)."
 
         #[command(flatten)]
         diff: DiffFilterArgs,
+
+        /// Find callees in every repo of a `.vex-workspace.toml` (found at
+        /// or above `--path`/cwd), grouped by repo. Call edges resolve
+        /// per-repo. See docs/MULTIREPO.md.
+        #[arg(long)]
+        workspace: bool,
     },
 
     /// Symbol-level diff between an arbitrary git revision and the
@@ -983,6 +995,12 @@ docs/GPU_SUPPORT.md §11 — heavy embedders / shared GPU only)."
 
         #[command(flatten)]
         scope: ScopeArgs,
+
+        /// Compute the reachable set in every repo of a
+        /// `.vex-workspace.toml` (found at or above `--path`/cwd), grouped
+        /// by repo. Call edges resolve per-repo. See docs/MULTIREPO.md.
+        #[arg(long)]
+        workspace: bool,
     },
 
     /// Find test functions that transitively reach `target` in the
