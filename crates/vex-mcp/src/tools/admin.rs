@@ -6,7 +6,7 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::args::push_gpu;
+use crate::args::{push_gpu, push_workspace};
 use crate::params::{opt_bool, opt_f64, opt_str};
 
 pub(crate) fn build_index(
@@ -20,6 +20,7 @@ pub(crate) fn build_index(
         extra.push("--semantic".into());
     }
     push_gpu(&mut extra, args)?;
+    push_workspace(&mut extra, args)?;
     Ok(("index".to_string(), extra))
 }
 
@@ -34,6 +35,7 @@ pub(crate) fn build_update(
         extra.push("--semantic".into());
     }
     push_gpu(&mut extra, args)?;
+    push_workspace(&mut extra, args)?;
     Ok(("update".to_string(), extra))
 }
 

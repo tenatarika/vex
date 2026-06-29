@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — MCP `workspace` param (multi-repo Phase 8)
+
+- The MCP server exposes a `workspace: boolean` parameter on the 10
+  workspace-capable tools (`search`, `grep`, `check`, `usages`, `impact`,
+  `callers`, `callees`, `reachable`, `index`, `update`), giving agents the
+  same multi-repo fan-out the CLI has. The server shells out to `vex
+  --workspace`; workspace results arrive as the grouped-by-repo
+  `{workspace, repos:[...]}` payload under `structuredContent.results`. Set
+  `project_root` at or above the `.vex-workspace.toml`. `find_symbol` is
+  excluded (use `check`/`search`); `why` is ignored in workspace mode (it is
+  single-repo only / a clap conflict). See `docs/MULTIREPO-PHASE8-mcp.md`.
+
 ### Added — `vex watch --workspace` (multi-repo Phase 7)
 
 - `vex watch --workspace` builds the initial index for every

@@ -6,7 +6,9 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::args::{push_auto_update, push_diff_scope, push_no_stale_check, push_scope};
+use crate::args::{
+    push_auto_update, push_diff_scope, push_no_stale_check, push_scope, push_workspace,
+};
 use crate::params::{
     opt_bool, opt_str, opt_u64, opt_u64_some, read_canonical_str, req_str, ParamError,
 };
@@ -23,9 +25,15 @@ pub(crate) fn build_usages(
     if opt_bool(args, "strict", false)? {
         extra.push("--strict".into());
     }
+    // `--workspace` is a clap conflict with `--why` (single-repo only).
+    // Workspace wins: skip `--why` in workspace mode, mirroring the CLI.
+    let workspace = opt_bool(args, "workspace", false)?;
+    if workspace {
+        extra.push("--workspace".into());
+    }
     // 11.10: structured trace via stderr — picked up by
     // `extract_why_trace` and surfaced under `_meta.why`.
-    if opt_bool(args, "why", false)? {
+    if !workspace && opt_bool(args, "why", false)? {
         extra.push("--why".into());
     }
     // v1.20.0 (D2): opt-in escape hatches for the new
@@ -81,6 +89,7 @@ pub(crate) fn build_impact(
     push_auto_update(&mut extra, args)?;
     push_no_stale_check(&mut extra, args)?;
     push_scope(&mut extra, args)?;
+    push_workspace(&mut extra, args)?;
     Ok(("impact".to_string(), extra))
 }
 
@@ -125,6 +134,7 @@ pub(crate) fn build_callers(
     push_no_stale_check(&mut extra, args)?;
     push_scope(&mut extra, args)?;
     push_diff_scope(&mut extra, args)?;
+    push_workspace(&mut extra, args)?;
     Ok(("callers".to_string(), extra))
 }
 
@@ -147,6 +157,7 @@ pub(crate) fn build_callees(
     push_no_stale_check(&mut extra, args)?;
     push_scope(&mut extra, args)?;
     push_diff_scope(&mut extra, args)?;
+    push_workspace(&mut extra, args)?;
     Ok(("callees".to_string(), extra))
 }
 
@@ -195,6 +206,7 @@ pub(crate) fn build_reachable(
     push_auto_update(&mut extra, args)?;
     push_no_stale_check(&mut extra, args)?;
     push_scope(&mut extra, args)?;
+    push_workspace(&mut extra, args)?;
     Ok(("reachable".to_string(), extra))
 }
 

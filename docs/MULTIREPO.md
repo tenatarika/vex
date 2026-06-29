@@ -304,6 +304,15 @@ the per-repo parallel build. Categorically outside the constraint.
    startup; concurrency handled by the existing per-root `IndexLock` +
    atomic-rename (no new machinery). Full design in
    `docs/MULTIREPO-PHASE7.md`.
+8. ✅ **MCP `--workspace` surface** — the MCP server (`crates/vex-mcp`)
+   exposes a `workspace: bool` param on the 10 workspace-capable tools
+   (search, grep, check, usages, impact, callers, callees, reachable, index,
+   update). The server shells out to `vex --workspace`, so it's a thin
+   arg-passthrough + descriptor declaration; results arrive as the
+   grouped-by-repo `{workspace, repos:[...]}` payload in
+   `structuredContent.results`. `find_symbol` is excluded (use check/search);
+   `why` is dropped in workspace mode (clap conflict). Full design in
+   `docs/MULTIREPO-PHASE8-mcp.md`.
 
 Phases 1–4 are the MVP and require **no binary-format change**.
 

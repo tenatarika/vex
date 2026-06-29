@@ -7,7 +7,8 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::args::{
-    push_auto_update, push_kind, push_metadata, push_no_stale_check, push_scope, push_show_truncate,
+    push_auto_update, push_kind, push_metadata, push_no_stale_check, push_scope,
+    push_show_truncate, push_workspace,
 };
 use crate::params::{
     opt_bool, opt_str, opt_str_array, opt_u64, opt_u64_some, read_canonical_array,
@@ -81,6 +82,7 @@ pub(crate) fn build_check(
     let mut extra = symbols;
     push_auto_update(&mut extra, args)?;
     push_no_stale_check(&mut extra, args)?;
+    push_workspace(&mut extra, args)?;
     Ok(("check".to_string(), extra))
 }
 

@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::args::{
     push_auto_update, push_diff_scope, push_kind, push_metadata, push_no_stale_check, push_scope,
+    push_workspace,
 };
 use crate::params::{opt_bool, opt_f64, opt_str, opt_u64, read_canonical_str, req_str, ParamError};
 
@@ -22,7 +23,14 @@ pub(crate) fn build_search(
     if semantic {
         extra.push("--semantic".into());
     }
-    if opt_bool(args, "why", false)? {
+    // `--workspace` is a clap conflict with `--why` (workspace results are
+    // grouped-by-repo; single-repo `--why` doesn't apply). Workspace wins:
+    // skip `--why` in workspace mode, mirroring the CLI's own contract.
+    let workspace = opt_bool(args, "workspace", false)?;
+    if workspace {
+        extra.push("--workspace".into());
+    }
+    if !workspace && opt_bool(args, "why", false)? {
         extra.push("--why".into());
     }
     if let Some(filter) = opt_str(args, "filter")? {
@@ -168,6 +176,7 @@ pub(crate) fn build_grep(
         extra.extend(["--filter".into(), filter.to_string()]);
     }
     push_scope(&mut extra, args)?;
+    push_workspace(&mut extra, args)?;
     Ok(("grep".to_string(), extra))
 }
 

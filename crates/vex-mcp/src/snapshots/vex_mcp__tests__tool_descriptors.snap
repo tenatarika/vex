@@ -1,6 +1,5 @@
 ---
 source: crates/vex-mcp/src/tests.rs
-assertion_line: 443
 expression: descriptors
 ---
 [
@@ -122,6 +121,11 @@ expression: descriptors
         "why": {
           "default": false,
           "description": "Surface a JSON trace under `_meta.why` in the response: normalized query, per-channel hits (FST/BM25/semantic/fuzzy), filter_applied snapshot",
+          "type": "boolean"
+        },
+        "workspace": {
+          "default": false,
+          "description": "Multi-repo: fan out across every repo declared in the nearest `.vex-workspace.toml` (set `project_root` at or above it — the manifest is found by walking up). Results become an object `{workspace, repos:[...]}` grouped by repo, NOT the flat per-tool array — branch on shape. `why` is ignored in workspace mode (single-repo only).",
           "type": "boolean"
         }
       },
@@ -268,6 +272,11 @@ expression: descriptors
           "default": false,
           "description": "Also generate per-symbol embeddings (enables semantic search / similar / duplicates; adds ~30-90s on a medium repo)",
           "type": "boolean"
+        },
+        "workspace": {
+          "default": false,
+          "description": "Multi-repo: fan out across every repo declared in the nearest `.vex-workspace.toml` (set `project_root` at or above it — the manifest is found by walking up). Results become an object `{workspace, repos:[...]}` grouped by repo, NOT the flat per-tool array — branch on shape. `why` is ignored in workspace mode (single-repo only).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -296,6 +305,11 @@ expression: descriptors
         "semantic": {
           "default": false,
           "description": "Also refresh embeddings for changed files",
+          "type": "boolean"
+        },
+        "workspace": {
+          "default": false,
+          "description": "Multi-repo: fan out across every repo declared in the nearest `.vex-workspace.toml` (set `project_root` at or above it — the manifest is found by walking up). Results become an object `{workspace, repos:[...]}` grouped by repo, NOT the flat per-tool array — branch on shape. `why` is ignored in workspace mode (single-repo only).",
           "type": "boolean"
         }
       },
@@ -519,6 +533,11 @@ expression: descriptors
           "default": false,
           "description": "Surface a JSON trace under `_meta.why`: mode (strict/fst_lookup), mode_legacy (back-compat alias for v1.9.x consumers, removed in v1.12), hits before/after path filter, prefix-suggestion count when no exact hits, def_site_dropped / docs_dropped counts (v1.20.0), filter snapshot.",
           "type": "boolean"
+        },
+        "workspace": {
+          "default": false,
+          "description": "Multi-repo: fan out across every repo declared in the nearest `.vex-workspace.toml` (set `project_root` at or above it — the manifest is found by walking up). Results become an object `{workspace, repos:[...]}` grouped by repo, NOT the flat per-tool array — branch on shape. `why` is ignored in workspace mode (single-repo only).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -578,6 +597,11 @@ expression: descriptors
         "symbol": {
           "description": "Exact symbol name to assess — canonical key.",
           "type": "string"
+        },
+        "workspace": {
+          "default": false,
+          "description": "Multi-repo: fan out across every repo declared in the nearest `.vex-workspace.toml` (set `project_root` at or above it — the manifest is found by walking up). Results become an object `{workspace, repos:[...]}` grouped by repo, NOT the flat per-tool array — branch on shape. `why` is ignored in workspace mode (single-repo only).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -758,6 +782,11 @@ expression: descriptors
         "project_root": {
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
+        },
+        "workspace": {
+          "default": false,
+          "description": "Multi-repo: fan out across every repo declared in the nearest `.vex-workspace.toml` (set `project_root` at or above it — the manifest is found by walking up). Results become an object `{workspace, repos:[...]}` grouped by repo, NOT the flat per-tool array — branch on shape. `why` is ignored in workspace mode (single-repo only).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -892,6 +921,11 @@ expression: descriptors
         "symbol": {
           "description": "Exact function name — canonical key (v1.7+).",
           "type": "string"
+        },
+        "workspace": {
+          "default": false,
+          "description": "Multi-repo: fan out across every repo declared in the nearest `.vex-workspace.toml` (set `project_root` at or above it — the manifest is found by walking up). Results become an object `{workspace, repos:[...]}` grouped by repo, NOT the flat per-tool array — branch on shape. `why` is ignored in workspace mode (single-repo only).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -959,6 +993,11 @@ expression: descriptors
         "symbol": {
           "description": "Exact function name — canonical key (v1.7+).",
           "type": "string"
+        },
+        "workspace": {
+          "default": false,
+          "description": "Multi-repo: fan out across every repo declared in the nearest `.vex-workspace.toml` (set `project_root` at or above it — the manifest is found by walking up). Results become an object `{workspace, repos:[...]}` grouped by repo, NOT the flat per-tool array — branch on shape. `why` is ignored in workspace mode (single-repo only).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -1173,6 +1212,11 @@ expression: descriptors
         "target": {
           "description": "Exact symbol name whose callers (direct + transitive) you want.",
           "type": "string"
+        },
+        "workspace": {
+          "default": false,
+          "description": "Multi-repo: fan out across every repo declared in the nearest `.vex-workspace.toml` (set `project_root` at or above it — the manifest is found by walking up). Results become an object `{workspace, repos:[...]}` grouped by repo, NOT the flat per-tool array — branch on shape. `why` is ignored in workspace mode (single-repo only).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -1213,6 +1257,11 @@ expression: descriptors
             "type": "string"
           },
           "type": "array"
+        },
+        "workspace": {
+          "default": false,
+          "description": "Multi-repo: fan out across every repo declared in the nearest `.vex-workspace.toml` (set `project_root` at or above it — the manifest is found by walking up). Results become an object `{workspace, repos:[...]}` grouped by repo, NOT the flat per-tool array — branch on shape. `why` is ignored in workspace mode (single-repo only).",
+          "type": "boolean"
         }
       },
       "required": [

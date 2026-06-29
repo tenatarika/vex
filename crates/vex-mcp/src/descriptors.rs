@@ -10,8 +10,55 @@
 
 use serde_json::Value;
 
+/// Tools that accept `--workspace` (multi-repo fan-out). Mirrors the CLI's
+/// `extract_workspace_flag` set, minus `find_symbol` (a thin exact-name probe
+/// — cross-repo existence is `check`, ranked is `search`) and `watch` (not an
+/// MCP tool). The `workspace` param is injected into these tools' schemas by
+/// [`inject_workspace_param`] so the definition lives in one place.
+pub(crate) const WORKSPACE_TOOLS: &[&str] = &[
+    "search",
+    "grep",
+    "check",
+    "usages",
+    "impact",
+    "callers",
+    "callees",
+    "reachable",
+    "index",
+    "update",
+];
+
+/// Add a `workspace` boolean property to every [`WORKSPACE_TOOLS`] descriptor.
+/// Done in post-processing (not inline in the json!) so the param's
+/// description is defined once and the covered set stays a single list.
+fn inject_workspace_param(tools: &mut Value) {
+    let prop = serde_json::json!({
+        "type": "boolean",
+        "default": false,
+        "description": "Multi-repo: fan out across every repo declared in the nearest `.vex-workspace.toml` (set `project_root` at or above it — the manifest is found by walking up). Results become an object `{workspace, repos:[...]}` grouped by repo, NOT the flat per-tool array — branch on shape. `why` is ignored in workspace mode (single-repo only)."
+    });
+    let Some(arr) = tools.as_array_mut() else {
+        return;
+    };
+    for tool in arr {
+        let is_covered = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|n| WORKSPACE_TOOLS.contains(&n));
+        if !is_covered {
+            continue;
+        }
+        if let Some(props) = tool
+            .pointer_mut("/inputSchema/properties")
+            .and_then(Value::as_object_mut)
+        {
+            props.insert("workspace".to_string(), prop.clone());
+        }
+    }
+}
+
 pub(crate) fn tool_descriptors() -> Value {
-    serde_json::json!([
+    let mut tools = serde_json::json!([
         {
             "name": "search",
             "description": "Hybrid structural + semantic code search across the indexed codebase. Fuses FST exact + BM25 + semantic channels in a single ranked list (~4ms FST hit, ~7-15ms with semantic). Prefer over grep for symbol or identifier lookup — grep does a full-scan (seconds on large repos) and returns line matches; this returns ranked symbol records with kind, signature, and line ranges. Use this when you need to find a definition by name, signature shape, or meaning rather than guessing a regex. Supports `filter` (substring path filter), `kind` (kind-boost / restrict), `context_path` (proximity hint), `no_bm25` (disable BM25 channel), and `no_stale_check` (skip pre-call staleness probe).",
@@ -502,5 +549,7 @@ pub(crate) fn tool_descriptors() -> Value {
                 }
             }
         }
-    ])
+    ]);
+    inject_workspace_param(&mut tools);
+    tools
 }

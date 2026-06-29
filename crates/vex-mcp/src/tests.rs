@@ -2177,3 +2177,99 @@ fn handle_request_maps_param_error_to_minus_32602() {
     assert_eq!(err.code, -32602, "expected -32602 Invalid params");
     assert!(err.message.contains("limit"));
 }
+
+// ── Multi-repo `--workspace` surface (Phase 8) ──────────────────────────
+
+/// `(tool, required-args)` for each workspace-capable tool. Adding
+/// `"workspace": true` to these must push `--workspace`.
+fn workspace_tool_cases() -> Vec<(&'static str, Value)> {
+    vec![
+        ("search", json!({ "query": "Foo" })),
+        ("grep", json!({ "pattern": "Foo" })),
+        ("check", json!({ "symbols": ["Foo"] })),
+        ("usages", json!({ "symbol": "Foo" })),
+        ("impact", json!({ "symbol": "Foo" })),
+        ("callers", json!({ "symbol": "Foo" })),
+        ("callees", json!({ "symbol": "Foo" })),
+        ("reachable", json!({ "target": "Foo" })),
+        ("index", json!({})),
+        ("update", json!({})),
+    ]
+}
+
+#[test]
+fn workspace_true_pushes_flag_for_every_covered_tool() {
+    for (tool, base) in workspace_tool_cases() {
+        let mut args = base.clone();
+        args["workspace"] = json!(true);
+        let extra = args_for(tool, args);
+        assert!(
+            extra.iter().any(|a| a == "--workspace"),
+            "{tool} with workspace=true must push --workspace, got: {extra:?}"
+        );
+    }
+}
+
+#[test]
+fn workspace_omitted_does_not_push_flag() {
+    for (tool, base) in workspace_tool_cases() {
+        let extra = args_for(tool, base.clone());
+        assert!(
+            !extra.iter().any(|a| a == "--workspace"),
+            "{tool} without workspace must not push --workspace, got: {extra:?}"
+        );
+    }
+}
+
+#[test]
+fn search_workspace_drops_why_clap_conflict() {
+    // `--workspace` conflicts_with `--why` on the CLI; workspace wins.
+    let extra = args_for(
+        "search",
+        json!({ "query": "Foo", "workspace": true, "why": true }),
+    );
+    assert!(extra.iter().any(|a| a == "--workspace"), "got: {extra:?}");
+    assert!(
+        !extra.iter().any(|a| a == "--why"),
+        "search must drop --why in workspace mode, got: {extra:?}"
+    );
+    // Without workspace, --why is still honoured.
+    let extra2 = args_for("search", json!({ "query": "Foo", "why": true }));
+    assert!(extra2.iter().any(|a| a == "--why"), "got: {extra2:?}");
+}
+
+#[test]
+fn usages_workspace_drops_why_clap_conflict() {
+    let extra = args_for(
+        "usages",
+        json!({ "symbol": "Foo", "workspace": true, "why": true }),
+    );
+    assert!(extra.iter().any(|a| a == "--workspace"), "got: {extra:?}");
+    assert!(
+        !extra.iter().any(|a| a == "--why"),
+        "usages must drop --why in workspace mode, got: {extra:?}"
+    );
+    let extra2 = args_for("usages", json!({ "symbol": "Foo", "why": true }));
+    assert!(extra2.iter().any(|a| a == "--why"), "got: {extra2:?}");
+}
+
+#[test]
+fn workspace_param_exposed_on_covered_tools_only() {
+    let desc = tool_descriptors();
+    let tools = desc.as_array().expect("array");
+    let has_ws = |name: &str| -> bool {
+        tools
+            .iter()
+            .find(|t| t["name"] == name)
+            .map(|t| t["inputSchema"]["properties"]["workspace"].is_object())
+            .unwrap_or(false)
+    };
+    for (tool, _) in workspace_tool_cases() {
+        assert!(has_ws(tool), "{tool} schema must expose `workspace`");
+    }
+    // find_symbol is intentionally excluded (use check/search for cross-repo).
+    assert!(
+        !has_ws("find_symbol"),
+        "find_symbol must NOT expose `workspace` (excluded by design)"
+    );
+}

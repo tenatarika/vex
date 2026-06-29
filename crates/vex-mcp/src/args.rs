@@ -27,6 +27,19 @@ pub(crate) fn push_auto_update(extra: &mut Vec<String>, args: &Value) -> Result<
     Ok(())
 }
 
+/// Push `--workspace` when the caller opted into multi-repo fan-out
+/// (`workspace: true`). The CLI walks up from `project_root`/cwd to the
+/// nearest `.vex-workspace.toml`. NOTE: tools that also push `--why`
+/// (`search`, `usages`) must gate `--why` off in workspace mode (it is a
+/// clap conflict, single-repo only) — those build fns compute `--why`
+/// themselves rather than relying on this helper.
+pub(crate) fn push_workspace(extra: &mut Vec<String>, args: &Value) -> Result<()> {
+    if opt_bool(args, "workspace", false)? {
+        extra.push("--workspace".into());
+    }
+    Ok(())
+}
+
 /// Translate the optional `gpu: bool` (and advanced `device: string`) MCP args
 /// into the CLI `--gpu` / `--no-gpu` / `--device` flags for `index`/`update`.
 /// Tri-state on purpose: an absent `gpu` forwards nothing (so `.vex.toml gpu` /
