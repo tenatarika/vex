@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -202,12 +203,27 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 # pattern_index = true
 "#;
 
-/// Process-global override for the cache root. Set once at CLI startup
-/// (`set_cache_override`), read by every `index_dir` call. We rely on a
-/// global because every cli sub-command threads `index_path()` through
-/// many call sites — propagating an extra param everywhere would be churn
-/// with no behavioural benefit.
-static CACHE_OVERRIDE: OnceLock<CacheLayout> = OnceLock::new();
+/// Process-global cache resolver. Set ONCE at CLI startup
+/// (`set_cache_override` for single-repo, `install_cache_resolver` for a
+/// workspace), read by every `index_dir` / `embed_cache_dir` /
+/// `blob_cache_dir` call. We rely on a global because every cli sub-command
+/// threads `index_path()` through many call sites — propagating an extra
+/// param everywhere would be churn with no behavioural benefit. Immutable
+/// after install (no mutable-global ordering hazard).
+static CACHE_RESOLVER: OnceLock<CacheResolver> = OnceLock::new();
+
+/// Fallback resolver for library/test calls made before any install — the
+/// platform default, hashed, no members. Byte-identical to the historical
+/// "no override" path. A `LazyLock` (not a stack temporary) so `resolver()`
+/// can hand out a `&'static` reference that `layout_for` borrows from.
+static DEFAULT_RESOLVER: LazyLock<CacheResolver> = LazyLock::new(|| CacheResolver {
+    shared_root: default_cache_root(),
+    members: HashMap::new(),
+    default: CacheLayout {
+        root: default_cache_root(),
+        skip_hash_subdir: false,
+    },
+});
 
 #[derive(Clone, Debug)]
 struct CacheLayout {
@@ -218,15 +234,119 @@ struct CacheLayout {
     skip_hash_subdir: bool,
 }
 
-/// Install a process-wide override for the cache root. No-op if called twice.
-///
-/// `skip_hash_subdir = true` is used by the local-cache mode where the
-/// cache directory is unique to one project and the hash adds no value.
+/// Resolves cache directories, honouring per-member layouts in a workspace
+/// (multi-repo Phase 2). Built once and installed read-only into
+/// [`CACHE_RESOLVER`]. See `docs/MULTIREPO-PHASE2.md`.
+#[derive(Clone, Debug)]
+pub struct CacheResolver {
+    /// Anchor for repo-AGNOSTIC caches (`embed_cache_dir`, `blob_cache_dir`
+    /// — model weights + content-addressed blob cache). Single-repo: the
+    /// project's resolved cache root. Workspace: the workspace root's
+    /// resolved cache root. Keying these per-member would duplicate the
+    /// ~86 MB model + blob cache N× (`docs/MULTIREPO.md` §6.1).
+    shared_root: PathBuf,
+    /// Per-CANONICAL-root cache layout. Workspace: one entry per member.
+    /// Single-repo: empty (everything uses `default`).
+    members: HashMap<PathBuf, CacheLayout>,
+    /// Layout for `index_dir(root)` when `root` ∉ `members`. Single-repo:
+    /// the project's resolved layout (reproduces the historical OnceLock
+    /// exactly). Workspace: the platform default (hashed) — platform-cache
+    /// members fall through here.
+    default: CacheLayout,
+}
+
+impl CacheResolver {
+    /// Single-layout resolver (single-repo, tests, benches). Every
+    /// `index_dir` call uses `layout`; embed/blob anchor to `root` — so a
+    /// `local_cache` project keeps its in-tree blob/embed caches.
+    pub fn single(root: PathBuf, skip_hash_subdir: bool) -> Self {
+        Self {
+            shared_root: root.clone(),
+            members: HashMap::new(),
+            default: CacheLayout {
+                root,
+                skip_hash_subdir,
+            },
+        }
+    }
+
+    /// Workspace resolver: `shared_root` anchors embed/blob; `members` is the
+    /// set of members with their OWN cache override (keyed by canonical
+    /// root). `default` is the workspace-root's resolved cache — members
+    /// without an own override fall through to it (preserving shared-config
+    /// behaviour). The caller is responsible for rejecting a hash-less
+    /// `default` across >1 member (would alias them); see
+    /// `build_workspace_resolver`.
+    pub fn workspace(
+        shared_root: PathBuf,
+        members: impl IntoIterator<Item = (PathBuf, ResolvedCache)>,
+        default: ResolvedCache,
+    ) -> Self {
+        let members: HashMap<PathBuf, CacheLayout> = members
+            .into_iter()
+            .map(|(root, rc)| {
+                // Defense vs the Phase 14.8 cache-symmetry incident class:
+                // members are looked up by canonical root, so a non-canonical
+                // key would silently fall back to `default`. Member roots are
+                // canonical by construction (workspace/mod.rs); pin it.
+                debug_assert!(
+                    root.canonicalize().map(|c| c == root).unwrap_or(true),
+                    "CacheResolver member key must be canonical: {}",
+                    root.display()
+                );
+                (
+                    root,
+                    CacheLayout {
+                        root: rc.root,
+                        skip_hash_subdir: rc.skip_hash_subdir,
+                    },
+                )
+            })
+            .collect();
+        Self {
+            shared_root,
+            members,
+            default: CacheLayout {
+                root: default.root,
+                skip_hash_subdir: default.skip_hash_subdir,
+            },
+        }
+    }
+
+    /// The cache layout for `project_root` — the member's own layout when
+    /// `project_root` is a known canonical member root, else `default`.
+    fn layout_for(&self, project_root: &Path) -> &CacheLayout {
+        self.members.get(project_root).unwrap_or(&self.default)
+    }
+}
+
+/// The installed resolver, or the process default if none was installed.
+fn resolver() -> &'static CacheResolver {
+    CACHE_RESOLVER.get().unwrap_or(&DEFAULT_RESOLVER)
+}
+
+/// Whether `project_root`'s resolved cache layout is hash-less (its index
+/// lives directly in the cache root, not a hash subdir) — i.e. a
+/// `local_cache` member. Workspace fanouts pass this per member to
+/// `ensure_index_ready`/`run_for_root` so a `local_cache` member's in-tree
+/// `.vex_cache/` gets its `*` `.gitignore` written (multi-repo Phase 2).
+pub fn skip_hash_for(project_root: &Path) -> bool {
+    resolver().layout_for(project_root).skip_hash_subdir
+}
+
+/// Install a process-wide single-layout cache override. No-op if called
+/// twice (the resolver is set-once). Back-compat entry for single-repo
+/// dispatch + tests/benches; `skip_hash_subdir = true` is the local-cache
+/// mode where the cache dir is unique to one project and the hash adds no
+/// value. Workspace dispatch uses [`install_cache_resolver`] instead.
 pub fn set_cache_override(path: PathBuf, skip_hash_subdir: bool) {
-    let _ = CACHE_OVERRIDE.set(CacheLayout {
-        root: path,
-        skip_hash_subdir,
-    });
+    let _ = CACHE_RESOLVER.set(CacheResolver::single(path, skip_hash_subdir));
+}
+
+/// Install a fully-built [`CacheResolver`] (workspace dispatch). No-op if
+/// called twice.
+pub fn install_cache_resolver(resolver: CacheResolver) {
+    let _ = CACHE_RESOLVER.set(resolver);
 }
 
 /// Return the worker count that was *explicitly* requested by the user
@@ -414,15 +534,9 @@ fn expand_user(p: &Path) -> PathBuf {
 /// default. A project-root hash is appended as a subdirectory unless the
 /// installed override declared the layout as project-local.
 pub fn index_dir(project_root: &std::path::Path) -> PathBuf {
-    let layout = match CACHE_OVERRIDE.get() {
-        Some(l) => l.clone(),
-        None => CacheLayout {
-            root: default_cache_root(),
-            skip_hash_subdir: false,
-        },
-    };
+    let layout = resolver().layout_for(project_root);
     if layout.skip_hash_subdir {
-        return layout.root;
+        return layout.root.clone();
     }
     let hash = xxh3_64(project_root.to_string_lossy().as_bytes());
     layout.root.join(format!("{hash:016x}"))
@@ -568,11 +682,7 @@ pub fn embed_cache_path(project_root: &std::path::Path, embedder_id: &str) -> Pa
 /// cache root; deliberately portable setups still pay the per-project
 /// cost.
 pub fn embed_cache_dir() -> PathBuf {
-    let root = match CACHE_OVERRIDE.get() {
-        Some(layout) => layout.root.clone(),
-        None => default_cache_root(),
-    };
-    root.join("embeddings")
+    resolver().shared_root.join("embeddings")
 }
 
 /// Cache directory for the Phase 14.7 blob-SHA addressed parse cache.
@@ -588,11 +698,7 @@ pub fn embed_cache_dir() -> PathBuf {
 /// function owns the `blobs/` segment so `BlobCache` does not add a second
 /// one.
 pub fn blob_cache_dir() -> PathBuf {
-    let root = match CACHE_OVERRIDE.get() {
-        Some(layout) => layout.root.clone(),
-        None => default_cache_root(),
-    };
-    root.join("blobs")
+    resolver().shared_root.join("blobs")
 }
 
 /// Platform-default cache root with the `vex/` segment appended.
@@ -998,5 +1104,57 @@ mod tests {
         assert_eq!(cfg.source_dir.as_deref(), Some(tmp.as_path()));
         assert_eq!(cfg.cache_dir.as_deref(), Some("./.vex/cache"));
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // ── CacheResolver (multi-repo Phase 2) ──────────────────────────────
+    // These exercise the resolver as PURE values — they never install the
+    // process-global `CACHE_RESOLVER` (a `OnceLock` cannot reset between
+    // tests in one binary; installing here would contaminate every later
+    // `index_dir`/`embed_cache_dir` call). The on-disk behaviour is covered
+    // by the `tests/workspace_index_test.rs` integration tests (each runs
+    // `vex` as a fresh subprocess).
+
+    #[test]
+    fn single_resolver_uses_one_layout_for_every_root() {
+        // The single-repo / shim resolver applies its one layout to any root
+        // and anchors embed/blob at that same root (M4 back-compat: a
+        // local_cache project keeps its in-tree blob/embed caches).
+        let r = CacheResolver::single(PathBuf::from("/proj/.vex_cache"), true);
+        let a = r.layout_for(Path::new("/proj"));
+        let b = r.layout_for(Path::new("/somewhere/else"));
+        assert!(a.skip_hash_subdir && b.skip_hash_subdir);
+        assert_eq!(a.root, PathBuf::from("/proj/.vex_cache"));
+        assert_eq!(a.root, b.root, "single layout ignores the looked-up root");
+        assert_eq!(r.shared_root, PathBuf::from("/proj/.vex_cache"));
+    }
+
+    #[test]
+    fn workspace_resolver_keys_members_else_default() {
+        // A member with its own local_cache layout resolves to that in-tree,
+        // hash-less dir; an unknown root falls through to `default` (platform,
+        // hashed); embed/blob anchor to `shared_root` regardless.
+        let member = PathBuf::from("/ws/beta");
+        let members = vec![(
+            member.clone(),
+            ResolvedCache {
+                root: PathBuf::from("/ws/beta/.vex_cache"),
+                skip_hash_subdir: true,
+            },
+        )];
+        let default = ResolvedCache {
+            root: PathBuf::from("/platform/vex"),
+            skip_hash_subdir: false,
+        };
+        let r = CacheResolver::workspace(PathBuf::from("/platform/vex"), members, default);
+
+        let m = r.layout_for(&member);
+        assert!(m.skip_hash_subdir);
+        assert_eq!(m.root, PathBuf::from("/ws/beta/.vex_cache"));
+
+        let other = r.layout_for(Path::new("/ws/alpha"));
+        assert!(!other.skip_hash_subdir, "unknown root → platform default");
+        assert_eq!(other.root, PathBuf::from("/platform/vex"));
+
+        assert_eq!(r.shared_root, PathBuf::from("/platform/vex"));
     }
 }

@@ -1,0 +1,29 @@
+   Compiling vex-fuzz v0.0.0 (/Users/furcas/WORK/pets/vex/fuzz)
+    Finished `release` profile [optimized + debuginfo] target(s) in 2.05s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.21s
+     Running `fuzz/target/aarch64-apple-darwin/release/fuzz_refs_fst -artifact_prefix=/Users/furcas/WORK/pets/vex/fuzz/artifacts/fuzz_refs_fst/ -max_total_time=60 -print_final_stats=1 /Users/furcas/WORK/pets/vex/fuzz/corpus/fuzz_refs_fst`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 1663002837
+INFO: Loaded 1 modules   (1372827 inline 8-bit counters): 1372827 [0x10d188100, 0x10d2d739b), 
+INFO: Loaded 1 PC tables (1372827 PCs): 1372827 [0x10d2d73a0,0x10e7c9d50), 
+INFO:      192 files found in /Users/furcas/WORK/pets/vex/fuzz/corpus/fuzz_refs_fst
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: seed corpus: files: 192 min: 1b max: 1436b total: 46788b rss: 90Mb
+#193	INITED cov: 163 ft: 517 corp: 97/13762b exec/s: 0 rss: 94Mb
+#24468	REDUCE cov: 163 ft: 517 corp: 97/13757b lim: 1674 exec/s: 24468 rss: 193Mb L: 263/1434 MS: 5 ChangeBinInt-ChangeByte-EraseBytes-InsertByte-CMP- DE: "\004\000\000\000\000\000\000\000"-
+#32768	pulse  cov: 163 ft: 517 corp: 97/13757b lim: 1754 exec/s: 16384 rss: 225Mb
+#65536	pulse  cov: 163 ft: 517 corp: 97/13757b lim: 2076 exec/s: 16384 rss: 354Mb
+#131072	pulse  cov: 163 ft: 517 corp: 97/13757b lim: 2725 exec/s: 14563 rss: 452Mb
+#262144	pulse  cov: 163 ft: 517 corp: 97/13757b lim: 4034 exec/s: 14563 rss: 458Mb
+#524288	pulse  cov: 163 ft: 517 corp: 97/13757b lim: 4096 exec/s: 14563 rss: 461Mb
+#856992	REDUCE cov: 163 ft: 517 corp: 97/13756b lim: 4096 exec/s: 14525 rss: 463Mb L: 50/1434 MS: 4 CopyPart-ChangeBinInt-InsertByte-EraseBytes-
+#885222	DONE   cov: 163 ft: 517 corp: 97/13756b lim: 4096 exec/s: 14511 rss: 463Mb
+###### Recommended dictionary. ######
+"\004\000\000\000\000\000\000\000" # Uses: 77188
+###### End of recommended dictionary. ######
+Done 885222 runs in 61 second(s)
+stat::number_of_executed_units: 885222
+stat::average_exec_per_sec:     14511
+stat::new_units_added:          2
+stat::slowest_unit_time_sec:    0
+stat::peak_rss_mb:              463

@@ -116,25 +116,28 @@ fn rejects_duplicate_members() {
 }
 
 #[test]
-fn rejects_member_with_local_cache_override() {
+fn accepts_member_with_local_cache_override() {
+    // Phase 2: a member's OWN local_cache is honoured (resolved per-member by
+    // the CacheResolver), no longer rejected at load.
     let tmp = TempDir::new().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     mk_repo(&root, "service-a", Some("local_cache = true\n"));
     let file = write_manifest(&root, "[[repo]]\npath = \"service-a\"\n");
 
-    let err = Workspace::load(&file).unwrap_err().to_string();
-    assert!(err.contains("cache_dir/local_cache"), "got: {err}");
+    let ws = Workspace::load(&file).expect("per-member local_cache must load");
+    assert_eq!(ws.members.len(), 1);
 }
 
 #[test]
-fn rejects_member_with_cache_dir_override() {
+fn accepts_member_with_cache_dir_override() {
+    // Phase 2: a member's OWN cache_dir is honoured, no longer rejected.
     let tmp = TempDir::new().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     mk_repo(&root, "service-a", Some("cache_dir = \"./.vex/cache\"\n"));
     let file = write_manifest(&root, "[[repo]]\npath = \"service-a\"\n");
 
-    let err = Workspace::load(&file).unwrap_err().to_string();
-    assert!(err.contains("cache_dir/local_cache"), "got: {err}");
+    let ws = Workspace::load(&file).expect("per-member cache_dir must load");
+    assert_eq!(ws.members.len(), 1);
 }
 
 #[test]

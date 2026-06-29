@@ -1,0 +1,27 @@
+   Compiling vex-fuzz v0.0.0 (/Users/furcas/WORK/pets/vex/fuzz)
+    Finished `release` profile [optimized + debuginfo] target(s) in 1.37s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.22s
+     Running `fuzz/target/aarch64-apple-darwin/release/fuzz_rename_chains_load -artifact_prefix=/Users/furcas/WORK/pets/vex/fuzz/artifacts/fuzz_rename_chains_load/ -max_total_time=60 -print_final_stats=1 /Users/furcas/WORK/pets/vex/fuzz/corpus/fuzz_rename_chains_load`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 1728417299
+INFO: Loaded 1 modules   (1371184 inline 8-bit counters): 1371184 [0x10cbdb250, 0x10cd29e80), 
+INFO: Loaded 1 PC tables (1371184 PCs): 1371184 [0x10cd29e80,0x10e216180), 
+INFO:       32 files found in /Users/furcas/WORK/pets/vex/fuzz/corpus/fuzz_rename_chains_load
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: seed corpus: files: 32 min: 1b max: 208b total: 2848b rss: 90Mb
+#33	INITED cov: 123 ft: 135 corp: 17/1217b exec/s: 0 rss: 90Mb
+#32768	pulse  cov: 123 ft: 135 corp: 17/1217b lim: 531 exec/s: 10922 rss: 125Mb
+#65536	pulse  cov: 123 ft: 135 corp: 17/1217b lim: 855 exec/s: 9362 rss: 159Mb
+#131072	pulse  cov: 123 ft: 135 corp: 17/1217b lim: 1506 exec/s: 9362 rss: 228Mb
+#190645	REDUCE cov: 123 ft: 135 corp: 17/1203b lim: 2100 exec/s: 9078 rss: 290Mb L: 66/208 MS: 2 EraseBytes-ChangeBit-
+#195019	REDUCE cov: 123 ft: 135 corp: 17/1202b lim: 2133 exec/s: 8864 rss: 295Mb L: 65/208 MS: 3 ShuffleBytes-ShuffleBytes-EraseBytes-
+#198905	REDUCE cov: 123 ft: 135 corp: 17/1201b lim: 2166 exec/s: 9041 rss: 299Mb L: 64/208 MS: 1 EraseBytes-
+#262144	pulse  cov: 123 ft: 135 corp: 17/1201b lim: 2793 exec/s: 9039 rss: 366Mb
+#524288	pulse  cov: 123 ft: 135 corp: 17/1201b lim: 4096 exec/s: 8886 rss: 579Mb
+#539492	DONE   cov: 123 ft: 135 corp: 17/1201b lim: 4096 exec/s: 8844 rss: 579Mb
+Done 539492 runs in 61 second(s)
+stat::number_of_executed_units: 539492
+stat::average_exec_per_sec:     8844
+stat::new_units_added:          3
+stat::slowest_unit_time_sec:    0
+stat::peak_rss_mb:              579

@@ -285,9 +285,47 @@ fn grep_workspace_json_groups_by_repo() {
 }
 
 #[test]
-fn search_workspace_rejects_local_cache_layout() {
-    // A hash-less cache (local_cache) would alias every member to one dir.
-    // The guard must reject it before any query runs (review HIGH-1).
+fn workspace_rejects_root_local_cache_across_multiple_members() {
+    // A hash-less cache at the WORKSPACE ROOT (local_cache) would alias every
+    // member to one flat dir. With >1 member the resolver must reject it at
+    // dispatch (Phase 2 narrowed guard). Per-member local_cache is fine — see
+    // `workspace_honours_per_member_local_cache`.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(&root.join("beta").join("b.rs"), "pub fn beta_thing() {}\n");
+    write(&root.join(".vex.toml"), "local_cache = true\n");
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+
+    let mut cmd = Command::cargo_bin("vex").unwrap();
+    cmd.current_dir(root);
+    cmd.env_remove("VEX_CACHE_DIR"); // let local_cache take effect
+    let out = cmd
+        .args(["search", "alpha_thing", "--workspace"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "root local_cache across >1 member must be rejected"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("collide"),
+        "error should mention collision: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn workspace_root_local_cache_single_member_succeeds() {
+    // The narrowed guard rejects root local_cache only across >1 member.
+    // A SINGLE-member workspace with root local_cache can't alias anything,
+    // so it must succeed and index into the shared in-tree cache.
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     write(
@@ -302,19 +340,82 @@ fn search_workspace_rejects_local_cache_layout() {
 
     let mut cmd = Command::cargo_bin("vex").unwrap();
     cmd.current_dir(root);
-    cmd.env_remove("VEX_CACHE_DIR"); // let local_cache take effect
-    let out = cmd
-        .args(["search", "alpha_thing", "--workspace"])
-        .output()
-        .unwrap();
+    cmd.env_remove("VEX_CACHE_DIR"); // let root local_cache take effect
     assert!(
-        !out.status.success(),
-        "should reject local_cache in workspace"
+        cmd.args(["index", "--workspace"])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "single-member workspace with root local_cache must succeed (no aliasing)"
     );
+    // Index landed in the shared in-tree `.vex_cache/` at the workspace root.
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("local_cache"),
-        "error should mention local_cache: {}",
-        String::from_utf8_lossy(&out.stderr)
+        root.join(".vex_cache").join("index.vex").is_file(),
+        "single-member root local_cache index should live at root/.vex_cache"
+    );
+}
+
+#[test]
+fn workspace_honours_per_member_local_cache() {
+    // Phase 2: members with their OWN `local_cache = true` each index into
+    // their in-tree `<member>/.vex_cache/` (with a `*` .gitignore), in
+    // DISJOINT dirs — no aliasing. Hermetic: no VEX_CACHE_DIR (env would beat
+    // local_cache), so nothing touches the real platform cache.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(
+        &root.join("alpha").join(".vex.toml"),
+        "local_cache = true\n",
+    );
+    write(&root.join("beta").join("b.rs"), "pub fn beta_thing() {}\n");
+    write(&root.join("beta").join(".vex.toml"), "local_cache = true\n");
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\n\n[[repo]]\npath = \"beta\"\n",
+    );
+
+    // No VEX_CACHE_DIR — let each member's local_cache take effect.
+    let vex_no_env = |args: &[&str]| {
+        let mut cmd = Command::cargo_bin("vex").unwrap();
+        cmd.current_dir(root);
+        cmd.env_remove("VEX_CACHE_DIR");
+        cmd.args(args).output().unwrap()
+    };
+
+    assert!(
+        vex_no_env(&["index", "--workspace"]).status.success(),
+        "index --workspace with per-member local_cache should succeed"
+    );
+
+    // Each member's index landed in its OWN in-tree dir, with a gitignore —
+    // disjoint, no committable-cache leak.
+    for m in ["alpha", "beta"] {
+        assert!(
+            root.join(m).join(".vex_cache").join("index.vex").is_file(),
+            "{m} local_cache index should live in-tree"
+        );
+        assert!(
+            root.join(m).join(".vex_cache").join(".gitignore").is_file(),
+            "{m} in-tree cache must get a `*` .gitignore"
+        );
+    }
+
+    // Each member resolves its OWN symbol but NOT the sibling's (disjoint
+    // indexes, not aliased into one).
+    let check = |sym: &str, member: &str| -> bool {
+        let out = vex_no_env(&["check", sym, "--path", member]);
+        String::from_utf8_lossy(&out.stdout).contains(&format!("+ {sym}"))
+    };
+    assert!(check("alpha_thing", "alpha"), "alpha_thing in alpha");
+    assert!(check("beta_thing", "beta"), "beta_thing in beta");
+    assert!(
+        !check("beta_thing", "alpha"),
+        "beta_thing must NOT resolve in alpha (disjoint local caches)"
     );
 }
 

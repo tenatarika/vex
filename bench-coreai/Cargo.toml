@@ -1,0 +1,18 @@
+# Empty [workspace] makes this an independent workspace root. Without it,
+# cargo walks up to ../Cargo.toml and refuses to build because bench-coreai/
+# isn't listed in its members. We deliberately stay OUT of the main vex
+# workspace — this is a throwaway research artifact and shouldn't pollute the
+# main workspace's lockfile or build graph.
+[workspace]
+
+[package]
+name = "bench-coreai"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+vex = { path = "..", features = ["gpu-coreml"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

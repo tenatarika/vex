@@ -35,12 +35,74 @@ pub(crate) mod stale_signal;
 pub(crate) mod status_coverage;
 pub mod trace;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use args::{Cli, Commands};
 
-use common::{extract_jobs_hint, extract_path_hint, resolve_format, resolve_root, CmdCtx};
+use common::{
+    extract_jobs_hint, extract_path_hint, extract_workspace_flag, resolve_format, resolve_root,
+    CmdCtx,
+};
 
 use crate::util::config;
+
+/// Build the per-member [`config::CacheResolver`] for a `--workspace`
+/// invocation (multi-repo Phase 2). Returns `Ok(None)` when no
+/// `.vex-workspace.toml` is found (the command then emits the real error);
+/// the caller falls back to the single-layout override.
+///
+/// - `shared_root` (embed/blob anchor) + `default` (members without an own
+///   override) come from the workspace ROOT's resolved cache.
+/// - `members` holds only members whose OWN `.vex.toml` sets
+///   `cache_dir`/`local_cache`. Members without an own override fall through
+///   to `default`, preserving shared-config behaviour.
+/// - A hash-less `default` (workspace root sets `local_cache`) across >1
+///   member would alias them into one dir → rejected here (narrowed form of
+///   the pre-Phase-2 blanket bail).
+fn build_workspace_resolver(
+    start: &std::path::Path,
+    cli_cache: Option<&std::path::Path>,
+) -> Result<Option<config::CacheResolver>> {
+    let Ok(ws) = crate::workspace::Workspace::find_and_load(start) else {
+        return Ok(None);
+    };
+    let ws_cfg = config::load_config(ws.base())?;
+    let default_rc = config::resolve_cache_root(cli_cache, &ws_cfg);
+    if default_rc.skip_hash_subdir && ws.members.len() > 1 {
+        bail!(
+            "the workspace root resolves to a hash-less cache (local_cache / a \
+             skip-hash cache_dir) — its {} members would all collide into one \
+             index dir. Remove local_cache at the workspace root (per-member \
+             local_cache is supported).",
+            ws.members.len()
+        );
+    }
+    let shared_root = default_rc.root.clone();
+
+    let mut members: Vec<(std::path::PathBuf, config::ResolvedCache)> = Vec::new();
+    for m in &ws.members {
+        let member_cfg = config::load_config(&m.root)?;
+        // Only the member's OWN .vex.toml counts (source_dir == m.root). An
+        // ancestor's local_cache/cache_dir is shared config — it flows
+        // through `default`, not a per-member skip-hash layout that would
+        // alias siblings. The comparison is canonical-vs-canonical:
+        // `load_config(&m.root)` is given the already-canonical member root
+        // (workspace/mod.rs), and walk-up preserves canonicality, so
+        // `source_dir` is canonical here — no /tmp→/private/tmp symlink miss.
+        let owns_override = member_cfg.source_dir.as_deref() == Some(m.root.as_path())
+            && (member_cfg.cache_dir.is_some() || member_cfg.local_cache == Some(true));
+        if owns_override {
+            members.push((
+                m.root.clone(),
+                config::resolve_cache_root(cli_cache, &member_cfg),
+            ));
+        }
+    }
+    Ok(Some(config::CacheResolver::workspace(
+        shared_root,
+        members,
+        default_rc,
+    )))
+}
 
 pub fn dispatch(cli: Cli) -> Result<std::process::ExitCode> {
     exit_code::finish(dispatch_inner(cli))
@@ -53,12 +115,26 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
     let cfg = config::load_config(&config_root)?;
     let format = resolve_format(cli.format, &cfg);
 
-    // Install the cache-root override (CLI > env > config > platform default).
+    // Install the cache resolver (CLI > env > config > platform default).
     // Done once here so every config::index_path/index_dir call downstream
-    // sees the resolved value without us threading it through 20+ call sites.
+    // sees the resolved value without threading it through 60+ call sites.
+    // Workspace mode (multi-repo Phase 2) installs a per-member resolver so a
+    // member can keep its own cache_dir/local_cache; single-repo installs the
+    // historical single-layout override.
     let resolved_cache = config::resolve_cache_root(cli.cache_dir.as_deref(), &cfg);
     let local_cache_active = resolved_cache.skip_hash_subdir;
-    config::set_cache_override(resolved_cache.root, resolved_cache.skip_hash_subdir);
+    let workspace_resolver = if extract_workspace_flag(&cli.command) {
+        build_workspace_resolver(&config_root, cli.cache_dir.as_deref())?
+    } else {
+        None
+    };
+    match workspace_resolver {
+        // Workspace: per-member layouts + workspace-root anchor for embed/blob.
+        Some(resolver) => config::install_cache_resolver(resolver),
+        // Single-repo (or `--workspace` with no manifest — the command then
+        // emits the real "no .vex-workspace.toml" error).
+        None => config::set_cache_override(resolved_cache.root, resolved_cache.skip_hash_subdir),
+    }
 
     // Configure the global rayon pool before any par_iter runs.
     //   * Indexing commands (Index/Update/Watch) always init — that is

@@ -16,7 +16,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::Serialize;
 
 use super::args::{OutputFormat, ScopeArgs};
@@ -297,14 +297,9 @@ fn impact_workspace(
     depth: u32,
     path_scope: &scope::PathScope,
 ) -> Result<()> {
-    // A hash-less cache layout aliases every member to one index dir.
-    if ctx.local_cache_active {
-        bail!(
-            "workspace mode does not support local_cache / a hash-less cache dir — \
-             members would collide into one index dir; use the platform cache"
-        );
-    }
-
+    // Multi-repo Phase 2: per-member cache layouts come from the installed
+    // resolver (the unsafe workspace-root hash-less case is rejected in
+    // `cli::build_workspace_resolver`).
     let start_dir = resolve_root(path)?;
     let ws = workspace::Workspace::find_and_load(&start_dir)?;
     let base = ws.base().to_path_buf();
@@ -319,7 +314,7 @@ fn impact_workspace(
             &m.root,
             &member_cfg,
             &member_cfg.exclude,
-            false,
+            crate::util::config::skip_hash_for(&m.root),
             name,
             auto_update,
             no_stale_check,

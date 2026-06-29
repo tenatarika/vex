@@ -1,0 +1,14 @@
+=== v1.19.0 release-gate fuzz attestation — 2026-06-18T18:28:31Z ===
+Target candidate: 5 commits in v1.18.0..HEAD
+Sanitizer: NONE (clang version mismatch: cargo-fuzz expects clang/17 ASAN runtime, system has clang/21 only — runtime-only blocker, coverage-guided fuzz remains valid)
+Settings: -max_total_time=60 -print_final_stats=1 per target
+
+Target          | execs    | exec/s | new_units | peak_rss_mb | result
+----------------+----------+--------+-----------+-------------+--------
+fuzz_state_load |   807365 |  13235 |       466 |        1911 | clean
+fuzz_manifest   |   829033 |  13590 |       234 |          56 | clean
+fuzz_bloom_load |   827429 |  13564 |         0 |          49 | clean
+fuzz_marker     |   256979 |   4212 |         6 |          50 | clean
+fuzz_pattern    |  1700514 |  27877 |      1023 |          58 | clean
+----------------+----------+--------+-----------+-------------+--------
+TOTAL: 4,421,320 executions across 5 targets in ~5 min, ZERO crashes / panics.

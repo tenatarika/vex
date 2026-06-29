@@ -44,6 +44,26 @@ pub(crate) fn extract_jobs_hint(cmd: &Commands) -> Option<usize> {
     }
 }
 
+/// Whether the command was invoked with `--workspace`. Mirrors
+/// [`extract_path_hint`] so `dispatch_inner` can install the per-member
+/// cache resolver up-front (multi-repo Phase 2) — the resolver must be set
+/// once, before dispatch, and only the fanout commands carry the flag.
+pub(crate) fn extract_workspace_flag(cmd: &Commands) -> bool {
+    match cmd {
+        Commands::Index { workspace, .. }
+        | Commands::Search { workspace, .. }
+        | Commands::Impact { workspace, .. }
+        | Commands::Usages { workspace, .. }
+        | Commands::Update { workspace, .. }
+        | Commands::Grep { workspace, .. }
+        | Commands::Callers { workspace, .. }
+        | Commands::Callees { workspace, .. }
+        | Commands::Reachable { workspace, .. }
+        | Commands::Check { workspace, .. } => *workspace,
+        _ => false,
+    }
+}
+
 /// Extract the --path hint from a subcommand for config loading.
 pub(crate) fn extract_path_hint(cmd: &Commands) -> Option<std::path::PathBuf> {
     match cmd {

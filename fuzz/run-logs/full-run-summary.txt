@@ -1,0 +1,13 @@
+PASS  fuzz_bloom_load  (Done 567217 runs)
+PASS  fuzz_hash_index_load  (Done 521277 runs)
+PASS  fuzz_incremental_hnsw  (Done 31890 runs)
+PASS  fuzz_index_reader  (Done 372662 runs)
+PASS  fuzz_manifest_load  (Done 511874 runs)
+PASS  fuzz_marker_load  (Done 194994 runs)
+PASS  fuzz_pattern_parser  (Done 500935 runs)
+PASS  fuzz_refs_fst  (Done 885222 runs)
+PASS  fuzz_rename_chains_load  (Done 539492 runs)
+PASS  fuzz_state_load  (Done 506555 runs)
+PASS  fuzz_symbol_fst  (Done 864651 runs)
+PASS  fuzz_tokenize_document  (Done 859158 runs)
+=== ALL DONE ===

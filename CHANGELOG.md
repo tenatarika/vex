@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — per-member cache layouts in a workspace (multi-repo Phase 2)
+
+- A `.vex-workspace.toml` member may now keep its own `cache_dir` /
+  `local_cache` in `.vex.toml` (previously rejected at load). The
+  process-global cache override (`CACHE_OVERRIDE: OnceLock<CacheLayout>`) was
+  replaced by a set-once `CacheResolver` that holds per-member cache layouts
+  keyed by canonical root plus a workspace-root anchor for the shared
+  embed/blob caches. A member with `local_cache = true` indexes into its
+  in-tree `<member>/.vex_cache/` (with a `*` `.gitignore`); disjoint members
+  never alias. Single-repo behaviour is unchanged.
+- The blanket "workspace mode does not support local_cache" bail is removed.
+  Only a hash-less cache at the *workspace root* across >1 member is rejected
+  (it would collapse every member into one index dir). See
+  `docs/MULTIREPO-PHASE2.md` and LIMITATIONS §7.
+
 ### Added — cross-repo strict-usages resolution (multi-repo Phase 6)
 
 - `vex usages <name> --strict --workspace` now resolves references across

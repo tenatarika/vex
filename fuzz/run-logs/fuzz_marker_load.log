@@ -1,0 +1,25 @@
+   Compiling vex-fuzz v0.0.0 (/Users/furcas/WORK/pets/vex/fuzz)
+    Finished `release` profile [optimized + debuginfo] target(s) in 2.10s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.21s
+     Running `fuzz/target/aarch64-apple-darwin/release/fuzz_marker_load -artifact_prefix=/Users/furcas/WORK/pets/vex/fuzz/artifacts/fuzz_marker_load/ -max_total_time=60 -print_final_stats=1 /Users/furcas/WORK/pets/vex/fuzz/corpus/fuzz_marker_load`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 1530573752
+INFO: Loaded 1 modules   (1371184 inline 8-bit counters): 1371184 [0x10d43d370, 0x10d58bfa0), 
+INFO: Loaded 1 PC tables (1371184 PCs): 1371184 [0x10d58bfa0,0x10ea782a0), 
+INFO:      317 files found in /Users/furcas/WORK/pets/vex/fuzz/corpus/fuzz_marker_load
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: seed corpus: files: 317 min: 1b max: 123b total: 9860b rss: 91Mb
+#318	INITED cov: 276 ft: 443 corp: 108/1661b exec/s: 0 rss: 137Mb
+#8192	pulse  cov: 276 ft: 443 corp: 108/1661b lim: 153 exec/s: 4096 rss: 457Mb
+#13784	REDUCE cov: 276 ft: 443 corp: 108/1660b lim: 202 exec/s: 3446 rss: 457Mb L: 3/72 MS: 1 EraseBytes-
+#16384	pulse  cov: 276 ft: 443 corp: 108/1660b lim: 223 exec/s: 3276 rss: 457Mb
+#32768	pulse  cov: 276 ft: 443 corp: 108/1660b lim: 386 exec/s: 3276 rss: 457Mb
+#65536	pulse  cov: 276 ft: 443 corp: 108/1660b lim: 712 exec/s: 3276 rss: 458Mb
+#131072	pulse  cov: 276 ft: 443 corp: 108/1660b lim: 1367 exec/s: 3196 rss: 458Mb
+#194994	DONE   cov: 276 ft: 443 corp: 108/1660b lim: 1997 exec/s: 3196 rss: 458Mb
+Done 194994 runs in 61 second(s)
+stat::number_of_executed_units: 194994
+stat::average_exec_per_sec:     3196
+stat::new_units_added:          1
+stat::slowest_unit_time_sec:    0
+stat::peak_rss_mb:              458

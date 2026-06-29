@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 
 use super::args::OutputFormat;
 use super::common::{
@@ -138,7 +138,9 @@ pub(crate) fn index(
 
 /// Build options for one repo from its own config + the shared CLI flags,
 /// then run the pipeline. Returns `None` only when `--no-wait` lost the
-/// build lock. `local_cache_active` is always false in workspace mode.
+/// build lock. `local_cache_active` is per-member in workspace mode
+/// (`config::skip_hash_for(&m.root)`), so a member's in-tree `.vex_cache/`
+/// still gets its `*` `.gitignore` (Phase 2).
 fn run_for_root(
     root: &Path,
     cfg: &VexConfig,
@@ -202,14 +204,10 @@ fn index_workspace(
     flags: &IndexFlags,
     no_wait: bool,
 ) -> Result<()> {
-    // A hash-less cache layout (`local_cache` / a bare `--cache-dir`) would
-    // collapse every member into one index dir. Refuse rather than corrupt.
-    if ctx.local_cache_active {
-        bail!(
-            "workspace mode does not support local_cache / a hash-less cache dir — \
-             members would collide into one index dir; use the platform cache"
-        );
-    }
+    // Multi-repo Phase 2: per-member cache layouts (incl. local_cache) are
+    // resolved into the installed `CacheResolver` at dispatch; the only
+    // unsafe case (hash-less cache at the WORKSPACE ROOT across >1 member)
+    // is rejected in `cli::build_workspace_resolver`. No blanket bail here.
 
     let start_dir = resolve_root(path)?;
     let ws = workspace::Workspace::find_and_load(&start_dir)?;
@@ -219,22 +217,18 @@ fn index_workspace(
     let mut results = Vec::with_capacity(ws.members.len());
     for m in &ws.members {
         // Member's own .vex.toml (walking up to the workspace root for the
-        // shared fallback) drives excludes/embedder/sections. It cannot set
-        // a cache override — rejected at workspace load — so `index_dir`'s
-        // global (platform) layout still applies.
+        // shared fallback) drives excludes/embedder/sections + its cache
+        // layout (via the resolver). `index_dir(m.root)` returns the member's
+        // own dir; `skip_hash_for` reports whether it's a hash-less
+        // (`local_cache`) layout so `run_for_root` writes the `*` .gitignore.
         let member_cfg = config::load_config(&m.root)?;
-        // `local_cache_active` is hard-coded false here: the cache layout is
-        // fixed process-globally at dispatch (set_cache_override is a
-        // OnceLock from the workspace-root config) and the local_cache guard
-        // above already bailed if it was hash-less. `run_for_root` must NOT
-        // re-derive the layout from `member_cfg`, or members could collide.
         let outcome = run_for_root(
             &m.root,
             &member_cfg,
             &member_cfg.exclude,
             flags,
             no_wait,
-            false,
+            config::skip_hash_for(&m.root),
         )?;
         results.push((
             m.display_name.clone(),

@@ -1,0 +1,50 @@
+   Compiling vex-fuzz v0.0.0 (/Users/furcas/WORK/pets/vex/fuzz)
+    Finished `release` profile [optimized + debuginfo] target(s) in 1.63s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.21s
+     Running `fuzz/target/aarch64-apple-darwin/release/fuzz_state_load -artifact_prefix=/Users/furcas/WORK/pets/vex/fuzz/artifacts/fuzz_state_load/ -max_total_time=60 -print_final_stats=1 /Users/furcas/WORK/pets/vex/fuzz/corpus/fuzz_state_load`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 1794209694
+INFO: Loaded 1 modules   (1371184 inline 8-bit counters): 1371184 [0x1088f5370, 0x108a43fa0), 
+INFO: Loaded 1 PC tables (1371184 PCs): 1371184 [0x108a43fa0,0x109f302a0), 
+INFO:      199 files found in /Users/furcas/WORK/pets/vex/fuzz/corpus/fuzz_state_load
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: seed corpus: files: 199 min: 1b max: 218b total: 16271b rss: 90Mb
+#200	INITED cov: 434 ft: 834 corp: 92/6948b exec/s: 0 rss: 107Mb
+#8371	NEW    cov: 434 ft: 835 corp: 93/6988b lim: 298 exec/s: 8371 rss: 151Mb L: 40/216 MS: 1 InsertRepeatedBytes-
+#12027	NEW    cov: 434 ft: 836 corp: 94/7019b lim: 330 exec/s: 12027 rss: 159Mb L: 31/216 MS: 1 EraseBytes-
+#13222	REDUCE cov: 434 ft: 836 corp: 94/7009b lim: 338 exec/s: 13222 rss: 159Mb L: 62/216 MS: 5 CrossOver-CMP-EraseBytes-ChangeBit-ChangeBit- DE: "\001\000\000="-
+#16384	pulse  cov: 434 ft: 836 corp: 94/7009b lim: 362 exec/s: 8192 rss: 159Mb
+#17649	REDUCE cov: 434 ft: 836 corp: 94/7006b lim: 378 exec/s: 8824 rss: 161Mb L: 59/216 MS: 2 ChangeASCIIInt-EraseBytes-
+#21991	REDUCE cov: 434 ft: 836 corp: 94/7004b lim: 418 exec/s: 10995 rss: 161Mb L: 57/216 MS: 2 ChangeASCIIInt-EraseBytes-
+#30569	REDUCE cov: 434 ft: 836 corp: 94/7003b lim: 498 exec/s: 10189 rss: 161Mb L: 39/216 MS: 1 EraseBytes-
+#32768	pulse  cov: 434 ft: 836 corp: 94/7003b lim: 514 exec/s: 8192 rss: 161Mb
+#35872	REDUCE cov: 434 ft: 836 corp: 94/7002b lim: 550 exec/s: 8968 rss: 161Mb L: 56/216 MS: 3 ChangeByte-PersAutoDict-EraseBytes- DE: "\001\000\000="-
+#36728	REDUCE cov: 434 ft: 836 corp: 94/7001b lim: 550 exec/s: 9182 rss: 161Mb L: 38/216 MS: 1 EraseBytes-
+#65536	pulse  cov: 434 ft: 836 corp: 94/7001b lim: 829 exec/s: 9362 rss: 164Mb
+#92310	REDUCE cov: 434 ft: 836 corp: 94/7000b lim: 1097 exec/s: 8391 rss: 164Mb L: 46/216 MS: 2 EraseBytes-ChangeByte-
+#93892	REDUCE cov: 434 ft: 836 corp: 94/6998b lim: 1107 exec/s: 8535 rss: 164Mb L: 62/216 MS: 2 EraseBytes-ChangeByte-
+#101650	REDUCE cov: 434 ft: 836 corp: 94/6991b lim: 1177 exec/s: 8470 rss: 164Mb L: 39/216 MS: 3 InsertRepeatedBytes-PersAutoDict-EraseBytes- DE: "\001\000\000="-
+#113362	REDUCE cov: 434 ft: 836 corp: 94/6988b lim: 1287 exec/s: 8720 rss: 164Mb L: 59/216 MS: 1 EraseBytes-
+#116473	REDUCE cov: 434 ft: 836 corp: 94/6987b lim: 1317 exec/s: 8959 rss: 164Mb L: 30/216 MS: 1 EraseBytes-
+#118620	REDUCE cov: 434 ft: 836 corp: 94/6976b lim: 1337 exec/s: 8472 rss: 164Mb L: 27/216 MS: 2 CrossOver-EraseBytes-
+#131072	pulse  cov: 434 ft: 836 corp: 94/6976b lim: 1457 exec/s: 8738 rss: 166Mb
+#139131	REDUCE cov: 434 ft: 836 corp: 94/6975b lim: 1537 exec/s: 8695 rss: 168Mb L: 29/216 MS: 1 EraseBytes-
+#226267	REDUCE cov: 434 ft: 836 corp: 94/6974b lim: 2398 exec/s: 8380 rss: 168Mb L: 28/216 MS: 1 EraseBytes-
+#235178	REDUCE cov: 434 ft: 836 corp: 94/6973b lim: 2486 exec/s: 8399 rss: 168Mb L: 26/216 MS: 1 EraseBytes-
+#255237	REDUCE cov: 434 ft: 836 corp: 94/6971b lim: 2684 exec/s: 8507 rss: 168Mb L: 44/216 MS: 4 ChangeByte-ChangeBinInt-ShuffleBytes-EraseBytes-
+#262144	pulse  cov: 434 ft: 836 corp: 94/6971b lim: 2750 exec/s: 8456 rss: 169Mb
+#264403	REDUCE cov: 434 ft: 836 corp: 94/6970b lim: 2772 exec/s: 8529 rss: 169Mb L: 45/216 MS: 1 EraseBytes-
+#339392	REDUCE cov: 434 ft: 836 corp: 94/6969b lim: 3509 exec/s: 8484 rss: 169Mb L: 47/216 MS: 4 EraseBytes-ChangeByte-CrossOver-InsertByte-
+#465096	REDUCE cov: 434 ft: 836 corp: 94/6964b lim: 4096 exec/s: 8456 rss: 169Mb L: 59/216 MS: 4 ChangeBit-CopyPart-ChangeBit-EraseBytes-
+#476172	REDUCE cov: 434 ft: 836 corp: 94/6958b lim: 4096 exec/s: 8353 rss: 169Mb L: 53/216 MS: 1 EraseBytes-
+#478488	REDUCE cov: 434 ft: 836 corp: 94/6954b lim: 4096 exec/s: 8394 rss: 169Mb L: 49/216 MS: 1 EraseBytes-
+#506555	DONE   cov: 434 ft: 836 corp: 94/6954b lim: 4096 exec/s: 8304 rss: 169Mb
+###### Recommended dictionary. ######
+"\001\000\000=" # Uses: 46729
+###### End of recommended dictionary. ######
+Done 506555 runs in 61 second(s)
+stat::number_of_executed_units: 506555
+stat::average_exec_per_sec:     8304
+stat::new_units_added:          23
+stat::slowest_unit_time_sec:    0
+stat::peak_rss_mb:              169

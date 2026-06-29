@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 use super::args::OutputFormat;
 use super::common::{resolve_root, CmdCtx};
@@ -171,24 +171,17 @@ fn check_workspace(
     auto_update: bool,
     no_stale_check: bool,
 ) -> Result<()> {
-    // A hash-less cache layout (`local_cache` / a bare `--cache-dir`) routes
-    // every member's `index_dir` to the same flat dir — they would all read
-    // the first member's index. Refuse, matching `vex index --workspace`.
-    if ctx.local_cache_active {
-        bail!(
-            "workspace mode does not support local_cache / a hash-less cache dir — \
-             members would collide into one index dir; use the platform cache"
-        );
-    }
-
+    // Multi-repo Phase 2: per-member cache layouts come from the installed
+    // resolver (the unsafe workspace-root hash-less case is rejected in
+    // `cli::build_workspace_resolver`). Each member's `local_cache_active` is
+    // derived from its own layout.
     let start_dir = resolve_root(path)?;
     let ws = workspace::Workspace::find_and_load(&start_dir)?;
     let base = ws.base().to_path_buf();
 
-    // The member's own .vex.toml drives staleness/auto-update;
-    // `local_cache_active` is false in workspace mode (guarded above). The
-    // stale reason is captured PER MEMBER (reset before the loop, take after
-    // each) so one member's stale index is not misattributed to the whole
+    // The member's own .vex.toml drives staleness/auto-update. The stale
+    // reason is captured PER MEMBER (reset before the loop, take after each)
+    // so one member's stale index is not misattributed to the whole
     // workspace via the global signal.
     super::stale_signal::reset();
     let mut per_repo: Vec<RepoCheck> = Vec::with_capacity(ws.members.len());
@@ -200,7 +193,7 @@ fn check_workspace(
             auto_update,
             no_stale_check,
             &member_cfg,
-            false,
+            crate::util::config::skip_hash_for(&m.root),
         )?;
         per_repo.push(RepoCheck {
             repo: m.display_name.clone(),

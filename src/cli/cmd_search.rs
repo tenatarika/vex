@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 use super::args::{DiffFilterArgs, MetadataArgs, OutputFormat, ScopeArgs};
 use super::common::{
@@ -405,16 +405,11 @@ fn produce_results(
 /// ranking only (no cross-repo unified score); `--why` and per-result
 /// JSON `signals` are single-repo features and are not emitted here.
 fn search_workspace(ctx: &CmdCtx<'_>, req: &SearchReq<'_>) -> Result<()> {
-    // A hash-less cache layout routes every member's `index_dir` to the same
-    // flat dir — they would all read the first member's index. Refuse,
-    // matching `vex index --workspace`.
-    if ctx.local_cache_active {
-        bail!(
-            "workspace mode does not support local_cache / a hash-less cache dir — \
-             members would collide into one index dir; use the platform cache"
-        );
-    }
-
+    // Multi-repo Phase 2: per-member cache layouts come from the installed
+    // resolver (the unsafe workspace-root hash-less case is rejected in
+    // `cli::build_workspace_resolver`). Each member's `local_cache_active`
+    // is derived from its own layout so a bootstrap (auto_update) writes the
+    // `*` .gitignore into a `local_cache` member's in-tree cache.
     let start_dir = resolve_root(None)?;
     let ws = workspace::Workspace::find_and_load(&start_dir)?;
     let base = ws.base().to_path_buf();
@@ -430,7 +425,14 @@ fn search_workspace(ctx: &CmdCtx<'_>, req: &SearchReq<'_>) -> Result<()> {
     let mut any = false;
     for m in &ws.members {
         let member_cfg = config::load_config(&m.root)?;
-        let outcome = produce_results(&m.root, &member_cfg, false, req, false, false)?;
+        let outcome = produce_results(
+            &m.root,
+            &member_cfg,
+            config::skip_hash_for(&m.root),
+            req,
+            false,
+            false,
+        )?;
         let stale = crate::cli::stale_signal::take();
         any |= !outcome.results.is_empty();
         per_repo.push((m.display_name.clone(), outcome.results, stale));

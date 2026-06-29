@@ -267,9 +267,12 @@ the per-repo parallel build. Categorically outside the constraint.
    `.vex-workspace.toml`, canonicalize, map to per-repo cache dirs. Reject
    overlaps + per-member cache overrides. `Workspace::find_and_load` is the
    single entry point all `--workspace` commands share.
-2. **De-globalize the cache override** — deferred. MVP rejects hash-less
-   layouts (`local_cache`) in workspace mode instead, so the global
-   `CACHE_OVERRIDE: OnceLock` is left intact.
+2. ✅ **De-globalize the cache override** — `CACHE_OVERRIDE: OnceLock<CacheLayout>`
+   replaced by a set-once `OnceLock<CacheResolver>` (per-member layouts keyed
+   by canonical root + a workspace-root anchor for embed/blob). A member may
+   now keep its own `cache_dir`/`local_cache`; only a hash-less cache at the
+   *workspace root* across >1 member is rejected (would alias them). Full
+   design + review resolutions in `docs/MULTIREPO-PHASE2.md`.
 3. ✅ **`vex index --workspace`** — indexes every member into its own dir
    (reuses the per-repo pipeline; each member uses its own `.vex.toml`).
 4. **Read-side fanout** — split by risk class:

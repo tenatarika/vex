@@ -943,8 +943,19 @@ Each member keeps its own per-repo index; results are grouped by repo. See
 - **Sequential, all-or-nothing.** Members are processed one at a time
   (rayon parallelism is *within* each member's build/scan); a hard failure
   on one member aborts the run.
-- **`local_cache` / hash-less cache layouts are rejected** in workspace
-  mode — every member would otherwise alias to the same flat index dir.
+- **Per-member `cache_dir` / `local_cache` (Phase 2).** A member may keep
+  its own `cache_dir`/`local_cache` in `.vex.toml` — it is resolved into a
+  per-member cache layout (own `local_cache` → in-tree `<member>/.vex_cache/`
+  with a `*` `.gitignore`; own `cache_dir` → hashed). Only a hash-less cache
+  at the *workspace root* (root `.vex.toml` `local_cache`) across >1 member
+  is rejected — it would alias every member into one dir. Embed/blob caches
+  (model weights, blob SHA cache) anchor to the workspace root (shared),
+  NOT per-member, to avoid N× duplication — so a member's index travels with
+  it under `local_cache` but its shared model weights do not. TOCTOU note:
+  the resolver is built from one `.vex-workspace.toml` read at startup and
+  the command re-reads it; a member added between the two reads routes to the
+  shared default for that run (re-run to pick it up). `VEX_CACHE_DIR` /
+  `--cache-dir` still override every member (env/CLI beat a member's config).
 - **No orphaned-index reconciliation.** `vex update --workspace` refreshes
   every declared member, but removing a member from `.vex-workspace.toml`
   does not clean its old index dir. `index_dir` is keyed by canonical path

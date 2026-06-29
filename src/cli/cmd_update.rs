@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 use super::args::OutputFormat;
 use super::common::{
@@ -190,13 +190,10 @@ fn update_workspace(
     flags: &UpdateFlags,
     no_wait: bool,
 ) -> Result<()> {
-    if ctx.local_cache_active {
-        bail!(
-            "workspace mode does not support local_cache / a hash-less cache dir — \
-             members would collide into one index dir; use the platform cache"
-        );
-    }
-
+    // Multi-repo Phase 2: per-member cache layouts come from the installed
+    // resolver; `update_one` derives every path via `config::*_path(m.root)`,
+    // which honours the member's own layout. The unsafe workspace-root
+    // hash-less case is rejected in `cli::build_workspace_resolver`.
     let start_dir = resolve_root(path)?;
     let ws = workspace::Workspace::find_and_load(&start_dir)?;
     let base = ws.base().to_path_buf();

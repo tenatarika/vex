@@ -172,10 +172,12 @@ pub(crate) struct IndexAvail {
 /// (`Similar`, `Duplicates`) pass `needs_semantic = true` so the
 /// bootstrap rebuilds with embeddings instead of structural-only.
 ///
-/// `local_cache_active` mirrors the flag computed in `dispatch()` so we
-/// can write the project-local `.gitignore` for `local_cache = true`
-/// users on the *first* invocation — otherwise the bootstrap path
-/// would skip the safeguard that `Commands::Index` applies.
+/// `local_cache_active` is the resolved skip-hash flag for THIS root — in
+/// single-repo mode the `dispatch()` value, in workspace mode the
+/// per-member `config::skip_hash_for(&m.root)` — so we can write the
+/// project-local `.gitignore` for `local_cache = true` users on the *first*
+/// invocation; otherwise the bootstrap path would skip the safeguard that
+/// `Commands::Index` applies.
 pub(crate) fn ensure_index_exists(
     root: &std::path::Path,
     auto_update_flag: bool,

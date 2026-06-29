@@ -244,13 +244,9 @@ fn callgraph_workspace(
     diff: &args::DiffFilterArgs,
     label: &str,
 ) -> Result<()> {
-    if ctx.local_cache_active {
-        bail!(
-            "workspace mode does not support local_cache / a hash-less cache dir — \
-             members would collide into one index dir; use the platform cache"
-        );
-    }
-
+    // Multi-repo Phase 2: per-member cache layouts come from the installed
+    // resolver (unsafe workspace-root hash-less case rejected in
+    // `cli::build_workspace_resolver`).
     let start_dir = resolve_root(path)?;
     let ws = workspace::Workspace::find_and_load(&start_dir)?;
     let base = ws.base().to_path_buf();
@@ -265,7 +261,7 @@ fn callgraph_workspace(
             &m.root,
             &member_cfg,
             &member_cfg.exclude,
-            false,
+            config::skip_hash_for(&m.root),
             name,
             is_callers,
             limit,
@@ -519,13 +515,9 @@ fn reachable_workspace(
     no_stale_check: bool,
     path_scope: &scope::PathScope,
 ) -> Result<()> {
-    if ctx.local_cache_active {
-        bail!(
-            "workspace mode does not support local_cache / a hash-less cache dir — \
-             members would collide into one index dir; use the platform cache"
-        );
-    }
-
+    // Multi-repo Phase 2: per-member cache layouts come from the installed
+    // resolver (unsafe workspace-root hash-less case rejected in
+    // `cli::build_workspace_resolver`).
     let start_dir = resolve_root(path)?;
     let ws = workspace::Workspace::find_and_load(&start_dir)?;
     let base = ws.base().to_path_buf();
@@ -539,7 +531,7 @@ fn reachable_workspace(
         let outcome = reachable_in_root(
             &m.root,
             &member_cfg,
-            false,
+            config::skip_hash_for(&m.root),
             target,
             max_hops,
             limit,

@@ -1,0 +1,37 @@
+   Compiling vex-fuzz v0.0.0 (/Users/furcas/WORK/pets/vex/fuzz)
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.91s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.20s
+     Running `fuzz/target/aarch64-apple-darwin/release/fuzz_index_reader -artifact_prefix=/Users/furcas/WORK/pets/vex/fuzz/artifacts/fuzz_index_reader/ -max_total_time=60 -print_final_stats=1 /Users/furcas/WORK/pets/vex/fuzz/corpus/fuzz_index_reader`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 1399753969
+INFO: Loaded 1 modules   (1371334 inline 8-bit counters): 1371334 [0x10d346540, 0x10d495206), 
+INFO: Loaded 1 PC tables (1371334 PCs): 1371334 [0x10d495208,0x10e981e68), 
+INFO:     7606 files found in /Users/furcas/WORK/pets/vex/fuzz/corpus/fuzz_index_reader
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 1048576 bytes
+INFO: seed corpus: files: 7606 min: 1b max: 19551633b total: 63959967b rss: 97Mb
+#7607	INITED cov: 329 ft: 657 corp: 124/969Kb exec/s: 7607 rss: 300Mb
+#8192	pulse  cov: 329 ft: 657 corp: 124/969Kb lim: 133955 exec/s: 4096 rss: 312Mb
+#14328	REDUCE cov: 329 ft: 657 corp: 124/969Kb lim: 134006 exec/s: 7164 rss: 557Mb L: 437/133938 MS: 1 EraseBytes-
+#16384	pulse  cov: 329 ft: 657 corp: 124/969Kb lim: 134023 exec/s: 5461 rss: 564Mb
+#32768	pulse  cov: 329 ft: 657 corp: 124/969Kb lim: 134176 exec/s: 6553 rss: 578Mb
+#49870	REDUCE cov: 329 ft: 657 corp: 124/969Kb lim: 134346 exec/s: 6233 rss: 587Mb L: 427/133938 MS: 2 ShuffleBytes-EraseBytes-
+#65536	pulse  cov: 329 ft: 657 corp: 124/969Kb lim: 134499 exec/s: 5957 rss: 588Mb
+#69048	REDUCE cov: 329 ft: 657 corp: 124/969Kb lim: 134533 exec/s: 6277 rss: 588Mb L: 779/133938 MS: 2 ShuffleBytes-EraseBytes-
+#80744	REDUCE cov: 329 ft: 657 corp: 124/969Kb lim: 134635 exec/s: 6211 rss: 588Mb L: 786/133938 MS: 1 EraseBytes-
+#108238	REDUCE cov: 329 ft: 657 corp: 124/969Kb lim: 134907 exec/s: 6366 rss: 591Mb L: 583/133938 MS: 4 ShuffleBytes-InsertRepeatedBytes-EraseBytes-CrossOver-
+#131072	pulse  cov: 329 ft: 657 corp: 124/969Kb lim: 135128 exec/s: 6241 rss: 595Mb
+#201459	REDUCE cov: 329 ft: 657 corp: 124/969Kb lim: 135825 exec/s: 6295 rss: 600Mb L: 787/133938 MS: 1 EraseBytes-
+#214736	REDUCE cov: 329 ft: 657 corp: 124/969Kb lim: 135944 exec/s: 6135 rss: 604Mb L: 785/133938 MS: 2 ChangeByte-EraseBytes-
+#231357	REDUCE cov: 329 ft: 657 corp: 124/969Kb lim: 136097 exec/s: 6088 rss: 604Mb L: 147/133938 MS: 1 EraseBytes-
+#240419	REDUCE cov: 329 ft: 657 corp: 124/969Kb lim: 136182 exec/s: 6164 rss: 604Mb L: 770/133938 MS: 2 ShuffleBytes-EraseBytes-
+#255605	REDUCE cov: 329 ft: 657 corp: 124/969Kb lim: 136318 exec/s: 6085 rss: 604Mb L: 411/133938 MS: 1 EraseBytes-
+#262144	pulse  cov: 329 ft: 657 corp: 124/969Kb lim: 136369 exec/s: 6096 rss: 604Mb
+#331738	REDUCE cov: 329 ft: 657 corp: 124/969Kb lim: 137066 exec/s: 6143 rss: 607Mb L: 799/133938 MS: 3 EraseBytes-ChangeBit-ChangeBit-
+#341646	REDUCE cov: 329 ft: 657 corp: 124/969Kb lim: 137151 exec/s: 6211 rss: 607Mb L: 789/133938 MS: 3 ChangeByte-ChangeByte-EraseBytes-
+#372662	DONE   cov: 329 ft: 657 corp: 124/969Kb lim: 137457 exec/s: 6109 rss: 611Mb
+Done 372662 runs in 61 second(s)
+stat::number_of_executed_units: 372662
+stat::average_exec_per_sec:     6109
+stat::new_units_added:          12
+stat::slowest_unit_time_sec:    0
+stat::peak_rss_mb:              611
