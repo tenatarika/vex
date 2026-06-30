@@ -3,9 +3,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/tenatarika/vex/actions/workflows/ci.yml/badge.svg)](https://github.com/tenatarika/vex/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
-[![Commands](https://img.shields.io/badge/commands-28-blue.svg)]()
+[![Commands](https://img.shields.io/badge/commands-30-blue.svg)]()
 [![Languages](https://img.shields.io/badge/languages-19-blueviolet.svg)]()
-[![Tests](https://img.shields.io/badge/tests-2712-green.svg)]()
+[![Tests](https://img.shields.io/badge/tests-3224-green.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
@@ -34,7 +34,7 @@ $ vex bundle --mode symbol --symbol Foo    # body + callers + callees + similar 
 - **Persistent call graph** — `vex callers`/`vex callees` reads from an FST built at index time (~4ms), not a live tree-sitter scan (seconds). Module-scope expressions are reported via synthetic `<module:path>` callers (Phase 14.1); Python + Java function/method decorators (Phase 14.2), Kotlin annotations + C# method/constructor attributes (Phase 14.2.2), and TypeScript method decorators + Rust outer attributes (Phase 14.2.1) emit forward edges to their targets. Class-level decorators remain invisible — see [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
 - **Pluggable embedder** — `Embedder` trait + registry; swap MiniLM-L6-v2 for future code-specific models (BGE, CodeBERT) without touching call sites
 - **Token-efficient** — compact output saves typically 6-10x fewer tokens than grep on average lookups (up to 88x on minified JS/CSS); `vex show` extracts just the symbol body instead of the whole file
-- **19 languages** indexed via tree-sitter, with three coverage tiers: **type-aware `--strict usages`** on 5 binder languages (Rust / TypeScript / Python / C# / C++); **indexed pattern prefilter** on 12 T1+T2a languages; baseline structural + semantic search on all 19 (see [Supported Languages](#supported-languages) for the matrix)
+- **19 languages** indexed via tree-sitter, with three coverage tiers: **type-aware `--strict usages`** on 7 binder languages (Rust / TypeScript / Python / C# / C++ / Go / Java); **indexed pattern prefilter** on 15 T1+T2a languages; baseline structural + semantic search on all 19 (see [Supported Languages](#supported-languages) for the matrix)
 - **Single binary, zero config** — no LSP servers, no databases, no Docker. Just `vex index && vex check Foo`
 
 ## What Vex isn't
@@ -45,7 +45,7 @@ vex is a **static-analysis indexing tool**, not a language server. Set expectati
 - **`vex search` is a ranked blend, not an exact-name lookup.** Structural FST + BM25 + semantic fused via RRF return *relevance-ordered* results — when no symbol literally named `Foo` lives in the index (imported from a dependency, deleted, typo), BM25 may surface callers / imports as if they were the definition. For exact-symbol questions ("does it exist?", "show me the body", "who calls it?") use `vex check Foo` / `vex show Foo` / `vex usages Foo --strict` — they bypass the ranker. **v1.15.0** prints a one-line stderr hint when an identifier-shaped query gets zero FST hits.
 - **No dynamic-dispatch visibility.** Decorator routing (`@router.get("/path")`), string-resolved factories (`uvicorn.run("main:app")`), reflection (`getattr(obj, name)()`), and macro-expanded references are all invisible to every vex command. `vex grep '\bname\b'` is the textual escape hatch.
 - **`vex callers` has uneven coverage outside function scope.** Module-level expressions like `app = create_app()` are reported via synthetic `<module:path>` callers (Phase 14.1). Python + Java function/method decorators (Phase 14.2), Kotlin annotations + C# method/constructor attributes (Phase 14.2.2), and TypeScript method decorators + Rust outer attributes on fns/methods (Phase 14.2.1) emit forward edges — `vex callers GetMapping` lists every Spring handler, `vex callers HttpGet` every ASP.NET action, `vex callers test` every `#[tokio::test]`. Class-level decorators (14.6) remain on the roadmap.
-- **`vex usages` quality varies by language.** 5 binder-supported languages get refactor-grade `--strict` refs; the other 14 use an identifier scanner with a higher false-positive rate.
+- **`vex usages` quality varies by language.** 7 binder-supported languages get refactor-grade `--strict` refs; the other 12 use an identifier scanner with a higher false-positive rate.
 
 See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for the full coverage matrix, concrete repros, and recommended workarounds per query type. **Read it before evaluating vex on a Python/FastAPI/Django codebase** — the framework patterns are the most-flagged gaps.
 
@@ -228,7 +228,7 @@ vex completions zsh > ~/.zfunc/_vex
 | `vex show <symbol> [--limit N] [--context N] [--kind fn] [--visibility V] [--async-only] [--signature-only \| --head N \| --no-body]` | Extract symbol body from source (saves tokens vs full file read). Same metadata + kind filters as `search`. **v1.9 (Phase 13.3):** smart truncation flags — `--signature-only` keeps only the declaration line, `--head N` keeps the first N body lines, `--no-body` returns signature + docstring only. Mutually exclusive. |
 | `vex similar <name> [--limit N] [--min-score T] [--explain]` | Find symbols semantically close to an existing one (HNSW nearest neighbors). `--explain` adds identifier-Jaccard + truncated unified diff per match. `--min-score` is an alias for `--threshold`. |
 | `vex duplicates [--min-score T] [--min-body-lines N] [--explain]` | List near-duplicate symbol pairs by embedding similarity. `--explain` shows what's actually different between the bodies. |
-| `vex usages <name> [--limit N] [--strict] [--include-self] [--include-docs]` | Find all references/usages of a symbol. Non-strict path = FST lookup; **v1.20.0 strips the row at the symbol's own definition line and `*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc` matches by default** — use `--include-self` / `--include-docs` to restore the pre-v1.20 wide-net behaviour. `--strict` reads binder-resolved refs from the v5 `reference_edges` section (Rust / TypeScript / Python / C# / C++). |
+| `vex usages <name> [--limit N] [--strict] [--include-self] [--include-docs]` | Find all references/usages of a symbol. Non-strict path = FST lookup; **v1.20.0 strips the row at the symbol's own definition line and `*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc` matches by default** — use `--include-self` / `--include-docs` to restore the pre-v1.20 wide-net behaviour. `--strict` reads binder-resolved refs from the v5 `reference_edges` section (Rust / TypeScript / Python / C# / C++ / Go / Java). |
 | **`vex impact <name> [--depth N] [--exclude-docs]`** | **NEW (v1.20.0, F1).** One-call delete-safety blast-radius report. Composes four reference channels — strict refs (binder-resolved), FST refs, `grep \b<Name>\b`, and direct call-graph callers — into a single verdict (`safe` / `unsafe` / `uncertain`) with a per-channel evidence sample. Use this BEFORE proposing to delete or rename a symbol; one call replaces the manual usages→grep→callers dance. Verdict rule: `unsafe` if strict refs OR call-graph callers report >0 (binder/graph confirms real usage); `uncertain` if only text channels hit (likely string-dispatch / comment / decorator); `safe` only when every channel returns zero. **v1.21.0:** `--depth N` (`1..16`) walks the call graph backward to surface indirect callers at depth ≥ 2; `--exclude-docs` drops prose-format mentions (`*.md`/`*.txt`/…) so a CHANGELOG-only symbol flips to `safe`. |
 | `vex pattern '<pat>' --lang <lang> [--why]` | AST pattern matching with metavariables (`$NAME`, `$_`, `$$$`, plus the v6 named multi-line forms `$$$BODY` / `$$ARGS`). Repeated metavars enforce back-references. Space-flanked ` && ` / ` || ` compose sub-patterns (AND requires both shapes in the file with shared captures agreeing; OR takes the union). When a v6 index is present an indexed prefilter narrows candidates to lang-matching files with the right root kind; falls back to live-scan otherwise. `--why` surfaces a JSON `ScanTrace` (mode / root_kind / candidate vs total / fallback reason) on stderr — and under `_meta.why` in the MCP response. |
 | `vex outline <file> [--kind fn]` | Show file structure, optionally filter by symbol kind. |
@@ -451,7 +451,7 @@ References stored in an FST (Finite State Transducer) — zero-copy lookup from 
 
 `vex usages --strict <name>` reads the v5 `reference_edges` section
 written by an LSP-style scope binder. For the languages with a
-binder (Rust, TypeScript, Python, C#, C++) every ref is resolved at
+binder (Rust, TypeScript, Python, C#, C++, Go, Java) every ref is resolved at
 index time against an in-file scope chain plus an import/use graph,
 then serialised against the global symbol the user actually meant —
 not just any line that mentions the spelling.
@@ -475,14 +475,15 @@ What this changes for the user:
 
 Without `--strict` `vex usages` still works for every supported
 language via the legacy refs FST; `--strict` simply trades recall
-breadth for precision on the five binder languages. v3 / v4 indexes
+breadth for precision on the seven binder languages. v3 / v4 indexes
 predating the binder bail with a "re-run `vex index`" message.
 
 ### Structural Patterns (`vex pattern`)
 
-Match code by shape rather than text. Live-scan today for every
-language vex parses; indexed prefilter (via the v6 `pattern_skeletons`
-section) for Rust, TypeScript, and Python.
+Match code by shape rather than text. Works on every language vex
+parses; an indexed prefilter (via the v6 `pattern_skeletons` section)
+speeds up candidate selection on the 15 languages that emit skeletons
+(every language except Bash, Lua, YAML, and TOML, which live-scan).
 
 **Syntax**:
 
@@ -655,36 +656,38 @@ For an agent making 10-20 code lookups per task, vex saves **5,000-20,000 tokens
   candidate files at query time; `live-scan` means tree-sitter walks
   every lang-matching file on each query. All 19 languages work with
   `vex pattern` syntax (`$NAME`, `$$$BODY`, `&&` / `||`); the
-  prefilter just speeds up discovery for the three T1 languages.
+  prefilter just speeds up discovery for the 15 languages that emit a
+  skeleton section (every language except Bash, Lua, YAML, and TOML).
 
 | Language | Extensions | Symbols | Imports | Binder | Patterns |
 |----------|------------|---------|---------|--------|----------|
 | Rust | `.rs` | functions, structs, enums, traits, impls, types, constants | `use` declarations | cross-file | indexed |
 | TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx` | classes, interfaces, enums, functions, arrows, type aliases | `import` | cross-file | indexed |
 | Python | `.py` | classes, functions (incl. async, decorated) | `import`, `from..import` | cross-file | indexed |
-| C# | `.cs` | classes, interfaces, structs, enums, methods, properties | — | in-file | live-scan |
-| C/C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | classes, structs, functions, methods, templates, enums | `#include` | cross-file (v1.14 BFS over quoted `#include "..."`; class methods still in-file) | live-scan |
-| Go | `.go` | functions, methods, structs, interfaces | `import` | — | live-scan |
-| Java | `.java` | classes, interfaces, enums, methods, constructors | `import` | — | live-scan |
-| Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` | — | live-scan |
-| Ruby | `.rb` | classes, modules, methods | — | — | live-scan |
-| Swift | `.swift` | classes, structs, enums, actors, protocols, functions | `import` | — | live-scan |
-| PHP | `.php`, `.phtml` | classes, interfaces, traits, methods, functions | `use`, `require` | — | live-scan |
-| SQL | `.sql` | tables, views, functions, triggers, indexes, schemas, types, sequences | `ALTER TABLE` refs | — | live-scan |
-| Markdown | `.md`, `.markdown` | headings (section structure) | — | — | live-scan |
+| C# | `.cs` | classes, interfaces, structs, enums, methods, properties | — | in-file | indexed |
+| C/C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | classes, structs, functions, methods, templates, enums | `#include` | cross-file (v1.14 BFS over quoted `#include "..."`; class methods still in-file) | indexed |
+| Go | `.go` | functions, methods, structs, interfaces | `import` | in-file | indexed |
+| Java | `.java` | classes, interfaces, enums, methods, constructors | `import` | in-file | indexed |
+| Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` | — | indexed |
+| Ruby | `.rb` | classes, modules, methods | — | — | indexed |
+| Swift | `.swift` | classes, structs, enums, actors, protocols, functions | `import` | — | indexed |
+| PHP | `.php`, `.phtml` | classes, interfaces, traits, methods, functions | `use`, `require` | — | indexed |
+| SQL | `.sql` | tables, views, functions, triggers, indexes, schemas, types, sequences | `ALTER TABLE` refs | — | indexed |
+| Markdown | `.md`, `.markdown` | headings (section structure) | — | — | indexed |
 | Bash | `.sh`, `.bash` | functions | — | — | live-scan |
 | Lua | `.lua` | functions, local functions, tables | `require` | — | live-scan |
-| CSS | `.css` | rules, selectors, `@keyframes` | — | — | live-scan |
-| HTML | `.html`, `.htm` | custom elements (hyphenated tag names) | — | — | live-scan |
+| CSS | `.css` | rules, selectors, `@keyframes` | — | — | indexed |
+| HTML | `.html`, `.htm` | custom elements (hyphenated tag names) | — | — | indexed |
 | YAML | `.yaml`, `.yml` | top-level keys | — | — | live-scan |
 | TOML | `.toml` | bare keys, dotted keys, tables | — | — | live-scan |
 
 See [docs/SUPPORTED_LANGUAGES.md](docs/SUPPORTED_LANGUAGES.md) for grammar
 versions, ABI level, and the runbook for adding a language or upgrading a
 grammar. Adding a language to the indexed-Patterns tier is one
-allowlist edit in `src/pattern/skeleton.rs` — see the Phase 11.4
-follow-up notes for the planned Go → Java → Kotlin → C# → C++ → Swift
-→ PHP → Ruby promotion order.
+allowlist edit in `src/pattern/skeleton/kinds.rs` — the Phase 11.4
+follow-up promotion (Go → Java → Kotlin → C# → C++ → Swift → PHP →
+Ruby, plus SQL / Markdown / CSS / HTML) is complete; only Bash, Lua,
+YAML, and TOML remain on live-scan.
 
 ## Index Location
 
@@ -807,7 +810,7 @@ cargo build --release -p vex-mcp
 
 `VEX_DEVICE` (v1.16.0) picks the GPU execution provider when the binary was built with `gpu-cuda` / `gpu-directml` / `gpu-coreml` — relevant when an MCP-driven `index` / `update` call rebuilds semantic embeddings on a large repo (51× CUDA / 29× DirectML over CPU on MiniLM-L6). `auto` is safe on CPU-only builds (degrades silently). Run `vex gpu` once to confirm the EP actually engages.
 
-**MCP Tools (23):**
+**MCP Tools (26):**
 - `search` — 3-way hybrid (structural + BM25 + semantic); accepts `filter` / `include` / `exclude` / `kind` / `context_path` / `no_bm25` / `--why` / metadata filters / diff-scope (`since` / `since_branched` / `changed_only`)
 - `find_symbol` — exact name lookup
 - `find_similar` — semantic search by free-form description
@@ -816,12 +819,14 @@ cargo build --release -p vex-mcp
 - `show` — extract symbol body from source; Phase 13.3 truncation flags (`signature_only` / `head` / `no_body` / `collapsed`, mutually exclusive)
 - `outline` — file structure
 - `usages` — find all references to a symbol; `filter` / `--strict` / `--why`
+- `impact` — delete-safety blast radius (verdict + per-channel evidence); `depth` / `exclude_docs`
 - `grep` — regex content search
 - `pattern` — AST pattern matching with metavar back-references; diff-scope; `--why`
 - `implementations` — find types extending a base class/trait/interface (incl. generics); diff-scope
 - `callers` / `callees` — direct callgraph navigation (fast path via persistent index); diff-scope
 - `paths` — enumerate caller chains between two functions
 - `reachable` — transitive callers of a target
+- `tests_for` — test functions that transitively cover a target (framework-labelled)
 - `diff` — symbol-level diff between a git revision and the working tree
 - `check` — fast symbol existence check
 - `bundle` — unified multi-source bundle (`mode: symbol | pr-impact | project`), Phase 13 envelope
@@ -829,8 +834,9 @@ cargo build --release -p vex-mcp
 - `capabilities` — machine-readable capability matrix (`protocol_version`, `signals`, `bundle_modes`, `history_diff` *(v1.16.0)*, etc.)
 - `index` / `update` — build/rebuild index; **v1.16.0** adds `gpu: bool` / `device: cpu|auto|cuda|directml|coreml` args (GPU-enabled builds only) so an agent can opt into GPU semantic embedding per-call without touching env or config
 - `status` — index statistics (now includes `gpu_support` / `default_device` *(v1.16.0)*)
+- `history` — historical versions of a symbol across commits *(MCP tool since v1.20.0, D5)*; `depth` / `limit` / `since` / `until` / `author` / `kind` / `diff` / `exact_presence`
 
-> **Note (v1.16.0):** `vex history <Symbol>` (with its new `--diff` / `--exact-presence` / `--since` / `--author` / `--kind` flags) is CLI-only — it is not yet an MCP tool, despite being advertised through `capabilities.history_diff`. Agents that need historical-symbol queries should shell out to `vex history` via Bash (the `--format json` envelope is the same shape every other vex command emits). Promotion to a first-class MCP tool is tracked separately.
+> **Note:** `vex history` and `vex tests-for` were promoted to first-class MCP tools in v1.20.0 (D5); earlier docs that called `history` "CLI-only" are stale. Both emit the same `--format json` envelope as every other vex command.
 
 > **Multi-repo (v1.22.0):** ten tools — `search`, `grep`, `check`, `usages`, `impact`, `callers`, `callees`, `reachable`, `index`, `update` — take a `workspace: boolean` arg that fans the call across every `.vex-workspace.toml` member, returning the grouped `{workspace, repos:[...]}` payload under `structuredContent.results`. Point `project_root` at or above the `.vex-workspace.toml`. `find_symbol` is excluded (use `check`/`search`); `why` is ignored in workspace mode. See `docs/MULTIREPO-PHASE8-mcp.md`.
 

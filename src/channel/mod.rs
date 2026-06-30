@@ -461,7 +461,7 @@ pub fn derive_verdict(invocations: &[ChannelInvocation]) -> (Verdict, String) {
 // ───────────────────────── Channel implementations ────────────────────────
 
 /// Phase 11.1 v5 `reference_edges` — binder-resolved cross-file refs.
-/// Available for Rust / TypeScript / Python / C# / C++; reports
+/// Available for Rust / TypeScript / Python / C# / C++ / Go / Java; reports
 /// `unavailable` on pre-v1.8 indexes or projects in languages
 /// without a binder.
 pub struct StrictRefsChannel;
