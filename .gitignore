@@ -1,4 +1,5 @@
 /target
+bench-coreai/target/
 *.swp
 *.swo
 .DS_Store
