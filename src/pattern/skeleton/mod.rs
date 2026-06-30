@@ -260,11 +260,7 @@ pub fn extract_skeletons(source: &str, lang: Language) -> Vec<Skeleton> {
     // on grammar-set-language failure for an unsupported language, but the
     // allowlist short-circuit above already filters those; collapse any
     // residual error path to an empty result (callers tolerate empty).
-    let Ok(tree) = crate::parse::parser_pool::with_parser(lang, |parser| {
-        parser
-            .parse(source, None)
-            .ok_or_else(|| anyhow::anyhow!("tree-sitter parse failed in skeleton extractor"))
-    }) else {
+    let Ok(tree) = crate::parse::parser_pool::parse_text(lang, source) else {
         return Vec::new();
     };
     let mut skeletons = Vec::new();

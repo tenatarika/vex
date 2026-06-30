@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
 [![Commands](https://img.shields.io/badge/commands-30-blue.svg)]()
 [![Languages](https://img.shields.io/badge/languages-19-blueviolet.svg)]()
-[![Tests](https://img.shields.io/badge/tests-3239-green.svg)]()
+[![Tests](https://img.shields.io/badge/tests-3245-green.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 

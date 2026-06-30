@@ -100,5 +100,13 @@ name = "fuzz_unresolved_refs"
 path = "fuzz_targets/fuzz_unresolved_refs.rs"
 doc = false
 
+# v1.23.0 — Kotlin scope binder (`src/parse/scope/kotlin.rs`). Drives the
+# full source → tree-sitter parse → symbol extraction → `bind_refs` path on
+# arbitrary UTF-8 Kotlin source. Must never panic; Err / empty refs is fine.
+[[bin]]
+name = "fuzz_kotlin_binder"
+path = "fuzz_targets/fuzz_kotlin_binder.rs"
+doc = false
+
 [workspace]
 members = ["."]

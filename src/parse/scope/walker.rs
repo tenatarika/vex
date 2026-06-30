@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tree_sitter::{Node, Tree};
 
 use super::{BindTarget, BoundRef, DefKind, LocalDef, RefKind, ScopeId, ScopeTree, UsePath};
@@ -183,9 +183,5 @@ impl<'a> Walker<'a> {
 /// don't repeat the boilerplate. v1.12.0 P3 — borrows a pooled per-thread
 /// parser instead of constructing one per call.
 pub(super) fn parse_with(lang: Language, content: &str) -> Result<Tree> {
-    crate::parse::parser_pool::with_parser(lang, |parser| {
-        parser
-            .parse(content, None)
-            .context("tree-sitter parse failed in scope binder")
-    })
+    crate::parse::parser_pool::parse_text(lang, content)
 }

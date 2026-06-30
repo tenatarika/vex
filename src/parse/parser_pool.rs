@@ -23,13 +23,40 @@
 //! parse-loop structure (rayon spawns N workers, each chews through a
 //! slice of files independently) without any extra coordination.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
-use anyhow::{Context, Result};
-use tree_sitter::Parser;
+use anyhow::{bail, Context, Result};
+use tree_sitter::{ParseOptions, ParseState, Parser, Tree};
 
 use super::language::Language;
+
+/// Per-parse cap on tree-sitter progress-callback invocations, used by
+/// [`parse_text`] to bound runaway parses.
+///
+/// Adversarial / malformed input can drive tree-sitter's GLR error-recovery
+/// into super-linear time *and memory* — `fuzz_kotlin_binder` found 451-byte
+/// Kotlin inputs that took 334 s to parse and blew past a 2 GB RSS cap. A
+/// wall-clock timeout bounds time but not the memory a fast explosion
+/// allocates within it, and it makes indexing non-deterministic; an
+/// operation budget bounds both and stays reproducible.
+///
+/// Calibration: tree-sitter fires the progress callback periodically, and on
+/// this grammar's error-recovery explosion memory grows ~linearly with
+/// callbacks (measured on a 480-byte OOM artifact: 3 K callbacks → 67 MB,
+/// 10 K → 218 MB, 50 K → 1.08 GB, 200 K → 3 GB). A healthy 250 KB parse fires
+/// only ~6 K callbacks with the byte offset advancing steadily (~25 / KB) and
+/// a sub-KB normal file fires a few dozen. The floor is set so the worst
+/// degenerate single parse stays well under ~150 MB, while the per-byte
+/// allowance (80× the healthy rate) leaves multi-MB real files untouched. A
+/// parse that exceeds the budget returns `Err` and the file is skipped.
+const PARSE_CALLBACK_FLOOR: u64 = 2_000;
+const PARSE_CALLBACK_PER_BYTE: u64 = 2;
+
+fn parse_callback_budget(len: usize) -> u64 {
+    PARSE_CALLBACK_FLOOR.saturating_add((len as u64).saturating_mul(PARSE_CALLBACK_PER_BYTE))
+}
 
 thread_local! {
     /// One `Parser` per language for the current thread. Lazily initialized
@@ -72,6 +99,57 @@ where
             }
         };
         f(parser)
+    })
+}
+
+/// Parse `content` with `lang`'s grammar under a wall-clock guard.
+///
+/// This is the single guarded parse entry point — every production parse
+/// site routes through it so no grammar can hang or OOM the indexer on
+/// adversarial input (see [`PARSE_BUDGET`]). Returns `Err` on a budget
+/// timeout or a genuine parse failure; callers already treat a parse error
+/// as "skip this file / fall back", so a timed-out file is simply skipped.
+pub(crate) fn parse_text(lang: Language, content: &str) -> Result<Tree> {
+    with_parser(lang, |parser| {
+        let bytes = content.as_bytes();
+        let len = bytes.len();
+        let budget = parse_callback_budget(len);
+        // `Cell` (shared borrow) lets the progress closure count invocations
+        // and flag an over-budget cancel while we still read the flag after
+        // `parse_with_options` returns — a `&mut` capture would keep the
+        // borrow alive past the read.
+        let calls = Cell::new(0u64);
+        let over_budget = Cell::new(false);
+        let mut progress = |_state: &ParseState| {
+            let n = calls.get() + 1;
+            calls.set(n);
+            if n > budget {
+                over_budget.set(true);
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let options = ParseOptions::new().progress_callback(&mut progress);
+        let tree = parser.parse_with_options(
+            &mut |i, _| {
+                if i < len {
+                    &bytes[i..]
+                } else {
+                    Default::default()
+                }
+            },
+            None,
+            Some(options),
+        );
+        match tree {
+            Some(t) => Ok(t),
+            None if over_budget.get() => bail!(
+                "tree-sitter parse exceeded the {budget}-callback budget for {lang:?} \
+                 ({len} bytes; likely adversarial / pathological input); file skipped"
+            ),
+            None => bail!("tree-sitter parse failed"),
+        }
     })
 }
 
@@ -126,5 +204,38 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn parse_text_parses_normal_source() {
+        let tree = parse_text(Language::Kotlin, "fun f(x: Int): Int = x + 1\n").expect("parse");
+        assert!(tree.root_node().child_count() >= 1);
+    }
+
+    #[test]
+    fn parse_callback_budget_scales_with_len() {
+        assert_eq!(parse_callback_budget(0), PARSE_CALLBACK_FLOOR);
+        assert_eq!(
+            parse_callback_budget(1000),
+            PARSE_CALLBACK_FLOOR + 1000 * PARSE_CALLBACK_PER_BYTE
+        );
+        // No overflow on absurd lengths.
+        assert!(parse_callback_budget(usize::MAX) >= PARSE_CALLBACK_FLOOR);
+    }
+
+    #[test]
+    fn parse_text_bails_on_pathological_input() {
+        // Regression for the fuzz_kotlin_binder finding: a 451-byte malformed
+        // Kotlin input drove tree-sitter-kotlin-ng's error recovery to 334 s /
+        // multi-GB. The callback budget must bail it as `Err` (fast + bounded)
+        // instead of hanging or OOMing. The artifact is valid UTF-8 (the fuzz
+        // target only feeds UTF-8), so `from_utf8` succeeds.
+        const PATHOLOGICAL: &[u8] = include_bytes!("../../fuzz/findings/kotlin-grammar-oom.bin");
+        let src = std::str::from_utf8(PATHOLOGICAL).expect("fuzz finding is valid UTF-8");
+        let result = parse_text(Language::Kotlin, src);
+        assert!(
+            result.is_err(),
+            "pathological input must hit the parse budget and return Err"
+        );
     }
 }

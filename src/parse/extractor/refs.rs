@@ -12,11 +12,11 @@
 //! grouped together so adding a new language's interpolation form
 //! requires touching one file.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::index::symbols::ParsedRef;
 use crate::parse::language::Language;
-use crate::parse::parser_pool::with_parser;
+use crate::parse::parser_pool::parse_text;
 
 use super::is_meaningful_identifier;
 
@@ -50,13 +50,9 @@ pub fn extract_references_ast(content: &str, lang: Language) -> Result<Vec<Parse
         return Ok(extract_references(content));
     }
 
-    // v1.12.0 P3 — pooled per-thread parser; see `with_parser` in
-    // `super::parser_pool`.
-    let tree = with_parser(lang, |parser| {
-        parser
-            .parse(content, None)
-            .context("tree-sitter parse failed")
-    })?;
+    // v1.12.0 P3 — pooled per-thread parser; v1.23.0 — guarded by the
+    // shared `parse_text` budget (see `super::parser_pool`).
+    let tree = parse_text(lang, content)?;
 
     let mut refs = Vec::new();
     // v1.12.0 P4 — collect line slices once, then pass an O(1)-indexable

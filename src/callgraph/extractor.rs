@@ -237,13 +237,9 @@ const MODULE_CALL_CAPTURE: &str = "module_call.name";
 fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<Call>)> {
     let query = COMPILED_QUERIES.get(&lang)?;
 
-    // v1.12.0 P3 — pooled per-thread parser.
-    let tree = crate::parse::parser_pool::with_parser(lang, |parser| {
-        parser
-            .parse(content, None)
-            .ok_or_else(|| anyhow::anyhow!("tree-sitter parse failed in callgraph extractor"))
-    })
-    .ok()?;
+    // v1.12.0 P3 — pooled per-thread parser; v1.23.0 — guarded by the
+    // shared `parse_text` budget.
+    let tree = crate::parse::parser_pool::parse_text(lang, content).ok()?;
 
     let fn_name_idx = query.capture_index_for_name("fn.name")?;
     let fn_body_idx = query.capture_index_for_name("fn.decl")?;

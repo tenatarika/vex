@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Hardened — bounded tree-sitter parse (DoS guard, all languages)
+
+- Every production parse now routes through a single guarded entry point
+  (`parser_pool::parse_text`) that caps tree-sitter's progress-callback
+  invocations, scaled by input size. Adversarial / malformed input could
+  previously drive a grammar's GLR error-recovery into super-linear time and
+  memory — `fuzz_kotlin_binder` found a 451-byte Kotlin input that took 334 s
+  and blew past 2 GB. The budget bails such a parse as `Err` (the file is
+  skipped) while leaving even multi-MB real files untouched; it is
+  deterministic (no wall clock), so indexing stays reproducible. New
+  `fuzz/fuzz_targets/fuzz_kotlin_binder.rs` exercises the full
+  parse → extract → bind path; the binder logic itself fuzzed clean (no
+  panics / overflows).
+
 ### Added — Kotlin scope binder (cross-file `--strict` on Kotlin)
 
 - New Kotlin scope binder (`src/parse/scope/kotlin.rs`) gives `vex usages

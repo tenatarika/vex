@@ -7,13 +7,13 @@
 //! Isolated from the AST classifiers in `refs.rs` and the body-token
 //! walker in `body.rs` so the high-level orchestration stays readable.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::QueryCursor;
 
 use crate::index::symbols::{ParsedRef, ParsedSymbol, SymbolKind};
 use crate::parse::language::Language;
-use crate::parse::parser_pool::with_parser;
+use crate::parse::parser_pool::parse_text;
 use crate::parse::queries;
 
 use super::body::extract_body_tokens;
@@ -54,11 +54,7 @@ pub fn extract_symbols_and_imports(
     // v1.12.0 P3 — borrow a pooled per-thread parser instead of constructing
     // one per file. The Tree owns its data after parse(), so we can drop the
     // parser borrow before iterating with QueryCursor.
-    let tree = with_parser(lang, |parser| {
-        parser
-            .parse(content, None)
-            .context("tree-sitter parse failed")
-    })?;
+    let tree = parse_text(lang, content)?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), content.as_bytes());
