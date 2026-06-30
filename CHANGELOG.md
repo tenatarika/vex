@@ -4,7 +4,49 @@ All notable changes to vex are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.22.0] - 2026-06-30
+
+Multi-repo **`--workspace`** support: point vex at a `.vex-workspace.toml`
+and every command fans out across a disjoint set of sibling repos, grouping
+results by repo — plus a new **Java scope binder** for cross-file `--strict`
+resolution.
+
+> **On-disk format break (v6 → v7).** Cross-repo strict-usages adds an
+> unresolved-refs section to the index. v3–v6 indexes still open, but the
+> section is absent until a rebuild, so `vex usages --strict --workspace`
+> needs current indexes. **Run `vex index` after upgrading** (per repo, or
+> `vex index --workspace`).
+
+### Added — multi-repo workspaces (`--workspace`)
+
+- A `.vex-workspace.toml` declares a disjoint set of canonicalized member
+  repos, each mapping to its own per-repo index dir and its own `.vex.toml`
+  (excludes / embedder / sections / cache). Overlapping or nested members are
+  rejected at load (`src/workspace`).
+- `--workspace` fans out across every member, grouped by repo, for: `index`,
+  `update`, `search`, `grep`, `check`, `usages`, `impact`, `callers`,
+  `callees`, and `reachable`. Text output uses per-repo sections/headers; JSON
+  uses a `repos[]` payload. Each command shares one `*_in_root` core between
+  the single-repo and workspace paths, so single-repo behaviour is unchanged.
+- A member missing the capability a query needs (`--strict` on a pre-v5 index,
+  a call graph for `reachable`) is reported unavailable for that repo instead
+  of aborting the whole fan-out. Per-member index staleness is surfaced
+  per-repo.
+- `--workspace` conflicts with `--why` (single-repo only). Reference and
+  call-graph resolution is per-repo by default — see the cross-repo
+  strict-usages entry below for the one cross-repo path — with the per-repo
+  boundaries documented in LIMITATIONS §7. See `docs/MULTIREPO.md`.
+
+### Added — Java scope binder (cross-file `--strict` on Java)
+
+- New Java scope binder (`src/parse/scope/java.rs`) gives `vex usages
+  --strict`, `vex impact`, and the update cascade cross-file resolution on
+  Java repos via Pass-2's single-candidate fallback: methods, constructors,
+  classes / interfaces / enums / records, varargs, imports, and
+  anonymous-class containment. Limitations documented in LIMITATIONS §4a.3.
+- Go and Java are now promoted to the T1 AST ref filter, so non-strict
+  `usages` skips identifiers inside comments and strings — closing a parity
+  gap Go missed in v1.21.0.
 
 ### Added — MCP `workspace` param (multi-repo Phase 8)
 
@@ -3387,7 +3429,8 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.15.2...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.22.0...HEAD
+[1.22.0]: https://github.com/tenatarika/vex/compare/v1.21.0...v1.22.0
 [1.15.2]: https://github.com/tenatarika/vex/compare/v1.15.1...v1.15.2
 [1.15.1]: https://github.com/tenatarika/vex/compare/v1.15.0...v1.15.1
 [1.15.0]: https://github.com/tenatarika/vex/compare/v1.14.1...v1.15.0

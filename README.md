@@ -201,6 +201,12 @@ vex update
 # Watch mode (re-indexes on file changes)
 vex watch
 
+# Multi-repo: treat a set of sibling repos as one workspace (v1.22.0)
+vex index --workspace                     # build every member of .vex-workspace.toml
+vex search "RetryPolicy" --workspace      # fan out, results grouped by repo
+vex usages Config --strict --workspace    # cross-repo strict refs (needs a v7 index)
+vex watch --workspace                     # keep every member incrementally fresh
+
 # Show index stats
 vex status
 
@@ -223,7 +229,7 @@ vex completions zsh > ~/.zfunc/_vex
 | `vex similar <name> [--limit N] [--min-score T] [--explain]` | Find symbols semantically close to an existing one (HNSW nearest neighbors). `--explain` adds identifier-Jaccard + truncated unified diff per match. `--min-score` is an alias for `--threshold`. |
 | `vex duplicates [--min-score T] [--min-body-lines N] [--explain]` | List near-duplicate symbol pairs by embedding similarity. `--explain` shows what's actually different between the bodies. |
 | `vex usages <name> [--limit N] [--strict] [--include-self] [--include-docs]` | Find all references/usages of a symbol. Non-strict path = FST lookup; **v1.20.0 strips the row at the symbol's own definition line and `*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc` matches by default** — use `--include-self` / `--include-docs` to restore the pre-v1.20 wide-net behaviour. `--strict` reads binder-resolved refs from the v5 `reference_edges` section (Rust / TypeScript / Python / C# / C++). |
-| **`vex impact <name>`** | **NEW (v1.20.0, F1).** One-call delete-safety blast-radius report. Composes four reference channels — strict refs (binder-resolved), FST refs, `grep \b<Name>\b`, and direct call-graph callers — into a single verdict (`safe` / `unsafe` / `uncertain`) with a per-channel evidence sample. Use this BEFORE proposing to delete or rename a symbol; one call replaces the manual usages→grep→callers dance. Verdict rule: `unsafe` if strict refs OR call-graph callers report >0 (binder/graph confirms real usage); `uncertain` if only text channels hit (likely string-dispatch / comment / decorator); `safe` only when every channel returns zero. |
+| **`vex impact <name> [--depth N] [--exclude-docs]`** | **NEW (v1.20.0, F1).** One-call delete-safety blast-radius report. Composes four reference channels — strict refs (binder-resolved), FST refs, `grep \b<Name>\b`, and direct call-graph callers — into a single verdict (`safe` / `unsafe` / `uncertain`) with a per-channel evidence sample. Use this BEFORE proposing to delete or rename a symbol; one call replaces the manual usages→grep→callers dance. Verdict rule: `unsafe` if strict refs OR call-graph callers report >0 (binder/graph confirms real usage); `uncertain` if only text channels hit (likely string-dispatch / comment / decorator); `safe` only when every channel returns zero. **v1.21.0:** `--depth N` (`1..16`) walks the call graph backward to surface indirect callers at depth ≥ 2; `--exclude-docs` drops prose-format mentions (`*.md`/`*.txt`/…) so a CHANGELOG-only symbol flips to `safe`. |
 | `vex pattern '<pat>' --lang <lang> [--why]` | AST pattern matching with metavariables (`$NAME`, `$_`, `$$$`, plus the v6 named multi-line forms `$$$BODY` / `$$ARGS`). Repeated metavars enforce back-references. Space-flanked ` && ` / ` || ` compose sub-patterns (AND requires both shapes in the file with shared captures agreeing; OR takes the union). When a v6 index is present an indexed prefilter narrows candidates to lang-matching files with the right root kind; falls back to live-scan otherwise. `--why` surfaces a JSON `ScanTrace` (mode / root_kind / candidate vs total / fallback reason) on stderr — and under `_meta.why` in the MCP response. |
 | `vex outline <file> [--kind fn]` | Show file structure, optionally filter by symbol kind. |
 | `vex implementations <name>` | Find types that extend/implement a base class, trait, or interface (incl. generic-parameterised: `class Foo : Repository<T>`). |
@@ -265,6 +271,25 @@ All search-shaped commands (`search`, `usages`, `pattern`, `show`, `grep`, `impl
 - **`vex search --why`** prints a JSON trace to stderr (the result list stays on stdout): `normalized_query`, per-channel hit counts (FST / BM25 / semantic), fallbacks engaged (`fuzzy`), and the active filter snapshot.
 - **`vex pattern --why`** prints a JSON `ScanTrace` to stderr after the result list: `mode` (`indexed` / `live_scan`), `root_kind_inferred`, `candidate_files` / `total_files`, and `fallback_reason` when the indexed prefilter was skipped (`no-index`, `no-skeleton-section`, `empty-section`, `grammar-drift`, `partial-section`, `index-open-error`). MCP callers see the same JSON under `_meta.why`.
 - **`vex similar --explain`** / **`vex duplicates --explain`** add a `jaccard` overlap score plus a truncated unified diff between the two bodies, so you can decide whether two semantically-clustered symbols are actually duplicates before acting.
+
+### Multi-repo workspaces (`--workspace`) — v1.22.0
+
+Declare a set of sibling repos in a `.vex-workspace.toml` and run any command with `--workspace` to fan out across all of them, grouped by repo:
+
+```toml
+# .vex-workspace.toml (at the directory that contains the repos)
+members = ["./api", "./worker", "./shared-lib"]
+```
+
+```bash
+vex index --workspace                   # build every member into its own per-repo index
+vex update --workspace                  # incremental refresh, per-repo changed/deleted counts
+vex usages Config --strict --workspace  # cross-repo strict refs, grouped by repo
+```
+
+- `--workspace` is accepted by `index`, `update`, `search`, `grep`, `check`, `usages`, `impact`, `callers`, `callees`, `reachable`, and `watch`. Each member keeps its own `.vex.toml` (excludes / embedder / sections / cache).
+- Reference and call-graph resolution is **per-repo by default**. The one exception is `vex usages <name> --strict --workspace`, which resolves a reference in repo B to a symbol defined in repo A via a gtags-style name fallback (rendered as a `name-resolved` sub-tier). This needs a **v7 index** — re-run `vex index` after upgrading.
+- A member missing a capability (`--strict` on an old index, a call graph for `reachable`) is reported unavailable for that repo instead of aborting the whole fan-out. `--workspace` conflicts with `--why`. See [`docs/MULTIREPO.md`](docs/MULTIREPO.md) and LIMITATIONS §7.
 
 ## Configuration
 
@@ -751,6 +776,8 @@ auto_update = true
 # format = "compact"   # already the default since v1.10.1 — set "text" if you'd rather see verbose output
 ```
 
+**Multi-repo (v1.22.0):** if Claude Code is working across several repos at once, drop a `.vex-workspace.toml` at the common parent and tell Claude to add `--workspace` to its vex calls — e.g. `vex usages Config --strict --workspace` to trace a symbol's references across every repo, or `vex check Foo --workspace` to see which repos define it. Results come back grouped by repo. See [Multi-repo workspaces](#multi-repo-workspaces---workspace--v1220).
+
 ### Claude Code (MCP Server)
 
 Alternatively, vex includes an MCP server (`vex-mcp`) that exposes all commands as MCP tools. Since **v1.11.2** a prebuilt `vex-mcp` binary ships in every release alongside `vex` for the three triples the build matrix covers: `aarch64-apple-darwin` (macOS Apple Silicon), `x86_64-unknown-linux-gnu` (Linux), and `x86_64-pc-windows-msvc` (Windows). Intel-Mac and other triples still require the source build below.
@@ -804,6 +831,8 @@ cargo build --release -p vex-mcp
 - `status` — index statistics (now includes `gpu_support` / `default_device` *(v1.16.0)*)
 
 > **Note (v1.16.0):** `vex history <Symbol>` (with its new `--diff` / `--exact-presence` / `--since` / `--author` / `--kind` flags) is CLI-only — it is not yet an MCP tool, despite being advertised through `capabilities.history_diff`. Agents that need historical-symbol queries should shell out to `vex history` via Bash (the `--format json` envelope is the same shape every other vex command emits). Promotion to a first-class MCP tool is tracked separately.
+
+> **Multi-repo (v1.22.0):** ten tools — `search`, `grep`, `check`, `usages`, `impact`, `callers`, `callees`, `reachable`, `index`, `update` — take a `workspace: boolean` arg that fans the call across every `.vex-workspace.toml` member, returning the grouped `{workspace, repos:[...]}` payload under `structuredContent.results`. Point `project_root` at or above the `.vex-workspace.toml`. `find_symbol` is excluded (use `check`/`search`); `why` is ignored in workspace mode. See `docs/MULTIREPO-PHASE8-mcp.md`.
 
 **MCP ↔ CLI parity (v1.10):** the schemas now mirror the CLI surface for every path-aware tool. Glob filters (`include` / `exclude`), substring `filter`, `kind` boost, `context_path` proximity hint, `no_bm25`, Phase 13.3 truncation, diff-scope, and `no_stale_check` are exposed everywhere the CLI accepts them — agents no longer need to drop to bash for "Rust files under `crates/api/` since `main`"-style scoping.
 
