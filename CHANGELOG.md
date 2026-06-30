@@ -4,6 +4,23 @@ All notable changes to vex are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added — Kotlin scope binder (cross-file `--strict` on Kotlin)
+
+- New Kotlin scope binder (`src/parse/scope/kotlin.rs`) gives `vex usages
+  --strict`, `vex impact`, and the update cascade cross-file resolution on
+  Kotlin repos via Pass-2's single-candidate fallback: top-level / member
+  functions, secondary constructors, classes / interfaces / objects /
+  companion objects, primary-constructor `val`/`var` params, `vararg`
+  params, enum constants, properties, lambdas, and `import` (incl. `as`
+  aliases). Brings the binder language count to **8** (Rust / TypeScript /
+  Python / C# / C++ / Go / Java / Kotlin). Limitations in LIMITATIONS §4a.4.
+- Kotlin is now promoted to the T1 AST ref filter, so non-strict `usages`
+  skips identifiers inside comments and string literals (only `${...}`
+  template interpolations are walked for refs). The bare `$name` short form
+  is treated as string text.
+
 ## [1.22.0] - 2026-06-30
 
 Multi-repo **`--workspace`** support: point vex at a `.vex-workspace.toml`

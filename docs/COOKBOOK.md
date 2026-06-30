@@ -89,7 +89,7 @@ This is by design — `vex search` is the **ranked-relevance** surface, not the 
 **Tool sequence**:
 
 1. `find_symbol(symbol="OldName")` — confirm the symbol exists and you have the right one.
-2. `usages(symbol="OldName", strict=true)` — **`strict=true` is the load-bearing flag**. Text-scan `usages` (default) returns string-literal / comment / wrong-scope false hits; `strict=true` reads the persistent scope-binder reference edges so cross-file imports are resolved for Rust / TypeScript / Python / C# / C++ / Go / Java (other languages fall back to text-scan and the response signals that).
+2. `usages(symbol="OldName", strict=true)` — **`strict=true` is the load-bearing flag**. Text-scan `usages` (default) returns string-literal / comment / wrong-scope false hits; `strict=true` reads the persistent scope-binder reference edges so cross-file imports are resolved for Rust / TypeScript / Python / C# / C++ / Go / Java / Kotlin (other languages fall back to text-scan and the response signals that).
 3. For each unique caller file in the result set, optionally `show(symbols=["<caller_symbol>"], head=20)` — head-only views are usually enough to plan the rename.
 4. Apply the rename (`Edit` / your editor of choice).
 5. `usages(symbol="OldName", strict=true)` again — must return empty. If anything remains, either the binder couldn't resolve it (look at the response `signals`) or you missed a manual edit.
