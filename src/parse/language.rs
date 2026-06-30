@@ -155,6 +155,7 @@ impl Language {
                 | Self::Cpp
                 | Self::Go
                 | Self::Java
+                | Self::Kotlin
         )
     }
 

@@ -380,9 +380,9 @@ pub enum Commands {
     /// Find all usages/references of a symbol.
     ///
     /// Default mode reads from the legacy refs FST (identifier mentions on
-    /// 7 T1 languages via AST walk; line-scan fallback elsewhere). Use
+    /// 8 T1 languages via AST walk; line-scan fallback elsewhere). Use
     /// `--strict` for binder-resolved refs on Rust / TypeScript / Python /
-    /// C# / C++ / Go / Java — drops false positives from comments / strings / wrong-
+    /// C# / C++ / Go / Java / Kotlin — drops false positives from comments / strings / wrong-
     /// scope same-name refs. Decorator-based dispatch and string-resolved
     /// references (FastAPI `@router.get`, Celery `task.delay`, Uvicorn
     /// factory strings) are invisible to both modes. See
@@ -412,7 +412,7 @@ pub enum Commands {
         /// 11.1). Drops the false positives of the legacy identifier
         /// FST — comments, doc strings, wrong-scope same-name refs.
         /// Available for Rust / TypeScript / Python / C# / C++ / Go /
-        /// Java. Errors
+        /// Java / Kotlin. Errors
         /// on indexes built before v1.8.0 (re-run `vex index` to
         /// rebuild). For other languages the legacy FST is the only
         /// option and is used by default — see `docs/LIMITATIONS.md`.

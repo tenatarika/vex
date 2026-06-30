@@ -130,6 +130,7 @@ fn is_comment_kind(kind: &str, lang: Language) -> bool {
         }
         Language::Go => kind == "comment",
         Language::Java => matches!(kind, "line_comment" | "block_comment"),
+        Language::Kotlin => matches!(kind, "line_comment" | "block_comment"),
         _ => false,
     }
 }
@@ -164,6 +165,10 @@ fn is_plain_string_kind(kind: &str, lang: Language) -> bool {
             "interpreted_string_literal" | "raw_string_literal" | "rune_literal"
         ),
         Language::Java => matches!(kind, "string_literal" | "character_literal" | "text_block"),
+        // Kotlin `string_literal` is interpolatable (`${...}` carries real
+        // refs) — handled below via `interpolation_child_kind`. Only the
+        // char literal is dropped wholesale.
+        Language::Kotlin => kind == "character_literal",
         _ => false,
     }
 }
@@ -177,6 +182,7 @@ fn interpolation_child_kind(kind: &str, lang: Language) -> Option<&'static str> 
         (Language::TypeScript, "template_string") => Some("template_substitution"),
         (Language::Python, "string") => Some("interpolation"),
         (Language::CSharp, "interpolated_string_expression") => Some("interpolation"),
+        (Language::Kotlin, "string_literal") => Some("interpolation"),
         _ => None,
     }
 }
