@@ -131,6 +131,16 @@ pub struct UsagesTrace {
     /// `0` on the strict path or when `--include-docs` is set.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub docs_dropped: usize,
+    /// v1.23.0 (PROTOCOL-EVOLUTION §3.2) — count of rows dropped by the
+    /// `--include` / `--exclude` path-scope globs. This is an **overlapping
+    /// sub-count of the diff-filter residual**, not an independent term: the
+    /// residual `dropped` (surfaced in `_meta.vex.dev/diff_filter`) still
+    /// includes these rows alongside `filter_path` + diff drops. Added so an
+    /// agent can tell how much of that residual was scope narrowing versus a
+    /// `--since*` / `--changed-only` diff. Do NOT subtract it a second time
+    /// from the balance. Zero on an unscoped query.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub scope_dropped: usize,
     pub filter_applied: FilterSnapshot,
 }
 
@@ -185,6 +195,7 @@ mod tests {
             prefix_suggestions: None,
             def_site_dropped: 0,
             docs_dropped: 0,
+            scope_dropped: 0,
             filter_applied: FilterSnapshot::default(),
         };
         let s = serde_json::to_string(&t).unwrap();
@@ -215,6 +226,7 @@ mod tests {
             prefix_suggestions: None,
             def_site_dropped: 0,
             docs_dropped: 0,
+            scope_dropped: 0,
             filter_applied: FilterSnapshot::default(),
         };
         let s = serde_json::to_string(&t).unwrap();
@@ -241,6 +253,7 @@ mod tests {
             prefix_suggestions: Some(3),
             def_site_dropped: 0,
             docs_dropped: 0,
+            scope_dropped: 0,
             filter_applied: FilterSnapshot::default(),
         };
         let s = serde_json::to_string(&t).unwrap();

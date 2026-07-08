@@ -189,6 +189,13 @@ materializes before v2, revisit — until then, single-copy is correct.
 
 ### 3.2 `diff_dropped` residual — add an overlapping `scope_dropped` sub-count
 
+**Status: SHIPPED (v1.23.0).** `UsagesTrace.scope_dropped` (`skip_if
+is_zero_usize`) now carries `DropCounts.scope` as an overlapping sub-count in
+the `--why` trace; `diff_dropped` is unchanged. No capability flag — it rides
+under the existing `why` capability like its `def_site_dropped` /
+`docs_dropped` siblings (see §6). The `narrowing_dropped` rename remains a v2
+item.
+
 **Problem.** In `cmd_usages`, the drop residual is computed as
 `diff_dropped = pre_filter_count − total − def_site_dropped − docs_dropped`
 (where `total` is post-scope + filter_path + diff). The channel *does*
@@ -297,11 +304,17 @@ Current flags: `signals`, `empty_reason`, `bundle_modes`, `why`,
 
 Proposed additions (flip as each expand step lands):
 
-- `scope_dropped` — §3.2 finer drop attribution present (v1.x)
 - `structured_result_kind` — §4 `def`/`neighbor` marker in
   `structuredContent` (v1.x). The text-channel drift hint is **not** gated.
 - `signals_nested` — §3.1 nested wire form. Flips at **v2**, not during
   v1.x (the v1.x work is internal-only).
+
+No flag for §3.2 `scope_dropped` (revised from an earlier draft): it is a
+sub-field of the `--why` trace, which is already gated wholesale by the `why`
+capability. Its siblings `def_site_dropped` / `docs_dropped` (v1.20.0) ship
+ungated the same way; a per-field flag for one of three peers would be
+inconsistent. Trace sub-fields ride under `why`; only top-level envelope
+shape changes earn their own flag.
 
 ---
 

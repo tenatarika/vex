@@ -41,6 +41,10 @@ struct UsagesOutcome {
     hits_before_filter: usize,
     def_site_dropped: usize,
     docs_dropped: usize,
+    /// Rows dropped by `--include`/`--exclude` path-scope globs. Overlapping
+    /// sub-count of `diff_dropped` (which still includes them) — see
+    /// `UsagesTrace::scope_dropped`.
+    scope_dropped: usize,
     diff_retained: usize,
     diff_dropped: usize,
     changed_paths: Option<crate::util::git_diff::ChangedPaths>,
@@ -131,6 +135,7 @@ pub(crate) fn usages(
             prefix_suggestions: outcome.prefix_suggestions.as_ref().map(|v| v.len()),
             def_site_dropped: outcome.def_site_dropped,
             docs_dropped: outcome.docs_dropped,
+            scope_dropped: outcome.scope_dropped,
             filter_applied: crate::cli::trace::FilterSnapshot {
                 filter: filter_path.clone(),
                 include: scope.include.clone(),
@@ -311,6 +316,7 @@ fn usages_from_reader(
             hits_before_filter: 0,
             def_site_dropped: 0,
             docs_dropped: 0,
+            scope_dropped: 0,
             diff_retained: 0,
             diff_dropped: 0,
             changed_paths,
@@ -321,6 +327,10 @@ fn usages_from_reader(
     let hits_before_filter = output.pre_filter_count;
     let def_site_dropped = output.dropped.def_site;
     let docs_dropped = output.dropped.docs;
+    // Overlapping sub-count: `diff_dropped` below still folds these in (the
+    // residual is computed from `pre_filter_count`, which precedes the
+    // channel's scope drop). Surfaced separately for attribution only.
+    let scope_dropped = output.dropped.scope;
 
     // Apply `filter_path` (substring) and `diff` (changed-path set) on the
     // channel's surviving hits — command-specific filters outside the
@@ -363,6 +373,7 @@ fn usages_from_reader(
         hits_before_filter,
         def_site_dropped,
         docs_dropped,
+        scope_dropped,
         diff_retained,
         diff_dropped,
         changed_paths,
