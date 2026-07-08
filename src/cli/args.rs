@@ -269,7 +269,7 @@ pub enum Commands {
         no_semantic: bool,
 
         /// Filter results by path substring (e.g. "src/api/" or "tests/")
-        #[arg(short = 'f', long = "filter")]
+        #[arg(short = 'f', long = "filter-path", visible_alias = "filter")]
         filter_path: Option<String>,
 
         /// Boost results matching one or more kinds. Repeatable and
@@ -396,7 +396,7 @@ pub enum Commands {
         limit: usize,
 
         /// Filter results by path substring (e.g. "src/api/" or "tests/")
-        #[arg(short = 'f', long = "filter")]
+        #[arg(short = 'f', long = "filter-path", visible_alias = "filter")]
         filter_path: Option<String>,
 
         /// Auto-update index if stale
@@ -662,7 +662,7 @@ pub enum Commands {
         context: usize,
 
         /// Filter results by path substring (e.g. "src/api/" or "tests/")
-        #[arg(short = 'f', long = "filter")]
+        #[arg(short = 'f', long = "filter-path", visible_alias = "filter")]
         filter_path: Option<String>,
 
         /// Boost results matching one or more kinds (repeatable,
@@ -740,7 +740,7 @@ pub enum Commands {
         limit: usize,
 
         /// Filter by path substring (e.g. "src/api/" or "tests/")
-        #[arg(short = 'f', long = "filter")]
+        #[arg(short = 'f', long = "filter-path", visible_alias = "filter")]
         filter_path: Option<String>,
 
         /// Project root path (defaults to cwd)
@@ -1109,7 +1109,7 @@ docs/GPU_SUPPORT.md §11 — heavy embedders / shared GPU only)."
         threshold: f32,
 
         /// Filter results by path substring (e.g. "src/api/" or "tests/")
-        #[arg(short = 'f', long = "filter")]
+        #[arg(short = 'f', long = "filter-path", visible_alias = "filter")]
         filter_path: Option<String>,
 
         /// Show reasoning per result: identifier-set Jaccard overlap +
@@ -1158,7 +1158,7 @@ docs/GPU_SUPPORT.md §11 — heavy embedders / shared GPU only)."
         min_body_lines: usize,
 
         /// Filter pairs to those involving this path substring
-        #[arg(short = 'f', long = "filter")]
+        #[arg(short = 'f', long = "filter-path", visible_alias = "filter")]
         filter_path: Option<String>,
 
         /// Show reasoning per pair: identifier-set Jaccard overlap +

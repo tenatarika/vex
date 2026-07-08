@@ -44,7 +44,9 @@ pub(crate) fn build_show(
     let limit = opt_u64(args, "limit", 1)?;
     let mut extra = symbols;
     extra.extend(["--limit".into(), limit.to_string()]);
-    if let Some(filter) = opt_str(args, "filter")? {
+    // `filter_path` canonical; `filter` back-compat alias (§3.3). Spawn the
+    // established `--filter` CLI flag for mixed-version safety.
+    if let Some(filter) = read_canonical_str(args, "filter_path", "filter", deprecated)? {
         extra.extend(["--filter".into(), filter.to_string()]);
     }
     push_kind(&mut extra, args)?;

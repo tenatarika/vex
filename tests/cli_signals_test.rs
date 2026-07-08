@@ -197,6 +197,44 @@ fn search_fuzzy_typo_query_results_are_neighbors_not_defs() {
     }
 }
 
+/// PROTOCOL-EVOLUTION §3.3 — `--filter-path` is the canonical CLI flag and
+/// `--filter` is a back-compat alias; both must parse and produce identical
+/// filtered results.
+#[test]
+fn search_filter_path_flag_and_filter_alias_are_equivalent() {
+    let tmp = TempDir::new().unwrap();
+    seed_corpus(tmp.path());
+
+    let run = |flag: &str| {
+        let assert = vex_in(tmp.path())
+            .args(["search", "alpha", flag, "src", "--format", "json"])
+            .assert()
+            .success();
+        let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+        let v: serde_json::Value = serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|e| panic!("{flag}: not valid JSON: {e}\n{stdout}"));
+        v["results"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|r| r["name"].as_str().map(String::from))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+
+    let canonical = run("--filter-path");
+    let alias = run("--filter");
+    assert!(
+        !canonical.is_empty(),
+        "expected at least one result under src/ for --filter-path"
+    );
+    assert_eq!(
+        canonical, alias,
+        "--filter-path and its --filter alias must return identical results"
+    );
+}
+
 #[test]
 fn search_signals_fst_hit_is_bool() {
     let tmp = TempDir::new().unwrap();

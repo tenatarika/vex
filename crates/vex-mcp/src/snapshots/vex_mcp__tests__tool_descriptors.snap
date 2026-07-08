@@ -38,8 +38,8 @@ expression: descriptors
           },
           "type": "array"
         },
-        "filter": {
-          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns).",
+        "filter_path": {
+          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns). Legacy alias: `filter`.",
           "type": "string"
         },
         "include": {
@@ -385,8 +385,8 @@ expression: descriptors
           },
           "type": "array"
         },
-        "filter": {
-          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns).",
+        "filter_path": {
+          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns). Legacy alias: `filter`.",
           "type": "string"
         },
         "head": {
@@ -472,8 +472,8 @@ expression: descriptors
           },
           "type": "array"
         },
-        "filter": {
-          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns).",
+        "filter_path": {
+          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns). Legacy alias: `filter`.",
           "type": "string"
         },
         "include": {
@@ -759,8 +759,8 @@ expression: descriptors
           },
           "type": "array"
         },
-        "filter": {
-          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns).",
+        "filter_path": {
+          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns). Legacy alias: `filter`.",
           "type": "string"
         },
         "include": {
@@ -1297,8 +1297,8 @@ expression: descriptors
           "description": "Include reasoning per match: identifier-set Jaccard overlap + truncated unified diff between bodies",
           "type": "boolean"
         },
-        "filter": {
-          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns).",
+        "filter_path": {
+          "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns). Legacy alias: `filter`.",
           "type": "string"
         },
         "include": {
@@ -1482,8 +1482,8 @@ expression: descriptors
           "description": "Include reasoning per pair: identifier-set Jaccard overlap + truncated unified diff between the two bodies",
           "type": "boolean"
         },
-        "filter": {
-          "description": "Substring path filter — keep pairs where at least one symbol's path contains this substring.",
+        "filter_path": {
+          "description": "Substring path filter — keep pairs where at least one symbol's path contains this substring. Legacy alias: `filter`.",
           "type": "string"
         },
         "include": {

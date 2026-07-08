@@ -186,6 +186,61 @@ fn show_legacy_singular_symbol_arg_is_deprecated() {
 }
 
 #[test]
+fn filter_path_canonical_and_legacy_filter_alias_both_spawn_filter_flag() {
+    // PROTOCOL-EVOLUTION §3.3 — `filter_path` is canonical; `filter` is a
+    // back-compat alias. Both resolve to the established `--filter` CLI flag
+    // (mixed-version safe); only the legacy name flags a deprecation marker.
+    // (tool, required primary field for that tool)
+    let cases: [(&str, Value); 4] = [
+        ("search", json!({"query": "foo"})),
+        ("usages", json!({"symbol": "Foo"})),
+        ("grep", json!({"pattern": "foo"})),
+        ("duplicates", json!({})),
+    ];
+    for (tool, base) in cases {
+        let mut canon_args = base.clone();
+        canon_args["filter_path"] = json!("src/api/");
+        let canon = build_command(tool, &canon_args, "/tmp/proj")
+            .unwrap_or_else(|e| panic!("{tool}: canonical filter_path must build: {e}"));
+        let fi = canon
+            .extra_args
+            .iter()
+            .position(|a| a == "--filter")
+            .unwrap_or_else(|| {
+                panic!(
+                    "{tool}: expected --filter in argv, got: {:?}",
+                    canon.extra_args
+                )
+            });
+        assert_eq!(
+            canon.extra_args.get(fi + 1).map(String::as_str),
+            Some("src/api/"),
+            "{tool}: --filter value must follow the flag"
+        );
+        assert!(
+            canon.deprecated_args.is_empty(),
+            "{tool}: canonical filter_path must not flag deprecation, got: {:?}",
+            canon.deprecated_args
+        );
+
+        let mut legacy_args = base.clone();
+        legacy_args["filter"] = json!("src/api/");
+        let legacy = build_command(tool, &legacy_args, "/tmp/proj")
+            .unwrap_or_else(|e| panic!("{tool}: legacy filter must build: {e}"));
+        assert!(
+            legacy.extra_args.iter().any(|a| a == "src/api/"),
+            "{tool}: legacy filter value must reach argv"
+        );
+        assert_eq!(
+            legacy.deprecated_args,
+            vec!["filter".to_string()],
+            "{tool}: legacy `filter` must emit a deprecation marker, got: {:?}",
+            legacy.deprecated_args
+        );
+    }
+}
+
+#[test]
 fn search_why_flag_is_pushed() {
     let extra = args_for("search", json!({"query": "Foo", "why": true}));
     assert!(

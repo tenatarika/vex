@@ -9,9 +9,7 @@ use serde_json::Value;
 use crate::args::{
     push_auto_update, push_diff_scope, push_no_stale_check, push_scope, push_workspace,
 };
-use crate::params::{
-    opt_bool, opt_str, opt_u64, opt_u64_some, read_canonical_str, req_str, ParamError,
-};
+use crate::params::{opt_bool, opt_u64, opt_u64_some, read_canonical_str, req_str, ParamError};
 
 pub(crate) fn build_usages(
     args: &Value,
@@ -47,7 +45,9 @@ pub(crate) fn build_usages(
     if opt_bool(args, "include_docs", false)? {
         extra.push("--include-docs".into());
     }
-    if let Some(filter) = opt_str(args, "filter")? {
+    // `filter_path` canonical; `filter` back-compat alias (§3.3). Spawn the
+    // established `--filter` CLI flag for mixed-version safety.
+    if let Some(filter) = read_canonical_str(args, "filter_path", "filter", deprecated)? {
         extra.extend(["--filter".into(), filter.to_string()]);
     }
     push_auto_update(&mut extra, args)?;

@@ -14,7 +14,7 @@ use crate::params::{opt_bool, opt_f64, opt_str, opt_u64, read_canonical_str, req
 pub(crate) fn build_search(
     args: &Value,
     _project_root: &str,
-    _deprecated: &mut Vec<String>,
+    deprecated: &mut Vec<String>,
 ) -> Result<(String, Vec<String>)> {
     let query = req_str(args, "query")?;
     let limit = opt_u64(args, "limit", 20)?;
@@ -33,7 +33,10 @@ pub(crate) fn build_search(
     if !workspace && opt_bool(args, "why", false)? {
         extra.push("--why".into());
     }
-    if let Some(filter) = opt_str(args, "filter")? {
+    // `filter_path` is canonical; `filter` is the back-compat alias
+    // (PROTOCOL-EVOLUTION §3.3). Always spawn the long-established
+    // `--filter` CLI flag so a mixed-version `vex` on PATH still parses it.
+    if let Some(filter) = read_canonical_str(args, "filter_path", "filter", deprecated)? {
         extra.extend(["--filter".into(), filter.to_string()]);
     }
     push_kind(&mut extra, args)?;
@@ -108,7 +111,10 @@ pub(crate) fn build_similar(
         "--threshold".into(),
         threshold.to_string(),
     ];
-    if let Some(filter) = opt_str(args, "filter")? {
+    // `filter_path` is canonical; `filter` is the back-compat alias
+    // (PROTOCOL-EVOLUTION §3.3). Always spawn the long-established
+    // `--filter` CLI flag so a mixed-version `vex` on PATH still parses it.
+    if let Some(filter) = read_canonical_str(args, "filter_path", "filter", deprecated)? {
         extra.extend(["--filter".into(), filter.to_string()]);
     }
     if opt_bool(args, "explain", false)? {
@@ -127,7 +133,7 @@ pub(crate) fn build_similar(
 pub(crate) fn build_duplicates(
     args: &Value,
     project_root: &str,
-    _deprecated: &mut Vec<String>,
+    deprecated: &mut Vec<String>,
 ) -> Result<(String, Vec<String>)> {
     let threshold = opt_f64(args, "threshold")?.unwrap_or(0.9);
     let limit = opt_u64(args, "limit", 50)?;
@@ -142,7 +148,10 @@ pub(crate) fn build_duplicates(
         "--min-body-lines".into(),
         min_body_lines.to_string(),
     ];
-    if let Some(filter) = opt_str(args, "filter")? {
+    // `filter_path` is canonical; `filter` is the back-compat alias
+    // (PROTOCOL-EVOLUTION §3.3). Always spawn the long-established
+    // `--filter` CLI flag so a mixed-version `vex` on PATH still parses it.
+    if let Some(filter) = read_canonical_str(args, "filter_path", "filter", deprecated)? {
         extra.extend(["--filter".into(), filter.to_string()]);
     }
     if opt_bool(args, "explain", false)? {
@@ -161,7 +170,7 @@ pub(crate) fn build_duplicates(
 pub(crate) fn build_grep(
     args: &Value,
     project_root: &str,
-    _deprecated: &mut Vec<String>,
+    deprecated: &mut Vec<String>,
 ) -> Result<(String, Vec<String>)> {
     let pattern = req_str(args, "pattern")?;
     let limit = opt_u64(args, "limit", 50)?;
@@ -172,7 +181,10 @@ pub(crate) fn build_grep(
         "--path".into(),
         project_root.to_string(),
     ];
-    if let Some(filter) = opt_str(args, "filter")? {
+    // `filter_path` is canonical; `filter` is the back-compat alias
+    // (PROTOCOL-EVOLUTION §3.3). Always spawn the long-established
+    // `--filter` CLI flag so a mixed-version `vex` on PATH still parses it.
+    if let Some(filter) = read_canonical_str(args, "filter_path", "filter", deprecated)? {
         extra.extend(["--filter".into(), filter.to_string()]);
     }
     push_scope(&mut extra, args)?;
