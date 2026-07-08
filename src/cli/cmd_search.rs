@@ -212,7 +212,17 @@ pub(crate) fn search(
                     "message": search_drift_message(&query),
                 }));
             }
-            output::print_search_envelope(&results, &signals, meta);
+            // §4 result_kind: the structural channel folds a fuzzy
+            // (Levenshtein) fallback into `trace_structural` with
+            // `MatchType::Fuzzy`. That fallback is all-or-nothing per query
+            // (see `symbol_fst::search_with_fallback`), and the pre-fusion
+            // trace keeps its tag (fusion only relabels the merged `results`),
+            // so any Fuzzy row here means the whole set is a typo-corrected
+            // near-miss — never a `"def"`.
+            let structural_fuzzy = trace_structural
+                .iter()
+                .any(|r| matches!(r.match_type, crate::search::MatchType::Fuzzy));
+            output::print_search_envelope(&results, &signals, meta, structural_fuzzy);
         }
         OutputFormat::Text | OutputFormat::Compact => {
             if results.is_empty() {

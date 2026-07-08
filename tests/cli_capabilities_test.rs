@@ -78,6 +78,22 @@ fn capabilities_command_includes_empty_reason_false() {
 }
 
 #[test]
+fn capabilities_command_advertises_structured_result_kind() {
+    // PROTOCOL-EVOLUTION §4 (v1.24.0) — the `def`/`neighbor` per-result
+    // marker ships in this release, so its capability flag flips true in the
+    // same release that first emits the field (§2 step-2).
+    let tmp = TempDir::new().unwrap();
+    write_minimal_project(tmp.path());
+    let out = run_capabilities(tmp.path());
+    assert_eq!(
+        out["capabilities"]["structured_result_kind"].as_bool(),
+        Some(true),
+        "expected capabilities.structured_result_kind == true, got: {}",
+        out
+    );
+}
+
+#[test]
 fn capabilities_command_bundle_modes_lists_phase_13_2_modes() {
     // Phase 13.2 — `bundle_modes` advertises the three modes shipped by
     // the `vex bundle` subcommand. Order is locked to mirror

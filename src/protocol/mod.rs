@@ -39,6 +39,13 @@ pub struct Capabilities {
     /// hunks }` for non-head entries within each `(symbol, kind)`
     /// group. Lets MCP agents feature-detect the diff rendering.
     pub history_diff: bool,
+    /// v1.24.0 (PROTOCOL-EVOLUTION §4 agent-output) — `vex search --format
+    /// json` results carry a per-row `result_kind` (`"def"` | `"neighbor"`)
+    /// distinguishing a structural definition match from a row surfaced only
+    /// via lexical/semantic proximity (callers, imports, fuzzy). Lets
+    /// code-mode consumers feature-detect the marker before reading it;
+    /// absent ⇒ unsupported (§1b).
+    pub structured_result_kind: bool,
 }
 
 #[derive(Serialize, Default, Clone, Debug)]

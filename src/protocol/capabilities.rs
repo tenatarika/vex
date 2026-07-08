@@ -13,5 +13,6 @@ pub fn current() -> Capabilities {
         metadata_filters: true,
         auto_update: true,
         history_diff: true,
+        structured_result_kind: true,
     }
 }

@@ -121,6 +121,82 @@ fn search_json_results_each_have_signals() {
     }
 }
 
+/// PROTOCOL-EVOLUTION §4 (v1.24.0) — capability↔emission coupling.
+/// `structured_result_kind` is advertised true, so every search result must
+/// carry a `result_kind` of exactly `"def"` or `"neighbor"`, and it must
+/// agree with `signals.fst_hit` (fst_hit ⇒ def). An exact-name query returns
+/// the definition, so results[0] is a `"def"`.
+#[test]
+fn search_results_carry_result_kind_coupled_to_capability_and_fst_hit() {
+    let tmp = TempDir::new().unwrap();
+    seed_corpus(tmp.path());
+    let out = search_json(tmp.path(), "alpha_handler");
+    assert_eq!(
+        out["capabilities"]["structured_result_kind"].as_bool(),
+        Some(true),
+        "capability must advertise the marker it emits, got: {out}"
+    );
+    let results = out["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected results array, got: {out}"));
+    assert!(!results.is_empty(), "expected at least one result");
+    for (i, r) in results.iter().enumerate() {
+        let kind = r["result_kind"].as_str().unwrap_or_else(|| {
+            panic!("results[{i}] missing result_kind string (capability is true), got: {r}")
+        });
+        assert!(
+            kind == "def" || kind == "neighbor",
+            "results[{i}].result_kind must be \"def\" or \"neighbor\", got: {kind:?}"
+        );
+        // `fst_hit` is a non-optional wire bool — a missing/malformed key is a
+        // contract violation, so fail loudly rather than defaulting.
+        let fst_hit = r["signals"]["fst_hit"].as_bool().unwrap_or_else(|| {
+            panic!("results[{i}].signals.fst_hit must be a bool on the wire, got: {r}")
+        });
+        // Exact-name query (no fuzzy fallback), so fst_hit ⇒ def here.
+        let expected = if fst_hit { "def" } else { "neighbor" };
+        assert_eq!(
+            kind, expected,
+            "results[{i}].result_kind must agree with signals.fst_hit for a non-fuzzy query; got kind={kind:?}, fst_hit={fst_hit}"
+        );
+    }
+    // An exact-name query resolves to the definition.
+    assert_eq!(
+        results[0]["result_kind"].as_str(),
+        Some("def"),
+        "exact-name query 'alpha_handler' must return a def as the top result, got: {}",
+        results[0]
+    );
+}
+
+/// PROTOCOL-EVOLUTION §4 — a fuzzy/typo-corrected query must NOT be labelled
+/// `"def"`. The structural channel folds a Levenshtein fallback into the same
+/// list (so `fst_hit` is true), but the query did not match the name as typed,
+/// so every row reads as `"neighbor"`. Regression for the code-review HIGH
+/// (`alphaHandlr` → `alpha_handler` was mislabelled `"def"`).
+#[test]
+fn search_fuzzy_typo_query_results_are_neighbors_not_defs() {
+    let tmp = TempDir::new().unwrap();
+    seed_corpus(tmp.path());
+    // Deliberate typo: no exact/prefix hit, so the FST falls back to fuzzy.
+    let out = search_json(tmp.path(), "alphaHandlr");
+    let results = out["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected results array, got: {out}"));
+    if results.is_empty() {
+        // If the corpus/index produced no fuzzy hit at all, there is nothing
+        // to mislabel — the invariant holds vacuously.
+        return;
+    }
+    for (i, r) in results.iter().enumerate() {
+        assert_eq!(
+            r["result_kind"].as_str(),
+            Some("neighbor"),
+            "results[{i}] of a typo query must be a neighbor, not a def; got: {r}"
+        );
+    }
+}
+
 #[test]
 fn search_signals_fst_hit_is_bool() {
     let tmp = TempDir::new().unwrap();

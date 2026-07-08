@@ -49,6 +49,38 @@ struct SearchResultWithSignals<'a> {
     inner: &'a SearchResult,
     signals: Signals,
     rank_percentile: f32,
+    /// v1.24.0 (PROTOCOL-EVOLUTION §4) — `"def"` when the query matched this
+    /// symbol's name structurally (a definition of what was searched),
+    /// `"neighbor"` when the row was surfaced only via lexical/semantic
+    /// proximity (callers, imports, fuzzy). Gated by
+    /// `capabilities.structured_result_kind`. `None` omits the key so the
+    /// non-search / un-opted-in path stays byte-identical (§2a).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_kind: Option<&'static str>,
+}
+
+/// Classify a result as a definition or a neighbour.
+///
+/// `"def"` requires an *exact / prefix* structural (FST) name match: the query
+/// named this symbol. A `fst_hit` alone is not sufficient, because the
+/// structural channel folds a Levenshtein *fuzzy* fallback into the same list
+/// (`search::structural::search_with_fuzzy`) — a typo-corrected near-miss did
+/// NOT match the name as typed and must read as a neighbour. Because that
+/// fallback is all-or-nothing per query (`symbol_fst::search_with_fallback`
+/// only reaches fuzzy when exact + prefix are both empty), a single
+/// `structural_fuzzy` flag disqualifies the whole result set from `"def"`.
+///
+/// Everything else — rows surfaced only via the lexical (BM25) or semantic
+/// channels (a caller, an import), and every row of a fuzzy-fallback query —
+/// is a `"neighbor"`. This is the per-result form of the query-level drift
+/// concept (see `cmd_search::SearchOutcome.drifted` /
+/// `docs/PROTOCOL-EVOLUTION.md` §4).
+fn classify_result_kind(sig: &Signals, structural_fuzzy: bool) -> &'static str {
+    if sig.fst_hit && !structural_fuzzy {
+        "def"
+    } else {
+        "neighbor"
+    }
 }
 
 /// Build the response `_meta` block for a search call.
@@ -152,7 +184,17 @@ fn envelope_disabled_via_env() -> bool {
 /// When `VEX_JSON_ENVELOPE=0` (or `false`/`off`), we fall back to the
 /// pre-Phase-13 bare-array shape so existing pipelines keep working. This
 /// opt-out is slated for removal in v2.0.
-pub fn print_search_envelope(results: &[SearchResult], signals: &[Signals], meta: MetaEnvelope) {
+///
+/// `structural_fuzzy` marks that the structural channel drifted to a
+/// Levenshtein fuzzy fallback for this query (all-or-nothing per query), which
+/// disqualifies every row from the `"def"` `result_kind` — see
+/// [`classify_result_kind`].
+pub fn print_search_envelope(
+    results: &[SearchResult],
+    signals: &[Signals],
+    meta: MetaEnvelope,
+    structural_fuzzy: bool,
+) {
     if envelope_disabled_via_env() {
         let json = serde_json::to_string_pretty(results).unwrap_or_default();
         println!("{json}");
@@ -172,10 +214,12 @@ pub fn print_search_envelope(results: &[SearchResult], signals: &[Signals], meta
             // called with the same merged slice — fall back to default so a
             // mismatch never panics in the output path.
             let sig = signals.get(i).cloned().unwrap_or_default();
+            let result_kind = Some(classify_result_kind(&sig, structural_fuzzy));
             SearchResultWithSignals {
                 inner: r,
                 signals: sig,
                 rank_percentile,
+                result_kind,
             }
         })
         .collect();
@@ -671,5 +715,99 @@ fn compact_kind(kind: &str) -> char {
         "package" => 'G',
         "heading" => 'H',
         _ => '?',
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::MatchType;
+
+    fn sample_result() -> SearchResult {
+        SearchResult {
+            name: "alpha_handler".into(),
+            kind: "function".into(),
+            path: "src/a.rs".into(),
+            line: 1,
+            signature: None,
+            score: 0.9,
+            match_type: MatchType::Structural,
+        }
+    }
+
+    #[test]
+    fn classify_result_kind_maps_exact_fst_hit_to_def_else_neighbor() {
+        let hit = Signals {
+            fst_hit: true,
+            ..Signals::default()
+        };
+        // Exact/prefix structural name match (not a fuzzy fallback) → def.
+        assert_eq!(classify_result_kind(&hit, false), "def");
+
+        // Surfaced only via a proximity channel (BM25 rank present, no FST
+        // hit) → neighbour.
+        let bm25_only = Signals {
+            fst_hit: false,
+            bm25_rank: Some(0),
+            ..Signals::default()
+        };
+        assert_eq!(classify_result_kind(&bm25_only, false), "neighbor");
+
+        // A bare default (no channel signal) still classifies as neighbour,
+        // never panics.
+        assert_eq!(classify_result_kind(&Signals::default(), false), "neighbor");
+    }
+
+    /// Regression: a fuzzy-fallback query (`structural_fuzzy == true`) produces
+    /// `fst_hit == true` rows that did NOT match the name as typed — they must
+    /// read as `"neighbor"`, not `"def"`. Caught in code review before merge.
+    #[test]
+    fn classify_result_kind_fuzzy_fallback_hit_is_neighbor_not_def() {
+        let fuzzy_hit = Signals {
+            fst_hit: true,
+            ..Signals::default()
+        };
+        assert_eq!(
+            classify_result_kind(&fuzzy_hit, true),
+            "neighbor",
+            "a fuzzy-fallback structural hit is a typo-corrected near-miss, not a def"
+        );
+    }
+
+    /// §2a un-opted-in byte-identity guard: a `SearchResultWithSignals` whose
+    /// `result_kind` is `None` MUST serialize *without* the key, so the
+    /// non-search / pre-feature path stays byte-identical. This cannot be
+    /// satisfied by editing a golden — the key must genuinely be absent.
+    #[test]
+    fn result_kind_none_omits_the_wire_key() {
+        let inner = sample_result();
+        let row = SearchResultWithSignals {
+            inner: &inner,
+            signals: Signals::default(),
+            rank_percentile: 1.0,
+            result_kind: None,
+        };
+        let v = serde_json::to_value(&row).unwrap();
+        assert!(
+            v.get("result_kind").is_none(),
+            "result_kind: None must omit the key entirely; got: {v}"
+        );
+    }
+
+    #[test]
+    fn result_kind_some_emits_the_wire_key() {
+        let inner = sample_result();
+        let row = SearchResultWithSignals {
+            inner: &inner,
+            signals: Signals::default(),
+            rank_percentile: 1.0,
+            result_kind: Some("def"),
+        };
+        let v = serde_json::to_value(&row).unwrap();
+        assert_eq!(
+            v.get("result_kind").and_then(|k| k.as_str()),
+            Some("def"),
+            "result_kind: Some must emit the string key; got: {v}"
+        );
     }
 }

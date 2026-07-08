@@ -427,6 +427,70 @@ INFO trailing line\n\
         );
     }
 
+    /// PROTOCOL-EVOLUTION §2a cross-crate tolerance — the MCP wrapper
+    /// reconstructs `capabilities` / `_meta` as untyped JSON, so an envelope
+    /// carrying an *unknown* capability key AND an unknown `_meta.vex.dev/*`
+    /// key (a newer `vex` on PATH than this wrapper was built against) must
+    /// pass through untouched, never rejected. This proves invariant #2 for
+    /// the real consumer, not just the producer.
+    #[test]
+    fn build_mcp_response_tolerates_unknown_capability_and_meta_keys() {
+        let future_envelope = serde_json::json!({
+            "protocol_version": "v1",
+            "capabilities": {
+                "signals": true, "empty_reason": false, "bundle_modes": [],
+                "why": true, "scope_filters": true, "metadata_filters": true,
+                "auto_update": true, "history_diff": true,
+                "structured_result_kind": true,
+                // A capability this wrapper build has never heard of:
+                "some_future_flag": true,
+            },
+            "_meta": {
+                "vex.dev/index_age_ms": 7,
+                // A _meta key this wrapper build has never heard of:
+                "vex.dev/some_future_hint": { "reason": "future" },
+            },
+            "results": [{
+                "name": "alpha_handler", "kind": "function",
+                "path": "src/a.rs", "line": 1, "score": 0.9,
+                "rank_percentile": 1.0,
+                "signals": { "fst_hit": true },
+                "result_kind": "def",
+            }]
+        });
+        let stdout = serde_json::to_string(&future_envelope).unwrap();
+
+        let result = build_mcp_response(
+            Some(0),
+            "exit status: 0".to_string(),
+            &stdout,
+            "",
+            "search",
+            &[],
+            &json!({}),
+        )
+        .expect("unknown forward-compat keys must not defeat envelope lifting");
+
+        // Unknown capability survives (capabilities cloned wholesale).
+        assert_eq!(
+            result["capabilities"]["some_future_flag"].as_bool(),
+            Some(true),
+            "unknown capability key must pass through untouched; got: {result}"
+        );
+        // Unknown _meta key survives (copied key-by-key).
+        assert!(
+            result["_meta"]["vex.dev/some_future_hint"].is_object(),
+            "unknown _meta key must pass through untouched; got: {}",
+            result["_meta"]
+        );
+        // The new result_kind marker rides in structuredContent for the LLM.
+        assert_eq!(
+            result["structuredContent"]["results"][0]["result_kind"].as_str(),
+            Some("def"),
+            "result_kind must be carried in structuredContent; got: {result}"
+        );
+    }
+
     #[test]
     fn mcp_response_places_signals_inside_structured_content_not_meta() {
         // Per MCP spec, _meta is invisible to the LLM. Signals MUST live in
