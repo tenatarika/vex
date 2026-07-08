@@ -237,42 +237,148 @@ hidden alias), canonicalizes internally. Precedent:
 Per the protocol research these outrank nested Signals in agent value.
 Split by break-risk:
 
-- **Text `content` channel — ship now, no gate.** Free-form text for the
-  LLM: a `via:` tag + `def`/`neighbor` marker per result, **no raw scores**,
-  and the "no exact hit → these are neighbors" **drift hint inline in the
-  payload** (agents don't see stderr — directly fixes the known
-  `vex search` misuse footgun, `reference_search_ranking_drift`). This is
-  the highest-value, zero-risk change and needs no capability flag to add.
-  **Status: the drift hint is SHIPPED (v1.23.0).** It is carried in the
-  envelope as `_meta.vex.dev/search_hint` `{ reason: "no_local_definition",
-  query, message }`, set on the single-repo JSON path when an
-  identifier-shaped query has zero structural hits, and on the workspace
-  envelope's top-level `_meta` when *every* member drifts (query-scoped). The
-  MCP builder needs no change — it already dumps the full envelope to
-  `content[0].text` and propagates `_meta`. The `via:` / `def`/`neighbor`
-  text markers remain future work.
-- **`structuredContent` `def`/`neighbor` marker — gated. Status: SHIPPED
-  (v1.24.0).** Each `vex search --format json` result row carries
-  `result_kind: "def" | "neighbor"` (`skip_serializing_if = Option::is_none`).
-  `"def"` requires an *exact/prefix* structural name match: `signals.fst_hit`
-  is necessary but not sufficient, because the structural channel folds a
-  Levenshtein fuzzy fallback into the same list — a typo query yields
-  `fst_hit: true` rows that are still `neighbor`s. The classifier takes a
-  query-level `structural_fuzzy` flag (all-or-nothing per query) to disqualify
-  those. Gated by the new
-  `capabilities.structured_result_kind` flag, which flips `true` in the same
-  release (§2 step-2). No new search-pipeline data — it is the per-result form
-  of the query-level `drifted` signal. Tests: §2a byte-identity (None omits
-  key) + capability↔emission coupling + cross-crate tolerance, in
-  `src/cli/output.rs`, `tests/cli_signals_test.rs`,
-  `tests/cli_capabilities_test.rs`, `crates/vex-mcp/src/response.rs`. Kept
-  separate from the ungated text hint as planned.
+**Shipped so far.** The **drift hint** (`_meta.vex.dev/search_hint`, v1.23.0)
+and the **structured `def`/`neighbor` marker** (`result_kind`, gated by
+`capabilities.structured_result_kind`, v1.24.0) — see the git log and
+`docs/MCP-SCHEMA.md`. `result_kind` derives `"def"` from an *exact/prefix*
+structural match (a query-level `structural_fuzzy` flag disqualifies
+Levenshtein-fallback rows). Both cross-checked against the STORAGE-RESEARCH
+appendix agent-output P0/P1 list; the two items below are the top *open* ones
+from that reconciliation.
 
-**Sequencing.** Land the §3.1 *internal* sub-struct refactor before the
-§4 structured additions — §4 adds fields to the per-result shape
-(`SearchResultWithSignals`, `src/cli/output.rs`) that §3.1 also touches;
-stabilize the construction sites first, then build §4 on top. §3.2 and §3.3
-are independent and can land in any order.
+### 4.1 Concise agent-tuned `content` text channel [P0/P1]
+
+**Problem.** `crates/vex-mcp/src/response.rs:88` sets
+`content[0].text = serde_json::to_string_pretty(&content)` — it dumps the
+**entire envelope JSON** into the LLM-facing text channel. Raw `bm25_score` /
+`semantic_cosine` and verbose structure reach the model, violating the
+two-audience model (STORAGE-RESEARCH appendix / MCP SEP-1624): `content` is the
+concise LLM channel; `structuredContent` is the rich machine channel.
+
+**Design (MCP-wrapper-only; no CLI/envelope change).** Replace the raw dump
+with a concise renderer that *reads* the already-parsed envelope
+(`structuredContent.results` + `_meta`) and builds a new text string. It **only
+reads** — it must never mutate `envelope_results`/`envelope_meta` before they
+are assigned into `structuredContent`/`_meta` (`response.rs:81-151`), so the
+machine channels stay byte-identical (existing `mcp_response_places_signals_*`
++ tolerance tests lock this boundary).
+
+**Rich render is `search`-shaped only; everything else is a *never-lossy*
+fallback (review HIGH-3 / MEDIUM).** Only `search` emits the full row
+`{name, kind, path, line, signals, result_kind}` that the sigil+`via:` line
+needs. Other subcommands are genuinely heterogeneous: `usages` emits bare
+`{path, line}` (no name/signals), `implementations` `{name, base, relation,
+path, line}`, `duplicates`/`bundle` paired/object shapes, `history` differs
+again. So the renderer dispatches on the `subcommand` string (already available
+in `build_mcp_response`):
+- **Row-shape family** (`search`, and only tools verified to share its row
+  shape) → the `<def|neighbor sigil> name  path:line  via:<channel>` line, **no
+  raw scores**, drift hint prepended, completeness line appended (§4.2).
+- **Everything else** → **compact-but-complete JSON of `results`** — worst case
+  is "less pretty than a bespoke summary," **never** "fields dropped / empty
+  render." (A row-renderer that assumed an array would empty-render `bundle`'s
+  object-shaped results — strictly worse than today's dump. The fallback must
+  degrade to *current-fidelity*, only more compact.)
+
+`structuredContent` is **unchanged** (full-fidelity, scores intact) everywhere.
+
+**`via:` derivation** mirrors `result_kind`'s own precedence so `via:` and the
+`def`/`neighbor` sigil can never disagree: `fst_hit` present → `via:name`;
+else the contributing channel (`bm25_rank` → lexical, `semantic_rank` →
+semantic). Signal fields are `skip_serializing_if` (§3.1), so **absence, not
+`false`, means "not this channel."** Fixed precedence (structural > lexical >
+semantic) resolves multi-channel rows. Display-quality only, derived from
+`signals`.
+
+**Break analysis + decisions (resolved in review).** `content[0].text` is
+advisory per MCP spec (display/LLM channel, not a typed contract). **(1) Do NOT
+gate `concise_text`** — gating an advisory text channel invites permanent
+double-maintenance; straight-replace. **(2) Keep a `VEX_MCP_TEXT=raw` escape
+hatch *indefinitely*** (one branch, cheap) — do **not** promise "one release" (cf.
+the `mode_legacy` "slated v1.12, still here v1.22" honesty note). Clients
+parsing `content` as JSON are already relying on undocumented behavior; the
+hatch is their migration path.
+
+**Tests.** Golden concise-text for `search`; assert no raw-score substring
+(`bm25`, a cosine float) and that the sigil + `via:` + (when present) drift hint
++ completeness line appear; a `bundle` (object `results`) golden asserting the
+fallback is complete (no dropped fields, non-empty); assert `structuredContent`
+still carries full `signals` with scores (proves split, not deletion).
+
+### 4.2 Result-completeness signal [delete-safety correctness]
+
+**Problem.** A consumer cannot distinguish "these are *all* the hits" from
+"top-N of many". For `vex usages` this is a **correctness** gap, not just UX:
+"2 callers → safe to delete" is wrong if 2 is `limit` of 50.
+
+**Design.** Additive `_meta` fields under the `vex.dev/*` namespace (like
+`search_hint`), all `Option` + `skip_serializing_if`:
+- `vex.dev/truncated: Option<bool>` — **presence encodes "the producer knows".**
+  `Some(true)` = capped, `Some(false)` = the full set (a *positive*
+  completeness statement), `None`/absent = **unknown** (see safety rule).
+- `vex.dev/result_total: Option<usize>` — total matches when known.
+- `vex.dev/result_total_exact: Option<bool>` — `false` marks a *lower bound*
+  ("≥ N"), for the search branch below.
+
+**Safety rule (review HIGH-1 — the load-bearing correction).** For a *safety*
+signal, **absent must mean "unknown", never "complete".** So: a consumer treats
+completeness as known **only** when `capabilities.result_completeness` is
+advertised **and** a `truncated` key is present. An old CLI on `PATH` (version
+skew is normal, §5.2a) emits no keys and advertises no capability → the §4.1
+renderer must say nothing / "completeness unknown", **never** "all N". This is
+the inverse of the "absent capability ⇒ false" rule (§1b): safe for a *feature*
+flag, dangerous for a *safety* signal. The renderer feature-detects
+`result_completeness` (already lifted) before any completeness claim, exactly as
+§5.2a drops `--protocol` when unsupported.
+
+**Scope — exact for `usages` ONLY in v1 (review HIGH, corrected).** Only
+`usages` materializes the full post-filter set before `.take(limit)`: `total =
+post_filter.len()` is *already* computed and carried in `UsagesOutcome`
+(`src/cli/cmd_usages.rs:347-353`) — `result_total = Some(total)`,
+`truncated = Some(total > limit)` is a zero-refactor one-liner. The other
+"enumeration" commands do **not** have this shape:
+- `callers`/`callees` early-**break** the posting-list loop at `out.len() >=
+  limit` (`src/store/call_graph.rs:269-271`) — the full set is never built.
+- `implementations`/callgraph set `fetch_limit = limit` unless a filter is
+  active and discard the pre-`take` count inline.
+Emitting exact completeness for those three needs removing the early-break /
+double-scanning — a real perf/behavioral change. **v1 ships `usages` only;
+callers/callees/implementations are DEFERRED** (tracked as a follow-up that
+revisits the early-break). Shipping the flag as "all enumeration commands"
+would make it *lie* for 3 of 4.
+
+**Search — honest lower bound, not silence (review HIGH-2 + simpler
+alternative).** Ranked search caps *inside* fusion
+(`src/search/fusion.rs:54`, fed with `limit` not an over-fetch ceiling), so no
+full total exists. But pure-defer is the *dangerous* option: the §4.1 search
+render would look identical to a complete enumeration and be over-trusted.
+Instead search emits `truncated = Some(returned == limit)` **plus**
+`result_total = Some(pool_size)` with `result_total_exact = Some(false)` — an
+honest "≥ N, more may exist". The renderer must actively disclaim ("ranked —
+showing N, total unknown"), never silently omit.
+
+**Capability — gated (review resolved).** `result_completeness` **is gated**,
+decisively: absence must be distinguishable from `false` for a safety signal,
+which the ungated `_meta` precedent (`search_hint`: missing hint = no hint)
+cannot express. The flag advertises "this build emits completeness where it
+supports it"; a supported command with the capability present and no `truncated`
+key is a producer bug, not "complete".
+
+**Bundle (review LOW-1).** `bundle` already computes a `was_truncated` bit
+(`cmd_bundle/symbol.rs`); when bundle later joins §4.2 it should feed the *same*
+`vex.dev/truncated` slot, not a parallel truncation vocabulary.
+
+**Tests.** §2a byte-identity (a command that doesn't know → no keys); `usages`
+with `limit < total` → `truncated:true` + exact `result_total`; `usages` with
+`limit ≥ total` → `truncated:false` (positive completeness); search → `truncated`
++ `result_total_exact:false`; capability↔emission coupling; skew: an
+advertised-capability-absent envelope → §4.1 renders "unknown", never "all N".
+
+**Sequencing.** §4.2 first (producer-side `_meta`, `usages`-scoped, low risk),
+then §4.1 (consumes §4.2's `_meta` + feature-detects the capability). §4.1 is
+`vex-mcp`-only; §4.2 touches the CLI `usages`/search producers + `MetaEnvelope`
+(two construction sites: `build_search_meta`, `default_meta_for` — exhaustive,
+compile-checked).
 
 ---
 
@@ -512,6 +618,15 @@ Proposed additions (flip as each expand step lands):
 - `signals_nested` — §3.1 nested wire form. Flips at **v2**, not during
   v1.x (the v1.x work is internal-only). True iff a requested v2 envelope
   emits nested `signals` (§5.4 Tier B).
+- `result_completeness` — §4.2 completeness signal
+  (`_meta.vex.dev/{truncated,result_total,result_total_exact}`). **Gated
+  (resolved):** absence must be distinguishable from `false` for a safety
+  signal, which an ungated `_meta` field can't express. Flips in the release
+  that first emits it; v1 scope is `usages` (exact) + search (lower bound);
+  callers/callees/implementations deferred (§4.2).
+- `concise_text` — **NOT a capability (resolved).** §4.1 straight-replaces the
+  advisory `content` text; gating a text channel invites double-maintenance.
+  Migration via the indefinite `VEX_MCP_TEXT=raw` env hatch, not a flag.
 - `protocol_versions` — §5.2 discovery array (e.g. `["v1","v2"]`) listing the
   response versions the producer can emit on request. Append-only (§1b). Lets
   a consumer feature-detect v2 before selecting it via
