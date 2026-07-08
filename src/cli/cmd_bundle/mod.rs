@@ -19,7 +19,9 @@ use crate::cli::args::ScopeArgs;
 use crate::cli::common::CmdCtx;
 use crate::cli::index_management::ensure_index_ready;
 use crate::cli::output::print_envelope;
-use crate::protocol::{capabilities, Signals};
+use crate::protocol::{
+    capabilities, LexicalSignals, PostSignals, SemanticSignals, Signals, StructuralSignals,
+};
 use crate::store::reader::IndexReader;
 use crate::util::config;
 
@@ -301,10 +303,12 @@ pub(super) fn global_rank_percentile(idx: usize, total: usize) -> f32 {
 }
 
 pub(super) fn signals_fst_hit() -> Signals {
-    Signals {
-        fst_hit: true,
-        ..Signals::default()
-    }
+    Signals::from_parts(
+        StructuralSignals { fst_hit: true },
+        LexicalSignals::default(),
+        SemanticSignals::default(),
+        PostSignals::default(),
+    )
 }
 
 /// Phase 14.1 — `CallMatch` doesn't carry `SymbolKind`, so derive the

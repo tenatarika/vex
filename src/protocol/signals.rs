@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::Signals;
+use super::{LexicalSignals, PostSignals, SemanticSignals, Signals, StructuralSignals};
 
 use crate::search::SearchResult;
 
@@ -72,18 +72,22 @@ pub fn build_signals(
         .map(|r| {
             let key = (r.path.clone(), r.name.clone(), r.line);
             let e = by_key.get(&key).copied().unwrap_or_default();
-            Signals {
-                fst_hit: e.fst_hit,
-                bm25_rank: e.bm25_rank,
-                bm25_score: e.bm25_score,
-                semantic_rank: e.semantic_rank,
-                semantic_cosine: e.semantic_cosine,
-                // No distance payload on MatchType::Fuzzy yet — see module doc.
-                fuzzy_distance: None,
-                rerank_boost: None,
-                // Indegree is bundle-only; absent on the search path.
-                indegree: None,
-            }
+            Signals::from_parts(
+                StructuralSignals { fst_hit: e.fst_hit },
+                LexicalSignals {
+                    bm25_rank: e.bm25_rank,
+                    bm25_score: e.bm25_score,
+                    // No distance payload on MatchType::Fuzzy yet — see module doc.
+                    fuzzy_distance: None,
+                },
+                SemanticSignals {
+                    semantic_rank: e.semantic_rank,
+                    semantic_cosine: e.semantic_cosine,
+                },
+                // rerank_boost lives in the rerank pipeline; indegree is
+                // bundle-only. Both absent on the search path.
+                PostSignals::default(),
+            )
         })
         .collect()
 }
@@ -185,6 +189,36 @@ mod tests {
             Some(0),
             "result at position 0 in bm25 list must have bm25_rank == Some(0)"
         );
+    }
+
+    #[test]
+    fn from_parts_maps_every_field_to_its_flat_slot() {
+        // Guards the single flat<->grouped boundary: distinct sentinel values
+        // per field catch any swap/drop if a sub-struct is ever reordered.
+        let s = Signals::from_parts(
+            StructuralSignals { fst_hit: true },
+            LexicalSignals {
+                bm25_rank: Some(1),
+                bm25_score: Some(2.0),
+                fuzzy_distance: Some(3),
+            },
+            SemanticSignals {
+                semantic_rank: Some(4),
+                semantic_cosine: Some(5.0),
+            },
+            PostSignals {
+                rerank_boost: Some(6.0),
+                indegree: Some(7),
+            },
+        );
+        assert!(s.fst_hit);
+        assert_eq!(s.bm25_rank, Some(1));
+        assert_eq!(s.bm25_score, Some(2.0));
+        assert_eq!(s.fuzzy_distance, Some(3));
+        assert_eq!(s.semantic_rank, Some(4));
+        assert_eq!(s.semantic_cosine, Some(5.0));
+        assert_eq!(s.rerank_boost, Some(6.0));
+        assert_eq!(s.indegree, Some(7));
     }
 
     #[test]

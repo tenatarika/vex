@@ -16,7 +16,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::parse::language::Language;
-use crate::protocol::Signals;
+use crate::protocol::{LexicalSignals, PostSignals, SemanticSignals, Signals, StructuralSignals};
 use crate::search::SearchResult;
 
 use super::{
@@ -34,11 +34,15 @@ fn signals_semantic(rank_in_similar: u32) -> Signals {
     // (which has no equivalent outer field) IS the canonical home for
     // `semantic_cosine`. An agent inspecting bundle results should
     // read `item.similarity`, not `item.signals.semantic_cosine`.
-    Signals {
-        fst_hit: false,
-        semantic_rank: Some(rank_in_similar),
-        ..Signals::default()
-    }
+    Signals::from_parts(
+        StructuralSignals::default(),
+        LexicalSignals::default(),
+        SemanticSignals {
+            semantic_rank: Some(rank_in_similar),
+            semantic_cosine: None,
+        },
+        PostSignals::default(),
+    )
 }
 
 /// Truncate a `probe` result (caller fetched with `cap = max + 1`) to

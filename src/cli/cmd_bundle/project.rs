@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::protocol::Signals;
+use crate::protocol::{LexicalSignals, PostSignals, SemanticSignals, Signals, StructuralSignals};
 use crate::store::reader::IndexReader;
 
 use super::{
@@ -130,11 +130,15 @@ pub fn assemble_project(
                 line: rec.line as usize,
                 signature,
             },
-            signals: Signals {
-                fst_hit: true,
-                indegree: Some(row.indegree),
-                ..Signals::default()
-            },
+            signals: Signals::from_parts(
+                StructuralSignals { fst_hit: true },
+                LexicalSignals::default(),
+                SemanticSignals::default(),
+                PostSignals {
+                    indegree: Some(row.indegree),
+                    ..Default::default()
+                },
+            ),
             rank_percentile: 0.0, // overwritten below
             role_rank: i as u32,
             role: "top",

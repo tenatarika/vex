@@ -78,6 +78,68 @@ pub struct Signals {
     pub indegree: Option<u32>,
 }
 
+/// Internal concern-grouping of [`Signals`], used only at construction sites.
+/// These sub-structs are **not serialized** — the wire `Signals` stays flat and
+/// byte-identical (see `docs/PROTOCOL-EVOLUTION.md` §3.1). They exist so
+/// construction expresses intent by channel family, and so the eventual v2
+/// wire-nesting is a mechanical swap. Route all `Signals` construction through
+/// [`Signals::from_parts`] — the single flat<->grouped mapping boundary — so a
+/// future nesting change touches one function, not N scattered literals.
+/// Sub-struct field names deliberately mirror the flat wire field names, so
+/// [`Signals::from_parts`] is a pure 1:1 map (no silent rename hazard).
+#[derive(Default, Clone, Copy, Debug)]
+pub(crate) struct StructuralSignals {
+    pub fst_hit: bool,
+}
+
+/// Lexical (BM25 + fuzzy) channel signals — see [`StructuralSignals`].
+#[derive(Default, Clone, Copy, Debug)]
+pub(crate) struct LexicalSignals {
+    pub bm25_rank: Option<u32>,
+    pub bm25_score: Option<f64>,
+    pub fuzzy_distance: Option<u32>,
+}
+
+/// Semantic (embedding) channel signals — see [`StructuralSignals`].
+#[derive(Default, Clone, Copy, Debug)]
+pub(crate) struct SemanticSignals {
+    pub semantic_rank: Option<u32>,
+    pub semantic_cosine: Option<f32>,
+}
+
+/// Post-fusion signals (reranker delta, call-graph indegree) — see
+/// [`StructuralSignals`].
+#[derive(Default, Clone, Copy, Debug)]
+pub(crate) struct PostSignals {
+    pub rerank_boost: Option<f32>,
+    pub indegree: Option<u32>,
+}
+
+impl Signals {
+    /// The single flat<->grouped mapping boundary. Assembles the flat wire
+    /// `Signals` from the four concern groups via an explicit field map —
+    /// never `#[serde(flatten)]`, which drops `skip_serializing_if` and breaks
+    /// byte-identity (`docs/PROTOCOL-EVOLUTION.md` §1a, invariant 1).
+    #[must_use]
+    pub(crate) fn from_parts(
+        structural: StructuralSignals,
+        lexical: LexicalSignals,
+        semantic: SemanticSignals,
+        post: PostSignals,
+    ) -> Self {
+        Signals {
+            fst_hit: structural.fst_hit,
+            bm25_rank: lexical.bm25_rank,
+            bm25_score: lexical.bm25_score,
+            semantic_rank: semantic.semantic_rank,
+            semantic_cosine: semantic.semantic_cosine,
+            fuzzy_distance: lexical.fuzzy_distance,
+            rerank_boost: post.rerank_boost,
+            indegree: post.indegree,
+        }
+    }
+}
+
 #[derive(Serialize, Default, Clone, Debug)]
 pub struct MetaEnvelope {
     #[serde(
