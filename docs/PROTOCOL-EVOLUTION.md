@@ -251,12 +251,22 @@ Split by break-risk:
   MCP builder needs no change — it already dumps the full envelope to
   `content[0].text` and propagates `_meta`. The `via:` / `def`/`neighbor`
   text markers remain future work.
-- **`structuredContent` `def`/`neighbor` marker — gated.** Adding a
-  structured result-kind field for code-mode consumers is an additive
-  envelope change and gets its own flag (`capabilities.structured_result_kind`)
-  under the §2 playbook. Keep it separate from the ungated text hint so the
-  text fix ships immediately without waiting on the structured-marker
-  design.
+- **`structuredContent` `def`/`neighbor` marker — gated. Status: SHIPPED
+  (v1.24.0).** Each `vex search --format json` result row carries
+  `result_kind: "def" | "neighbor"` (`skip_serializing_if = Option::is_none`).
+  `"def"` requires an *exact/prefix* structural name match: `signals.fst_hit`
+  is necessary but not sufficient, because the structural channel folds a
+  Levenshtein fuzzy fallback into the same list — a typo query yields
+  `fst_hit: true` rows that are still `neighbor`s. The classifier takes a
+  query-level `structural_fuzzy` flag (all-or-nothing per query) to disqualify
+  those. Gated by the new
+  `capabilities.structured_result_kind` flag, which flips `true` in the same
+  release (§2 step-2). No new search-pipeline data — it is the per-result form
+  of the query-level `drifted` signal. Tests: §2a byte-identity (None omits
+  key) + capability↔emission coupling + cross-crate tolerance, in
+  `src/cli/output.rs`, `tests/cli_signals_test.rs`,
+  `tests/cli_capabilities_test.rs`, `crates/vex-mcp/src/response.rs`. Kept
+  separate from the ungated text hint as planned.
 
 **Sequencing.** Land the §3.1 *internal* sub-struct refactor before the
 §4 structured additions — §4 adds fields to the per-result shape
@@ -300,12 +310,14 @@ feature-detect additive changes instead of gating on `protocol_version`.
 Evolution rules live in §1b; per-flag emission rule in §2 step-2.
 
 Current flags: `signals`, `empty_reason`, `bundle_modes`, `why`,
-`scope_filters`, `metadata_filters`, `auto_update`, `history_diff`.
+`scope_filters`, `metadata_filters`, `auto_update`, `history_diff`,
+`structured_result_kind` (v1.24.0).
 
 Proposed additions (flip as each expand step lands):
 
 - `structured_result_kind` — §4 `def`/`neighbor` marker in
-  `structuredContent` (v1.x). The text-channel drift hint is **not** gated.
+  `structuredContent`. **SHIPPED (v1.24.0), flipped `true`.** The text-channel
+  drift hint is **not** gated.
 - `signals_nested` — §3.1 nested wire form. Flips at **v2**, not during
   v1.x (the v1.x work is internal-only).
 

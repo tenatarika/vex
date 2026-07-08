@@ -521,6 +521,25 @@ fields alongside the existing rank ordinals:
   appear in the semantic channel OR the channel did not run (see
   `_meta.vex.dev/semantic_channel` for the reason).
 
+### Per-result `result_kind` (v1.24.0, PROTOCOL-EVOLUTION §4)
+
+Each `search` result row carries a `result_kind` string classifying it as a
+definition or a proximity neighbour:
+
+- `"def"` — the query matched this symbol's *name* structurally (an **exact or
+  prefix** FST match); it is a definition of what was searched.
+- `"neighbor"` — the row was surfaced by proximity, not a name-as-typed match:
+  the lexical (BM25) or semantic channels (a caller, an import) **or** a
+  Levenshtein *fuzzy* fallback (a typo-corrected near-miss). When every result
+  is a `neighbor`, the query drifted — see `_meta.vex.dev/search_hint`.
+
+It is the per-result form of the query-level drift signal. A `signals.fst_hit`
+is necessary but not sufficient for `"def"`: the structural channel folds a
+fuzzy fallback into the same list, so a typo query yields `fst_hit: true` rows
+that are still `neighbor`s. Feature-detect via
+`capabilities.structured_result_kind` (absent ⇒ unsupported). Omitted on
+non-search envelopes.
+
 ### `_meta.vex.dev/semantic_channel` (D4)
 
 New optional envelope field on `search` responses reporting WHY the
