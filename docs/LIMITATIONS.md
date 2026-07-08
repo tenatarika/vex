@@ -985,11 +985,17 @@ Each member keeps its own per-repo index; results are grouped by repo. See
   the full 3-channel hybrid, a member without vectors quietly falls back to
   structural + BM25. This is by design and safe (ranking is per-repo, so the
   asymmetry never mixes hybrid and structural scores; differing per-member
-  embedders are fine for the same reason). The caveat is *visibility*: in
-  workspace mode the per-repo `_meta.vex.dev/semantic_channel` reason
-  (`index_lacks_vectors`) and the "no embeddings" stderr advisory are
-  suppressed, so the fallback is not surfaced. To confirm a member's semantic
-  status, run `vex status` in that repo or search it single-repo.
+  embedders are fine for the same reason). As of v1.23.0 the degradation is
+  surfaced per member: with `--semantic`, a member lacking vectors gets a
+  `semantic_channel: "index_lacks_vectors"` field on its JSON repo object and
+  a `(semantic skipped: index lacks vectors …)` stderr advisory in text. The
+  field's *presence* signals degradation — `not_requested` (no `--semantic`
+  passed) is suppressed since it's uniform across members and obvious from the
+  command. This intentionally diverges from the single-repo
+  `_meta.vex.dev/semantic_channel`, which always emits a reason; the workspace
+  repo object is a reduced sub-schema (it also omits per-result signals). To
+  inspect a member's raw semantic status, run `vex status` in that repo or
+  search it single-repo.
 - **Staleness is reported per-member.** Each member's stale-index reason
   is captured independently and surfaced as a per-repo `stale_reason` in
   JSON (and a stderr advisory in text); the top-level envelope meta is not
