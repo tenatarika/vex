@@ -52,6 +52,22 @@ struct SearchOutcome {
     changed_paths: Option<crate::util::git_diff::ChangedPaths>,
 }
 
+/// One workspace member's search outcome, carried through the `--workspace`
+/// fanout. The workspace envelope surfaces these per repo (the top-level
+/// `_meta` can't carry per-member reasons).
+struct RepoOutcome {
+    repo: String,
+    results: Vec<SearchResult>,
+    /// `Some(reason)` if this member's index was stale; `None` when fresh.
+    stale: Option<String>,
+    /// Why the semantic channel did not contribute for this member, verbatim
+    /// from `produce_results`: `None` = it ran (or wasn't degraded),
+    /// `Some(NOT_REQUESTED)` = no `--semantic`, `Some(INDEX_LACKS_VECTORS)` =
+    /// asked-for but no embeddings. Only the last is surfaced downstream (see
+    /// the JSON/text emit sites); `NOT_REQUESTED` is suppressed as noise.
+    semantic_channel: Option<&'static str>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn search(
     ctx: &CmdCtx<'_>,
@@ -300,9 +316,9 @@ fn produce_results(
     // `None` when semantic ran successfully (the channel contributed
     // results, agents can read `signals.semantic_cosine` per row).
     let semantic_channel_reason: Option<&'static str> = if !semantic {
-        Some("not_requested")
+        Some(crate::protocol::semantic_channel_reason::NOT_REQUESTED)
     } else if !reader.has_vectors() {
-        Some("index_lacks_vectors")
+        Some(crate::protocol::semantic_channel_reason::INDEX_LACKS_VECTORS)
     } else {
         None
     };
@@ -414,14 +430,20 @@ fn search_workspace(ctx: &CmdCtx<'_>, req: &SearchReq<'_>) -> Result<()> {
     let ws = workspace::Workspace::find_and_load(&start_dir)?;
     let base = ws.base().to_path_buf();
 
-    // Per member: (display_name, results, stale_reason). `want_prefusion =
-    // false` — the workspace envelope carries no per-result signals/trace.
-    // The stale reason is captured PER MEMBER (reset before, take after) so
-    // a stale member's reason is not misattributed to the whole workspace
-    // via the global signal.
+    // One entry per member. `want_prefusion = false` — the workspace envelope
+    // carries no per-result signals/trace. `stale` is captured PER MEMBER via
+    // the global stale signal, which needs reset-before / take-after so a stale
+    // member's reason isn't misattributed to the whole workspace.
+    // `semantic_channel` needs none of that discipline: it is returned directly
+    // from `produce_results` (`SearchOutcome::semantic_channel_reason`) and
+    // never touches global state, so it can't bleed between members. It is the
+    // per-member reason the semantic channel did not contribute — a member
+    // built without `--semantic` vectors falls back to structural + BM25
+    // (`index_lacks_vectors`) while a sibling runs full hybrid, and this is the
+    // only place that asymmetry is surfaced (single-repo `emit_diagnostics` is
+    // off in the fanout).
     crate::cli::stale_signal::reset();
-    let mut per_repo: Vec<(String, Vec<SearchResult>, Option<String>)> =
-        Vec::with_capacity(ws.members.len());
+    let mut per_repo: Vec<RepoOutcome> = Vec::with_capacity(ws.members.len());
     let mut any = false;
     for m in &ws.members {
         let member_cfg = config::load_config(&m.root)?;
@@ -435,7 +457,12 @@ fn search_workspace(ctx: &CmdCtx<'_>, req: &SearchReq<'_>) -> Result<()> {
         )?;
         let stale = crate::cli::stale_signal::take();
         any |= !outcome.results.is_empty();
-        per_repo.push((m.display_name.clone(), outcome.results, stale));
+        per_repo.push(RepoOutcome {
+            repo: m.display_name.clone(),
+            results: outcome.results,
+            stale,
+            semantic_channel: outcome.semantic_channel_reason,
+        });
     }
     if !any {
         crate::cli::exit_code::signal_no_results();
@@ -445,10 +472,26 @@ fn search_workspace(ctx: &CmdCtx<'_>, req: &SearchReq<'_>) -> Result<()> {
         OutputFormat::Json => {
             let repos: Vec<_> = per_repo
                 .iter()
-                .map(|(repo, results, stale)| {
-                    let mut obj = serde_json::json!({ "repo": repo, "results": results });
-                    if let Some(reason) = stale {
+                .map(|r| {
+                    let mut obj = serde_json::json!({ "repo": r.repo, "results": r.results });
+                    if let Some(reason) = &r.stale {
                         obj["stale_reason"] = serde_json::json!(reason);
+                    }
+                    // Surface the per-member semantic degradation reason (the
+                    // workspace top-level `_meta` can't carry a per-member
+                    // value). `not_requested` is suppressed: it's uniform
+                    // across all members and derivable from the absent
+                    // `--semantic`, so the field's *presence* means "this
+                    // member degraded" — same policy as the text advisory
+                    // below and the sibling `stale_reason` (absent when
+                    // not applicable). This intentionally diverges from the
+                    // single-repo `_meta.vex.dev/semantic_channel`, which
+                    // always emits a reason; the workspace repo object is a
+                    // reduced sub-schema (no per-result signals either).
+                    if let Some(reason) = r.semantic_channel {
+                        if reason != crate::protocol::semantic_channel_reason::NOT_REQUESTED {
+                            obj["semantic_channel"] = serde_json::json!(reason);
+                        }
                     }
                     obj
                 })
@@ -463,10 +506,25 @@ fn search_workspace(ctx: &CmdCtx<'_>, req: &SearchReq<'_>) -> Result<()> {
             );
         }
         OutputFormat::Text | OutputFormat::Compact => {
-            for (repo, results, stale) in &per_repo {
+            for r in &per_repo {
+                let RepoOutcome {
+                    repo,
+                    results,
+                    stale,
+                    semantic_channel,
+                } = r;
                 println!("── {repo} ──");
                 if let Some(reason) = stale {
                     eprintln!("  (stale: {reason})");
+                }
+                // Only the degradation case is worth a human advisory;
+                // `not_requested` is obvious from the absent `--semantic`.
+                if *semantic_channel
+                    == Some(crate::protocol::semantic_channel_reason::INDEX_LACKS_VECTORS)
+                {
+                    eprintln!(
+                        "  (semantic skipped: index lacks vectors — run `vex index --semantic` in this repo)"
+                    );
                 }
                 if results.is_empty() {
                     println!("  No results for \"{}\"", req.query);

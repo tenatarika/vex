@@ -12,6 +12,19 @@ use serde::Serialize;
 
 pub const PROTOCOL_VERSION: &str = "v1";
 
+/// Reason values for `_meta.vex.dev/semantic_channel` (single-repo) and the
+/// per-repo `semantic_channel` field in `--workspace` output. Named so the
+/// producer (`cmd_search::produce_results`) and the workspace advisory /
+/// suppression checks stay in sync if the wire values ever change — a rename
+/// then can't silently break a string comparison at a distant call site.
+pub mod semantic_channel_reason {
+    /// The caller did not pass `--semantic` / `semantic: true`.
+    pub const NOT_REQUESTED: &str = "not_requested";
+    /// The caller asked for semantic but the index has no embeddings;
+    /// re-run `vex index --semantic`.
+    pub const INDEX_LACKS_VECTORS: &str = "index_lacks_vectors";
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct Capabilities {
     pub signals: bool,

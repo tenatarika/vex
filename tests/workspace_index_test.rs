@@ -290,6 +290,88 @@ fn search_workspace_json_groups_by_repo() {
     );
 }
 
+/// Build a one-member workspace (indexed WITHOUT `--semantic`, so its index
+/// carries no vectors) and return `(TempDir, root, cache)`. Kept as a TempDir
+/// guard so the caller controls teardown timing.
+fn semantic_fallback_workspace() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().to_path_buf();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn alpha_thing() {}\n",
+    );
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\nname = \"A\"\n",
+    );
+    vex_in(&root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+    (tmp, root, cache)
+}
+
+/// Parse `search --workspace --format json` stdout and return the first repo
+/// object, asserting the `results.repos` array path is well-formed (a bare
+/// `json["results"]["repos"][0]` would silently yield `Value::Null` on a
+/// shape change and assert against nothing).
+fn first_repo(stdout: &str) -> serde_json::Value {
+    let json: serde_json::Value = serde_json::from_str(stdout)
+        .unwrap_or_else(|e| panic!("stdout is not JSON ({e}): {stdout}"));
+    let repos = json["results"]["repos"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected results.repos array: {stdout}"));
+    assert!(!repos.is_empty(), "expected at least one repo: {stdout}");
+    repos[0].clone()
+}
+
+/// `search --semantic --workspace` over a member whose index has no vectors
+/// surfaces the fallback per repo: the JSON repo object carries
+/// `semantic_channel: "index_lacks_vectors"`. No embedder is loaded — the
+/// reason is pinned from `reader.has_vectors()` before any semantic channel
+/// runs — so this stays offline / ONNX-free.
+#[test]
+fn search_workspace_json_surfaces_semantic_channel_fallback() {
+    let (_tmp, root, cache) = semantic_fallback_workspace();
+    let out = vex_in(&root, &cache)
+        .args([
+            "search",
+            "alpha_thing",
+            "--semantic",
+            "--workspace",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let repo = first_repo(&stdout);
+    assert_eq!(
+        repo["semantic_channel"], "index_lacks_vectors",
+        "repo object should surface the semantic fallback reason: {stdout}"
+    );
+}
+
+/// The contract inverse: a NON-`--semantic` workspace search must NOT emit a
+/// `semantic_channel` field. `not_requested` is uniform across members and
+/// derivable from the absent flag, so it is suppressed as noise (the field's
+/// presence is reserved to mean "this member degraded").
+#[test]
+fn search_workspace_json_omits_semantic_channel_when_not_requested() {
+    let (_tmp, root, cache) = semantic_fallback_workspace();
+    let out = vex_in(&root, &cache)
+        .args(["search", "alpha_thing", "--workspace", "--format", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let repo = first_repo(&stdout);
+    assert!(
+        repo.get("semantic_channel").is_none(),
+        "non-semantic search must not emit semantic_channel: {stdout}"
+    );
+}
+
 #[test]
 fn grep_workspace_groups_matches_by_repo() {
     // grep scans the filesystem directly — no `vex index` needed first.
