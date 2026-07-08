@@ -34,6 +34,7 @@ use super::walker::{parse_with, Walker};
 use super::{BoundRef, DefKind, RefKind, ScopeBinder, ScopeId, ScopeKind, UsePath};
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::language::Language;
+use crate::parse::NodeTextExt;
 
 pub struct RustBinder;
 
@@ -223,7 +224,7 @@ fn collect_use_imports(
 ) {
     match node.kind() {
         "identifier" => {
-            let name = node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
+            let name = node.node_text(content.as_bytes()).to_string();
             if name.is_empty() {
                 return;
             }
@@ -232,7 +233,7 @@ fn collect_use_imports(
             output.push((name, UsePath { segments }));
         }
         "scoped_identifier" => {
-            let text = node.utf8_text(content.as_bytes()).unwrap_or("");
+            let text = node.node_text(content.as_bytes());
             let mut segments = prefix.to_vec();
             segments.extend(
                 text.split("::")
@@ -246,7 +247,7 @@ fn collect_use_imports(
         "use_as_clause" => {
             let path_text = node
                 .child_by_field_name("path")
-                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                .and_then(|n| n.node_text_opt(content.as_bytes()))
                 .unwrap_or("");
             let mut segments = prefix.to_vec();
             segments.extend(
@@ -256,10 +257,7 @@ fn collect_use_imports(
                     .filter(|s| !s.is_empty()),
             );
             if let Some(alias) = node.child_by_field_name("alias") {
-                let alias_name = alias
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or("")
-                    .to_string();
+                let alias_name = alias.node_text(content.as_bytes()).to_string();
                 if !alias_name.is_empty() {
                     output.push((alias_name, UsePath { segments }));
                 }
@@ -268,7 +266,7 @@ fn collect_use_imports(
         "scoped_use_list" => {
             let path_text = node
                 .child_by_field_name("path")
-                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                .and_then(|n| n.node_text_opt(content.as_bytes()))
                 .unwrap_or("");
             let mut new_prefix = prefix.to_vec();
             new_prefix.extend(

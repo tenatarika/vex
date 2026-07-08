@@ -43,6 +43,7 @@ use super::walker::{parse_with, Walker};
 use super::{BoundRef, DefKind, RefKind, ScopeBinder, ScopeId, ScopeKind, UsePath};
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::language::Language;
+use crate::parse::NodeTextExt;
 
 pub struct CSharpBinder;
 
@@ -204,11 +205,7 @@ fn walk_using(w: &mut Walker, node: Node, scope: ScopeId) {
         return;
     }
     let bind_name = match alias {
-        Some(a) => a
-            .utf8_text(w.content.as_bytes())
-            .unwrap_or("")
-            .trim()
-            .to_string(),
+        Some(a) => a.node_text(w.content.as_bytes()).trim().to_string(),
         None => segments
             .last()
             .cloned()
@@ -244,11 +241,7 @@ fn collect_cs_path(node: Node, content: &str, out: &mut Vec<String>) {
             }
         }
         "identifier" => {
-            let text = node
-                .utf8_text(content.as_bytes())
-                .unwrap_or("")
-                .trim()
-                .to_string();
+            let text = node.node_text(content.as_bytes()).trim().to_string();
             if !text.is_empty() {
                 out.push(text);
             }

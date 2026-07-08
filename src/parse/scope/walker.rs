@@ -19,6 +19,7 @@ use super::{BindTarget, BoundRef, DefKind, LocalDef, RefKind, ScopeId, ScopeTree
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::extractor::is_meaningful_identifier;
 use crate::parse::language::Language;
+use crate::parse::NodeTextExt;
 
 /// Per-language tree dispatch — matches on node kind, recurses via
 /// `Walker::walk_children`, and emits bindings + refs.
@@ -89,10 +90,10 @@ impl<'a> Walker<'a> {
     }
 
     pub(super) fn add_binding(&mut self, scope: ScopeId, name_node: Node, kind: DefKind) {
-        // `unwrap_or("")` guards against the rare case where a
-        // tree-sitter node spans a BOM-shifted or truncated byte range;
-        // we'd rather silently drop the binding than panic the indexer.
-        let name = name_node.utf8_text(self.content.as_bytes()).unwrap_or("");
+        // `node_text` is bounds-safe (see `NodeTextExt`): a tree-sitter node
+        // spanning a BOM-shifted / out-of-range byte range yields "" rather
+        // than panicking the indexer, so we silently drop the binding.
+        let name = name_node.node_text(self.content.as_bytes());
         if name.is_empty() {
             return;
         }
@@ -131,9 +132,9 @@ impl<'a> Walker<'a> {
     }
 
     pub(super) fn emit_ref(&mut self, node: Node, scope: ScopeId, kind: RefKind) {
-        // See add_binding — same defensive fallback for the rare
-        // BOM/truncation edge.
-        let text = node.utf8_text(self.content.as_bytes()).unwrap_or("");
+        // See add_binding — `node_text` is bounds-safe for the rare
+        // BOM/out-of-range edge.
+        let text = node.node_text(self.content.as_bytes());
         if !is_meaningful_identifier(text) {
             return;
         }

@@ -17,6 +17,7 @@ use anyhow::Result;
 use crate::index::symbols::ParsedRef;
 use crate::parse::language::Language;
 use crate::parse::parser_pool::parse_text;
+use crate::parse::NodeTextExt;
 
 use super::is_meaningful_identifier;
 
@@ -99,7 +100,7 @@ fn walk_for_refs(
     }
 
     if is_identifier_kind(kind) {
-        let text = node.utf8_text(content.as_bytes()).unwrap_or_default();
+        let text = node.node_text(content.as_bytes());
         if is_meaningful_identifier(text) {
             let line = node.start_position().row + 1;
             let context = lines.get(line - 1).map(|l| l.trim().to_string());

@@ -49,6 +49,7 @@ use super::walker::{parse_with, Walker};
 use super::{BoundRef, DefKind, RefKind, ScopeBinder, ScopeId, ScopeKind, UsePath};
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::language::Language;
+use crate::parse::NodeTextExt;
 
 pub struct CppBinder;
 
@@ -257,11 +258,7 @@ fn walk_alias_declaration(w: &mut Walker, node: Node, scope: ScopeId) {
     let Some(name_node) = node.child_by_field_name("name") else {
         return;
     };
-    let alias = name_node
-        .utf8_text(w.content.as_bytes())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let alias = name_node.node_text(w.content.as_bytes()).trim().to_string();
     if alias.is_empty() {
         return;
     }
@@ -286,11 +283,7 @@ fn walk_namespace_alias(w: &mut Walker, node: Node, scope: ScopeId) {
     let Some(name_node) = node.child_by_field_name("name") else {
         return;
     };
-    let alias = name_node
-        .utf8_text(w.content.as_bytes())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let alias = name_node.node_text(w.content.as_bytes()).trim().to_string();
     if alias.is_empty() {
         return;
     }
@@ -368,11 +361,7 @@ fn push_path_segments(node: Node, content: &str, out: &mut Vec<String>) {
 }
 
 fn push_text_segment(node: Node, content: &str, out: &mut Vec<String>) {
-    let s = node
-        .utf8_text(content.as_bytes())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let s = node.node_text(content.as_bytes()).trim().to_string();
     if !s.is_empty() {
         out.push(s);
     }

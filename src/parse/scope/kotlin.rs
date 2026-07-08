@@ -61,6 +61,7 @@ use super::walker::{parse_with, Walker};
 use super::{BoundRef, DefKind, RefKind, ScopeBinder, ScopeId, ScopeKind, UsePath};
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::language::Language;
+use crate::parse::NodeTextExt;
 
 pub struct KotlinBinder;
 
@@ -322,7 +323,7 @@ fn walk_string(w: &mut Walker, node: Node, scope: ScopeId) {
 /// binds nothing (the `*` is an anonymous token, so detect it from the raw
 /// text). An `as` alias binds the alias name.
 fn walk_import(w: &mut Walker, node: Node, scope: ScopeId) {
-    let raw = node.utf8_text(w.content.as_bytes()).unwrap_or("");
+    let raw = node.node_text(w.content.as_bytes());
     if raw.trim_end().ends_with('*') {
         return;
     }
@@ -346,7 +347,7 @@ fn walk_import(w: &mut Walker, node: Node, scope: ScopeId) {
     }
 
     if let Some(alias) = alias {
-        let name = alias.utf8_text(w.content.as_bytes()).unwrap_or("").trim();
+        let name = alias.node_text(w.content.as_bytes()).trim();
         if !name.is_empty() {
             // The alias path still points at the original qualified target.
             let segments = path_node
@@ -375,7 +376,7 @@ fn collect_kotlin_path(node: Node, content: &str) -> Vec<String> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "identifier" {
-            let text = child.utf8_text(content.as_bytes()).unwrap_or("").trim();
+            let text = child.node_text(content.as_bytes()).trim();
             if !text.is_empty() {
                 out.push(text.to_string());
             }

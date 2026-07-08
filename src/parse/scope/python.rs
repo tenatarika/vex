@@ -32,6 +32,7 @@ use super::walker::{parse_with, Walker};
 use super::{BoundRef, DefKind, RefKind, ScopeBinder, ScopeId, ScopeKind, UsePath};
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::language::Language;
+use crate::parse::NodeTextExt;
 
 pub struct PythonBinder;
 
@@ -219,8 +220,7 @@ fn walk_import_statement(w: &mut Walker, node: Node, scope: ScopeId) {
                         .map(|d| dotted_name_segments(d, w.content))
                         .unwrap_or_default();
                     if let Some(a) = alias {
-                        let alias_text =
-                            a.utf8_text(w.content.as_bytes()).unwrap_or("").to_string();
+                        let alias_text = a.node_text(w.content.as_bytes()).to_string();
                         if !alias_text.is_empty() && !segs.is_empty() {
                             w.add_import_binding(
                                 scope,
@@ -276,8 +276,7 @@ fn walk_import_from(w: &mut Walker, node: Node, scope: ScopeId) {
                         .map(|d| dotted_name_segments(d, w.content))
                         .unwrap_or_default();
                     if let (Some(a), Some(orig)) = (alias, local_segs.first().cloned()) {
-                        let alias_text =
-                            a.utf8_text(w.content.as_bytes()).unwrap_or("").to_string();
+                        let alias_text = a.node_text(w.content.as_bytes()).to_string();
                         if !alias_text.is_empty() {
                             let mut full = module_segs.clone();
                             full.push(orig);
@@ -309,7 +308,7 @@ fn dotted_name_segments(node: Node, content: &str) -> Vec<String> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "identifier" {
-            let text = child.utf8_text(content.as_bytes()).unwrap_or("");
+            let text = child.node_text(content.as_bytes());
             if !text.is_empty() {
                 out.push(text.to_string());
             }

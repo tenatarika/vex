@@ -14,6 +14,7 @@
 use tree_sitter::Node;
 
 use crate::parse::language::Language;
+use crate::parse::NodeTextExt;
 
 /// Return the leaf identifier text for declaration-shaped nodes. The
 /// field name varies by language and kind — anonymous nodes (lambdas,
@@ -104,7 +105,7 @@ pub(super) fn extract_ident(
             _ => unreachable!("guarded by outer matches!"),
         };
         return name_node
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .and_then(|n| n.node_text_opt(source.as_bytes()))
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
     }
@@ -120,7 +121,7 @@ pub(super) fn extract_ident(
     ) {
         return child_by_kind(node, "start_tag")
             .and_then(|st| child_by_kind(st, "tag_name"))
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .and_then(|n| n.node_text_opt(source.as_bytes()))
             .map(String::from);
     }
     // SQL DDL nodes split across three name shapes:
@@ -160,7 +161,7 @@ pub(super) fn extract_ident(
             }
         };
         return name_node
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .and_then(|n| n.node_text_opt(source.as_bytes()))
             .map(String::from);
     }
     // Markdown: extract heading text for `atx_heading` / `setext_
@@ -180,7 +181,7 @@ pub(super) fn extract_ident(
             node.child_by_field_name("heading_content")
         };
         return text_node
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .and_then(|n| n.node_text_opt(source.as_bytes()))
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
     }
@@ -197,7 +198,7 @@ pub(super) fn extract_ident(
         return node
             .child_by_field_name("declarator")
             .and_then(crate::parse::scope::cpp_extract_inner_identifier)
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .and_then(|n| n.node_text_opt(source.as_bytes()))
             .map(String::from);
     }
     // Kotlin: `property_declaration` has no `name:` field — the
@@ -208,14 +209,14 @@ pub(super) fn extract_ident(
     if matches!((lang, kind), (Language::Kotlin, "property_declaration")) {
         return child_by_kind(node, "variable_declaration")
             .and_then(|vd| child_by_kind(vd, "identifier"))
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .and_then(|n| n.node_text_opt(source.as_bytes()))
             .map(String::from);
     }
     // Kotlin: `enum_entry` exposes its identifier as a positional
     // `identifier` child (no `name:` field).
     if matches!((lang, kind), (Language::Kotlin, "enum_entry")) {
         return child_by_kind(node, "identifier")
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .and_then(|n| n.node_text_opt(source.as_bytes()))
             .map(String::from);
     }
     // PHP: `const_element` exposes its identifier as a positional
@@ -224,7 +225,7 @@ pub(super) fn extract_ident(
     // `variable_name`).
     if matches!((lang, kind), (Language::Php, "const_element")) {
         return child_by_kind(node, "name")
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .and_then(|n| n.node_text_opt(source.as_bytes()))
             .map(String::from);
     }
     // PHP: `property_element.name` is a `variable_name` wrapper
@@ -240,7 +241,7 @@ pub(super) fn extract_ident(
         return node
             .child_by_field_name("name")
             .and_then(|vn| child_by_kind(vn, "name"))
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .and_then(|n| n.node_text_opt(source.as_bytes()))
             .map(String::from);
     }
     // For Rust `impl_item` AND Kotlin `type_alias` the identifying
@@ -258,10 +259,7 @@ pub(super) fn extract_ident(
         "name"
     };
     let name_node = node.child_by_field_name(field)?;
-    name_node
-        .utf8_text(source.as_bytes())
-        .ok()
-        .map(String::from)
+    name_node.node_text_opt(source.as_bytes()).map(String::from)
 }
 
 /// First child of `node` whose kind equals `kind`, or `None`. Walks

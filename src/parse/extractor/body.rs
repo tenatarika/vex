@@ -11,6 +11,7 @@
 use std::collections::HashSet;
 
 use crate::parse::language::Language;
+use crate::parse::NodeTextExt;
 
 use super::is_keyword;
 
@@ -70,7 +71,7 @@ pub(super) fn extract_body_tokens(
             | "string_scalar"
             | "plain_scalar" => {
                 // content is guaranteed UTF-8 by read_to_string
-                let text = node.utf8_text(content.as_bytes()).unwrap_or_default();
+                let text = node.node_text(content.as_bytes());
                 if text.len() > 1 && !is_keyword(text) && seen.insert(text.to_string()) {
                     tokens.push(text.to_string());
                 }
@@ -132,7 +133,7 @@ fn tokenise_string_value(
     seen: &mut HashSet<String>,
     tokens: &mut Vec<String>,
 ) {
-    let text = node.utf8_text(content.as_bytes()).unwrap_or_default();
+    let text = node.node_text(content.as_bytes());
     for word in text.split_whitespace() {
         let clean: String = word
             .chars()

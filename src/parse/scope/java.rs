@@ -62,6 +62,7 @@ use super::walker::{parse_with, Walker};
 use super::{BoundRef, DefKind, RefKind, ScopeBinder, ScopeId, ScopeKind, UsePath};
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::language::Language;
+use crate::parse::NodeTextExt;
 
 pub struct JavaBinder;
 
@@ -273,7 +274,7 @@ fn collect_java_path(node: Node, content: &str, out: &mut Vec<String>) {
             }
         }
         "identifier" => {
-            let text = node.utf8_text(content.as_bytes()).unwrap_or("").trim();
+            let text = node.node_text(content.as_bytes()).trim();
             if !text.is_empty() {
                 out.push(text.to_string());
             }

@@ -53,6 +53,7 @@ use super::walker::{parse_with, Walker};
 use super::{BoundRef, DefKind, RefKind, ScopeBinder, ScopeId, ScopeKind, UsePath};
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::language::Language;
+use crate::parse::NodeTextExt;
 
 pub struct GoBinder;
 
@@ -214,8 +215,7 @@ fn walk_import_spec(w: &mut Walker, node: Node, scope: ScopeId) {
         return;
     };
     let path_text = path_node
-        .utf8_text(w.content.as_bytes())
-        .unwrap_or("")
+        .node_text(w.content.as_bytes())
         .trim_matches('"')
         .trim();
     if path_text.is_empty() {
@@ -230,11 +230,9 @@ fn walk_import_spec(w: &mut Walker, node: Node, scope: ScopeId) {
     // `package_identifier` for an alias, or a `dot` / `blank_identifier`
     // node for `.`/`_` imports (which bind nothing).
     let bind_name = match node.child_by_field_name("name") {
-        Some(n) if n.kind() == "package_identifier" => n
-            .utf8_text(w.content.as_bytes())
-            .unwrap_or("")
-            .trim()
-            .to_string(),
+        Some(n) if n.kind() == "package_identifier" => {
+            n.node_text(w.content.as_bytes()).trim().to_string()
+        }
         Some(_) => return, // dot or blank import — no binding
         // `path_text` is non-empty (guarded above), so `split` always
         // yields a last segment; `next_back` avoids the unreachable panic.

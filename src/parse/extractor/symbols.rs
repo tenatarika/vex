@@ -15,6 +15,7 @@ use crate::index::symbols::{ParsedRef, ParsedSymbol, SymbolKind};
 use crate::parse::language::Language;
 use crate::parse::parser_pool::parse_text;
 use crate::parse::queries;
+use crate::parse::NodeTextExt;
 
 use super::body::extract_body_tokens;
 use super::GrammarLoadError;
@@ -72,7 +73,7 @@ pub fn extract_symbols_and_imports(
         for capture in m.captures {
             let capture_name = &query.capture_names()[capture.index as usize];
             let node = capture.node;
-            let name = node.utf8_text(content.as_bytes()).unwrap_or_default();
+            let name = node.node_text(content.as_bytes());
             if name.is_empty() {
                 continue;
             }

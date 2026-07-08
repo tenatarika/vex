@@ -30,6 +30,7 @@ use super::walker::{parse_with, Walker};
 use super::{BoundRef, DefKind, RefKind, ScopeBinder, ScopeId, ScopeKind, UsePath};
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::language::Language;
+use crate::parse::NodeTextExt;
 
 pub struct TypeScriptBinder;
 
@@ -256,7 +257,7 @@ fn walk_import_clause(w: &mut Walker, clause: Node, scope: ScopeId, line: usize,
     for child in clause.children(&mut cursor) {
         match child.kind() {
             "identifier" => {
-                let name = child.utf8_text(w.content.as_bytes()).unwrap_or("");
+                let name = child.node_text(w.content.as_bytes());
                 if !name.is_empty() {
                     w.add_import_binding(
                         scope,
@@ -272,7 +273,7 @@ fn walk_import_clause(w: &mut Walker, clause: Node, scope: ScopeId, line: usize,
                 let mut inner = child.walk();
                 for grand in child.children(&mut inner) {
                     if grand.kind() == "identifier" {
-                        let alias = grand.utf8_text(w.content.as_bytes()).unwrap_or("");
+                        let alias = grand.node_text(w.content.as_bytes());
                         if !alias.is_empty() {
                             w.add_import_binding(
                                 scope,
@@ -293,11 +294,11 @@ fn walk_import_clause(w: &mut Walker, clause: Node, scope: ScopeId, line: usize,
                     if grand.kind() == "import_specifier" {
                         let original = grand
                             .child_by_field_name("name")
-                            .and_then(|n| n.utf8_text(w.content.as_bytes()).ok())
+                            .and_then(|n| n.node_text_opt(w.content.as_bytes()))
                             .unwrap_or("");
                         let local = grand
                             .child_by_field_name("alias")
-                            .and_then(|n| n.utf8_text(w.content.as_bytes()).ok())
+                            .and_then(|n| n.node_text_opt(w.content.as_bytes()))
                             .unwrap_or(original);
                         if !original.is_empty() && !local.is_empty() {
                             w.add_import_binding(
@@ -331,7 +332,7 @@ fn extract_string_text(node: Node, content: &str) -> Option<String> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "string_fragment" {
-            return child.utf8_text(content.as_bytes()).ok().map(String::from);
+            return child.node_text_opt(content.as_bytes()).map(String::from);
         }
     }
     None
