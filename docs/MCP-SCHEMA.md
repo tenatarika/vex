@@ -26,7 +26,7 @@ across every tool.
 | `symbols` | string[] | Array of exact symbol names — batch lookup / existence probe. | `show`, `check` |
 | `path` | string | Filesystem path to a single source file (absolute or relative to `project_root`). | `outline` |
 | `pattern` | string | Regex pattern (`grep`) *or* structural AST pattern with `$METAVARS` (`pattern`). Tool docstring states which. | `grep`, `pattern` |
-| `filter` | string | Substring path filter applied to result paths (single substring; use `include`/`exclude` for globs). | `grep`, `similar`, `duplicates` |
+| `filter_path` | string | Substring path filter applied to result paths (single substring; use `include`/`exclude` for globs). `filter` is the deprecated alias (v1.24.0 rename, PROTOCOL-EVOLUTION §3.3). | `search`, `show`, `usages`, `grep`, `similar`, `duplicates` |
 | `include` | string[] | Path-glob whitelist (gitignore syntax, repeatable). | every search-shaped tool |
 | `exclude` | string[] | Path-glob blacklist, wins over `include` (repeatable). | every search-shaped tool |
 | `mode` | enum | **Bundle assembly mode** — `symbol` / `pr-impact` / `project`. Discriminator for per-mode required fields (see [Bundle modes](#bundle-modes-v19)). | `bundle` |
@@ -184,6 +184,7 @@ ordering after sorting the bundle by `rank_percentile`.
 | `outline` | `file` | `path` |
 | `check` | `names` | `symbols` |
 | `show` | `symbol` (singular) | `symbols: [name]` |
+| `search`, `show`, `usages`, `grep`, `similar`, `duplicates` | `filter` | `filter_path` (v1.24.0, §3.3) |
 
 Sending a legacy field still works. The MCP response surfaces a
 `_meta.deprecated_args` array listing every legacy name the client

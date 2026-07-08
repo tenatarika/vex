@@ -241,7 +241,7 @@ vex completions zsh > ~/.zfunc/_vex
 | **`vex diff --base <rev> [--limit N]`** | **NEW.** Symbol-level diff between an arbitrary git revision and the working tree: added / removed / moved-within-file / body-changed entries. `git diff --no-renames` semantics so a `git mv` surfaces both halves. |
 | **`vex bundle --mode <symbol\|pr-impact\|project> [...]`** | **NEW (v1.9, Phase 13.2).** Unified multi-source bundle — replaces 4 round-trips (`show → callers → callees → similar`) with one. `--mode symbol --symbol Foo` returns body + callers + callees + semantic similar. `--mode pr-impact --base origin/main` returns changed symbols + transitive callers (depth=2 default) + tests. `--mode project [--top-n 30]` returns top-N by reverse call-graph indegree (experimental — see `docs/MCP-SCHEMA.md#bundle-modes-v19` for the response shape and `mode_hints` per-mode keys). Always emits the v1 envelope `{ protocol_version, capabilities, _meta, results }`. |
 | `vex check <name> [name...]` | Fast existence check — which symbols exist in the index? |
-| `vex grep <pattern> [--filter path/]` | Regex content search (no index needed). |
+| `vex grep <pattern> [--filter-path path/]` | Regex content search (no index needed). |
 | `vex update [--path .] [--semantic] [--embedder ID] [--history \| --no-history]` | Incremental update — re-parse only changed files, reuse unchanged symbols from existing index. **`--history` (v1.15.0)** is sticky via the manifest: if the prior build had a history section, `vex update` keeps it fresh via a 3-branch walker (fast-path skip on no-new-commits, incremental on linear history, full rebuild on force-push). `--no-history` drops the section + nulls the manifest fields. |
 | `vex watch [--path .] [--semantic] [--embedder ID]` | Watch filesystem, auto re-index on changes. |
 | `vex status [--path .]` | Show index stats: symbol count, size, embeddings, call graph, BM25, GPU support. |
@@ -258,7 +258,7 @@ vex completions zsh > ~/.zfunc/_vex
 All search-shaped commands (`search`, `usages`, `pattern`, `show`, `grep`, `implementations`, `callers`, `callees`, `paths`, `reachable`, `tests-for`, `similar`, `duplicates`, `diff`, `bundle`) accept:
 
 - **`--include <glob>` / `--exclude <glob>`** (repeatable, gitignore syntax) — per-call path scoping that doesn't require re-indexing. `--exclude` wins over `--include`. Example: `vex search Foo --include 'src/**' --exclude '**/*.gen.*'`.
-- **`--filter <substring>`** — older path-substring filter, still supported. Composes AND with the globs.
+- **`--filter-path <substring>`** (alias `--filter`) — path-substring filter. Composes AND with the globs.
 
 `vex search` / `vex show` additionally accept:
 
@@ -931,7 +931,7 @@ Use vex for code search instead of grep or manual file reading:
 - `vex bundle --mode symbol --symbol Foo` — single-call body + callers + callees + similar (replaces 4 round-trips)
 - `vex bundle --mode pr-impact --base origin/main` — changed symbols + transitive callers + tests on the current branch
 
-All commands support `--filter "path/"` to narrow results to a directory. Most search-shaped commands also accept `--since <rev>` / `--since-branched` / `--changed-only` for diff-scoping.
+All commands support `--filter-path "path/"` (alias `--filter`) to narrow results to a directory. Most search-shaped commands also accept `--since <rev>` / `--since-branched` / `--changed-only` for diff-scoping.
 
 ### Rules
 - **Always prefer `vex show` over `Read`** when you need a specific function or class
