@@ -3,9 +3,11 @@
 //! When the structural FST returns no symbol named the query AND
 //! the query looks like a bare identifier (the typical
 //! "imported-from-dependency / typo" case), `vex search` emits a
-//! stderr hint pointing at `check` / `show` / `usages --strict` as
-//! the precise-lookup tools. The hint is non-fatal and doesn't
-//! appear in the JSON envelope on stdout.
+//! stderr hint (human path) pointing at `check` / `show` /
+//! `usages --strict` as the precise-lookup tools, AND — from v1.23.0
+//! (PROTOCOL-EVOLUTION §4) — surfaces the same advisory in the JSON
+//! envelope's `_meta.vex.dev/search_hint` so MCP agents / `--format
+//! json` consumers (who never see stderr) get it too.
 //!
 //! Pins:
 //! 1. `vex search undefined_symbol` on a project where the name is
@@ -14,7 +16,10 @@
 //!    → stderr does NOT contain the hint (would be noise).
 //! 3. `vex search "multi word phrase"` (not identifier-shaped) →
 //!    no hint regardless of FST hits.
-//! 4. JSON envelope on stdout is unchanged by the hint.
+//! 4. JSON envelope stays valid JSON AND carries
+//!    `_meta.vex.dev/search_hint` when the query drifts.
+//! 5. JSON envelope OMITS `_meta.vex.dev/search_hint` for a defined
+//!    symbol (no drift).
 
 use std::path::Path;
 
@@ -111,10 +116,10 @@ fn hint_does_not_fire_for_multi_word_query() {
 }
 
 #[test]
-fn hint_does_not_pollute_json_envelope() {
-    // JSON output on stdout must remain a clean envelope — the
-    // hint lives on stderr, so `vex search Foo --format json | jq`
-    // still works.
+fn hint_surfaces_in_json_envelope_meta() {
+    // JSON stdout must stay a valid envelope (so `| jq` works) AND — from
+    // v1.23.0 §4 — carry the drift advisory in `_meta.vex.dev/search_hint`
+    // so MCP agents / JSON consumers see it (stderr is invisible to them).
     let tmp = TempDir::new().unwrap();
     write_project_with_external_reference(tmp.path());
 
@@ -123,19 +128,54 @@ fn hint_does_not_pollute_json_envelope() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    // Stdout must parse as JSON (proves no hint contamination).
     let envelope: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("stdout must be valid JSON; got: {stdout}\nerror: {e}"));
-    // Envelope must have the v1 shape.
     assert!(
         envelope.get("protocol_version").is_some(),
         "missing protocol_version"
     );
     assert!(envelope.get("results").is_some(), "missing results");
-    // Stderr must STILL carry the hint (it just doesn't leak into stdout).
+
+    let hint = &envelope["_meta"]["vex.dev/search_hint"];
+    assert_eq!(
+        hint["reason"], "no_local_definition",
+        "envelope must carry the drift reason: {stdout}"
+    );
+    assert_eq!(
+        hint["query"], "undefined_symbol",
+        "hint must echo the query"
+    );
+    assert!(
+        hint["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("vex check") && m.contains("vex usages")),
+        "hint message must name the precise-lookup tools: {stdout}"
+    );
+
+    // Stderr must STILL carry the hint for the human path.
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert!(
         stderr.contains(HINT_SUBSTRING),
         "hint must STILL go to stderr in JSON mode. Got stderr: {stderr}"
+    );
+}
+
+#[test]
+fn json_envelope_omits_hint_for_defined_symbol() {
+    // No drift (the symbol IS defined) → no `search_hint` key at all
+    // (skip_serializing_if keeps the envelope clean for the common case).
+    let tmp = TempDir::new().unwrap();
+    write_project_with_external_reference(tmp.path());
+
+    let assert = vex_in(tmp.path())
+        .args(["search", "known_def", "--format", "json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let envelope: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout must be valid JSON; got: {stdout}\nerror: {e}"));
+    assert!(
+        envelope["_meta"].get("vex.dev/search_hint").is_none(),
+        "defined-symbol search must not emit search_hint: {stdout}"
     );
 }

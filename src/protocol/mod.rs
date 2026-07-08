@@ -221,6 +221,21 @@ pub struct MetaEnvelope {
         skip_serializing_if = "Option::is_none"
     )]
     pub semantic_channel: Option<&'static str>,
+    /// v1.23.0 (PROTOCOL-EVOLUTION §4 agent-output) — search-drift advisory,
+    /// set when an identifier-shaped `vex search` query found NO structural
+    /// (FST) match, so hybrid ranking returns neighbours (callers / imports)
+    /// rather than the definition the caller likely meant. Pre-v1.23 this hint
+    /// was stderr-only; MCP agents and `--format json` consumers never saw it
+    /// and trusted the drifted neighbour list (the known `vex search` misuse
+    /// footgun). Now carried in the envelope so it reaches the MCP `content`
+    /// text channel and `structuredContent`/`_meta` alike. Shape:
+    /// `{ reason: "no_local_definition", query, message }`. Same `vex.dev/`
+    /// namespace as the other observability fields.
+    #[serde(
+        rename = "vex.dev/search_hint",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub search_hint: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Clone, Debug)]

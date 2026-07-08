@@ -372,6 +372,61 @@ fn search_workspace_json_omits_semantic_channel_when_not_requested() {
     );
 }
 
+/// §4 agent-output in workspace mode: the drift advisory is query-scoped, so
+/// it surfaces on the top-level `_meta.vex.dev/search_hint` only when EVERY
+/// member drifted (no member has a structural definition); a defined symbol
+/// omits it.
+#[test]
+fn search_workspace_json_surfaces_drift_hint_when_all_members_drift() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let cache = root.join(".cache");
+    write(
+        &root.join("alpha").join("a.rs"),
+        "pub fn caller() { undefined_symbol(); }\npub fn known_def() -> u8 { 7 }\n",
+    );
+    write(
+        &root.join(".vex-workspace.toml"),
+        "[[repo]]\npath = \"alpha\"\nname = \"A\"\n",
+    );
+    vex_in(root, &cache)
+        .args(["index", "--workspace"])
+        .assert()
+        .success();
+
+    // Undefined identifier → the single member drifts → top-level hint present.
+    let out = vex_in(root, &cache)
+        .args([
+            "search",
+            "undefined_symbol",
+            "--workspace",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let hint = &json["_meta"]["vex.dev/search_hint"];
+    assert_eq!(
+        hint["reason"], "no_local_definition",
+        "workspace drift must surface a top-level hint: {stdout}"
+    );
+    assert_eq!(hint["query"], "undefined_symbol");
+
+    // Defined symbol → no drift → no hint.
+    let out2 = vex_in(root, &cache)
+        .args(["search", "known_def", "--workspace", "--format", "json"])
+        .output()
+        .unwrap();
+    let stdout2 = String::from_utf8_lossy(&out2.stdout);
+    let json2: serde_json::Value = serde_json::from_str(&stdout2).unwrap();
+    assert!(
+        json2["_meta"].get("vex.dev/search_hint").is_none(),
+        "defined symbol must not surface a drift hint: {stdout2}"
+    );
+}
+
 #[test]
 fn grep_workspace_groups_matches_by_repo() {
     // grep scans the filesystem directly — no `vex index` needed first.

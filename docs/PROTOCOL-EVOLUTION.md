@@ -236,6 +236,14 @@ Split by break-risk:
   payload** (agents don't see stderr — directly fixes the known
   `vex search` misuse footgun, `reference_search_ranking_drift`). This is
   the highest-value, zero-risk change and needs no capability flag to add.
+  **Status: the drift hint is SHIPPED (v1.23.0).** It is carried in the
+  envelope as `_meta.vex.dev/search_hint` `{ reason: "no_local_definition",
+  query, message }`, set on the single-repo JSON path when an
+  identifier-shaped query has zero structural hits, and on the workspace
+  envelope's top-level `_meta` when *every* member drifts (query-scoped). The
+  MCP builder needs no change — it already dumps the full envelope to
+  `content[0].text` and propagates `_meta`. The `via:` / `def`/`neighbor`
+  text markers remain future work.
 - **`structuredContent` `def`/`neighbor` marker — gated.** Adding a
   structured result-kind field for code-mode consumers is an additive
   envelope change and gets its own flag (`capabilities.structured_result_kind`)

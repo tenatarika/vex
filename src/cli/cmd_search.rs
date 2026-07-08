@@ -47,9 +47,27 @@ struct SearchOutcome {
     trace_bm25: Vec<SearchResult>,
     trace_semantic: Vec<SearchResult>,
     semantic_channel_reason: Option<&'static str>,
+    /// True when an identifier-shaped query returned zero structural (FST)
+    /// hits, so the ranking drifted to neighbours (callers / imports) rather
+    /// than a definition. Drives the stderr advisory (human path) and the
+    /// `_meta.vex.dev/search_hint` envelope field (agent path).
+    drifted: bool,
     diff_retained: usize,
     diff_dropped: usize,
     changed_paths: Option<crate::util::git_diff::ChangedPaths>,
+}
+
+/// The human-readable search-drift advisory for an identifier-shaped query
+/// that found no structural (FST) match. Shared by the stderr notice and the
+/// JSON envelope's `_meta.vex.dev/search_hint.message` so the two never drift.
+fn search_drift_message(query: &str) -> String {
+    format!(
+        "`vex search {query}` found no symbol named `{query}` in this index. \
+         Hybrid ranking may surface callers / imports instead. For exact-symbol \
+         lookup try `vex check {query}` (existence), `vex show {query}` \
+         (definition body), or `vex usages {query} --strict` (every reference). \
+         See `docs/COOKBOOK.md` FAQ for the full decision rule."
+    )
 }
 
 /// One workspace member's search outcome, carried through the `--workspace`
@@ -66,6 +84,10 @@ struct RepoOutcome {
     /// asked-for but no embeddings. Only the last is surfaced downstream (see
     /// the JSON/text emit sites); `NOT_REQUESTED` is suppressed as noise.
     semantic_channel: Option<&'static str>,
+    /// Whether this member's search drifted (identifier-shaped query, zero
+    /// structural hits). Aggregated across members to decide the workspace
+    /// envelope's top-level `_meta.vex.dev/search_hint` — see the JSON branch.
+    drifted: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -125,6 +147,7 @@ pub(crate) fn search(
         trace_bm25,
         trace_semantic,
         semantic_channel_reason,
+        drifted,
         diff_retained,
         diff_dropped,
         changed_paths,
@@ -178,6 +201,17 @@ pub(crate) fn search(
             meta.diff_filter =
                 diff_filter_meta(&diff, changed_paths.as_ref(), diff_retained, diff_dropped);
             meta.semantic_channel = semantic_channel_reason;
+            // §4 agent-output: carry the search-drift advisory in the envelope
+            // so MCP agents / JSON consumers see it (stderr is invisible to
+            // them). NOT gated by `emit_diagnostics` — that only silences the
+            // stderr copy for the workspace fanout.
+            if drifted {
+                meta.search_hint = Some(serde_json::json!({
+                    "reason": "no_local_definition",
+                    "query": query,
+                    "message": search_drift_message(&query),
+                }));
+            }
             output::print_search_envelope(&results, &signals, meta);
         }
         OutputFormat::Text | OutputFormat::Compact => {
@@ -272,16 +306,15 @@ fn produce_results(
     // hint: imported-from-dependency symbols look like they "didn't
     // find anything useful". Suggest the precise-lookup tools.
     //
-    // Hint goes to stderr — doesn't pollute stdout JSON envelope or
-    // text result list. See `docs/COOKBOOK.md#faq--vex-search-foo-returned-the-wrong-things`.
-    if emit_diagnostics && structural_results.is_empty() && is_identifier_shaped(query) {
-        eprintln!(
-            "hint: `vex search {query}` found no symbol named `{query}` in this index. \
-             Hybrid ranking may surface callers / imports instead. For exact-symbol \
-             lookup try `vex check {query}` (existence), `vex show {query}` \
-             (definition body), or `vex usages {query} --strict` (every reference). \
-             See `docs/COOKBOOK.md` FAQ for the full decision rule."
-        );
+    // The hint goes to stderr for the human path (gated by `emit_diagnostics`
+    // so the workspace fanout doesn't repeat it per member). The same
+    // condition also drives the `_meta.vex.dev/search_hint` envelope field
+    // (set by the caller) — that path is NOT gated by `emit_diagnostics`,
+    // because MCP agents / `--format json` consumers never see stderr and are
+    // exactly who the hint is for (PROTOCOL-EVOLUTION §4).
+    let drifted = structural_results.is_empty() && is_identifier_shaped(query);
+    if emit_diagnostics && drifted {
+        eprintln!("hint: {}", search_drift_message(query));
     }
 
     // BM25 channel: auto-on when the index has BM25 data, opt-out
@@ -410,6 +443,7 @@ fn produce_results(
         trace_bm25,
         trace_semantic,
         semantic_channel_reason,
+        drifted,
         diff_retained,
         diff_dropped,
         changed_paths,
@@ -462,11 +496,19 @@ fn search_workspace(ctx: &CmdCtx<'_>, req: &SearchReq<'_>) -> Result<()> {
             results: outcome.results,
             stale,
             semantic_channel: outcome.semantic_channel_reason,
+            drifted: outcome.drifted,
         });
     }
     if !any {
         crate::cli::exit_code::signal_no_results();
     }
+
+    // §4 agent-output: the drift advisory is query-scoped, not member-scoped
+    // (same identifier queried in every member). Surface it on the workspace
+    // envelope's top-level `_meta` only when NO member found a structural
+    // definition — if any member has the def, the search DID find it and a
+    // "no definition" hint would mislead.
+    let all_drifted = !per_repo.is_empty() && per_repo.iter().all(|r| r.drifted);
 
     match ctx.format {
         OutputFormat::Json => {
@@ -496,22 +538,37 @@ fn search_workspace(ctx: &CmdCtx<'_>, req: &SearchReq<'_>) -> Result<()> {
                     obj
                 })
                 .collect();
+            let mut meta = output::default_meta_for(&base);
+            if all_drifted {
+                meta.search_hint = Some(serde_json::json!({
+                    "reason": "no_local_definition",
+                    "query": req.query,
+                    "message": search_drift_message(req.query),
+                }));
+            }
             output::print_envelope(
                 serde_json::json!({
                     "workspace": ws.file.to_string_lossy(),
                     "repos": repos,
                 }),
                 crate::protocol::capabilities::current(),
-                output::default_meta_for(&base),
+                meta,
             );
         }
         OutputFormat::Text | OutputFormat::Compact => {
+            // Human path: emit the drift advisory once for the whole
+            // workspace (query-scoped) rather than per member — mirrors the
+            // single-repo stderr hint, which the fanout suppresses per member.
+            if all_drifted {
+                eprintln!("hint: {}", search_drift_message(req.query));
+            }
             for r in &per_repo {
                 let RepoOutcome {
                     repo,
                     results,
                     stale,
                     semantic_channel,
+                    drifted: _,
                 } = r;
                 println!("── {repo} ──");
                 if let Some(reason) = stale {
