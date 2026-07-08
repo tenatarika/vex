@@ -204,8 +204,8 @@ glob misses vanish into the `diff_dropped` residual. The balance
 `pre_filter_count − def_site_dropped − docs_dropped − diff_dropped ==
 hits_after_filter` holds *by construction*, but `diff_dropped` is really
 `scope + filter_path + diff` combined, and an agent reading the field name
-mis-attributes scope drops as diff drops. There is no `scope_dropped` field
-today.
+mis-attributes scope drops as diff drops. (Pre-v1.23.0 there was no
+`scope_dropped` field; it shipped v1.23.0 per the status note above.)
 
 **Additive plan (truly additive — no semantic change).** Surface the
 already-computed `DropCounts.scope` as a new `scope_dropped: usize`
@@ -276,30 +276,221 @@ are independent and can land in any order.
 
 ---
 
-## 5. What `protocol v2` actually removes (the contract batch)
+## 5. `protocol v2` — the contract batch (mechanics)
 
-`v2` performs the *contract* step for everything deprecated during the
-expand phases. Prospective removal manifest (kept current as items
-deprecate):
+Status: **DESIGN** (2026-07-08). v2 is *scheduled for design*, not for a cut.
+This section is the "write the full mechanics when v2 is scheduled"
+deliverable the earlier draft deferred. No code lands from this section until
+it passes architect review and the per-item readiness gates in §5.4 are met.
 
-- flat `Signals` fields — superseded by nested wire form (§3.1)
-- `UsagesTrace.mode_legacy` — superseded by `mode`
-- argument aliases from §3.3
-- `diff_dropped` → `narrowing_dropped` rename, if chosen (§3.2)
+### 5.1 Two break classes — do not conflate them
 
-**Cut trigger (concrete, to avoid indefinite deferral):** cut v2 when
-(a) ≥ 2 fields have completed the full expand→advertise→deprecate cycle,
-**and** (b) ≥ 1 minor has elapsed since the most recent deprecation was
-announced (a real migration window). Not before.
+The earlier removal manifest lumped four items, but they are **two different
+kinds of break** with different vehicles:
 
-**Coexistence model (decide at v2, recommended now):** a dual-audience
-protocol should support **request-time selection** — the consumer names the
-protocol version it wants (a request `_meta`/param or MCP negotiation), and
-the server emits v1 or v2 accordingly — rather than a flag-day bump that
-strands every un-updated consumer. `v2` therefore also means: teach the
-producer to emit either shape on request, keep v1 emission until a
-deprecation window closes. Write the full mechanics up here when v2 is
-scheduled.
+- **Output-envelope reshape** — changes the *shape of what vex emits*
+  (`ResponseEnvelope` / `Signals` / trace). A consumer parsing the response
+  breaks. This is what `protocol_version` selects, and it is the *only* thing
+  request-time version selection (§5.2) governs.
+- **Input-argument removal** — vex stops *accepting* a deprecated request arg
+  name (`name`, `names`, singular `symbol`, `filter`, `target`←`symbol`).
+  This is orthogonal to the response version: an input alias is read *before*
+  any envelope is produced. Version-gating inputs ("accept `name` only when
+  the caller asked for v1 output") is incoherent — the caller hasn't been
+  parsed yet. So input aliases are **not** part of the `protocol_version`
+  contract.
+
+Consequence: input aliases are *cheap to keep forever* (one `read_canonical_*`
+branch each) and removing them strands scripted callers for no wire-shape
+benefit. **Recommendation: keep input aliases indefinitely**; drop them only
+on a genuine flag-day major (a hypothetical `vex 2.0` *product* release), not
+as part of the response-`protocol_version` v2. Track them here but do not
+gate them on `protocol_version`. The *sole* legitimate vehicle for input-alias
+removal is a startup/compile-time product-major gate (a hypothetical
+`VEX_PRODUCT_MAJOR` / `vex 2.0`), categorically **not** the per-request response
+`protocol_version` — named here so a future reader doesn't re-propose gating
+inputs on the wire version.
+
+### 5.2 Coexistence model — request-time output-version selection
+
+A dual-audience protocol must let the consumer **name the response version it
+wants**; the producer emits that shape. Never a flag-day bump that strands
+un-updated consumers.
+
+- **Default stays `v1`.** Absent an explicit request, vex emits v1 forever
+  (until a deprecation window formally closes — §5.5). "Absent ⇒ v1" is the
+  input-side mirror of the "absent capability ⇒ false" rule (§1b).
+- **Discovery via `capabilities`.** Add `capabilities.protocol_versions:
+  ["v1","v2"]` (append-only array, §1b sub-contract) so a consumer learns v2
+  exists *before* requesting it. This is the feature-detect surface; the
+  `protocol_version` *string* remains a report of what was actually emitted.
+- **Selection mechanism (two front doors, one core):**
+  - **MCP:** read `params._meta["vex.dev/protocol_version"]` on the tool call
+    — the same `_meta` channel vex already reads `traceparent` from
+    (`crates/vex-mcp/src/response.rs`). Mirrors MCP's own `initialize`
+    `protocolVersion` handshake (client proposes, server emits a supported
+    version), so it is idiomatic for MCP consumers.
+  - **CLI:** a global `--protocol <v1|v2>` flag, plus `VEX_PROTOCOL` env for
+    scripts.
+  - Both resolve to one `ProtocolVersion` enum handed to the producer.
+
+- **Version parsing is an ordered enum, never a string compare.**
+  `ProtocolVersion` is an ordered enum with an explicit `FromStr`: a parseable
+  `vN` above the newest supported clamps *down* to the newest supported; a
+  non-`vN` / garbage value falls back to `V1`; **never errors** (forward-compat).
+  Do not lexically compare version strings — `"v10" < "v9"` lexically is the
+  same `v1.12`-sorts-before-`v1.9` bug class the project has already hit.
+- **Clamp is a downgrade — pair it with "read the emitted version."** Clamping
+  a `v3` request down to `v2` only round-trips safely if older shapes are
+  strict shape-ancestors of newer ones (true here: §5.1 keeps inputs orthogonal
+  and v2 only *reshapes outputs*). The consumer contract is therefore: **the
+  requested version and the emitted `protocol_version` may differ; always read
+  the emitted value.** State this wherever v2 is advertised.
+
+#### 5.2a Cross-process negotiation (MCP wrapper ⇄ CLI subprocess)
+
+The MCP server does **not** emit the envelope — it spawns `vex <sub> …` as a
+subprocess and lifts the CLI's stdout envelope (`crates/vex-mcp/src/response.rs`).
+So the wrapper and the CLI binary are **two independently-versioned processes**
+(Homebrew / self-update updates each separately), and version skew is the
+*normal* case, not an edge case. Rules:
+
+- The wrapper translates `_meta["vex.dev/protocol_version"]` into a `--protocol`
+  CLI flag — but **only after feature-detecting** the callee CLI's
+  `capabilities.protocol_versions` (which it already lifts). If the requested
+  version is not listed, the wrapper **drops the flag** (→ CLI emits its
+  default) rather than forwarding it. Forwarding `--protocol v2` to an old CLI
+  that never learned the flag would clap-error → `-32000`; the "never error /
+  clamp" promise lives in the *CLL* and an old CLI cannot honor it, so the
+  clamp must happen in the *wrapper* for the cross-process path.
+- Silent downgrade is the correct failure: wrapper strips the flag, CLI emits
+  v1, `protocol_version: "v1"` reports it truthfully. The agent asked for v2
+  and got v1 with no error — fine, because the consumer contract is "read the
+  emitted version" (above).
+- **Default-drift guard (MED-1):** when the CLI's *default* eventually flips to
+  v2 (§5.5), the wrapper must pin `--protocol v1` **explicitly** for un-opted
+  requests during the deprecation window — never rely on the CLI default —
+  so a CLI-side default flip cannot leak v2 to agents that never opted in.
+  "Absent ⇒ v1" is a promise the wrapper must actively enforce, not inherit.
+
+### 5.3 Producer mechanics
+
+The shape fork is a **serialization-boundary** decision, not a flag threaded
+into constructors. Both the architect and rust-reviewer design passes converged
+on this (do not re-litigate):
+
+- **Two distinct types, one wrapper, manual dispatch.** v1's shape is the
+  *literal, unmodified* `Signals` struct (`#[derive(Serialize)]`, untouched).
+  v2's shape is a new `SignalsNested` struct **built from the same four §3.1
+  sub-structs** (`StructuralSignals` / `LexicalSignals` / `SemanticSignals` /
+  `PostSignals`). A wrapper enum `SignalsWire<'a> { V1(&'a Signals),
+  V2(SignalsNested) }` gets a **two-line manual `Serialize`** that just
+  delegates to the active arm's derived impl. No `#[serde(untagged)]` (a
+  deserialize-oriented attribute, misleading on serialize-only types; buys
+  nothing), no `flatten` (invariant #1), no single struct with version-reading
+  `skip_serializing_if` (that *is* the drift hazard).
+- **One source of truth ⇒ divergence-proof.** Because both shapes project from
+  the *same* sub-structs, the §3.1 flat+nested divergence hazard is impossible
+  by construction — a new channel added to the sub-structs feeds both wire
+  shapes. This is why the §3.1 groundwork made v2 "a mechanical swap."
+- **`ProtocolVersion` lives in `src/protocol/`** (beside `PROTOCOL_VERSION`) —
+  it is a wire concept both the CLI and the `vex-mcp` crate reason about, not a
+  `cli/` detail.
+- **Single branch point.** Version is *resolved* once at the request boundary
+  (`cmd_*` / `build_command`) and *applied* once, inside the envelope printer
+  (`print_envelope` / `print_search_envelope`, plus the bespoke `capabilities`
+  envelope in `cmd_trivial.rs`) — the ~3 sites that actually call
+  `serde_json::to_string`. `build_signals` and the per-channel construction
+  logic stay **version-agnostic**. Honest sizing: reaching those ~3 printer
+  sites from `main.rs` still needs the version plumbed through the existing
+  per-command context/args rather than a new bare parameter on every `cmd_*`
+  signature — confirm the shared context type before implementation; it is not
+  literally "3 sites, zero fan-out."
+- **`protocol_version` string and shape are ONE decision, set together.** A bug
+  where the shape forks to v2 but the reported string still says `"v1"` (or
+  vice-versa) is the classic desync; select both from the same resolved
+  `ProtocolVersion` in the same function.
+- **v1 output must stay byte-identical.** The V1 arm wraps the literal existing
+  types — never a re-declared "V1Signals" copy that a future edit could reorder
+  (`serde_json` emits in declaration order). The §1c snapshot suite guards it;
+  v2 gets its own parallel golden.
+- **The `--why` trace is a *second, independent* branch point.** It rides in
+  `MetaEnvelope.why_trace: Option<serde_json::Value>` — an untyped blob built in
+  `src/cli/trace.rs`, so the compiler will *not* catch a v2 trace reshape
+  (§5.4's `narrowing_dropped`). It needs its own version branch + dual-golden;
+  do not assume "the serializer branches" covers it.
+- Serialize-only structs stay serialize-only (§1a invariant #7); the wrapper's
+  manual `Serialize` adds no `Deserialize` and no round-tripping.
+
+### 5.4 v2 output contents, by readiness tier
+
+Only Tier-B (output-reshape) items belong to `protocol_version` v2. Each needs
+its expand step **before** v2 can contract it:
+
+- **Nested `Signals` wire** — v2 emits `signals` grouped by channel
+  (structural / lexical / semantic / post; the §3.1 sub-structs already model
+  this internally) and drops the flat fields. `capabilities.signals_nested`
+  flips when v2 can emit it. *Readiness: expand NOT started* — and §3.1
+  deliberately rejected emitting flat+nested together in v1.x (divergence
+  hazard), so nested is v2-native (expand+contract happen together under the
+  version gate). This is the headline v2 reshape.
+- **`diff_dropped` → `narrowing_dropped`** — v2 renames the residual and lets
+  `diff_dropped` (if kept at all) carry *only* diff/filter_path, with
+  `narrowing_dropped` carrying the combined narrowing count. *Readiness:
+  expand NOT started* (`narrowing_dropped` exists only in this doc). Lower
+  value than nested Signals; may be dropped from v2 scope.
+
+`mode_legacy` (an *output* field) is the one ready-now output removal: `mode`
+has been emitted alongside it since v1.8/1.9 (many minors). It can be dropped
+in v2's flat→cleanup pass with no expand work outstanding.
+
+### 5.5 Cut trigger + deprecation window (refined)
+
+Cut v2 only when, for **the output items it will reshape**:
+(a) each has completed expand→advertise→deprecate, **and**
+(b) ≥ 1 minor has elapsed since that item's deprecation was announced.
+Freshly-deprecated items (e.g. `filter`, deprecated v1.24.0) are simply *not
+in the first v2* — they wait for their window, or ride a later reshape. v2 is
+not all-or-nothing; it reshapes whatever is ready and leaves the rest on v1
+semantics.
+
+**Gate (b) is exempted for v2-native reshapes.** Nested `Signals` has *no
+pre-v2 deprecation event* — flat fields are only "deprecated" at the instant v2
+ships nested (§3.1 forbade a v1.x flat+nested coexistence phase). So gate (b) is
+circular/vacuous for it. Resolution: v2-native reshapes satisfy gate (b) via the
+*post-cut* deprecation window below (v1 stays default while consumers migrate),
+not a pre-cut one. Gate (b) applies only to items that had a real v1.x expand
+phase (aliases, `mode_legacy`).
+
+After cutting: keep emitting v1 by default through a published deprecation
+window (≥ N minors, N TBD at cut) before flipping the default to v2. Announce
+the window in CHANGELOG + `MCP-SCHEMA.md`.
+
+### 5.6 Testing the version fork
+
+- **Dual goldens** — every snapshot that today pins the v1 envelope gains a
+  v2 sibling. v1 golden must not move (§1c).
+- **Version-matrix test** — request each of `{unset, v1, v2}` and assert the
+  emitted `protocol_version` + shape; assert unset ≡ v1 byte-for-byte.
+- **Capability↔version coupling** — `protocol_versions` lists exactly the
+  versions the producer can emit; `signals_nested` true iff v2 emits nested.
+- **Cross-process skew matrix (§5.2a)** — test the cross-product of
+  `{wrapper knows v2} × {CLI supports only v1}` and `{old wrapper} × {CLI
+  supports v2}`. Assert: a v2 request to a v1-only CLI → wrapper strips
+  `--protocol`, CLI returns v1 **success** (never `-32000`); an old wrapper
+  never sends a version and the v2-capable CLI stays on its default. Pin the
+  benign reverse case so a future wrapper change can't regress it.
+- **Cross-crate tolerance** — the MCP wrapper tolerates an unknown requested
+  version and never errors: it forwards `--protocol` only when the callee's
+  `protocol_versions` lists it, else drops it (§5.2a).
+
+### 5.7 Prospective removal manifest (kept current)
+
+- flat `Signals` fields — Tier B, expand not started (§5.4)
+- `diff_dropped`→`narrowing_dropped` — Tier B, expand not started, maybe cut
+- `UsagesTrace.mode_legacy` — output, ready now
+- input arg aliases (`name`/`names`/singular `symbol`/`filter`/`target`) —
+  **§5.1: keep indefinitely**, not a `protocol_version` concern
 
 ---
 
@@ -319,7 +510,15 @@ Proposed additions (flip as each expand step lands):
   `structuredContent`. **SHIPPED (v1.24.0), flipped `true`.** The text-channel
   drift hint is **not** gated.
 - `signals_nested` — §3.1 nested wire form. Flips at **v2**, not during
-  v1.x (the v1.x work is internal-only).
+  v1.x (the v1.x work is internal-only). True iff a requested v2 envelope
+  emits nested `signals` (§5.4 Tier B).
+- `protocol_versions` — §5.2 discovery array (e.g. `["v1","v2"]`) listing the
+  response versions the producer can emit on request. Append-only (§1b). Lets
+  a consumer feature-detect v2 before selecting it via
+  `_meta["vex.dev/protocol_version"]` / `--protocol`. Elements are the `Display`
+  of `ProtocolVersion::ALL` (not free strings), and the array is order-pinned by
+  a test mirroring `bundle_mode_flag_all_matches_capabilities` so the discovery
+  set and the `--protocol`-accepted set cannot drift.
 
 No flag for §3.2 `scope_dropped` (revised from an earlier draft): it is a
 sub-field of the `--why` trace, which is already gated wholesale by the `why`
