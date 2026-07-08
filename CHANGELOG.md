@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-07-08
+
+### Fixed — bounds-safe node text extraction (malformed-input panic)
+
+- Reading a symbol/import/ref name off a tree-sitter node now goes through a
+  bounds-checked `NodeTextExt` accessor instead of `Node::utf8_text` directly.
+  tree-sitter's GLR error recovery can emit a node whose byte range runs past
+  the end of the source (a fuzz run found malformed Kotlin yielding a node
+  starting one byte past EOF); `utf8_text` slices `&source[range]` internally
+  and panicked on such a range, and a trailing `.unwrap_or("")` / `.ok()` could
+  not catch it. The pipeline's per-file `catch_unwind` already contained the
+  fallout (the file was skipped), so `vex index` never crashed — but the
+  extractor, the nine scope binders, and the `vex pattern` skeleton prefilter
+  are now panic-safe on adversarial input in their own right. Found via
+  `fuzz_kotlin_binder`.
+
 ### Hardened — bounded tree-sitter parse (DoS guard, all languages)
 
 - Every production parse now routes through a single guarded entry point
@@ -34,6 +50,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   skips identifiers inside comments and string literals (only `${...}`
   template interpolations are walked for refs). The bare `$name` short form
   is treated as string text.
+
+### Added — agent-facing search observability
+
+- `vex search --workspace --format json` now surfaces each member's semantic
+  fallback: a repo object carries `semantic_channel: "index_lacks_vectors"`
+  (and a text-mode advisory) when `--semantic` was requested but that member's
+  index has no embeddings, so a mixed-`--semantic` workspace no longer degrades
+  silently. `not_requested` is suppressed (field presence signals degradation).
+- `vex search` surfaces its search-drift hint (identifier-shaped query with no
+  structural match → ranking returns callers/imports, not the definition) in
+  the response envelope as `_meta.vex.dev/search_hint`, so MCP agents and
+  `--format json` consumers see it — previously it was stderr-only. Set on the
+  single-repo path and on the `--workspace` top-level when every member drifts.
+- `vex usages --why` reports a new `scope_dropped` count in its trace: the
+  rows dropped by `--include`/`--exclude` path-scope globs, previously folded
+  invisibly into the diff residual. It is an overlapping sub-count (the
+  residual is unchanged) so existing consumers are unaffected.
+
+### Changed — internal / docs
+
+- `Signals` construction is grouped into concern sub-structs
+  (structural / lexical / semantic / post) behind `Signals::from_parts`; the
+  serialized wire format is byte-identical (prep for a future nested shape).
+- New `docs/PROTOCOL-EVOLUTION.md` records the additive (expand-and-contract)
+  methodology for evolving the response envelope without a version bump.
 
 ## [1.22.0] - 2026-06-30
 
