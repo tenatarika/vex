@@ -979,6 +979,17 @@ Each member keeps its own per-repo index; results are grouped by repo. See
 - **`vex search --why` is single-repo only** — it is a hard clap conflict
   with `--workspace`. Per-result JSON `signals` are likewise omitted from
   workspace output.
+- **Mixed `--semantic` across members degrades silently.** With `search
+  --semantic --workspace`, each member applies semantic independently by
+  whether *its own* index has vectors: a member built with `--semantic` runs
+  the full 3-channel hybrid, a member without vectors quietly falls back to
+  structural + BM25. This is by design and safe (ranking is per-repo, so the
+  asymmetry never mixes hybrid and structural scores; differing per-member
+  embedders are fine for the same reason). The caveat is *visibility*: in
+  workspace mode the per-repo `_meta.vex.dev/semantic_channel` reason
+  (`index_lacks_vectors`) and the "no embeddings" stderr advisory are
+  suppressed, so the fallback is not surfaced. To confirm a member's semantic
+  status, run `vex status` in that repo or search it single-repo.
 - **Staleness is reported per-member.** Each member's stale-index reason
   is captured independently and surfaced as a per-repo `stale_reason` in
   JSON (and a stderr advisory in text); the top-level envelope meta is not
