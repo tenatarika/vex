@@ -1,10 +1,12 @@
 # VCS Backends — Design (git · Arc · svn)
 
-Status: **DESIGN** (2026-07-10). No code yet. This is the agreed plan to
-abstract vex's hard git dependency behind a `Vcs` trait so it also runs against
-**Yandex Arc** and **Subversion**, with git as the default and byte-identical
-current behavior preserved. Implementation is phased (§6) and each phase is a
-separate reviewed change.
+Status: **Phase 1 SHIPPED** (2026-07-10, commit `bcf75df`); **DESIGN for
+Phases 2-5** (§6). The plan abstracts vex's hard git dependency behind a `Vcs`
+trait so it also runs against **Yandex Arc** and **Subversion**, with git as the
+default and byte-identical current behavior preserved. Implementation is phased
+(§6) and each phase is a separate reviewed change. Phase 1 (extract `Vcs` trait
++ `GitVcs` for diff-scoping) has landed; blob-cache/history/staleness remain
+git-only until later phases.
 
 Grounding: the git-coupling survey (§1) enumerates every git shell-out; the
 trait (§3) is the minimal surface those sites actually need.

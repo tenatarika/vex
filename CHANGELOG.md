@@ -6,6 +6,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — per-result `result_kind` marker on `vex search` JSON (PROTOCOL-EVOLUTION §4)
+
+- Each `vex search --format json` result row now carries `result_kind`:
+  `"def"` when the query matched the symbol's name via an exact/prefix
+  structural (FST) hit, `"neighbor"` when the row was surfaced only by
+  lexical/semantic proximity or a fuzzy (typo-corrected) fallback. Lets an
+  agent tell a genuine definition from a proximity neighbour without reading
+  raw scores. Gated by the new `capabilities.structured_result_kind` flag
+  (feature-detect before relying on it; absent ⇒ unsupported). Additive —
+  `skip_serializing_if` keeps the wire byte-identical for consumers that don't
+  read it.
+
+### Changed — path filter argument renamed `--filter` → `--filter-path` (back-compat kept)
+
+- The path-substring filter is now canonically `--filter-path` on the CLI
+  (`search`/`show`/`usages`/`grep`/`similar`/`duplicates`) and `filter_path` in
+  the MCP tool schemas. The old names still work: `--filter` is a visible clap
+  alias, and MCP `filter` is accepted as a deprecated alias (surfaced via
+  `_meta.deprecated_args`). No scripted caller breaks; the rename only clarifies
+  an under-descriptive name (the internal field was already `filter_path`).
+
+### Internal — VCS backend groundwork (VCS-BACKENDS Phase 1)
+
+- Diff-scoping (`--since` / `--since-branched` / `--changed-only`) now routes
+  through a new `Vcs` trait + `GitVcs` backend (`src/vcs/`), the first step
+  toward optional Yandex Arc / Subversion support. Byte-identical git behavior;
+  git remains the sole backend. No user-visible change.
+
 ## [1.23.0] - 2026-07-08
 
 ### Fixed — bounds-safe node text extraction (malformed-input panic)
