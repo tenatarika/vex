@@ -19,6 +19,7 @@ mod protocol;
 mod search;
 mod store;
 mod util;
+mod vcs;
 mod watch;
 mod workspace;
 

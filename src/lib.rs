@@ -15,5 +15,6 @@ pub mod protocol;
 pub mod search;
 pub mod store;
 pub mod util;
+pub mod vcs;
 pub mod watch;
 pub mod workspace;

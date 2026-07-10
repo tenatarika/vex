@@ -14,39 +14,15 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::Result;
 
-/// Selects which set of changed paths a search-shaped command should be
-/// restricted to.
-///
-/// The variants are mutually exclusive at the CLI layer (clap
-/// `conflicts_with_all`). We carry a borrowed `&str` for `--since` so the
-/// caller's existing `String` can flow straight through without an extra
-/// allocation.
-#[derive(Debug, Clone, Copy)]
-pub enum DiffScope<'a> {
-    /// `--since <rev>` — files changed between `<rev>..HEAD`.
-    Since(&'a str),
-    /// `--since-branched` — files changed since branch diverged from
-    /// main/master (origin first, then local).
-    SinceBranched,
-    /// `--changed-only` — working-tree dirty + untracked.
-    ChangedOnly,
-}
+use crate::vcs::{GitVcs, Vcs, VcsError};
 
-impl DiffScope<'_> {
-    /// Human-readable label used by the `_meta["vex.dev/diff_filter"].scope`
-    /// JSON field. Stable string — wire-format consumers may key on it.
-    pub fn label(&self) -> &'static str {
-        match self {
-            DiffScope::Since(_) => "since",
-            DiffScope::SinceBranched => "since_branched",
-            DiffScope::ChangedOnly => "changed_only",
-        }
-    }
-}
+// `DiffScope` moved to `crate::vcs` (it is VCS-agnostic and part of the `Vcs`
+// trait surface). Re-exported here so existing `crate::util::git_diff::DiffScope`
+// import paths keep resolving unchanged.
+pub use crate::vcs::DiffScope;
 
 /// Set of repo-relative paths a command's results must intersect.
 ///
@@ -71,20 +47,17 @@ impl ChangedPaths {
     ///   * Repo dir is not a git repo → first `git` invocation fails with
     ///     `not a git repository` in stderr; surfaced verbatim.
     pub fn resolve(repo_root: &Path, scope: DiffScope) -> Result<Self> {
-        // Pre-flight: `git diff` outside a worktree exits 0 with help on
-        // stderr (a fallback to `--no-index` mode), so a missing-repo
-        // error would otherwise leak past the success check below and
-        // silently return an empty set. Surface it here with a stable,
-        // testable phrasing.
-        ensure_git_worktree(repo_root)?;
-        let raw = match scope {
-            DiffScope::Since(rev) => git_diff_name_only(repo_root, &format!("{rev}..HEAD"))?,
-            DiffScope::SinceBranched => {
-                let base = resolve_merge_base(repo_root)?;
-                git_diff_name_only(repo_root, &format!("{base}..HEAD"))?
-            }
-            DiffScope::ChangedOnly => collect_working_tree_changes(repo_root)?,
-        };
+        // Phase 1 (docs/VCS-BACKENDS.md): git is the sole backend, constructed
+        // directly. `ensure_repo` is the H3 pre-flight — `git diff` outside a
+        // worktree exits 0 with help, so without it a missing-repo error would
+        // leak past the success check and silently return an empty set. The
+        // `Vcs` error is collapsed to `anyhow` verbatim so the existing
+        // error-substring tests still hold.
+        let vcs = GitVcs;
+        vcs.ensure_repo(repo_root).map_err(VcsError::into_anyhow)?;
+        let raw = vcs
+            .changed_paths(repo_root, scope)
+            .map_err(VcsError::into_anyhow)?;
         // Normalize at insertion time using the SAME function we'll use at
         // lookup time. The insertion side and lookup side must walk the
         // same normalization pipeline or the HashSet keys won't agree —
@@ -118,29 +91,6 @@ impl ChangedPaths {
     pub fn len(&self) -> usize {
         self.paths.len()
     }
-}
-
-/// Verify `repo_root` is inside a git worktree before invoking `git diff`.
-/// Uses `git rev-parse --is-inside-work-tree`, which exits non-zero outside
-/// any repo — unlike `git diff`, which falls back to no-index mode and
-/// prints help. Without this guard a `--since main` call in a non-repo
-/// directory would silently return an empty change set.
-fn ensure_git_worktree(repo_root: &Path) -> Result<()> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(repo_root)
-        .output()
-        .context("invoke git rev-parse")?;
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if stdout.trim() == "true" {
-            return Ok(());
-        }
-    }
-    bail!(
-        "not a git repository at {}: --since/--since-branched/--changed-only require a git checkout",
-        repo_root.display()
-    );
 }
 
 /// Normalize a repo-relative (or canonicalized) path string into the
@@ -219,153 +169,6 @@ fn case_fold(p: String) -> String {
 #[inline]
 fn case_fold(p: String) -> String {
     p
-}
-
-/// `git diff --name-only -z <range>` parsed into a Vec.
-///
-/// `-z` gives us null-terminated output that survives pathological
-/// filenames (newlines, quotes) — `lines()` would split mid-path otherwise.
-fn git_diff_name_only(root: &Path, range: &str) -> Result<Vec<String>> {
-    // Trailing `--`: terminate the revision list so any user-supplied
-    // `--since` value that starts with `-` (e.g. `--no-renames`) doesn't
-    // sneak in as a git flag. We can't put `--` BEFORE the range — git
-    // would then read the range as a pathspec — so it sits at the end,
-    // which is the documented form for `git diff [<options>] [<rev>] [--]`.
-    let output = Command::new("git")
-        .args(["diff", "--name-only", "--no-renames", "-z", range, "--"])
-        .current_dir(root)
-        .output()
-        .context("invoke git diff --name-only")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr_t = stderr.trim();
-        if stderr_t.contains("not a git repository") {
-            bail!(
-                "not a git repository at {}: --since/--since-branched/--changed-only require a git checkout",
-                root.display()
-            );
-        }
-        bail!("git diff --name-only {range} failed: {stderr_t}");
-    }
-    Ok(split_nul(&output.stdout))
-}
-
-/// Working-tree change set: union of unstaged + staged + untracked.
-///
-/// `git diff HEAD` captures both staged and unstaged changes against the
-/// HEAD tree in one shot — no need to also query the index separately.
-/// `git ls-files --others --exclude-standard` then adds untracked files
-/// while respecting `.gitignore`.
-fn collect_working_tree_changes(root: &Path) -> Result<Vec<String>> {
-    // Tracked changes vs. HEAD (staged + unstaged in one query).
-    // Trailing `--` keeps any future caller-supplied pathspec from
-    // colliding with `--` flags; the literal `HEAD` here is fixed so
-    // there's no rev-injection risk today, but the form is identical
-    // for consistency with `git_diff_name_only`.
-    let diff = Command::new("git")
-        .args(["diff", "HEAD", "--name-only", "--no-renames", "-z", "--"])
-        .current_dir(root)
-        .output()
-        .context("invoke git diff HEAD --name-only")?;
-    if !diff.status.success() {
-        let stderr = String::from_utf8_lossy(&diff.stderr);
-        let stderr_t = stderr.trim();
-        if stderr_t.contains("not a git repository") {
-            bail!(
-                "not a git repository at {}: --changed-only requires a git checkout",
-                root.display()
-            );
-        }
-        // Empty repo (no HEAD yet): treat as "everything untracked" by
-        // skipping the diff portion. `unknown revision or path 'HEAD'`
-        // surfaces here.
-        if !stderr_t.contains("unknown revision") && !stderr_t.contains("ambiguous argument") {
-            bail!("git diff HEAD --name-only failed: {stderr_t}");
-        }
-    }
-    let mut out = if diff.status.success() {
-        split_nul(&diff.stdout)
-    } else {
-        Vec::new()
-    };
-
-    // Untracked files (still respecting .gitignore).
-    let untracked = Command::new("git")
-        .args(["ls-files", "--others", "--exclude-standard", "-z"])
-        .current_dir(root)
-        .output()
-        .context("invoke git ls-files --others")?;
-    if !untracked.status.success() {
-        let stderr = String::from_utf8_lossy(&untracked.stderr);
-        bail!(
-            "git ls-files --others --exclude-standard failed: {}",
-            stderr.trim()
-        );
-    }
-    out.extend(split_nul(&untracked.stdout));
-    Ok(out)
-}
-
-/// Split null-terminated git output into a clean `Vec<String>`. Tolerant of
-/// the trailing `\0` git always emits, and of empty stdout.
-fn split_nul(bytes: &[u8]) -> Vec<String> {
-    bytes
-        .split(|&b| b == 0)
-        .filter(|s| !s.is_empty())
-        .map(|s| String::from_utf8_lossy(s).into_owned())
-        .collect()
-}
-
-/// Resolve the merge-base for `--since-branched`, falling back through
-/// `origin/main` -> `origin/master` -> `main` -> `master`. Returns the
-/// first ref that yields a merge-base. Errors with an actionable message
-/// when none works — usually means the project has a non-default trunk
-/// name (e.g. `develop`) and the user should use `--since develop` instead.
-fn resolve_merge_base(root: &Path) -> Result<String> {
-    const CANDIDATES: &[&str] = &["origin/main", "origin/master", "main", "master"];
-    let mut tried = Vec::with_capacity(CANDIDATES.len());
-    for cand in CANDIDATES {
-        match try_merge_base(root, cand)? {
-            Some(sha) => return Ok(sha),
-            None => tried.push(*cand),
-        }
-    }
-    bail!(
-        "--since-branched: no merge-base found against any of {}. \
-         Run `vex search ... --since <your-trunk>` instead, or push your branch \
-         so `origin/main` exists.",
-        tried.join(", ")
-    );
-}
-
-/// Try `git merge-base HEAD <ref>`. Returns `Ok(Some(sha))` on success,
-/// `Ok(None)` when the ref doesn't exist or no merge-base exists (both
-/// are normal fall-through conditions for `resolve_merge_base`'s ladder),
-/// and `Err` only for unexpected git failures (corrupt repo, etc.).
-fn try_merge_base(root: &Path, reference: &str) -> Result<Option<String>> {
-    let output = Command::new("git")
-        .args(["merge-base", "HEAD", reference])
-        .current_dir(root)
-        .output()
-        .context("invoke git merge-base")?;
-    if output.status.success() {
-        let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if sha.is_empty() {
-            return Ok(None);
-        }
-        return Ok(Some(sha));
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stderr_t = stderr.trim();
-    if stderr_t.contains("not a git repository") {
-        bail!(
-            "not a git repository at {}: --since-branched requires a git checkout",
-            root.display()
-        );
-    }
-    // "Not a valid object name" / "unknown revision" / silent exit 1 with
-    // no merge-base: treat as "this candidate didn't work, try the next".
-    Ok(None)
 }
 
 #[cfg(test)]
@@ -563,12 +366,5 @@ mod tests {
         assert_eq!(DiffScope::Since("anything").label(), "since");
         assert_eq!(DiffScope::SinceBranched.label(), "since_branched");
         assert_eq!(DiffScope::ChangedOnly.label(), "changed_only");
-    }
-
-    #[test]
-    fn split_nul_drops_trailing_empty() {
-        assert_eq!(split_nul(b"a\0b\0"), vec!["a", "b"]);
-        assert_eq!(split_nul(b""), Vec::<String>::new());
-        assert_eq!(split_nul(b"only\0"), vec!["only"]);
     }
 }

@@ -175,9 +175,10 @@ struct CommitMeta {
 }
 
 /// `git rev-parse --is-inside-work-tree` precheck — mirrors the
-/// pattern in [`crate::util::git_diff::ensure_git_worktree`]. We don't
-/// reuse that helper because it's `pub(crate)` *inside* util and
-/// surfaces a `--since` / `--changed-only` error message.
+/// pattern in [`crate::vcs::GitVcs::ensure_repo`]. We don't reuse that
+/// (Phase-1 diff-scope-only) backend method because history is not yet
+/// routed through the `Vcs` trait and this surfaces a `vex history`-specific
+/// error message (the two distinct strings the VCS design's L1 preserves).
 ///
 /// Promoted to `pub(crate)` so the v1.17 Phase 14.8
 /// `history_builder` module can reuse it without duplicating the
