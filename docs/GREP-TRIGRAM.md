@@ -181,12 +181,19 @@ is best-effort: a save failure warns and leaves grep to full-walk.
   `parse_files` build + `output.rs` write/carry-forward,
   `config::trigram_path`. Integration tests cover fresh index, warm-cache
   re-index, and update carry-forward.
-- **P3 (next):** wire `grep::search` to consume the sidecar — extract
-  trigrams → load sidecar → filter files by bloom + `(len, mtime)`
-  freshness → read only survivors; else full walk. Integration test incl.
-  edit-then-grep-without-reindex and the Windows POSIX-key round-trip.
-  Also fold in the `trigram_persisted` manifest flag + `vex status` line
-  (deferred from P2 — the sibling `body_tokens_persisted` pattern; P2
-  leaves sidecar health discoverable only via `path.exists()`).
-- **P4:** criterion bench + tune `BLOOM_BITS`/`k`; document the win as
-  code-files-only in `docs/LIMITATIONS.md`.
+- **P3 (done):** `grep::search` consumes the sidecar via `TrigramSkip`
+  (`src/grep/mod.rs`) — extract required trigrams → load sidecar → in
+  `discover_files`, from the stat the walk already does, skip a file iff
+  its record is fresh (`(len, mtime)` match) and its bloom lacks a
+  required trigram; every other case reads. `TrigramSkip::build` returns
+  `None` (→ full walk) for non-literal / short patterns or an absent
+  sidecar. Also lands the `trigram_persisted` flag on the JSON `Manifest`
+  (not the bincode `state` sidecar — avoids invalidating every existing
+  `index.state`) + a `vex status` line. Tests: results-identical,
+  edit-then-grep-without-reindex (guard reads the edited file), and a
+  white-box skip proof (fool the guard with `filetime` to observe the
+  skip drop a match a full read would find).
+- **P4 (next):** criterion bench + tune `BLOOM_BITS`/`k`; document the win
+  as code-files-only in `docs/LIMITATIONS.md`. Optional: Windows-specific
+  POSIX-key unit test (P3's key derivation goes through `to_rel_posix`,
+  covered indirectly by the e2e tests on the host platform).

@@ -6,18 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added — `vex grep` trigram skip-index infrastructure (P1 + P2)
+### Added — `vex grep` trigram skip-index (P1–P3)
 
-- Groundwork for accelerating `vex grep` by skipping files that provably can't
-  match a pattern's literal. `src/grep/trigram.rs` extracts a pattern's required
-  trigrams and builds a per-file presence bloom (P1); `vex index` / `vex update`
-  now persist those blooms to an `index.trigram` sidecar alongside each file's
-  `(len, mtime)` staleness guard (P2). The bloom also rides inside the blob-cache
-  entry (**format v3 → v4**, one-time re-parse of stale entries) so it survives a
-  warm-cache re-index without re-reading files. **No user-facing behavior change
-  yet** — `vex grep` starts consuming the sidecar in P3. Absence, staleness, or a
-  malformed sidecar always degrades to a full walk (no false negatives). See
-  `docs/GREP-TRIGRAM.md`.
+- `vex grep` now skips files that provably can't match a pattern's literal,
+  instead of reading every file ≤1 MB. `src/grep/trigram.rs` extracts a
+  pattern's required trigrams and builds a per-file presence bloom (P1); `vex
+  index` / `vex update` persist those blooms to an `index.trigram` sidecar with
+  each file's `(len, mtime)` staleness guard (P2); and `grep::search` consults it
+  to leave non-matching files unread (P3). The bloom also rides inside the
+  blob-cache entry (**format v3 → v4**, one-time re-parse of stale entries) so it
+  survives a warm-cache re-index without re-reading files.
+- **No false negatives**: an absent/stale/malformed sidecar, a non-literal or
+  sub-trigram pattern, or a file edited since indexing (detected by the
+  `(len, mtime)` guard, since grep runs without a reindex) all fall back to
+  reading the file — the result set is always identical to a full walk.
+- `vex status` now reports whether the trigram skip-index is present
+  (`trigram_persisted` on the manifest). See `docs/GREP-TRIGRAM.md`.
 
 ## [1.24.0] - 2026-07-10
 
