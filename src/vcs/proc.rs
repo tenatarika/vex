@@ -78,15 +78,15 @@ pub(super) fn wait_capturing(mut child: Child, timeout: Duration, label: &str) -
     })
 }
 
-#[cfg(test)]
+// The timeout mechanism is OS-agnostic, but the tests need a sleepy binary
+// (`sleep`/`printf`) that isn't on Windows — so the whole module is unix-gated.
+// (Gating only the test fns would leave `use super::*` / `Command`/`Stdio`
+// unused on Windows → `-D warnings` fails; see the v1.21 Windows-cfg incident.)
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::process::{Command, Stdio};
 
-    // The mechanism is OS-agnostic; the tests need a sleepy binary, so they are
-    // unix-gated (`sleep`/`printf` aren't on Windows).
-
-    #[cfg(unix)]
     #[test]
     fn wait_capturing_times_out_and_kills_a_hung_child() {
         let child = Command::new("sleep")
@@ -103,7 +103,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn wait_capturing_collects_output_of_a_fast_child() {
         let child = Command::new("printf")
