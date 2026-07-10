@@ -32,11 +32,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - New global `--vcs <auto|git|arc|svn|none>` flag, `$VEX_VCS` env var, and
   `.vex.toml` `vcs = "..."` key select the VCS backend for diff-scoping
   (`--since` / `--since-branched` / `--changed-only`). Precedence: flag > env >
-  config > marker auto-detect. `git` is the only functional backend today;
-  `arc`/`svn` are detected/forced but decline cleanly ("backend not yet
-  available") until their backends land, and `none` is an explicit floor that
-  disables diff-scoping. Affects diff-scoping only — no effect on other
-  commands in this phase. See docs/VCS-BACKENDS.md.
+  config > marker auto-detect. `git` is fully functional; `arc` gained a
+  provisional backend in Phase 3 (see the entry above); `svn` is detected/forced
+  but declines cleanly ("backend not yet available") until its backend lands;
+  `none` is an explicit floor that disables diff-scoping. Affects diff-scoping
+  only — no effect on other commands. See docs/VCS-BACKENDS.md.
+
+### Added — provisional Yandex Arc backend for diff-scoping (VCS-BACKENDS Phase 3)
+
+- `--vcs arc` (also `VEX_VCS=arc` / `.vex.toml vcs="arc"` / a `.arc` marker) now
+  routes diff-scoping through a new `ArcVcs` backend that shells out to `arc`
+  (`arc root` / `arc diff --name-only` / `arc status --json` / `arc merge-base`,
+  with Arc's `arcadia/trunk`→`trunk` ladder). **Provisional and unverified:** the
+  `arc` CLI could not be run in development, so command shapes are grounded in
+  public research and marked `FIELD-VERIFY` in the source (see docs/VCS-BACKENDS.md
+  §7a). Reachable only by explicit selection; the `arc root` auto-probe is
+  deferred. Falls back gracefully (clear error) when `arc` is absent.
 
 ### Internal — VCS backend groundwork (VCS-BACKENDS Phase 1)
 

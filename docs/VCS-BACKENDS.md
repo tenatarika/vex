@@ -243,10 +243,17 @@ deliberate narrowings vs. the original bullet:**
   `.git` gives them today). The probe lands together with `ArcVcs`. **No
   physical cache namespacing** (§5).
 
-**Phase 3 — `ArcVcs` (diff-scope), the requested primary.** git-shaped `arc`
-command mapping for `ensure_repo`/`changed_paths`; `arc root` detection.
-**Starts with a field-capture** of real `arc status / diff / rev-parse` output
-(R2) before mapping — not assumed git-identical.
+**Phase 3 — `ArcVcs` (diff-scope). SHIPPED PROVISIONAL (2026-07-10), research-
+grounded, UNVERIFIED against a real `arc`.** `arc` was not available on the dev
+machine, so instead of a field capture (R2) the command shapes were grounded in
+public research (third-party arc clients EVGVir/yandex-arc, anton-rudeshko/zsh-arc;
+Yandex Habr writeup). `src/vcs/arc.rs` (`ArcVcs`), reachable via explicit
+`--vcs arc` / `VEX_VCS=arc` / `.vex.toml vcs="arc"` / `.arc` marker. The `arc root`
+FUSE **auto-probe stays deferred** (unverifiable + adds VFS latency to every
+`arc`-on-PATH run); explicit selection is the entry point. Testable without
+`arc`: the `arc status --json` parser (unit) + graceful-failure-when-arc-absent
+(integration). **Command shapes MUST be field-verified before trusting** — see
+the checklist in §7a.
 
 **Phase 4 — `SvnVcs` (diff-scope).** `merge_base=false` (SinceBranched
 declined, §5); `svn status` / `svn diff --summarize -r`; integer-revision
@@ -284,6 +291,28 @@ must not call `dirty_count` when `deep==false`). Each is its own reviewed change
 - **R5 (low):** nested markers — the **common** git-inside-arc case is handled
   by the `arc root`-before-git rule (§4, M3); genuinely-unrelated innermost
   markers (svn-in-git) fall to innermost. Both need a detection test.
+
+---
+
+## 7a. Arc CLI field-verify checklist (Phase 3)
+
+`ArcVcs` (`src/vcs/arc.rs`) ships against these research-grounded shapes. Run
+each against a real `arc` install (`arc <cmd> --help` + a live invocation) and
+correct `arc.rs` where reality diverges. Confidence from the public research:
+
+| Op | Shape used | Confidence | To verify |
+|---|---|---|---|
+| detect / `ensure_repo` | `arc root` (exit-code + path) | high | that non-zero exit outside a working copy; no `.arc` on-disk marker on FUSE mounts |
+| changed since rev | `arc diff <from> <to> --name-only --no-color` | high (cmd), med (`<from> <to>` two-arg) | `..` range vs two-arg; `--` terminator; **`-z` support** (we newline-split — no `-z` attested) |
+| working tree | `arc status --json` → `status.{changed,staged,untracked}[].path` | high | exact JSON shape; that untracked is included (no separate `ls-files --others`) |
+| since-branched | `arc merge-base --leftmost <ref> HEAD`, ladder `arcadia/trunk` → `trunk` | high (merge-base, trunk name) | arg order; whether `--leftmost` is required; ladder completeness |
+| revision id | *(not used in diff-scope)* | — | `arc rev-parse` likely absent; use `arc info --json` if a rev id is ever needed (Phase 5) |
+
+**Known-unverifiable (Arc is Yandex-internal):** `-z`/`--` on diff, `--others`
+on `ls-files`, `arc rev-parse`, git-SHA-1 compatibility of Arc commit hashes.
+Prefer `--json` (Arc's stable machine contract) over porcelain where a choice
+exists. Once verified, drop the `PROVISIONAL` banner in `arc.rs` and flip on the
+`arc root` auto-probe in detection (§4).
 
 ---
 
