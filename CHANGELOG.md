@@ -6,7 +6,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added — `vex grep` trigram skip-index (P1–P3)
+## [1.24.1] - 2026-07-11
+
+### Added — `vex grep` trigram skip-index (P1–P4)
 
 - `vex grep` now skips files that provably can't match a pattern's literal,
   instead of reading every file ≤1 MB. `src/grep/trigram.rs` extracts a
@@ -3639,7 +3641,8 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.24.0...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.24.1...HEAD
+[1.24.1]: https://github.com/tenatarika/vex/compare/v1.24.0...v1.24.1
 [1.22.0]: https://github.com/tenatarika/vex/compare/v1.21.0...v1.22.0
 [1.15.2]: https://github.com/tenatarika/vex/compare/v1.15.1...v1.15.2
 [1.15.1]: https://github.com/tenatarika/vex/compare/v1.15.0...v1.15.1
