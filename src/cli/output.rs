@@ -115,6 +115,10 @@ pub fn build_search_meta(manifest_path: &Path) -> MetaEnvelope {
         history_mode: None,
         semantic_channel: None,
         search_hint: None,
+        // §4.2 result-completeness keys default to None (absent = "unknown",
+        // the safety default); producers that can compute them (usages) set
+        // them explicitly at the emission site.
+        ..Default::default()
     }
 }
 
@@ -157,6 +161,10 @@ pub(crate) fn default_meta_for(root: &Path) -> MetaEnvelope {
         history_mode: None,
         semantic_channel: None,
         search_hint: None,
+        // §4.2 result-completeness keys default to None (absent = "unknown",
+        // the safety default); producers that can compute them (usages) set
+        // them explicitly at the emission site.
+        ..Default::default()
     }
 }
 

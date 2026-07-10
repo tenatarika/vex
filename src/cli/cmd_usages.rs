@@ -163,6 +163,12 @@ pub(crate) fn usages(
             if let Some(ref t) = why_trace {
                 meta.why_trace = serde_json::to_value(t).ok();
             }
+            // §4.2 result-completeness — EXACT for `usages`: `total` is the full
+            // post-filter set (`post_filter.len()`), `entries` is `.take(limit)`
+            // of it, so `total > entries.len()` iff more matches were capped.
+            // `result_total_exact` left absent = exact by convention (§4.2).
+            meta.result_total = Some(outcome.total);
+            meta.truncated = Some(outcome.total > outcome.entries.len());
             print_envelope(&json, capabilities::current(), meta);
         }
         OutputFormat::Text | OutputFormat::Compact => {

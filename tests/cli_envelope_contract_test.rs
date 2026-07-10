@@ -342,3 +342,104 @@ fn diff_emits_envelope_v1() {
         .unwrap();
     assert_envelope(tmp.path(), &["diff", "--base", "HEAD", "--format", "json"]);
 }
+
+// ---- PROTOCOL-EVOLUTION §4.2 result-completeness (usages, exact) ----
+
+/// Fixture whose `run_task` symbol is referenced several times, so `usages`
+/// truncation is observable at a small `--limit`. Snake_case on purpose: a
+/// pure-lowercase-no-underscore name (e.g. `helper`) is dropped by
+/// `is_meaningful_identifier` and would yield zero usages.
+fn write_multi_use_project(root: &Path) {
+    std::fs::write(root.join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src").join("lib.rs"),
+        "pub fn run_task() {}\n\
+         pub fn a() { run_task(); }\n\
+         pub fn b() { run_task(); }\n\
+         pub fn c() { run_task(); }\n",
+    )
+    .unwrap();
+    Command::cargo_bin("vex")
+        .unwrap()
+        .current_dir(root)
+        .env("VEX_CACHE_DIR", root.join(".vex-cache"))
+        .args(["index"])
+        .assert()
+        .success();
+}
+
+/// Parse the JSON envelope of `vex usages <sym> --limit <limit>`.
+fn usages_envelope(root: &Path, sym: &str, limit: &str) -> serde_json::Value {
+    // `.assert()` runs without asserting the exit code (usages exits 1 on no
+    // results); `helper` has results so it exits 0 regardless.
+    let assert = vex_in(root)
+        .args(["usages", sym, "--limit", limit, "--format", "json"])
+        .assert();
+    serde_json::from_slice(&assert.get_output().stdout).expect("usages stdout is JSON")
+}
+
+/// `limit < total` → `truncated: true` + an exact `result_total`, and the
+/// `result_completeness` capability is advertised (delete-safety: a consumer
+/// may only trust completeness when the capability is present).
+#[test]
+fn usages_completeness_truncated_when_capped() {
+    let tmp = TempDir::new().unwrap();
+    write_multi_use_project(tmp.path());
+    let v = usages_envelope(tmp.path(), "run_task", "1");
+    assert_eq!(
+        v["capabilities"]["result_completeness"],
+        serde_json::json!(true),
+        "result_completeness capability must be advertised"
+    );
+    let meta = &v["_meta"];
+    let total = meta["vex.dev/result_total"]
+        .as_u64()
+        .expect("result_total present for usages");
+    assert!(total >= 2, "fixture must produce >1 usage, got {total}");
+    assert_eq!(
+        meta["vex.dev/truncated"],
+        serde_json::json!(true),
+        "limit 1 < total {total} must mark truncated:true"
+    );
+}
+
+/// `limit >= total` → `truncated: false` — a *positive* completeness statement
+/// ("this IS the full set"), not silence. `result_total_exact` is absent
+/// (usages totals are exact by convention, §4.2).
+#[test]
+fn usages_completeness_full_set_is_positive() {
+    let tmp = TempDir::new().unwrap();
+    write_multi_use_project(tmp.path());
+    let v = usages_envelope(tmp.path(), "run_task", "500");
+    let meta = &v["_meta"];
+    assert_eq!(
+        meta["vex.dev/truncated"],
+        serde_json::json!(false),
+        "limit >= total is a positive completeness statement (Some(false))"
+    );
+    assert!(
+        meta.get("vex.dev/result_total_exact").is_none(),
+        "usages totals are exact → the lower-bound marker must be absent"
+    );
+}
+
+/// Safety default: a command that does NOT compute completeness (search, until
+/// §4.1's lower-bound branch lands) emits NO completeness keys at all — absent
+/// means "unknown", never a false "complete" (§4.2 HIGH-1).
+#[test]
+fn search_emits_no_completeness_keys_yet() {
+    let tmp = TempDir::new().unwrap();
+    write_multi_use_project(tmp.path());
+    let assert = vex_in(tmp.path())
+        .args(["search", "run_task", "--format", "json"])
+        .assert();
+    let v: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("search stdout is JSON");
+    let meta = &v["_meta"];
+    assert!(
+        meta.get("vex.dev/truncated").is_none(),
+        "search must not emit a truncated key until §4.1"
+    );
+    assert!(meta.get("vex.dev/result_total").is_none());
+}

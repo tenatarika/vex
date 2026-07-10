@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — result-completeness signal on `vex usages` JSON (PROTOCOL-EVOLUTION §4.2)
+
+- `vex usages --format json` now carries completeness metadata so a consumer
+  can tell "these are *all* the callers" from "top-N of many" — a delete-safety
+  correctness signal, not just UX. `_meta.vex.dev/truncated` is `true` when the
+  result set was capped by `--limit`, `false` when it is the full set (a
+  positive "nothing was dropped" statement); `_meta.vex.dev/result_total` gives
+  the exact post-filter total. Gated by the new `capabilities.result_completeness`
+  flag. **Safety semantics:** absence means "unknown", never "complete" — a
+  consumer may trust completeness only when the capability is advertised *and* a
+  `truncated` key is present, so an old CLI (no keys) is never read as "all N".
+  Exact for `usages` in v1; `search` (lower-bound) and callers/callees/
+  implementations are follow-ups. Additive — `skip_serializing_if` keeps the
+  wire byte-identical for consumers that don't read it.
+
 ### Added — per-result `result_kind` marker on `vex search` JSON (PROTOCOL-EVOLUTION §4)
 
 - Each `vex search --format json` result row now carries `result_kind`:

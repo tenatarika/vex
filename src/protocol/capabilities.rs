@@ -14,5 +14,6 @@ pub fn current() -> Capabilities {
         auto_update: true,
         history_diff: true,
         structured_result_kind: true,
+        result_completeness: true,
     }
 }

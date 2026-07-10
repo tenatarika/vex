@@ -46,6 +46,15 @@ pub struct Capabilities {
     /// code-mode consumers feature-detect the marker before reading it;
     /// absent ⇒ unsupported (§1b).
     pub structured_result_kind: bool,
+    /// v1.24.0 (PROTOCOL-EVOLUTION §4.2) — this build emits result-completeness
+    /// keys (`_meta.vex.dev/{truncated,result_total,result_total_exact}`) on the
+    /// commands that can compute them (`usages` exact; `search` lower-bound).
+    /// **Gated deliberately:** completeness is a *safety* signal, so a consumer
+    /// must treat "capability absent" as "unknown", NOT "false/complete" — the
+    /// inverse of the §1b feature-flag rule. A supported command advertising the
+    /// capability but emitting no `truncated` key is a producer bug, not
+    /// "complete".
+    pub result_completeness: bool,
 }
 
 #[derive(Serialize, Default, Clone, Debug)]
@@ -243,6 +252,33 @@ pub struct MetaEnvelope {
         skip_serializing_if = "Option::is_none"
     )]
     pub search_hint: Option<serde_json::Value>,
+    /// v1.24.0 (PROTOCOL-EVOLUTION §4.2 result-completeness). **Presence
+    /// encodes "the producer knows".** `Some(true)` = the result set was capped
+    /// (more matches exist), `Some(false)` = this IS the full set (a positive
+    /// completeness statement), absent = **unknown** — a safety signal, so a
+    /// consumer must treat absent as "unknown", never "complete" (design §4.2
+    /// HIGH-1). Only emitted where the producer can compute it (`usages`; a
+    /// lower-bound form on `search`) AND `capabilities.result_completeness` is
+    /// advertised. Same `vex.dev/` namespace as the other observability fields.
+    #[serde(rename = "vex.dev/truncated", skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+    /// v1.24.0 (§4.2) — total matches when known. For `usages` this is the
+    /// exact post-filter set size; for `search` it is a pool-size lower bound
+    /// (see [`Self::result_total_exact`]).
+    #[serde(
+        rename = "vex.dev/result_total",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub result_total: Option<usize>,
+    /// v1.24.0 (§4.2) — `Some(false)` marks [`Self::result_total`] as a *lower
+    /// bound* ("≥ N", the ranked-`search` case); `Some(true)`/absent means the
+    /// total is exact (the `usages` case). Never claim "exactly N" when this is
+    /// `Some(false)`.
+    #[serde(
+        rename = "vex.dev/result_total_exact",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub result_total_exact: Option<bool>,
 }
 
 #[derive(Serialize, Clone, Debug)]
