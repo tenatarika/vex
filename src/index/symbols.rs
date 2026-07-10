@@ -331,4 +331,18 @@ pub struct ParsedFile {
     /// already ran when the index was written; unchanged-file refs are
     /// carried in the persistent reference_edges section).
     pub cpp_includes: Vec<String>,
+    /// grep trigram skip-index bloom (STORAGE-RESEARCH §2), built from
+    /// the file's raw bytes during `parse_files`. `#[serde(skip)]`: this
+    /// is a transient carrier, NOT part of the blob-cache bincode payload
+    /// — the blob cache persists the bloom in its own fixed-width entry
+    /// slot (`parse_cache`), and `output.rs` folds it into the
+    /// `index.trigram` sidecar. `serde` has no built-in impl for
+    /// `[u8; 256]`, which is the other reason the field stays skipped.
+    ///
+    /// `Some(bloom)` ⟺ the file was freshly parsed this run (read path or
+    /// blob-cache hit). `None` ⟺ reconstructed from a prior index during
+    /// `vex update` (no bytes read) — the sidecar writer then carries the
+    /// old record forward instead of building a fresh one.
+    #[serde(skip)]
+    pub trigram_bloom: Option<[u8; crate::grep::trigram::BLOOM_BYTES]>,
 }

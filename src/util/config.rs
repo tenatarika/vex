@@ -614,6 +614,19 @@ pub fn bloom_path(project_root: &std::path::Path) -> PathBuf {
     index_dir(project_root).join("index.bloom")
 }
 
+/// grep trigram skip-index sidecar (STORAGE-RESEARCH §2). Stores a
+/// per-code-file trigram presence bloom plus the `(len, mtime)` the
+/// file had when indexed, so `vex grep` can skip files that provably
+/// cannot contain the pattern's required literal — but only while the
+/// stored `(len, mtime)` still matches the file on disk (grep runs
+/// without a reindex, so a stale record must never suppress a read).
+/// Lives next to `index.vex`; absence, a malformed sidecar, or a
+/// `(len, mtime)` mismatch all degrade to a full walk — never a false
+/// negative. See `src/store/trigram.rs` for the format.
+pub fn trigram_path(project_root: &std::path::Path) -> PathBuf {
+    index_dir(project_root).join("index.trigram")
+}
+
 /// v1.17 / Phase 14.8: git_history sidecar. Stores the persistent
 /// historical symbol index — every `(symbol, blob)` pair reachable
 /// from the indexed tip with first-seen / last-seen commit spans.

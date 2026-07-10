@@ -44,9 +44,11 @@
 //! ```text
 //! offset  size  field
 //!      0     4  magic = b"VXBC"
-//!      4     2  CACHE_FORMAT_VERSION: u16 (little-endian, starts at 1)
+//!      4     2  CACHE_FORMAT_VERSION: u16 (little-endian; 4 since v1.24)
 //!      6     4  grammar_fingerprint: u32 (little-endian)
-//!     10     *  bincode payload of ParsedFile
+//!     10     1  trigram_bloom_present: u8
+//!     11   256  trigram_bloom slot
+//!    267     *  bincode payload of ParsedFile
 //! ```
 //!
 //! ### Process-global cache override
@@ -74,9 +76,26 @@ use vex::parse::scope::{BindTarget, BoundRef, RefKind, UsePath};
 use vex::pattern::skeleton::Skeleton;
 use vex::store::pattern_skeletons::grammar_fingerprint_for_lang;
 
-// On-disk format constants pinned here so Step 4 has a concrete contract.
+// On-disk format constants pinned here so the hand-written cache entries
+// below match the real `parse_cache` header. Kept in lock-step with
+// `src/index/parse_cache/mod.rs`: bumping the real version WITHOUT
+// updating this const silently turns the corrupt-payload test into a
+// version-mismatch test (the version gate fires before payload decode).
 const MAGIC: &[u8; 4] = b"VXBC";
-const CACHE_FORMAT_VERSION: u16 = 1;
+const CACHE_FORMAT_VERSION: u16 = 4;
+/// Width of the trigram-bloom slot that follows the 1-byte `present` flag.
+const BLOOM_SLOT_LEN: usize = 256;
+
+/// Write a format-correct v4 header (magic + version + fingerprint +
+/// `present = 0` + zeroed bloom slot) so a following payload is decoded
+/// at the right offset. Used by the hand-built cache-file tests.
+fn write_v4_header<W: std::io::Write>(f: &mut W, fingerprint: u32) {
+    f.write_all(MAGIC).unwrap();
+    f.write_all(&CACHE_FORMAT_VERSION.to_le_bytes()).unwrap();
+    f.write_all(&fingerprint.to_le_bytes()).unwrap();
+    f.write_all(&[0u8]).unwrap(); // trigram_bloom_present = 0
+    f.write_all(&[0u8; BLOOM_SLOT_LEN]).unwrap();
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -146,6 +165,7 @@ fn make_rich_parsed_file() -> ParsedFile {
         bound_refs: vec![bound_ref],
         skeletons: vec![skeleton],
         cpp_includes: Vec::new(),
+        trigram_bloom: None,
     }
 }
 
@@ -291,6 +311,89 @@ fn blob_cache_insert_then_lookup_roundtrips_parsed_file() {
     assert_parsed_file_eq(&original, &hit);
 }
 
+// ── Test 3b: v4 entry carries the trigram bloom across the roundtrip ─────────
+
+/// The v1.24 bloom slot: an entry inserted with `trigram_bloom = Some(..)`
+/// must return that exact bloom on lookup (it rides in the fixed slot, not
+/// the bincode payload, since `[u8; 256]` has no serde impl). This is what
+/// lets a blob-cache hit restore the bloom without re-reading the file.
+#[test]
+fn blob_cache_roundtrips_trigram_bloom_when_present() {
+    let tmp = TempDir::new().unwrap();
+    let cache = cache_at(&tmp);
+
+    let sha = "1111111111111111111111111111111111111111";
+    let bloom = [0xABu8; vex::grep::trigram::BLOOM_BYTES];
+    let mut pf = make_rich_parsed_file();
+    pf.trigram_bloom = Some(bloom);
+
+    cache.insert(sha, Language::Rust, &pf).expect("insert");
+    let hit = cache.lookup(sha, Language::Rust).expect("cache hit");
+
+    assert_eq!(
+        hit.trigram_bloom,
+        Some(bloom),
+        "the bloom slot must roundtrip byte-for-byte"
+    );
+}
+
+/// The `present` flag: an entry inserted with `trigram_bloom = None` must
+/// return `None` — NOT `Some([0; 256])`. Confusing "no bloom recorded"
+/// with a genuine all-zero bloom would let the sidecar writer emit a
+/// zero-bloom record and grep would then silently skip the file (a false
+/// negative). The flag byte keeps the two distinct.
+#[test]
+fn blob_cache_absent_trigram_bloom_stays_none() {
+    let tmp = TempDir::new().unwrap();
+    let cache = cache_at(&tmp);
+
+    let sha = "2222222222222222222222222222222222222222";
+    let pf = make_rich_parsed_file(); // trigram_bloom: None
+
+    cache.insert(sha, Language::Rust, &pf).expect("insert");
+    let hit = cache.lookup(sha, Language::Rust).expect("cache hit");
+
+    assert_eq!(
+        hit.trigram_bloom, None,
+        "an absent bloom must decode as None, never as an all-zero bloom"
+    );
+}
+
+/// A `present` byte that is neither 0 nor 1 (only 0/1 are ever written,
+/// but the reader is documented as "non-zero → present") must decode the
+/// slot as a real bloom, not `None`. Pins that defensive contract.
+#[test]
+fn blob_cache_nonzero_present_byte_decodes_as_present() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let sha = "3333333333333333333333333333333333333333";
+    let shard = root.join(&sha[..2]);
+    fs::create_dir_all(&shard).unwrap();
+    let path = shard.join(format!("{sha}.bin"));
+
+    let fingerprint = grammar_fingerprint_for_lang(Language::Rust);
+    let payload = bincode::serialize(&make_rich_parsed_file()).unwrap();
+    let bloom = [0x5Au8; BLOOM_SLOT_LEN];
+
+    let mut f = fs::File::create(&path).unwrap();
+    f.write_all(MAGIC).unwrap();
+    f.write_all(&CACHE_FORMAT_VERSION.to_le_bytes()).unwrap();
+    f.write_all(&fingerprint.to_le_bytes()).unwrap();
+    f.write_all(&[2u8]).unwrap(); // present = 2 — garbage, but non-zero
+    f.write_all(&bloom).unwrap();
+    f.write_all(&payload).unwrap();
+    drop(f);
+
+    let hit = BlobCache::new(root)
+        .lookup(sha, Language::Rust)
+        .expect("hit");
+    assert_eq!(
+        hit.trigram_bloom,
+        Some(bloom),
+        "a non-zero present byte must decode the slot as a real bloom"
+    );
+}
+
 // ── Test 4: wrong language returns None ──────────────────────────────────────
 
 /// An entry inserted under `Language::Rust` must NOT be returned when
@@ -339,17 +442,20 @@ fn blob_cache_lookup_with_stale_format_version_returns_none() {
     fs::create_dir_all(&shard_dir).unwrap();
     let cache_file = shard_dir.join(format!("{sha}.bin"));
 
-    // Write a valid-looking header with a BOGUS version number (999).
+    // Write a full-length v4-shaped entry (magic + present flag + bloom
+    // slot + a byte of payload) but with a BOGUS version number, so the
+    // buffer clears the `data.len() >= PAYLOAD_OFFSET` length guard and
+    // the VERSION check is the gate that actually rejects it — that's the
+    // behaviour this test is meant to pin.
     let bogus_version: u16 = 999;
     let fingerprint = grammar_fingerprint_for_lang(Language::Rust);
     let mut f = fs::File::create(&cache_file).unwrap();
     f.write_all(MAGIC).unwrap();
     f.write_all(&bogus_version.to_le_bytes()).unwrap();
     f.write_all(&fingerprint.to_le_bytes()).unwrap();
-    // Payload: minimal valid bincode for some ParsedFile would be complex to
-    // craft here; a truncated/empty payload is fine because the version check
-    // fires first and we never reach payload decoding.
-    f.write_all(&[0u8; 4]).unwrap();
+    f.write_all(&[0u8]).unwrap(); // present = 0
+    f.write_all(&[0u8; BLOOM_SLOT_LEN]).unwrap();
+    f.write_all(&[0u8; 4]).unwrap(); // token payload past PAYLOAD_OFFSET
     drop(f);
 
     let cache = BlobCache::new(root);
@@ -374,12 +480,11 @@ fn blob_cache_lookup_with_corrupt_payload_returns_none() {
     fs::create_dir_all(&shard_dir).unwrap();
     let cache_file = shard_dir.join(format!("{sha}.bin"));
 
-    // Valid header, random garbage payload.
+    // Valid v4 header (so the version + length gates pass and we actually
+    // reach payload decoding), then a random garbage payload.
     let fingerprint = grammar_fingerprint_for_lang(Language::Rust);
     let mut f = fs::File::create(&cache_file).unwrap();
-    f.write_all(MAGIC).unwrap();
-    f.write_all(&CACHE_FORMAT_VERSION.to_le_bytes()).unwrap();
-    f.write_all(&fingerprint.to_le_bytes()).unwrap();
+    write_v4_header(&mut f, fingerprint);
     // Truncated / garbage payload — bincode will fail to decode.
     f.write_all(&[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
     drop(f);
@@ -428,12 +533,11 @@ fn blob_cache_evict_to_cap_removes_oldest_entries() {
             bound_refs: Vec::new(),
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         };
         let payload = bincode::serialize(&pf).expect("serialize");
         let mut f = fs::File::create(&path).unwrap();
-        f.write_all(MAGIC).unwrap();
-        f.write_all(&CACHE_FORMAT_VERSION.to_le_bytes()).unwrap();
-        f.write_all(&fingerprint.to_le_bytes()).unwrap();
+        write_v4_header(&mut f, fingerprint);
         f.write_all(&payload).unwrap();
         path
     };
@@ -512,12 +616,11 @@ fn blob_cache_evict_to_cap_under_cap_is_noop() {
         bound_refs: Vec::new(),
         skeletons: Vec::new(),
         cpp_includes: Vec::new(),
+        trigram_bloom: None,
     };
     let payload = bincode::serialize(&pf).expect("serialize");
     let mut f = fs::File::create(&path).unwrap();
-    f.write_all(MAGIC).unwrap();
-    f.write_all(&CACHE_FORMAT_VERSION.to_le_bytes()).unwrap();
-    f.write_all(&fingerprint.to_le_bytes()).unwrap();
+    write_v4_header(&mut f, fingerprint);
     f.write_all(&payload).unwrap();
     drop(f);
 

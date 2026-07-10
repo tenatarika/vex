@@ -508,6 +508,7 @@ mod tests {
             bound_refs: vec![],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         }];
         let bloom = SymbolBloom::from_parsed_files(&parsed);
         assert!(bloom.may_contain("Foo"));

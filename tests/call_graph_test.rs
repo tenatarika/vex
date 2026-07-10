@@ -35,6 +35,7 @@ fn make_file(path: &str, symbols: Vec<ParsedSymbol>) -> ParsedFile {
         bound_refs: Vec::new(),
         skeletons: Vec::new(),
         cpp_includes: Vec::new(),
+        trigram_bloom: None,
     }
 }
 

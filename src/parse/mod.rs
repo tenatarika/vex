@@ -108,6 +108,11 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
         bound_refs,
         skeletons,
         cpp_includes,
+        // Built by the pipeline (`parse_files`) from the file bytes, not
+        // here — `parse_file` is language-layer and doesn't own the
+        // read/cache decision. Left `None` for the parse layer's own
+        // callers (tests, direct parses).
+        trigram_bloom: None,
     })
 }
 

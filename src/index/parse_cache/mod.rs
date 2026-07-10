@@ -14,8 +14,22 @@
 //!      0     4  magic = b"VXBC"
 //!      4     2  CACHE_FORMAT_VERSION: u16 (little-endian)
 //!      6     4  grammar_fingerprint: u32 (little-endian)
-//!     10     *  bincode-1.3 payload of ParsedFile
+//!     10     1  trigram_bloom_present: u8 (1 = slot holds a real bloom)
+//!     11   256  trigram_bloom slot (BLOOM_SLOT bytes; grep skip-index)
+//!    267     *  bincode-1.3 payload of ParsedFile
 //! ```
+//!
+//! The trigram bloom (v1.24+, STORAGE-RESEARCH §2) is a pure function of
+//! file content, so it's content-addressed and cross-project-shareable
+//! exactly like the parse itself — hence it rides in the cache entry
+//! rather than being rebuilt on every hit. It sits in a fixed-width slot
+//! ahead of the variable-length bincode payload (not inside it: `serde`
+//! has no built-in impl for `[u8; 256]`, and a fixed slot keeps the
+//! payload offset constant). The `present` flag distinguishes a genuine
+//! all-zero bloom (a <3-byte / empty file — skipping it at grep time is
+//! correct) from "no bloom recorded" (→ `trigram_bloom = None` → the
+//! sidecar writer omits the file → grep full-reads it). Confusing the two
+//! would turn a missing bloom into a silent skip — a false negative.
 //!
 //! ## Invalidation
 //!
@@ -57,10 +71,26 @@ pub const MAGIC: &[u8; 4] = b"VXBC";
 ///   stored a shorter payload (body_tokens skipped) — bincode reads
 ///   them as truncated. Treating v2 caches as misses on read forces a
 ///   one-time re-parse, after which v3 entries take over.
-pub const CACHE_FORMAT_VERSION: u16 = 3;
+/// - `4`: v1.24+ grep trigram skip-index — inserted the
+///   `present` flag + `BLOOM_SLOT`-byte trigram bloom between the
+///   header and the bincode payload. v3 entries have no slot; treating
+///   them as misses forces a one-time re-parse that rebuilds the bloom
+///   from bytes, after which v4 entries carry it for free on every hit.
+pub const CACHE_FORMAT_VERSION: u16 = 4;
 
 /// On-disk header size: 4 (magic) + 2 (version) + 4 (fingerprint).
 const HEADER_SIZE: usize = 10;
+
+/// Width of the trigram-bloom slot that follows the 1-byte `present`
+/// flag. A local format constant (like `HEADER_SIZE`) so the on-disk
+/// format is self-describing; the compile-time assert pins it to the
+/// bloom's real size so a P4 bloom-width tune can't silently desync the
+/// two (it would fail the build here instead).
+const BLOOM_SLOT: usize = 256;
+const _: () = assert!(BLOOM_SLOT == crate::grep::trigram::BLOOM_BYTES);
+
+/// Offset of the bincode payload: header + `present` flag + bloom slot.
+const PAYLOAD_OFFSET: usize = HEADER_SIZE + 1 + BLOOM_SLOT;
 
 /// Step 7-opt — encode `(header || bincode(pf))` for `lang` into a single
 /// buffer. Splitting this out of [`BlobCache::insert`] lets the parse pipeline
@@ -73,10 +103,25 @@ const HEADER_SIZE: usize = 10;
 pub(crate) fn encode_entry(lang: Language, pf: &ParsedFile) -> bincode::Result<Vec<u8>> {
     let payload = bincode::serialize(pf)?;
     let fingerprint = grammar_fingerprint_for_lang(lang);
-    let mut buf = Vec::with_capacity(HEADER_SIZE + payload.len());
+    let mut buf = Vec::with_capacity(PAYLOAD_OFFSET + payload.len());
     buf.extend_from_slice(MAGIC);
     buf.extend_from_slice(&CACHE_FORMAT_VERSION.to_le_bytes());
     buf.extend_from_slice(&fingerprint.to_le_bytes());
+    // Trigram bloom slot. `present = 0` (with a zeroed slot) when the
+    // caller never attached a bloom — the reader then yields
+    // `trigram_bloom = None` so a missing bloom degrades to a full read,
+    // never a silent skip. `parse_files` always sets the bloom on the
+    // read path, so freshly-written entries carry `present = 1`.
+    match &pf.trigram_bloom {
+        Some(bloom) => {
+            buf.push(1);
+            buf.extend_from_slice(bloom);
+        }
+        None => {
+            buf.push(0);
+            buf.extend_from_slice(&[0u8; BLOOM_SLOT]);
+        }
+    }
     buf.extend_from_slice(&payload);
     Ok(buf)
 }
@@ -103,7 +148,7 @@ impl BlobCache {
         let path = self.entry_path(sha);
         let data = fs::read(&path).ok()?;
 
-        if data.len() < HEADER_SIZE {
+        if data.len() < PAYLOAD_OFFSET {
             return None;
         }
 
@@ -125,8 +170,24 @@ impl BlobCache {
             return None;
         }
 
-        // Decode payload.
-        bincode::deserialize::<ParsedFile>(&data[HEADER_SIZE..]).ok()
+        // Trigram bloom slot: `present` flag at HEADER_SIZE, then
+        // BLOOM_SLOT bytes. `present == 0` → `None` (no bloom recorded;
+        // the file will be full-read at grep time). Any other flag byte
+        // is treated as present (defensive: only 0/1 are ever written).
+        let present = data[HEADER_SIZE];
+        let trigram_bloom = if present == 0 {
+            None
+        } else {
+            let slot = &data[HEADER_SIZE + 1..HEADER_SIZE + 1 + BLOOM_SLOT];
+            let mut bloom = [0u8; BLOOM_SLOT];
+            bloom.copy_from_slice(slot);
+            Some(bloom)
+        };
+
+        // Decode payload and re-attach the transient (serde-skipped) bloom.
+        let mut pf = bincode::deserialize::<ParsedFile>(&data[PAYLOAD_OFFSET..]).ok()?;
+        pf.trigram_bloom = trigram_bloom;
+        Some(pf)
     }
 
     /// Serialize `pf` and write it to the cache entry for `sha` / `lang`.

@@ -32,6 +32,7 @@ fn make_parsed_file(path: &str, symbols: Vec<ParsedSymbol>) -> ParsedFile {
         bound_refs: Vec::new(),
         skeletons: Vec::new(),
         cpp_includes: Vec::new(),
+        trigram_bloom: None,
     }
 }
 
@@ -270,6 +271,7 @@ fn refs_roundtrip_and_search() {
         bound_refs: Vec::new(),
         skeletons: Vec::new(),
         cpp_includes: Vec::new(),
+        trigram_bloom: None,
     }];
 
     vex::store::writer::write_index(&files, &index_path).unwrap();
@@ -1039,6 +1041,7 @@ fn ref_edges_roundtrip_module_symbols() {
         ],
         skeletons: Vec::new(),
         cpp_includes: Vec::new(),
+        trigram_bloom: None,
     }];
 
     vex::store::writer::write_index(&files, &index_path).unwrap();
@@ -1081,6 +1084,7 @@ fn ref_edges_resolve_imported_use_path_cross_file() {
             bound_refs: vec![],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         },
         ParsedFile {
             path: "b.rs".into(),
@@ -1098,6 +1102,7 @@ fn ref_edges_resolve_imported_use_path_cross_file() {
             }],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         },
     ];
 
@@ -1136,6 +1141,7 @@ fn ref_edges_same_name_three_files_first_wins() {
             bound_refs: vec![],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         },
         ParsedFile {
             path: "b.rs".into(),
@@ -1145,6 +1151,7 @@ fn ref_edges_same_name_three_files_first_wins() {
             bound_refs: vec![],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         },
         ParsedFile {
             path: "c.rs".into(),
@@ -1154,6 +1161,7 @@ fn ref_edges_same_name_three_files_first_wins() {
             bound_refs: vec![],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         },
         ParsedFile {
             path: "user.rs".into(),
@@ -1171,6 +1179,7 @@ fn ref_edges_same_name_three_files_first_wins() {
             }],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         },
     ];
 
@@ -1218,6 +1227,7 @@ fn ref_edges_drop_imported_when_use_path_unresolvable() {
         }],
         skeletons: Vec::new(),
         cpp_includes: Vec::new(),
+        trigram_bloom: None,
     }];
 
     vex::store::writer::write_index(&files, &index_path).unwrap();
@@ -1250,6 +1260,7 @@ fn ref_edges_ts_imported_cross_file() {
             bound_refs: vec![],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         },
         ParsedFile {
             path: "user.ts".into(),
@@ -1267,6 +1278,7 @@ fn ref_edges_ts_imported_cross_file() {
             }],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         },
     ];
 
@@ -1301,6 +1313,7 @@ fn ref_edges_python_imported_cross_file() {
             bound_refs: vec![],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         },
         ParsedFile {
             path: "b.py".into(),
@@ -1318,6 +1331,7 @@ fn ref_edges_python_imported_cross_file() {
             }],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         },
     ];
 
@@ -1355,6 +1369,7 @@ fn ref_edges_ts_default_import_does_not_resolve_cross_file() {
             bound_refs: vec![],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         },
         ParsedFile {
             path: "y.ts".into(),
@@ -1372,6 +1387,7 @@ fn ref_edges_ts_default_import_does_not_resolve_cross_file() {
             }],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         },
     ];
 
