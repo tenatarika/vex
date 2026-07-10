@@ -140,10 +140,16 @@ Resolution order (first match wins), once per invocation:
 routinely contain vendored `.git` dirs, and the FUSE mount may not expose `.arc`
 at the level where a nested `.git` sits below — so a naive innermost-marker walk
 picks the vendored `.git` and indexes a sub-tree as git when the user is in an
-Arc repo. Therefore: when the `arc` binary is on PATH, **probe `arc root` before
-concluding `git`**, and if the `arc` root is an ancestor of the found `.git`,
-prefer the outer Arc root. Only genuinely-unrelated innermost markers (e.g. an
-svn checkout inside a git repo) fall back to the innermost rule.
+Arc repo. Therefore (Phase 3 target): when the `arc` binary is on PATH, **probe
+`arc root` before concluding `git`**, and if the `arc` root is an ancestor of
+the found `.git`, prefer the outer Arc root. Only genuinely-unrelated innermost
+markers (e.g. an svn checkout inside a git repo) fall back to the innermost rule.
+
+> **Phase 2 as-shipped:** the `arc root` probe and the Arc-preference above are
+> **deferred to Phase 3** (they only make sense once `ArcVcs` can actually
+> diff-scope). Phase 2 detection is **markers-only and git wins a co-located
+> tie**, precisely so a git-in-arc monorepo does *not* lose its nested-`.git`
+> diff-scoping before `ArcVcs` exists. See §6 Phase 2.
 
 **Detection flip is observable, never a silent reindex (M3).** Detection can
 flip across invocations from an innocuous PATH change (the `arc` binary appears
@@ -218,11 +224,24 @@ variant, the **caller** composes the final message text, so `git_diff`'s and
 (one call site), so this is a *local* refactor, not the wide cross-cutting risk
 the first draft feared.
 
-**Phase 2 — detection + override + `none` + manifest `vcs_kind` + `_meta`.**
-`--vcs`/`VEX_VCS`/`.vex.toml`, marker walk (+`arc root` probe, §4),
-`_meta.vex.dev/vcs` with declined caps, additive manifest `vcs_kind` (§5). Still
-git-only in practice; `none` is the honest floor. **No physical cache
-namespacing** (§5).
+**Phase 2 — detection + override + `none`. SHIPPED (2026-07-10) with two
+deliberate narrowings vs. the original bullet:**
+- Shipped: `--vcs` flag / `VEX_VCS` env / `.vex.toml vcs` override chain
+  (flag > env > config > detect > `none`), marker auto-detect, and the `NoVcs`
+  floor (git-only in practice; arc/svn/none decline cleanly). `src/vcs/detect.rs`
+  + `src/vcs/none.rs`; override precedence covered by `tests/cli_vcs_test.rs`.
+- **Deferred to Phase 3/4 (no consumer yet):** `_meta.vex.dev/vcs` and the
+  manifest `vcs_kind` field. Emitting either now is write-only scaffolding —
+  "which backend answered" is trivially "git" until a non-git backend exists,
+  and `vcs_kind` staleness-gating (§5 H1) needs staleness routed through the
+  trait (Phase 4). Until `_meta.vex.dev/vcs` lands, a mistyped override warns at
+  `tracing::warn!` only; the `--vcs` help documents it affects diff-scope only.
+- **Detection is markers-only; git WINS a co-located `.git`/`.arc` tie** — the
+  §4 `arc root` probe and outer-Arc-preference are **deferred to Phase 3**.
+  Reason: with no Arc *backend* yet, preferring Arc over a nested `.git` would
+  *regress* git-in-arc monorepo users (they'd lose the diff-scoping the nested
+  `.git` gives them today). The probe lands together with `ArcVcs`. **No
+  physical cache namespacing** (§5).
 
 **Phase 3 — `ArcVcs` (diff-scope), the requested primary.** git-shaped `arc`
 command mapping for `ensure_repo`/`changed_paths`; `arc root` detection.

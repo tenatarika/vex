@@ -329,6 +329,12 @@ semantic = true
 # bge-large-en-v1.5, mxbai-large. Changing it requires a reindex.
 # Set globally across projects with the VEX_EMBEDDER env var (this file wins).
 # embedder = "minilm-l6-v2"
+
+# VCS backend for diff-scoping (--since/--since-branched/--changed-only).
+# "auto" (default) detects .git/.svn/.arc; "git" | "none" | "arc" | "svn".
+# Only git is functional today; arc/svn decline until their backends land.
+# Overridden by the --vcs flag and the $VEX_VCS env var. See docs/VCS-BACKENDS.md.
+# vcs = "auto"
 ```
 
 CLI flags always override config values. Use `--no-semantic` to explicitly disable semantic mode when the config enables it. The `VEX_DEVICE` and `VEX_EMBEDDER` environment variables act as **global defaults across all projects** (lowest precedence, below `.vex.toml`) — see [GPU Acceleration](#gpu-acceleration).

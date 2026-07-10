@@ -27,12 +27,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `_meta.deprecated_args`). No scripted caller breaks; the rename only clarifies
   an under-descriptive name (the internal field was already `filter_path`).
 
+### Added — `--vcs` backend selection for diff-scoping (VCS-BACKENDS Phase 2)
+
+- New global `--vcs <auto|git|arc|svn|none>` flag, `$VEX_VCS` env var, and
+  `.vex.toml` `vcs = "..."` key select the VCS backend for diff-scoping
+  (`--since` / `--since-branched` / `--changed-only`). Precedence: flag > env >
+  config > marker auto-detect. `git` is the only functional backend today;
+  `arc`/`svn` are detected/forced but decline cleanly ("backend not yet
+  available") until their backends land, and `none` is an explicit floor that
+  disables diff-scoping. Affects diff-scoping only — no effect on other
+  commands in this phase. See docs/VCS-BACKENDS.md.
+
 ### Internal — VCS backend groundwork (VCS-BACKENDS Phase 1)
 
-- Diff-scoping (`--since` / `--since-branched` / `--changed-only`) now routes
-  through a new `Vcs` trait + `GitVcs` backend (`src/vcs/`), the first step
-  toward optional Yandex Arc / Subversion support. Byte-identical git behavior;
-  git remains the sole backend. No user-visible change.
+- Diff-scoping now routes through a new `Vcs` trait + `GitVcs` backend
+  (`src/vcs/`), the first step toward optional Yandex Arc / Subversion support.
+  Byte-identical git behavior; git remains the sole functional backend.
 
 ## [1.23.0] - 2026-07-08
 
