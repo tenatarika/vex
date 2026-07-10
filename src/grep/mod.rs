@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -5,6 +6,11 @@ use rayon::prelude::*;
 use regex::Regex;
 
 pub mod trigram;
+
+use crate::store::trigram as store_trigram;
+use crate::store::trigram::TrigramRecord;
+use crate::util::config;
+use trigram::{Trigram, TrigramBloom};
 
 /// A single grep match in a file.
 #[derive(Debug, Clone)]
@@ -14,7 +20,14 @@ pub struct GrepMatch {
     pub text: String,
 }
 
-/// Search file contents by regex pattern. Parallel scan, no index needed.
+/// Search file contents by regex pattern. Parallel scan.
+///
+/// When an `index.trigram` sidecar is present and the pattern yields a
+/// required literal, files whose bloom provably can't contain that literal
+/// are skipped before they're read (see [`TrigramSkip`]). Absent sidecar,
+/// non-literal pattern, or a stale record → the file is read as before, so
+/// the result set is identical to a full walk — the skip-index only trims
+/// I/O, never matches.
 pub fn search(
     root: &Path,
     pattern: &str,
@@ -23,7 +36,8 @@ pub fn search(
     excludes: &[String],
 ) -> Result<Vec<GrepMatch>> {
     let re = Regex::new(pattern).context("invalid regex pattern")?;
-    let files = discover_files(root, filter_path, excludes)?;
+    let skip = TrigramSkip::build(root, pattern);
+    let files = discover_files(root, filter_path, excludes, skip.as_ref())?;
 
     let matches: Vec<GrepMatch> = files
         .par_iter()
@@ -56,10 +70,74 @@ pub fn search(
     Ok(matches.into_iter().take(limit).collect())
 }
 
+/// The `index.trigram` skip-index paired with the current pattern's
+/// required trigrams. `can_skip` decides — per file, from metadata the
+/// walk already fetched — whether the file provably cannot match and can
+/// be left unread.
+///
+/// **No false negatives.** A file is skipped ONLY when it has a sidecar
+/// record whose `(len, mtime)` still matches the file on disk AND whose
+/// bloom lacks one of the required trigrams. Any other case (no record,
+/// stale record, un-keyable path, stat failure) reads the file. See
+/// `docs/GREP-TRIGRAM.md`.
+struct TrigramSkip {
+    /// Trigrams the pattern's literal must contain (non-empty by
+    /// construction — `required_trigrams` returns `None` for < 3 bytes).
+    required: Vec<Trigram>,
+    index: HashMap<String, TrigramRecord>,
+}
+
+impl TrigramSkip {
+    /// Build the skip-index for `pattern`, or `None` when it can't help:
+    /// the pattern has no ≥3-byte required literal, or the sidecar is
+    /// absent / malformed (→ full walk, matching pre-index behaviour).
+    fn build(root: &Path, pattern: &str) -> Option<Self> {
+        let required = trigram::required_trigrams(pattern)?;
+        if required.is_empty() {
+            return None;
+        }
+        let records = store_trigram::load(&config::trigram_path(root)).ok()?;
+        let index = records
+            .into_iter()
+            .map(|r| (r.rel_path.clone(), r))
+            .collect();
+        Some(TrigramSkip { required, index })
+    }
+
+    /// True iff `path` provably cannot match and may be left unread.
+    /// `meta` is the stat the walk already performed for the size cap.
+    fn can_skip(&self, path: &Path, root: &Path, meta: &std::fs::Metadata) -> bool {
+        // Key must be derived exactly as the sidecar wrote it (POSIX rel),
+        // else the lookup silently misses on Windows and every file reads.
+        let Some(rel) = crate::util::paths::to_rel_posix(path, root) else {
+            return false;
+        };
+        let Some(rec) = self.index.get(&rel) else {
+            return false; // absent → read
+        };
+        // Staleness guard: grep runs without a reindex, so any drift in
+        // (len, mtime) means the bloom may not reflect current content →
+        // read, never skip.
+        if rec.len != meta.len() {
+            return false;
+        }
+        let Ok(mtime) = meta.modified() else {
+            return false;
+        };
+        if (rec.mtime_secs, rec.mtime_nanos) != store_trigram::mtime_parts(mtime) {
+            return false;
+        }
+        // Fresh + matching record: skip iff the bloom proves the required
+        // literal cannot be present.
+        !TrigramBloom::from_raw(rec.bloom).might_contain_all(&self.required)
+    }
+}
+
 fn discover_files(
     root: &Path,
     filter_path: Option<&str>,
     excludes: &[String],
+    skip: Option<&TrigramSkip>,
 ) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
@@ -78,10 +156,23 @@ fn discover_files(
             }
         }
 
-        // Skip files > 1 MB
-        if std::fs::metadata(&path).is_ok_and(|m| m.len() <= 1_048_576) {
-            files.push(path);
+        // Single stat, reused for both the 1 MB cap and the trigram skip.
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if meta.len() > 1_048_576 {
+            continue;
         }
+
+        // Trigram skip-index: drop files that provably can't match before
+        // they're ever read.
+        if let Some(skip) = skip {
+            if skip.can_skip(&path, root, &meta) {
+                continue;
+            }
+        }
+
+        files.push(path);
     }
 
     Ok(files)

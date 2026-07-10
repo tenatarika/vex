@@ -22,12 +22,6 @@
 //! windows), so it matches the byte domain grep searches and multibyte literals
 //! Just Work. Alternation OR-of-trigram-sets is deferred (csearch RegexpQuery).
 
-// P1 lands this pure module ahead of its consumers: the sidecar (P2) and the
-// `grep::search` wiring (P3) call this API. Until P3, the non-test build has no
-// caller, so allow dead_code to keep the `-D warnings` gate green; remove when
-// P3 wires it in.
-#![allow(dead_code)]
-
 use regex_syntax::hir::{Hir, HirKind};
 
 /// Per-file bloom size in bits and hash count. Tunable starting point
