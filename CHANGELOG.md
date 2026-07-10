@@ -47,7 +47,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `arc` CLI could not be run in development, so command shapes are grounded in
   public research and marked `FIELD-VERIFY` in the source (see docs/VCS-BACKENDS.md
   §7a). Reachable only by explicit selection; the `arc root` auto-probe is
-  deferred. Falls back gracefully (clear error) when `arc` is absent.
+  deferred. Degrades safely: a missing `arc`, a non-zero exit, or an
+  unrecognized `arc status --json` shape all fail with a clear error rather than
+  silently reporting "nothing changed"; a runtime warning marks the backend
+  unverified. It never silently falls back to git or drops the diff filter.
 
 ### Internal — VCS backend groundwork (VCS-BACKENDS Phase 1)
 

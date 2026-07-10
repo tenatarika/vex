@@ -314,6 +314,38 @@ Prefer `--json` (Arc's stable machine contract) over porcelain where a choice
 exists. Once verified, drop the `PROVISIONAL` banner in `arc.rs` and flip on the
 `arc root` auto-probe in detection (§4).
 
+### Graceful degradation (so a wrong assumption fails safe, not silent)
+
+Because the shapes above are unverified, `ArcVcs` is built to **fail loud, never
+silently mislead** — the H2 principle extended to the "successful call, wrong
+output shape" case that plain error-handling misses:
+
+- **Unrecognized `arc status --json` → hard error, not empty.** A real `arc`
+  emitting a different JSON shape would otherwise parse to an empty change set
+  and silently report "nothing changed" (dropping every `--changed-only`
+  result — the delete-safety footgun). `parse_arc_status_json` requires a
+  recognizable envelope (`status` object or a known group) and `bail!`s
+  otherwise. An empty set is returned only from a *recognized* shape.
+- **Spawn failure / non-zero exit / bad flag → `VcsError::Failed`**, propagated
+  as a clear command error — never mapped to an empty set (H2), never a panic.
+- **No silent backend substitution.** An arc failure does NOT fall back to git
+  or to "ignore `--since`": the user asked for arc, and a different backend
+  would give a *different* changed-set. Failing loudly is correct for a
+  scoping/safety feature.
+- **Runtime provisionality signal.** `ensure_repo` emits a `tracing::warn!` on
+  every arc-backed invocation so a prod user who selected `--vcs arc` is told at
+  runtime (stderr) the backend is unverified — not just in the docs.
+
+**Residual gaps to close at field-verify (still silent-ish today):**
+- `arc diff --name-only` output that isn't bare paths (e.g. status columns, or
+  colour despite `--no-color`) would be parsed as bogus paths → fewer/zero
+  matches. Mitigation deferred to field-verify (confirm the `--name-only`
+  format; add a shape sanity-check if needed).
+- **No subprocess timeout.** Arc's FUSE/VFS mount can be slow or hang; an `arc`
+  invocation currently has no timeout and would hang the `vex` call. Add a
+  bounded timeout when field-verifying (std has none built-in — needs a helper
+  thread or the `wait-timeout` crate).
+
 ---
 
 ## 8. References

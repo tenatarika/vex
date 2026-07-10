@@ -46,6 +46,15 @@ impl Vcs for ArcVcs {
     }
 
     fn ensure_repo(&self, root: &Path) -> VcsResult<()> {
+        // Runtime provisionality signal: this backend is UNVERIFIED against a
+        // real `arc`. `ensure_repo` is the entry point for every diff-scope, so
+        // a user who selected `--vcs arc` is told at runtime (stderr via
+        // tracing) that results may be unreliable — not only in the docs. Cheap
+        // and honest; the diff-scope path already fails loud on any arc error.
+        tracing::warn!(
+            "vex: the `arc` VCS backend is PROVISIONAL and unverified against a \
+             real arc CLI (docs/VCS-BACKENDS.md §7a) — verify diff-scoped results"
+        );
         // FIELD-VERIFY (high): `arc root` prints the working-copy root and exits
         // non-zero outside one — the attested detection idiom (zsh-arc
         // `arc root || echo .`). No `arc rev-parse --is-inside-work-tree`.
@@ -126,14 +135,36 @@ fn arc_status_changed(root: &Path) -> Result<Vec<String>> {
 
 /// Pure parser for `arc status --json`, split out so it is unit-testable
 /// without an `arc` binary. Collects `path` from the `changed`, `staged`, and
-/// `untracked` arrays under the top-level `status` object; tolerates any of
-/// them being absent.
+/// `untracked` arrays under the top-level `status` object.
+///
+/// **Graceful-degradation guard (fail loud, never silently empty):** because
+/// `ArcVcs` is provisional, a real `arc` whose JSON shape differs from our
+/// assumption would otherwise parse cleanly and yield an **empty** change set —
+/// silently reporting "nothing changed" and dropping every result from a
+/// `--changed-only` search (the delete-safety footgun H2 exists to prevent,
+/// but which H2's error→empty rule does NOT cover for a *successful* call with
+/// an unexpected shape). So we require the shape to be *recognizable* — a
+/// top-level `status` object, or at least one of the expected groups — and
+/// `bail!` otherwise. An empty change set is only returned when the shape IS
+/// recognized and the groups are genuinely empty.
 fn parse_arc_status_json(text: &str) -> Result<Vec<String>> {
     let root: Value = serde_json::from_str(text.trim()).context("arc status JSON")?;
-    let status = root.get("status").unwrap_or(&root);
+    const GROUPS: [&str; 3] = ["changed", "staged", "untracked"];
+    let container = root.get("status");
+    let scope = container.unwrap_or(&root);
+    let recognized = container.is_some() || GROUPS.iter().any(|g| scope.get(g).is_some());
+    if !recognized {
+        bail!(
+            "unrecognized `arc status --json` shape (no `status` object nor \
+             changed/staged/untracked groups) — the PROVISIONAL arc backend's \
+             assumed output shape does not match this `arc`. Refusing to report \
+             an empty change set from an unrecognized shape; field-verify per \
+             docs/VCS-BACKENDS.md §7a."
+        );
+    }
     let mut out = Vec::new();
-    for group in ["changed", "staged", "untracked"] {
-        if let Some(arr) = status.get(group).and_then(Value::as_array) {
+    for group in GROUPS {
+        if let Some(arr) = scope.get(group).and_then(Value::as_array) {
             for entry in arr {
                 if let Some(p) = entry.get("path").and_then(Value::as_str) {
                     out.push(p.to_string());
@@ -220,8 +251,33 @@ mod tests {
     fn parse_arc_status_json_tolerates_missing_groups() {
         let json = r#"{ "status": { "changed": [{"path": "only.rs"}] } }"#;
         assert_eq!(parse_arc_status_json(json).unwrap(), vec!["only.rs"]);
+        // Recognized envelope (a `status` object) with empty groups → a genuine
+        // "nothing changed" empty set, NOT an error.
         let empty = r#"{ "status": {} }"#;
         assert!(parse_arc_status_json(empty).unwrap().is_empty());
+    }
+
+    /// Graceful-degradation guard: a valid-JSON but *unrecognized* shape (what a
+    /// real `arc` whose output differs from our assumption would produce) must
+    /// FAIL LOUD, never silently return an empty change set (delete-safety).
+    #[test]
+    fn parse_arc_status_json_unrecognized_shape_fails_loud() {
+        // No `status` object and none of the expected groups → error.
+        let err = parse_arc_status_json(r#"{ "files": ["a.rs"], "revision": 42 }"#)
+            .expect_err("unrecognized shape must error, not yield empty");
+        assert!(
+            format!("{err:#}").contains("unrecognized"),
+            "error must name the unrecognized-shape cause, got: {err:#}"
+        );
+        // A bare object with no keys is also unrecognized (ambiguous vs. a real
+        // clean-tree shape, which the research says carries a `status` object).
+        assert!(parse_arc_status_json("{}").is_err());
+        // But a top-level group without the `status` wrapper is still accepted
+        // (defensive: some arc versions may flatten).
+        assert_eq!(
+            parse_arc_status_json(r#"{ "changed": [{"path": "flat.rs"}] }"#).unwrap(),
+            vec!["flat.rs"]
+        );
     }
 
     #[test]
