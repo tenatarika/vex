@@ -1051,7 +1051,9 @@ narrower. Design: `docs/VCS-BACKENDS.md`.
 - **svn — `--since` contacts the server.** `svn diff --summarize -r <rev>:HEAD`
   compares committed revisions, so on a *remote* repo it makes a network call
   (inherent to svn's centralized model). `--changed-only` (`svn status`) is
-  offline.
+  offline. Every `svn` call runs under a bounded timeout (default 60s, override
+  `VEX_VCS_TIMEOUT_SECS=<secs>`) so an unreachable/hung server fails with a
+  clear "timed out" error instead of hanging `vex` indefinitely.
 - **svn — path quoting.** Parsing uses `--xml` (svn's stable machine format),
   so paths with spaces are handled. Paths are repo-relative, as with git.
 - **Arc — reachable only via explicit selection.** `ArcVcs` is used only under
