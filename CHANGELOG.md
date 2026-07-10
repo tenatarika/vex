@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-07-10
+
 ### Fixed — bounded timeout on the svn and arc diff-scoping backends
 
 - Every `svn` and `arc` invocation in the diff-scoping backends now runs under a
