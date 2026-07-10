@@ -602,13 +602,25 @@ fn render_workspace_json(
             obj
         })
         .collect();
+    // §4.2 result-completeness (exact, aggregated across the workspace): the
+    // capability is advertised, so a *supported* command MUST emit the keys —
+    // silence here would be a producer bug, not "complete". Each repo's
+    // `outcome.total` is its exact post-filter size; sum is the workspace
+    // total, and truncation is "any member repo was capped by its limit".
+    let result_total: usize = per_repo.iter().map(|r| r.outcome.total).sum();
+    let truncated = per_repo
+        .iter()
+        .any(|r| r.outcome.total > r.outcome.entries.len());
+    let mut meta = super::output::default_meta_for(base);
+    meta.result_total = Some(result_total);
+    meta.truncated = Some(truncated);
     print_envelope(
         serde_json::json!({
             "workspace": ws.file.to_string_lossy(),
             "repos": repos,
         }),
         capabilities::current(),
-        super::output::default_meta_for(base),
+        meta,
     );
 }
 

@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — concise MCP `content` text channel (PROTOCOL-EVOLUTION §4.1)
+
+- The MCP server's `content[0].text` (the channel an LLM reads) previously
+  dumped the **entire** response envelope as pretty JSON — raw `bm25_score` /
+  `semantic_cosine`, capabilities block, signatures, ~2k+ tokens per `search`
+  call. It now renders a concise, agent-tuned view: for `search`, one line per
+  hit — `<def|nbr|hit> name (kind)  path:line  via:<channel>` — with the search
+  drift hint prepended and (when emitted) a completeness line appended; no raw
+  scores. Other subcommands render compact-but-complete JSON of `results`
+  (never-lossy). The full-fidelity payload with all scores is **unchanged** in
+  `structuredContent` / `_meta` (the machine channels). Set `VEX_MCP_TEXT=raw`
+  to restore the legacy full-envelope dump (kept indefinitely as the migration
+  path for clients that parse `content` as JSON).
+
 ### Added — result-completeness signal on `vex usages` JSON (PROTOCOL-EVOLUTION §4.2)
 
 - `vex usages --format json` now carries completeness metadata so a consumer

@@ -246,7 +246,7 @@ Levenshtein-fallback rows). Both cross-checked against the STORAGE-RESEARCH
 appendix agent-output P0/P1 list; the two items below are the top *open* ones
 from that reconciliation.
 
-### 4.1 Concise agent-tuned `content` text channel [P0/P1]
+### 4.1 Concise agent-tuned `content` text channel [P0/P1] — SHIPPED v1.24.0
 
 **Problem.** `crates/vex-mcp/src/response.rs:88` sets
 `content[0].text = serde_json::to_string_pretty(&content)` — it dumps the
@@ -305,7 +305,7 @@ hatch is their migration path.
 fallback is complete (no dropped fields, non-empty); assert `structuredContent`
 still carries full `signals` with scores (proves split, not deletion).
 
-### 4.2 Result-completeness signal [delete-safety correctness]
+### 4.2 Result-completeness signal [delete-safety correctness] — SHIPPED v1.24.0 (`usages`; search/callers deferred)
 
 **Problem.** A consumer cannot distinguish "these are *all* the hits" from
 "top-N of many". For `vex usages` this is a **correctness** gap, not just UX:

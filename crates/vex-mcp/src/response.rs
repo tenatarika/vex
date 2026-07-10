@@ -6,6 +6,8 @@
 //! Extracted from `main.rs` in the v1.21 split — see
 //! `.claude/Task/v1.21-vex-mcp-split.md`.
 
+use std::fmt::Write as _;
+
 use anyhow::Result;
 use serde_json::Value;
 
@@ -71,8 +73,9 @@ pub(crate) fn build_mcp_response(
     // `capabilities` to the JSON-RPC `result` top level, expose `results` as
     // `structuredContent.results` (NOT `_meta` — per MCP spec `_meta` is
     // invisible to the LLM, but `structuredContent` is the prescribed
-    // mechanism for typed payloads). Keep `content[0].text` populated with
-    // the full envelope JSON for MCP clients that read text only.
+    // mechanism for typed payloads). `content[0].text` carries the concise
+    // agent-tuned render (§4.1), NOT the full envelope — the machine payload
+    // lives in `structuredContent`/`_meta` below.
     let envelope_protocol_version = content
         .get("protocol_version")
         .and_then(Value::as_str)
@@ -82,10 +85,29 @@ pub(crate) fn build_mcp_response(
     let envelope_meta = content.get("_meta").cloned();
     let is_envelope = envelope_protocol_version.is_some() && envelope_capabilities.is_some();
 
+    // §4.2 safety gate: completeness is trustworthy ONLY when the producer
+    // advertises `capabilities.result_completeness`. An old/third-party `vex`
+    // emitting stray `_meta.vex.dev/truncated` without the capability must be
+    // read as "unknown", never "complete" — so the renderer stays silent about
+    // completeness unless this is true (design §4.2 HIGH-1).
+    let completeness_known = envelope_capabilities
+        .as_ref()
+        .and_then(|c| c.get("result_completeness"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    let text = render_content_text(
+        text_mode_from_env(),
+        completeness_known,
+        subcommand,
+        is_envelope,
+        &content,
+        &envelope_results,
+        &envelope_meta,
+    )?;
     let mut result = serde_json::json!({
         "content": [{
             "type": "text",
-            "text": serde_json::to_string_pretty(&content)?
+            "text": text
         }]
     });
 
@@ -151,6 +173,178 @@ pub(crate) fn build_mcp_response(
     }
 
     Ok(result)
+}
+
+/// Which text the LLM-facing `content` channel carries. `Raw` is the
+/// `VEX_MCP_TEXT=raw` escape hatch (legacy full-envelope dump).
+#[derive(Clone, Copy)]
+enum TextMode {
+    Concise,
+    Raw,
+}
+
+/// Read the `content`-channel mode from the environment. Split from
+/// [`render_content_text`] so the render logic is unit-testable without
+/// mutating process-global env (which would poison parallel tests).
+fn text_mode_from_env() -> TextMode {
+    if std::env::var("VEX_MCP_TEXT").ok().as_deref() == Some("raw") {
+        TextMode::Raw
+    } else {
+        TextMode::Concise
+    }
+}
+
+/// Build the LLM-facing `content[0].text` (PROTOCOL-EVOLUTION §4.1).
+///
+/// Two-audience split: `content` is the concise agent channel, while
+/// `structuredContent`/`_meta` (assembled by the caller and left untouched
+/// here) carry the full-fidelity machine payload with raw scores. This reads
+/// the already-parsed envelope; it must NOT mutate `results`/`meta`.
+///
+/// `VEX_MCP_TEXT=raw` restores the legacy full-envelope pretty dump —
+/// indefinitely, the migration path for clients that parse `content` as JSON
+/// (undocumented but real).
+fn render_content_text(
+    mode: TextMode,
+    completeness_known: bool,
+    subcommand: &str,
+    is_envelope: bool,
+    content: &Value,
+    results: &Option<Value>,
+    meta: &Option<Value>,
+) -> Result<String> {
+    if matches!(mode, TextMode::Raw) {
+        return Ok(serde_json::to_string_pretty(content)?);
+    }
+    if !is_envelope {
+        // Raw stdout / non-envelope error body: nothing structured to condense.
+        return Ok(serde_json::to_string_pretty(content)?);
+    }
+    // Rich render only for the row-shape family. `search` is the sole tool
+    // verified to emit `{name, kind, path, line, signals, result_kind}`; other
+    // subcommands are heterogeneous (`usages` = `{path,line}`, `bundle` =
+    // object results, …) and fall through to the fallback branch below.
+    if subcommand == "search" {
+        if let Some(text) =
+            render_search_concise(results.as_ref(), meta.as_ref(), completeness_known)
+        {
+            return Ok(text);
+        }
+    }
+    // Fallback: compact-but-complete JSON of `results` — never drops a
+    // `results` field (worst case "less pretty than a bespoke summary"). The
+    // §4.2 completeness line is prepended when the producer emits it, so a
+    // delete-safety signal (e.g. `usages` truncation) still reaches the
+    // LLM-visible `content` channel even for non-search tools — `_meta` alone
+    // is documented invisible to the model.
+    let payload = results.as_ref().unwrap_or(content);
+    let json = serde_json::to_string(payload)?;
+    match completeness_line(meta.as_ref(), completeness_known) {
+        Some(line) => Ok(format!("{line}\n{json}")),
+        None => Ok(json),
+    }
+}
+
+/// Concise `search` render: one line per hit —
+/// `<def|nbr|hit> name (kind)  path:line  via:<channel>` — with the drift hint
+/// prepended and (when the producer emits §4.2 keys) a completeness line
+/// appended. No raw scores reach the model. Returns `None` when `results` is
+/// not the expected array, so the caller falls back to compact JSON.
+fn render_search_concise(
+    results: Option<&Value>,
+    meta: Option<&Value>,
+    completeness_known: bool,
+) -> Option<String> {
+    let rows = results?.as_array()?;
+    let mut out = String::new();
+
+    // Drift hint first: "you searched a name with no local definition — these
+    // are neighbours", else the neighbour list is silently over-trusted.
+    if let Some(msg) = meta
+        .and_then(|m| m.get("vex.dev/search_hint"))
+        .and_then(|h| h.get("message"))
+        .and_then(Value::as_str)
+    {
+        out.push_str("hint: ");
+        out.push_str(msg);
+        out.push('\n');
+    }
+
+    if rows.is_empty() {
+        out.push_str("(no results)");
+    } else {
+        for row in rows {
+            let name = row.get("name").and_then(Value::as_str).unwrap_or("?");
+            let path = row.get("path").and_then(Value::as_str).unwrap_or("?");
+            let marker = match row.get("result_kind").and_then(Value::as_str) {
+                Some("def") => "def",
+                Some("neighbor") => "nbr",
+                _ => "hit",
+            };
+            let loc = match row.get("line").and_then(Value::as_u64) {
+                Some(l) => format!("{path}:{l}"),
+                None => path.to_string(),
+            };
+            let kind = row.get("kind").and_then(Value::as_str).unwrap_or("");
+            let via = derive_via(row);
+            out.push_str(marker);
+            out.push(' ');
+            out.push_str(name);
+            if !kind.is_empty() {
+                let _ = write!(out, " ({kind})");
+            }
+            let _ = writeln!(out, "  {loc}  via:{via}");
+        }
+    }
+
+    // Completeness line (currently dormant for `search` until its own §4.2
+    // lower-bound emission lands — `cmd_search` does not set `truncated` yet).
+    if let Some(line) = completeness_line(meta, completeness_known) {
+        out.push_str(&line);
+        out.push('\n');
+    }
+
+    Some(out.trim_end().to_string())
+}
+
+/// `via:` channel for a search row, mirroring `result_kind`'s own precedence so
+/// the marker and `via:` can never disagree: structural (`fst_hit`) > lexical
+/// (`bm25_rank`) > semantic (`semantic_rank`). `fst_hit` is always present (a
+/// plain wire `bool`); the channel-rank fields are `Option` + `skip_serializing_if`,
+/// so for THOSE *absence* — not `false` — means "not this channel".
+fn derive_via(row: &Value) -> &'static str {
+    let sig = row.get("signals");
+    let present = |k: &str| sig.and_then(|s| s.get(k)).is_some();
+    if sig.and_then(|s| s.get("fst_hit")).and_then(Value::as_bool) == Some(true) {
+        "name"
+    } else if present("bm25_rank") {
+        "lexical"
+    } else if present("semantic_rank") {
+        "semantic"
+    } else {
+        "?"
+    }
+}
+
+/// Human completeness line from §4.2 `_meta`. `None` when completeness is not
+/// trustworthy — the producer didn't advertise `capabilities.result_completeness`
+/// (`completeness_known == false`) OR emitted no `truncated` key. A safety
+/// signal: absence is rendered as silence, NEVER "all N" (design §4.2 HIGH-1).
+fn completeness_line(meta: Option<&Value>, completeness_known: bool) -> Option<String> {
+    if !completeness_known {
+        return None;
+    }
+    let m = meta?;
+    let truncated = m.get("vex.dev/truncated").and_then(Value::as_bool)?;
+    let total = m.get("vex.dev/result_total").and_then(Value::as_u64);
+    let exact = m.get("vex.dev/result_total_exact").and_then(Value::as_bool) != Some(false);
+    Some(match (truncated, total, exact) {
+        (true, Some(t), true) => format!("-- truncated: showing a subset of {t} total"),
+        (true, Some(t), false) => format!("-- truncated: ranked, >={t} total (more may exist)"),
+        (true, None, _) => "-- truncated: more results exist".to_string(),
+        (false, Some(t), _) => format!("-- complete: all {t} shown"),
+        (false, None, _) => "-- complete".to_string(),
+    })
 }
 
 /// Extract the `--why` ScanTrace JSON from a vex CLI's stderr.
@@ -585,6 +779,206 @@ INFO trailing line\n\
             current_stage2_result["_meta"]["signals"].is_null(),
             "_meta must not contain 'signals' key; got: {}",
             current_stage2_result["_meta"]
+        );
+    }
+
+    // ---- PROTOCOL-EVOLUTION §4.1 concise content render ----
+
+    #[test]
+    fn search_concise_render_has_markers_via_and_no_raw_scores() {
+        let results = json!([
+            { "name": "run_task", "kind": "function", "path": "src/lib.rs", "line": 1,
+              "signature": "pub fn run_task()", "score": 0.9, "match_type": "Hybrid",
+              "result_kind": "def",
+              "signals": { "fst_hit": true, "bm25_rank": 3, "bm25_score": 4.2 } },
+            { "name": "run_task", "kind": "method", "path": "src/other.rs", "line": 9,
+              "score": 0.4, "match_type": "Lexical", "result_kind": "neighbor",
+              "signals": { "fst_hit": false, "bm25_rank": 11, "bm25_score": 1.1 } }
+        ]);
+        let meta =
+            json!({ "vex.dev/search_hint": { "message": "no local definition for 'run_task'" } });
+        let text = render_search_concise(Some(&results), Some(&meta), true).expect("array renders");
+
+        assert!(
+            text.contains("hint: no local definition"),
+            "drift hint prepended:\n{text}"
+        );
+        assert!(text.contains("def run_task"), "def marker:\n{text}");
+        assert!(text.contains("nbr run_task"), "neighbor marker:\n{text}");
+        assert!(text.contains("src/lib.rs:1"), "path:line:\n{text}");
+        assert!(text.contains("via:name"), "structural via:\n{text}");
+        assert!(text.contains("via:lexical"), "lexical via:\n{text}");
+        // No raw scores / verbose fields reach the model (they stay in
+        // structuredContent).
+        assert!(!text.contains("bm25"), "no raw score fields:\n{text}");
+        assert!(!text.contains("4.2"), "no raw score values:\n{text}");
+        assert!(!text.contains("signature"), "no signature dump:\n{text}");
+    }
+
+    #[test]
+    fn completeness_line_variants_and_silence_on_unknown() {
+        let mk = |t: bool, total: Option<u64>, exact: Option<bool>| {
+            let mut m = serde_json::Map::new();
+            m.insert("vex.dev/truncated".into(), json!(t));
+            if let Some(x) = total {
+                m.insert("vex.dev/result_total".into(), json!(x));
+            }
+            if let Some(e) = exact {
+                m.insert("vex.dev/result_total_exact".into(), json!(e));
+            }
+            Value::Object(m)
+        };
+        assert_eq!(
+            completeness_line(Some(&mk(true, Some(50), None)), true).unwrap(),
+            "-- truncated: showing a subset of 50 total"
+        );
+        assert_eq!(
+            completeness_line(Some(&mk(false, Some(3), None)), true).unwrap(),
+            "-- complete: all 3 shown"
+        );
+        assert_eq!(
+            completeness_line(Some(&mk(true, Some(10), Some(false))), true).unwrap(),
+            "-- truncated: ranked, >=10 total (more may exist)"
+        );
+        // Safety: absent completeness keys = unknown = silence, NEVER "all N".
+        assert!(completeness_line(Some(&json!({})), true).is_none());
+        assert!(completeness_line(None, true).is_none());
+        // Safety gate (§4.2 HIGH-1): capability NOT advertised → silence even
+        // when a stray `truncated` key is present (old/third-party producer).
+        assert!(completeness_line(Some(&mk(true, Some(50), None)), false).is_none());
+    }
+
+    /// Envelope capabilities block; `completeness` toggles the gated
+    /// `result_completeness` flag so tests can exercise the §4.2 skew rule.
+    fn caps(completeness: bool) -> Value {
+        json!({ "signals": true, "empty_reason": false, "bundle_modes": [],
+            "why": true, "scope_filters": true, "metadata_filters": true,
+            "auto_update": true, "history_diff": true,
+            "result_completeness": completeness })
+    }
+
+    #[test]
+    fn non_search_fallback_is_compact_and_surfaces_completeness_line() {
+        // `usages` (compact-JSON fallback) with the capability advertised: the
+        // §4.2 truncation warning must reach the LLM-visible content channel,
+        // prepended to the compact results JSON (`_meta` alone is invisible).
+        let envelope = json!({
+            "protocol_version": "v1",
+            "capabilities": caps(true),
+            "_meta": { "vex.dev/truncated": true, "vex.dev/result_total": 42 },
+            "results": [ { "path": "src/a.rs", "line": 7 } ]
+        });
+        let stdout = serde_json::to_string(&envelope).unwrap();
+        let result = build_mcp_response(
+            Some(0),
+            "exit status: 0".to_string(),
+            &stdout,
+            "",
+            "usages",
+            &[],
+            &json!({}),
+        )
+        .unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.starts_with("-- truncated: showing a subset of 42 total\n"),
+            "completeness line must prepend the fallback; got: {text}"
+        );
+        assert!(
+            text.contains("\"path\":\"src/a.rs\""),
+            "compact results JSON; got: {text}"
+        );
+        assert!(
+            !text.contains("\n  "),
+            "results must be compact, not pretty; got: {text}"
+        );
+        // Machine channels untouched.
+        assert_eq!(
+            result["structuredContent"]["results"][0]["line"].as_u64(),
+            Some(7)
+        );
+        assert_eq!(result["_meta"]["vex.dev/truncated"].as_bool(), Some(true));
+    }
+
+    /// §4.2 HIGH-1 skew: a `truncated` key WITHOUT the `result_completeness`
+    /// capability (old/third-party producer) must NOT render a completeness
+    /// line — absent capability = "unknown", never "complete".
+    #[test]
+    fn stray_truncated_without_capability_renders_no_completeness_line() {
+        let envelope = json!({
+            "protocol_version": "v1",
+            "capabilities": caps(false),
+            "_meta": { "vex.dev/truncated": true, "vex.dev/result_total": 42 },
+            "results": [ { "path": "src/a.rs", "line": 7 } ]
+        });
+        let stdout = serde_json::to_string(&envelope).unwrap();
+        let result = build_mcp_response(
+            Some(0),
+            "exit status: 0".to_string(),
+            &stdout,
+            "",
+            "usages",
+            &[],
+            &json!({}),
+        )
+        .unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(
+            !text.contains("truncated") && !text.contains("complete"),
+            "no completeness claim when capability absent; got: {text}"
+        );
+    }
+
+    /// Object-shaped `results` (e.g. `bundle`) fall through to the never-lossy
+    /// compact-JSON branch complete and non-empty — the row renderer must not
+    /// empty-render a non-array payload.
+    #[test]
+    fn object_shaped_results_fallback_is_complete() {
+        let envelope = json!({
+            "protocol_version": "v1",
+            "capabilities": caps(true),
+            "results": { "symbol": "Foo", "callers": [ { "path": "a.rs", "line": 1 } ] }
+        });
+        let stdout = serde_json::to_string(&envelope).unwrap();
+        let result = build_mcp_response(
+            Some(0),
+            "exit status: 0".to_string(),
+            &stdout,
+            "",
+            "bundle",
+            &[],
+            &json!({}),
+        )
+        .unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("\"symbol\":\"Foo\""),
+            "object results complete; got: {text}"
+        );
+        assert!(
+            text.contains("\"callers\""),
+            "nested fields preserved; got: {text}"
+        );
+    }
+
+    #[test]
+    fn raw_mode_restores_full_envelope_dump() {
+        let content = json!({ "results": [ { "name": "x", "signals": { "bm25_score": 4.2 } } ] });
+        let results = content.get("results").cloned();
+        let text = render_content_text(
+            TextMode::Raw,
+            true,
+            "search",
+            true,
+            &content,
+            &results,
+            &None,
+        )
+        .unwrap();
+        // VEX_MCP_TEXT=raw escape hatch: full dump, raw scores present.
+        assert!(
+            text.contains("bm25_score"),
+            "raw mode keeps full envelope; got: {text}"
         );
     }
 }
