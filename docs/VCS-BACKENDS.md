@@ -243,17 +243,16 @@ deliberate narrowings vs. the original bullet:**
   `.git` gives them today). The probe lands together with `ArcVcs`. **No
   physical cache namespacing** (§5).
 
-**Phase 3 — `ArcVcs` (diff-scope). SHIPPED PROVISIONAL (2026-07-10), research-
-grounded, UNVERIFIED against a real `arc`.** `arc` was not available on the dev
-machine, so instead of a field capture (R2) the command shapes were grounded in
-public research (third-party arc clients EVGVir/yandex-arc, anton-rudeshko/zsh-arc;
-Yandex Habr writeup). `src/vcs/arc.rs` (`ArcVcs`), reachable via explicit
+**Phase 3 — `ArcVcs` (diff-scope). FIELD-VERIFIED (2026-07-10) against a real
+`arc` install** (an `arcadia` working copy; capture log in §7a). Shipped
+provisional 2026-07-10 (research-grounded), then verified the same day when a
+real `arc` capture arrived — the `PROVISIONAL` banner and the runtime
+`tracing::warn!` are dropped. `src/vcs/arc.rs` (`ArcVcs`), reachable via explicit
 `--vcs arc` / `VEX_VCS=arc` / `.vex.toml vcs="arc"` / `.arc` marker. The `arc root`
-FUSE **auto-probe stays deferred** (unverifiable + adds VFS latency to every
-`arc`-on-PATH run); explicit selection is the entry point. Testable without
-`arc`: the `arc status --json` parser (unit) + graceful-failure-when-arc-absent
-(integration). **Command shapes MUST be field-verified before trusting** — see
-the checklist in §7a.
+FUSE **auto-probe stays deferred** (adds VFS latency to every `arc`-on-PATH run);
+explicit selection is the entry point. Testable without `arc`: the `arc status
+--json` parser + `reject_flaglike_rev` (unit) + graceful-failure-when-arc-absent
+(integration). Verified command shapes — see §7a.
 
 **Phase 4 — `SvnVcs` (diff-scope).** `merge_base=false` (SinceBranched
 declined, §5); `svn status` / `svn diff --summarize -r`; integer-revision
@@ -278,10 +277,11 @@ must not call `dirty_count` when `deep==false`). Each is its own reviewed change
   byte-identical contract + existing tests (`non_git_repo_errors_actionably`,
   `since_finds_files_modified_in_head`, `path_with_space_is_handled`) and a
   literal, line-reviewed move.
-- **R2 (high, on critical path for Phase 3):** the `arc` CLI surface is
-  unverified on this machine. Phase 3 must open with a field-capture of real
-  `arc status / diff --summarize / rev-parse` output. If `arc` diverges from
-  git shapes, `ArcVcs` needs its own parsers, not git reuse.
+- **R2 (RESOLVED 2026-07-10):** the `arc` CLI surface was unverified when
+  Phase 3 shipped; a real-`arc` field capture (§7a) confirmed `arc root`, `arc
+  diff <a> <b> --name-only --no-color`, `arc diff -B`, and `arc status --json`,
+  and refuted the `--` terminator assumption (dropped). `ArcVcs` uses its own
+  arc invocations, not git reuse.
 - **R3 (med, growth-phase):** svn `SinceBranched` is hard-`Unsupported` (§5);
   the *rename-follow* gap is deferred to Phase 5+ and resolves to
   degraded-with-loud-signal (`partial:true` + `_meta`), never silent (M4).
@@ -294,31 +294,41 @@ must not call `dirty_count` when `deep==false`). Each is its own reviewed change
 
 ---
 
-## 7a. Arc CLI field-verify checklist (Phase 3)
+## 7a. Arc CLI field-verify log (Phase 3 — VERIFIED 2026-07-10)
 
-`ArcVcs` (`src/vcs/arc.rs`) ships against these research-grounded shapes. Run
-each against a real `arc` install (`arc <cmd> --help` + a live invocation) and
-correct `arc.rs` where reality diverges. Confidence from the public research:
+Verified against a real `arc` install (an `arcadia` working copy) via
+`arc <cmd> --help` + live invocations. Result per op:
 
-| Op | Shape used | Confidence | To verify |
-|---|---|---|---|
-| detect / `ensure_repo` | `arc root` (exit-code + path) | high | that non-zero exit outside a working copy; no `.arc` on-disk marker on FUSE mounts |
-| changed since rev | `arc diff <from> <to> --name-only --no-color` | high (cmd), med (`<from> <to>` two-arg) | `..` range vs two-arg; `--` terminator; **`-z` support** (we newline-split — no `-z` attested) |
-| working tree | `arc status --json` → `status.{changed,staged,untracked}[].path` | high | exact JSON shape; that untracked is included (no separate `ls-files --others`) |
-| since-branched | `arc merge-base --leftmost <ref> HEAD`, ladder `arcadia/trunk` → `trunk` | high (merge-base, trunk name) | arg order; whether `--leftmost` is required; ladder completeness |
-| revision id | *(not used in diff-scope)* | — | `arc rev-parse` likely absent; use `arc info --json` if a rev id is ever needed (Phase 5) |
+| Op | Shape used | Verdict |
+|---|---|---|
+| detect / `ensure_repo` | `arc root` (exit-code + path) | ✅ `arc root` → `/Users/…/arcadia` (prints working-copy root) |
+| changed since rev | `arc diff <from> <to> --name-only --no-color` | ✅ two-arg rev form + `--name-only` + `--no-color` all in `arc diff --help`; `arc diff trunk HEAD --name-only` → newline-separated **repo-root-relative** paths |
+| since-branched | `arc diff -B --name-only --no-color` | ✅ **pivoted to `-B`** — help: "`-B` show changes between merge-base(FROM_ID, TO_ID) and TO_ID. Default FROM_ID=trunk, TO_ID=HEAD". One command, replaces the merge-base ladder |
+| working tree | `arc status --json` → `status.{changed,staged,untracked}[].path` | ✅ exact shape confirmed; untracked included in `status` (no `ls-files --others`); each entry `{status,type,path}` |
+| merge-base (capability) | `arc merge-base --leftmost trunk HEAD` | ✅ returns a SHA — capability truthful, but `SinceBranched` uses `-B` instead |
+| revision id | *(not used in diff-scope)* | — deferred to Phase 5 |
 
-**Known-unverifiable (Arc is Yandex-internal):** `-z`/`--` on diff, `--others`
-on `ls-files`, `arc rev-parse`, git-SHA-1 compatibility of Arc commit hashes.
-Prefer `--json` (Arc's stable machine contract) over porcelain where a choice
-exists. Once verified, drop the `PROVISIONAL` banner in `arc.rs` and flip on the
-`arc root` auto-probe in detection (§4).
+**Corrections applied from the capture:**
+- **`--` terminator dropped.** `arc diff --help` documents no end-of-options
+  `--`; free args are "Commit, branch or path". The git backend's `--`
+  flag-injection guard is replaced by `reject_flaglike_rev` (refuse a rev
+  starting with `-`).
+- **`-z` absent** (not in `arc diff --help`) → newline-split confirmed correct.
+- **`SinceBranched` → `arc diff -B`** — drops the unverified `arcadia/trunk`
+  ladder candidate and the two-step `merge-base` + `diff`.
+
+**Still unverified (low-priority residual):** whether `arc diff --name-only`
+quotes paths containing spaces/newlines (git octal-escapes without `-z`; Arc has
+no `-z`) — see the residual-gaps note below. The `arc root` auto-probe in
+detection (§4) stays deferred by design (VFS latency), independent of this
+verification.
 
 ### Graceful degradation (so a wrong assumption fails safe, not silent)
 
-Because the shapes above are unverified, `ArcVcs` is built to **fail loud, never
-silently mislead** — the H2 principle extended to the "successful call, wrong
-output shape" case that plain error-handling misses:
+Retained after verification: `ArcVcs` is built to **fail loud, never silently
+mislead** — the H2 principle extended to the "successful call, wrong output
+shape" case that plain error-handling misses (guards a future `arc` whose JSON
+shape drifts):
 
 - **Unrecognized `arc status --json` → hard error, not empty.** A real `arc`
   emitting a different JSON shape would otherwise parse to an empty change set
@@ -332,15 +342,15 @@ output shape" case that plain error-handling misses:
   or to "ignore `--since`": the user asked for arc, and a different backend
   would give a *different* changed-set. Failing loudly is correct for a
   scoping/safety feature.
-- **Runtime provisionality signal.** `ensure_repo` emits a `tracing::warn!` on
-  every arc-backed invocation so a prod user who selected `--vcs arc` is told at
-  runtime (stderr) the backend is unverified — not just in the docs.
+- **Leading-`-` revision rejected.** `reject_flaglike_rev` refuses a `--since`
+  value beginning with `-` (arc has no `--` terminator), so it can never be
+  smuggled in as an arc flag.
 
-**Residual gaps to close at field-verify (still silent-ish today):**
-- `arc diff --name-only` output that isn't bare paths (e.g. status columns, or
-  colour despite `--no-color`) would be parsed as bogus paths → fewer/zero
-  matches. Mitigation deferred to field-verify (confirm the `--name-only`
-  format; add a shape sanity-check if needed).
+**Residual gaps (post-verification):**
+- **Path quoting untested.** `arc diff --name-only` emitted bare, root-relative
+  paths in the capture, but no path contained a space or newline. Git
+  octal-escapes such paths when `-z` is absent; whether Arc does the same (it
+  has no `-z`) is unconfirmed. A path with special chars could parse wrong.
 - **No subprocess timeout.** Arc's FUSE/VFS mount can be slow or hang; an `arc`
   invocation currently has no timeout and would hang the `vex` call. Add a
   bounded timeout when field-verifying (std has none built-in — needs a helper

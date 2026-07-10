@@ -1,28 +1,31 @@
-//! Yandex **Arc** backend (diff-scoping) — **PROVISIONAL / UNVERIFIED**.
+//! Yandex **Arc** backend (diff-scoping).
 //!
-//! Arc is Yandex-internal and the `arc` CLI could not be run on the dev
-//! machine, so every command shape below is grounded in **public research**
-//! (third-party arc clients: EVGVir/yandex-arc, anton-rudeshko/zsh-arc; the
-//! Yandex Habr writeup) rather than a field capture. Each invocation is marked
-//! `FIELD-VERIFY` with its confidence — these MUST be confirmed against a real
-//! `arc` install before this backend is trusted in anger.
+//! Field-verified 2026-07-10 against a real `arc` install (an `arcadia`
+//! working copy): the command shapes below are confirmed from live captures,
+//! not research-grounded. `arc root`, `arc diff <from> <to> --name-only
+//! --no-color`, `arc diff -B --name-only`, and `arc status --json` were all
+//! run against real Arc — see the capture log in `docs/VCS-BACKENDS.md §7a`.
 //!
 //! **Reachability (Phase 3):** `ArcVcs` is selected only via an explicit
 //! override (`--vcs arc` / `VEX_VCS=arc` / `.vex.toml vcs = "arc"`) or a `.arc`
-//! marker. The `arc root` FUSE auto-probe in detection is **deferred** (it is
-//! unverifiable and would add VFS latency to every `arc`-on-PATH invocation) —
-//! see `docs/VCS-BACKENDS.md`.
+//! marker. The `arc root` FUSE auto-probe in detection is **deferred** (it
+//! would add VFS latency to every `arc`-on-PATH invocation) — see
+//! `docs/VCS-BACKENDS.md`.
 //!
-//! Key Arc facts driving the shapes below:
-//! - Detection primitive is `arc root` (exit-code + path), NOT
-//!   `arc rev-parse --is-inside-work-tree` (the latter is not attested).
-//! - Arc's trunk is literally `trunk`; the remote is `arcadia` → merge-base
-//!   ladder is `arcadia/trunk` → `trunk` (NOT git's main/master).
-//! - `--json` is Arc's stable machine contract; `arc status --json` already
-//!   includes untracked files (no separate `ls-files --others`).
-//! - `-z` null-terminated output is NOT attested → we newline-split (paths
-//!   with embedded newlines are unsupported until `-z`/`--json` diff is
-//!   field-verified).
+//! Key Arc facts (all field-verified):
+//! - Detection is `arc root` — prints the working-copy root, exits non-zero
+//!   outside one.
+//! - `arc diff -B --name-only` diffs `merge-base(trunk, HEAD)..HEAD` in a
+//!   single command (default FROM=trunk, TO=HEAD) — the arc-native "since
+//!   branched" scope, so no separate `merge-base` + `diff` two-step is needed.
+//! - `arc status --json` → `{ "status": { changed/staged/untracked: [{path}] } }`,
+//!   untracked already included (no separate `ls-files --others`).
+//! - `--name-only` paths are repo-root-relative (like git) and
+//!   newline-separated. Arc has no `-z` flag, so we newline-split; paths with
+//!   embedded newlines are unsupported.
+//! - Arc documents no `--` end-of-options terminator (unlike git), so a
+//!   `--since` revision beginning with `-` is rejected up front rather than
+//!   guarded with a trailing `--`.
 
 use std::path::Path;
 
@@ -41,23 +44,16 @@ impl Vcs for ArcVcs {
     }
 
     fn capabilities(&self) -> VcsCapabilities {
-        // Arc has `merge-base` (verified: `arc merge-base --leftmost trunk …`).
+        // Arc supports merge-base (`arc merge-base --leftmost trunk HEAD`,
+        // field-verified) — though `SinceBranched` uses the simpler `arc diff
+        // -B`, which computes the same base in one command.
         VcsCapabilities { merge_base: true }
     }
 
     fn ensure_repo(&self, root: &Path) -> VcsResult<()> {
-        // Runtime provisionality signal: this backend is UNVERIFIED against a
-        // real `arc`. `ensure_repo` is the entry point for every diff-scope, so
-        // a user who selected `--vcs arc` is told at runtime (stderr via
-        // tracing) that results may be unreliable — not only in the docs. Cheap
-        // and honest; the diff-scope path already fails loud on any arc error.
-        tracing::warn!(
-            "vex: the `arc` VCS backend is PROVISIONAL and unverified against a \
-             real arc CLI (docs/VCS-BACKENDS.md §7a) — verify diff-scoped results"
-        );
-        // FIELD-VERIFY (high): `arc root` prints the working-copy root and exits
-        // non-zero outside one — the attested detection idiom (zsh-arc
-        // `arc root || echo .`). No `arc rev-parse --is-inside-work-tree`.
+        // `arc root` prints the working-copy root and exits non-zero outside
+        // one (field-verified) — the detection idiom. The diff-scope path
+        // fails loud on any arc error (H2).
         match arc(root, &["root"]) {
             Ok(_) => Ok(()),
             Err(e) => Err(VcsError::Failed(e.context(format!(
@@ -76,10 +72,7 @@ impl Vcs for ArcVcs {
 fn arc_changed_paths(root: &Path, scope: DiffScope) -> Result<Vec<String>> {
     match scope {
         DiffScope::Since(rev) => arc_diff_name_only(root, rev, "HEAD"),
-        DiffScope::SinceBranched => {
-            let base = resolve_arc_merge_base(root)?;
-            arc_diff_name_only(root, &base, "HEAD")
-        }
+        DiffScope::SinceBranched => arc_diff_base(root),
         DiffScope::ChangedOnly => arc_status_changed(root),
     }
 }
@@ -106,20 +99,46 @@ fn arc(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-/// FIELD-VERIFY (diff --name-only high; two-arg form high; `-z`/`--` unknown):
-/// `arc diff <from> <to> --name-only --no-color --` → newline-separated paths.
-/// The two positional-rev form (not a `..` range) is what real arc clients use;
-/// `--no-color` strips ANSI; no `-z` is attested so we split on newlines.
+/// `arc diff <from> <to> --name-only --no-color` → newline-separated,
+/// repo-root-relative paths (field-verified 2026-07-10). The two positional-rev
+/// form (not a `..` range) is what real arc uses; `--no-color` forces color
+/// mode `never`. Arc has no `-z` flag, so we newline-split.
 ///
-/// The trailing `--` mirrors `GitVcs::git_diff_name_only`'s flag-injection
-/// guard: a `--since` value beginning with `-` (e.g. from a programmatic/MCP
-/// caller) must not be parsed as an `arc` flag. FIELD-VERIFY that `arc diff`
-/// accepts a trailing `--` and that it fully prevents a leading-`-` revision
-/// from being read as an option; if arc rejects `--`, drop it and instead
-/// validate/reject `-`-leading revs up front.
+/// Arc documents no `--` end-of-options terminator (unlike git), so the git
+/// backend's `--` flag-injection guard is unavailable. Instead a revision
+/// beginning with `-` is rejected up front — otherwise `arc` would parse it as
+/// an option. `to` is always the literal `HEAD` here; only a caller-supplied
+/// `--since` value can carry a leading `-`.
 fn arc_diff_name_only(root: &Path, from: &str, to: &str) -> Result<Vec<String>> {
-    let stdout = arc(root, &["diff", from, to, "--name-only", "--no-color", "--"])?;
+    reject_flaglike_rev(from)?;
+    reject_flaglike_rev(to)?;
+    let stdout = arc(root, &["diff", from, to, "--name-only", "--no-color"])?;
     Ok(split_lines(&stdout))
+}
+
+/// `SinceBranched` via `arc diff -B --name-only --no-color`: `-B` diffs
+/// `merge-base(FROM, TO)..TO` with FROM defaulting to `trunk` and TO to `HEAD`
+/// (field-verified 2026-07-10) — the arc-native "changes since this branch left
+/// trunk" scope, in a single command with no assumption about which trunk ref
+/// name resolves (vs a manual `merge-base` + `diff` two-step).
+fn arc_diff_base(root: &Path) -> Result<Vec<String>> {
+    let stdout = arc(root, &["diff", "-B", "--name-only", "--no-color"])?;
+    Ok(split_lines(&stdout))
+}
+
+/// Reject a revision that `arc` would parse as an option. Arc has no `--`
+/// end-of-options terminator, so a leading-`-` rev (e.g. from a
+/// programmatic/MCP `--since` caller) must be refused rather than smuggled
+/// past a separator the way the git backend does.
+fn reject_flaglike_rev(rev: &str) -> Result<()> {
+    if rev.starts_with('-') {
+        bail!(
+            "invalid arc revision {rev:?}: begins with `-` and would be parsed \
+             as a flag (arc has no `--` end-of-options terminator). Use a \
+             revision that does not start with `-`."
+        );
+    }
+    Ok(())
 }
 
 /// FIELD-VERIFY (status --json high; untracked-inclusion high): `arc status
@@ -137,10 +156,10 @@ fn arc_status_changed(root: &Path) -> Result<Vec<String>> {
 /// without an `arc` binary. Collects `path` from the `changed`, `staged`, and
 /// `untracked` arrays under the top-level `status` object.
 ///
-/// **Graceful-degradation guard (fail loud, never silently empty):** because
-/// `ArcVcs` is provisional, a real `arc` whose JSON shape differs from our
-/// assumption would otherwise parse cleanly and yield an **empty** change set —
-/// silently reporting "nothing changed" and dropping every result from a
+/// **Graceful-degradation guard (fail loud, never silently empty):** the shape
+/// is field-verified (§7a), but a future `arc` whose JSON differs would
+/// otherwise parse cleanly and yield an **empty** change set — silently
+/// reporting "nothing changed" and dropping every result from a
 /// `--changed-only` search (the delete-safety footgun H2 exists to prevent,
 /// but which H2's error→empty rule does NOT cover for a *successful* call with
 /// an unexpected shape). So we require the shape to be *recognizable* — a
@@ -156,10 +175,9 @@ fn parse_arc_status_json(text: &str) -> Result<Vec<String>> {
     if !recognized {
         bail!(
             "unrecognized `arc status --json` shape (no `status` object nor \
-             changed/staged/untracked groups) — the PROVISIONAL arc backend's \
-             assumed output shape does not match this `arc`. Refusing to report \
-             an empty change set from an unrecognized shape; field-verify per \
-             docs/VCS-BACKENDS.md §7a."
+             changed/staged/untracked groups) — this `arc`'s output does not \
+             match the field-verified shape. Refusing to report an empty change \
+             set from an unrecognized shape; see docs/VCS-BACKENDS.md §7a."
         );
     }
     let mut out = Vec::new();
@@ -173,46 +191,6 @@ fn parse_arc_status_json(text: &str) -> Result<Vec<String>> {
         }
     }
     Ok(out)
-}
-
-/// FIELD-VERIFY (merge-base high; trunk=`trunk`/remote=`arcadia` high):
-/// resolve the merge-base for `SinceBranched` against Arc's trunk. The ladder
-/// is `arcadia/trunk` (remote) → `trunk` (local) — NOT git's main/master,
-/// which do not exist in Arcadia.
-fn resolve_arc_merge_base(root: &Path) -> Result<String> {
-    const CANDIDATES: &[&str] = &["arcadia/trunk", "trunk"];
-    let mut tried = Vec::with_capacity(CANDIDATES.len());
-    for cand in CANDIDATES {
-        if let Some(base) = try_arc_merge_base(root, cand)? {
-            return Ok(base);
-        }
-        tried.push(*cand);
-    }
-    bail!(
-        "--since-branched: no merge-base found against any of {}. \
-         Use `vex search ... --since <rev>` with an explicit arc revision instead.",
-        tried.join(", ")
-    );
-}
-
-/// FIELD-VERIFY: `arc merge-base --leftmost <ref> HEAD`. `--leftmost` is the
-/// attested variant (zsh-arc `arc merge-base --leftmost trunk …`). A missing
-/// ref / no merge-base is a normal fall-through (`Ok(None)`); only an arc
-/// spawn/other failure is `Err`.
-fn try_arc_merge_base(root: &Path, reference: &str) -> Result<Option<String>> {
-    let output = std::process::Command::new("arc")
-        .args(["merge-base", "--leftmost", reference, "HEAD"])
-        .current_dir(root)
-        .output()
-        .with_context(|| "failed to invoke `arc merge-base` — is the arc CLI on PATH?")?;
-    if output.status.success() {
-        let base = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return Ok((!base.is_empty()).then_some(base));
-    }
-    // Unknown ref / no merge-base → try the next candidate. (We can't cheaply
-    // distinguish "ref absent" from other non-zero exits without field data;
-    // treating all non-zero here as fall-through mirrors the git backend.)
-    Ok(None)
 }
 
 /// Split newline-terminated arc output into a clean `Vec<String>`. Tolerant of
@@ -278,6 +256,17 @@ mod tests {
             parse_arc_status_json(r#"{ "changed": [{"path": "flat.rs"}] }"#).unwrap(),
             vec!["flat.rs"]
         );
+    }
+
+    #[test]
+    fn reject_flaglike_rev_blocks_leading_dash() {
+        // A leading-`-` rev would be parsed as an arc option (no `--` guard).
+        let err = reject_flaglike_rev("-rf").expect_err("leading-dash rev must be rejected");
+        assert!(format!("{err:#}").contains("begins with `-`"));
+        // Ordinary revisions pass untouched.
+        assert!(reject_flaglike_rev("HEAD").is_ok());
+        assert!(reject_flaglike_rev("trunk~3").is_ok());
+        assert!(reject_flaglike_rev("a7f4ba4f5a422cc03c45343d5db3c6d032f3baa4").is_ok());
     }
 
     #[test]
