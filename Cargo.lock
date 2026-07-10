@@ -4351,6 +4351,7 @@ dependencies = [
  "ort",
  "predicates",
  "proptest",
+ "quick-xml",
  "rayon",
  "regex",
  "self_update",

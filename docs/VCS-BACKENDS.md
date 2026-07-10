@@ -1,12 +1,13 @@
 # VCS Backends — Design (git · Arc · svn)
 
-Status: **Phase 1 SHIPPED** (2026-07-10, commit `bcf75df`); **DESIGN for
-Phases 2-5** (§6). The plan abstracts vex's hard git dependency behind a `Vcs`
-trait so it also runs against **Yandex Arc** and **Subversion**, with git as the
-default and byte-identical current behavior preserved. Implementation is phased
-(§6) and each phase is a separate reviewed change. Phase 1 (extract `Vcs` trait
-+ `GitVcs` for diff-scoping) has landed; blob-cache/history/staleness remain
-git-only until later phases.
+Status: **Phases 1-4 SHIPPED** (2026-07-10) — `Vcs` trait + `GitVcs` extraction
+(Phase 1), detection/override/`none` floor (Phase 2), field-verified `ArcVcs`
+(Phase 3) and `SvnVcs` (Phase 4). **Phase 5+ is DESIGN/growth** (§6): widening
+the trait to blob-cache / history / staleness. The plan abstracts vex's hard git
+dependency behind a `Vcs` trait so it also runs against **Yandex Arc** and
+**Subversion**, with git as the default and byte-identical current behavior
+preserved. Each phase is a separate reviewed change; blob-cache/history/staleness
+remain git-only until Phase 5+.
 
 Grounding: the git-coupling survey (§1) enumerates every git shell-out; the
 trait (§3) is the minimal surface those sites actually need.
@@ -196,8 +197,9 @@ silently trigger a mystery full rebuild.
   namespace is needed.** Only the manifest `vcs_kind` field (a staleness
   gate, not a file-layout axis) is added.
 - **`--since-branched` on svn** — the flag stays accepted but returns the
-  `Unsupported` error with a backend-aware message ("`--since-branched`
-  requires merge-base; not available on svn — use `--since -r<N>`").
+  `Unsupported` error with a backend-aware message. (Design sketch; the
+  as-shipped wording lives in `SvnVcs::SINCE_BRANCHED_MSG` and redirects to
+  `--since <rev>`, e.g. `--since 42`.)
 - **`_meta.vex.dev/vcs` — emit the declined capabilities too (L3).** Not just
   `git|arc|svn|none` but the capability bits, e.g.
   `{"kind":"svn","merge_base":false}`, so a declined capability (H2/M4) is
@@ -254,9 +256,21 @@ explicit selection is the entry point. Testable without `arc`: the `arc status
 --json` parser + `reject_flaglike_rev` (unit) + graceful-failure-when-arc-absent
 (integration). Verified command shapes — see §7a.
 
-**Phase 4 — `SvnVcs` (diff-scope).** `merge_base=false` (SinceBranched
-declined, §5); `svn status` / `svn diff --summarize -r`; integer-revision
-`head_id`; non-SHA staleness falls to mtime (H1). Document in `LIMITATIONS.md`.
+**Phase 4 — `SvnVcs` (diff-scope). FIELD-VERIFIED (2026-07-10) against a real
+`svn` 1.14 working copy.** Unlike Arc, `svn` is open-source and installable
+(`brew install subversion`), so it was verified from the start (no provisional
+stage): a throwaway `svnadmin` repo captured every command shape, and a
+skip-if-absent end-to-end test (`svn::tests::end_to_end_against_real_svn`)
+exercises the live trait impl. `src/vcs/svn.rs` (`SvnVcs`). Verified shapes:
+`svn info` (detect — `E155007` outside a working copy); `svn diff --summarize
+--xml -r <rev>:HEAD` (`Since`); `svn status --xml` (`ChangedOnly` — local mods +
+unversioned in one offline call). `merge_base=false` → `SinceBranched` returns
+`Unsupported` with an actionable `--since` redirect (§5). **XML, not porcelain**
+— svn's stable machine contract (like Arc's `--json`), parsed via `quick-xml`
+(already in the tree transitively); porcelain's fixed-column layout breaks on
+paths with spaces (field-verified: `src/with space.rs`). Blob-cache / history /
+staleness stay git-only (svn has no blob store; non-SHA staleness → mtime deep
+check, H1). Documented in `LIMITATIONS.md`.
 
 **Phase 5+ (growth, additive) — widen the trait** to the other subsystems once
 Arc CLI is field-verified: `tracked_content_ids` (blob cache; git/arc only,
@@ -282,8 +296,9 @@ must not call `dirty_count` when `deep==false`). Each is its own reviewed change
   diff <a> <b> --name-only --no-color`, `arc diff -B`, and `arc status --json`,
   and refuted the `--` terminator assumption (dropped). `ArcVcs` uses its own
   arc invocations, not git reuse.
-- **R3 (med, growth-phase):** svn `SinceBranched` is hard-`Unsupported` (§5);
-  the *rename-follow* gap is deferred to Phase 5+ and resolves to
+- **R3 (Phase-4 part SHIPPED; rename-follow deferred):** svn `SinceBranched` is
+  hard-`Unsupported` (§5) — shipped and verified in Phase 4. The *rename-follow*
+  gap stays deferred to Phase 5+ (history, not diff-scope) and resolves to
   degraded-with-loud-signal (`partial:true` + `_meta`), never silent (M4).
 - **R4 (resolved — not a format bump):** `manifest.json` has no version marker;
   `vcs_kind` is a plain additive `Option` field per the existing convention,

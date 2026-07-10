@@ -29,14 +29,14 @@ impl NoVcs {
     /// from Phase 1 for the common no-repo case.
     fn reason(&self, root: &Path) -> String {
         match self.detected {
-            // In practice only `Svn` reaches this arm since Phase 3:
-            // `detect::backend_for` routes `VcsKind::Arc` to `ArcVcs`, not
-            // `NoVcs`. `Arc` is kept here defensively — if a future path
-            // reintroduces `NoVcs::new(VcsKind::Arc)`, this wording still holds.
+            // Fully defensive since Phase 4: `detect::backend_for` routes both
+            // `Arc`→`ArcVcs` and `Svn`→`SvnVcs`, so neither reaches `NoVcs` in
+            // practice. Kept so a future path that reintroduces
+            // `NoVcs::new(Arc|Svn)` still produces a coherent message.
             VcsKind::Arc | VcsKind::Svn => format!(
-                "the {} backend is not yet available (planned — see docs/VCS-BACKENDS.md); \
-                 diff-scoping requires git. Re-run without --since/--since-branched/--changed-only, \
-                 or use --vcs git if a nested git checkout applies.",
+                "the {} backend is unavailable here; diff-scoping requires git. \
+                 Re-run without --since/--since-branched/--changed-only, or use \
+                 --vcs git if a nested git checkout applies.",
                 self.detected.as_str()
             ),
             _ => format!(

@@ -115,19 +115,21 @@ fn flag_vcs_none_forces_floor_in_git_repo() {
         .stderr(predicates::str::contains("not a git repository"));
 }
 
-/// `--vcs svn` (no backend yet) declines with the honest "not yet available"
-/// message rather than the generic no-repo one.
+/// `--vcs svn` routes to `SvnVcs`, which shells out to `svn`. In a directory
+/// that isn't an svn working copy (here a git repo), diff-scope resolution must
+/// fail *gracefully* with an svn-specific error — NOT fall back to git, NOT
+/// return an empty set, NOT panic. Holds whether or not `svn` is installed: if
+/// present, `svn info` errors with `E155007`; if absent, the spawn fails — both
+/// messages name `svn`.
 #[test]
-fn flag_vcs_svn_reports_not_yet_available() {
+fn flag_vcs_svn_routes_to_svnvcs_and_fails_gracefully() {
     let tmp = TempDir::new().unwrap();
     seed_repo(tmp.path(), "");
     vex_in(tmp.path())
         .args(["search", "alpha", "--changed-only", "--vcs", "svn"])
         .assert()
         .failure()
-        .stderr(predicates::str::contains(
-            "svn backend is not yet available",
-        ));
+        .stderr(predicates::str::contains("svn"));
 }
 
 /// `--vcs arc` routes to the (provisional) `ArcVcs`, which shells out to `arc`.

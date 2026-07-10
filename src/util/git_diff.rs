@@ -389,16 +389,18 @@ mod tests {
     }
 
     #[test]
-    fn resolve_with_svn_backend_reports_not_yet_available() {
-        // A detected-but-unimplemented backend declines honestly, distinct
-        // from the plain no-repo case.
+    fn resolve_with_novcs_svn_arm_reports_backend_unavailable() {
+        // Defensive: since Phase 4, `Svn` routes to `SvnVcs`, so this `NoVcs`
+        // arm is unreachable in practice — but if a future path constructs
+        // `NoVcs::new(Svn)` it must still decline coherently, distinct from the
+        // plain no-repo message.
         let tmp = TempDir::new().unwrap();
         let svn = crate::vcs::NoVcs::new(crate::vcs::VcsKind::Svn);
         let err = ChangedPaths::resolve_with(&svn, tmp.path(), DiffScope::ChangedOnly).unwrap_err();
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("svn backend is not yet available"),
-            "svn floor must say the backend is planned, got: {msg}"
+            msg.contains("backend is unavailable here"),
+            "NoVcs Svn arm must give the defensive message, got: {msg}"
         );
     }
 }

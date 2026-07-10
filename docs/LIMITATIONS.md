@@ -1037,6 +1037,36 @@ Each member keeps its own per-repo index; results are grouped by repo. See
 
 ---
 
+## 8. Diff-scoping across VCS backends (`--since` / `--changed-only` / `--since-branched`)
+
+The diff-scope flags run against a `Vcs` backend resolved from the checkout
+(override with `--vcs <git|arc|svn|none>`). git is the default and most
+capable; **Arc** (Yandex) and **svn** (Subversion) are field-verified but
+narrower. Design: `docs/VCS-BACKENDS.md`.
+
+- **svn — `--since-branched` is unsupported.** svn branches are directory
+  copies with no merge-base, so `--since-branched` returns a clear error
+  (never a wrong answer). Use `--since <rev>` with an svn revision instead
+  (e.g. `--since 42` → changed paths in `r42:HEAD`).
+- **svn — `--since` contacts the server.** `svn diff --summarize -r <rev>:HEAD`
+  compares committed revisions, so on a *remote* repo it makes a network call
+  (inherent to svn's centralized model). `--changed-only` (`svn status`) is
+  offline.
+- **svn — path quoting.** Parsing uses `--xml` (svn's stable machine format),
+  so paths with spaces are handled. Paths are repo-relative, as with git.
+- **Arc — reachable only via explicit selection.** `ArcVcs` is used only under
+  `--vcs arc` / `VEX_VCS=arc` / `.vex.toml vcs="arc"` or a `.arc` marker; the
+  `arc root` FUSE auto-probe is deferred (VFS latency). `--since-branched` maps
+  to `arc diff -B` (merge-base vs `trunk`).
+- **Non-git backends get no blob-cache speedup.** The Phase-14.7 content cache
+  and `vex history` remain git-only; svn/arc checkouts fall back to the
+  existing xxh3/mtime path (correct, just not accelerated).
+- **`--changed-only` semantics differ slightly.** git/arc/svn each report their
+  native "working-tree dirty + untracked" set; prop-only changes (svn) and
+  ignored files are excluded to match git's content-only `--name-only`.
+
+---
+
 ## Coverage matrix (one-line summary)
 
 | Query | T1 strict | T1 default | T2 (line-scan) | Module-level | Decorator | String-resolved |

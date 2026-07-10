@@ -138,10 +138,9 @@ pub struct Cli {
     /// `auto` (default) detects by marker (`.git`/`.svn`/`.arc`).
     ///
     /// Affects ONLY `--since` / `--since-branched` / `--changed-only`; no effect
-    /// on other commands. `git` is fully verified; `arc` is a PROVISIONAL,
-    /// research-grounded backend (unverified against a real `arc` — field-verify
-    /// before trusting; see docs/VCS-BACKENDS.md §7a); `svn`/`none` decline
-    /// diff-scoping cleanly.
+    /// on other commands. `git`, `arc` (Yandex Arc), and `svn` (Subversion) are
+    /// all field-verified backends; svn declines `--since-branched` (no
+    /// merge-base). `none` disables diff-scoping. See docs/VCS-BACKENDS.md.
     #[arg(long, global = true, value_enum)]
     pub vcs: Option<VcsArg>,
 }

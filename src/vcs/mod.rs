@@ -1,12 +1,12 @@
 //! Version-control backend abstraction.
 //!
 //! Covers **diff-scoping only** — `ensure_repo` + `changed_paths`
-//! (`docs/VCS-BACKENDS.md`). git is the default and fully verified backend;
-//! [`ArcVcs`] (Yandex Arc) is a **provisional, research-grounded** backend
-//! reachable via explicit `--vcs arc` (Phase 3, unverified against a real
-//! `arc` — see `arc.rs`); svn is still a `NoVcs` floor (Phase 4). Blob-cache,
-//! history, and staleness are NOT routed through this trait yet — they stay
-//! git-only and hit their existing fallbacks on non-git checkouts.
+//! (`docs/VCS-BACKENDS.md`). git is the default backend; [`ArcVcs`] (Yandex
+//! Arc, Phase 3) and [`SvnVcs`] (Subversion, Phase 4) are both field-verified
+//! against real installs and reachable via `--vcs arc` / `--vcs svn` or a
+//! `.arc` / `.svn` marker. Blob-cache, history, and staleness are NOT routed
+//! through this trait yet — they stay git-only and hit their existing
+//! fallbacks on non-git checkouts.
 
 use std::path::Path;
 
@@ -14,11 +14,13 @@ mod arc;
 mod detect;
 mod git;
 mod none;
+mod svn;
 
 pub use arc::ArcVcs;
 pub use detect::{install_override, resolve};
 pub use git::GitVcs;
 pub use none::NoVcs;
+pub use svn::SvnVcs;
 
 /// Which VCS backend the resolver picked for a request. Set by `vcs::detect`
 /// from the override chain / marker walk; [`NoVcs`] reports the *detected*
@@ -47,10 +49,11 @@ impl VcsKind {
 /// of guessing. Grows additively as later phases add operations
 /// (`content_addressed`, `rename_follow`, `sha_revisions`).
 //
-// `merge_base` is not consulted yet — git always supports `SinceBranched`, and
-// the only backend that declines it (svn, Phase 4) currently routes through
-// `NoVcs` which rejects every scope. The field exists so the svn backend can
-// gate `SinceBranched` precisely instead of a blanket decline.
+// `merge_base` is not consulted by the caller yet: git/arc always support
+// `SinceBranched`, and svn declines it directly inside `SvnVcs::changed_paths`
+// (returning `Unsupported` for that one scope) rather than via a caller-side
+// capability check. The bit is retained as the truthful, machine-observable
+// advertisement of the gap (`_meta.vex.dev/vcs`, per design §5 L3).
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct VcsCapabilities {

@@ -32,25 +32,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - New global `--vcs <auto|git|arc|svn|none>` flag, `$VEX_VCS` env var, and
   `.vex.toml` `vcs = "..."` key select the VCS backend for diff-scoping
   (`--since` / `--since-branched` / `--changed-only`). Precedence: flag > env >
-  config > marker auto-detect. `git` is fully functional; `arc` gained a
-  provisional backend in Phase 3 (see the entry above); `svn` is detected/forced
-  but declines cleanly ("backend not yet available") until its backend lands;
+  config > marker auto-detect. `git` is fully functional; `arc` (Phase 3) and
+  `svn` (Phase 4) gained field-verified backends (see the entries above);
   `none` is an explicit floor that disables diff-scoping. Affects diff-scoping
   only — no effect on other commands. See docs/VCS-BACKENDS.md.
 
-### Added — provisional Yandex Arc backend for diff-scoping (VCS-BACKENDS Phase 3)
+### Added — Subversion (svn) backend for diff-scoping (VCS-BACKENDS Phase 4)
+
+- `--vcs svn` (also `VEX_VCS=svn` / `.vex.toml vcs="svn"` / a `.svn` marker) now
+  routes diff-scoping through a new `SvnVcs` backend that shells out to `svn`
+  (`svn info` to detect, `svn diff --summarize --xml -r <rev>:HEAD` for
+  `--since`, `svn status --xml` for `--changed-only`). Field-verified against a
+  real `svn` 1.14 working copy. `--since-branched` is declined with a clear
+  error (svn branches are directory copies with no merge-base — use
+  `--since <rev>`), never a wrong answer. Output is parsed from svn's `--xml`
+  machine format, so paths containing spaces are handled. Degrades safely: a
+  missing `svn`, a non-zero exit, or an unrecognized XML shape all fail loud
+  rather than silently reporting "nothing changed"; never falls back to git.
+
+### Added — Yandex Arc backend for diff-scoping (VCS-BACKENDS Phase 3)
 
 - `--vcs arc` (also `VEX_VCS=arc` / `.vex.toml vcs="arc"` / a `.arc` marker) now
   routes diff-scoping through a new `ArcVcs` backend that shells out to `arc`
-  (`arc root` / `arc diff --name-only` / `arc status --json` / `arc merge-base`,
-  with Arc's `arcadia/trunk`→`trunk` ladder). **Provisional and unverified:** the
-  `arc` CLI could not be run in development, so command shapes are grounded in
-  public research and marked `FIELD-VERIFY` in the source (see docs/VCS-BACKENDS.md
-  §7a). Reachable only by explicit selection; the `arc root` auto-probe is
+  (`arc root` to detect, `arc diff <from> <to> --name-only` for `--since`,
+  `arc diff -B` for `--since-branched`, `arc status --json` for
+  `--changed-only`). Field-verified 2026-07-10 against a real `arc` (arcadia)
+  install. Reachable only by explicit selection; the `arc root` auto-probe is
   deferred. Degrades safely: a missing `arc`, a non-zero exit, or an
   unrecognized `arc status --json` shape all fail with a clear error rather than
-  silently reporting "nothing changed"; a runtime warning marks the backend
-  unverified. It never silently falls back to git or drops the diff filter.
+  silently reporting "nothing changed". It never silently falls back to git or
+  drops the diff filter.
 
 ### Internal — VCS backend groundwork (VCS-BACKENDS Phase 1)
 

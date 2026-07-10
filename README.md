@@ -332,7 +332,8 @@ semantic = true
 
 # VCS backend for diff-scoping (--since/--since-branched/--changed-only).
 # "auto" (default) detects .git/.svn/.arc; "git" | "none" | "arc" | "svn".
-# Only git is functional today; arc/svn decline until their backends land.
+# git, arc (Yandex Arc), and svn (Subversion) are all functional backends;
+# svn declines --since-branched (no merge-base). "none" disables diff-scoping.
 # Overridden by the --vcs flag and the $VEX_VCS env var. See docs/VCS-BACKENDS.md.
 # vcs = "auto"
 ```
