@@ -15,6 +15,7 @@ mod arc;
 mod detect;
 mod git;
 mod none;
+mod proc;
 mod svn;
 
 pub use arc::ArcVcs;

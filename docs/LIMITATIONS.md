@@ -1059,7 +1059,9 @@ narrower. Design: `docs/VCS-BACKENDS.md`.
 - **Arc — reachable only via explicit selection.** `ArcVcs` is used only under
   `--vcs arc` / `VEX_VCS=arc` / `.vex.toml vcs="arc"` or a `.arc` marker; the
   `arc root` FUSE auto-probe is deferred (VFS latency). `--since-branched` maps
-  to `arc diff -B` (merge-base vs `trunk`).
+  to `arc diff -B` (merge-base vs `trunk`). Like svn, every `arc` call runs
+  under the bounded `VEX_VCS_TIMEOUT_SECS` timeout (default 60s) so a stalled
+  FUSE/VFS mount can't hang `vex`.
 - **Non-git backends get no blob-cache speedup.** The Phase-14.7 content cache
   and `vex history` remain git-only; svn/arc checkouts fall back to the
   existing xxh3/mtime path (correct, just not accelerated).

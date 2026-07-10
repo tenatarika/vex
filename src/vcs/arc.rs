@@ -26,12 +26,17 @@
 //! - Arc documents no `--` end-of-options terminator (unlike git), so a
 //!   `--since` revision beginning with `-` is rejected up front rather than
 //!   guarded with a trailing `--`.
+//! - Every `arc` invocation runs under a bounded wall-clock timeout (shared
+//!   `proc::wait_capturing` / `vcs_timeout`, default 60s, override
+//!   `VEX_VCS_TIMEOUT_SECS`) so a stalled FUSE/VFS mount can't hang `vex`.
 
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
+use super::proc::{vcs_timeout, wait_capturing};
 use super::{DiffScope, Vcs, VcsCapabilities, VcsError, VcsKind, VcsResult};
 
 /// Yandex Arc VCS backend. Fieldless — every op shells out to `arc` in `root`.
@@ -86,21 +91,24 @@ fn arc_changed_paths(root: &Path, scope: DiffScope) -> Result<Vec<String>> {
 /// Run `arc` with `args` in `root`, returning stdout on success.
 ///
 /// A spawn failure (arc not installed) and a non-zero exit both surface as
-/// `Err` with actionable context — never a silent empty set (H2).
+/// `Err` with actionable context — never a silent empty set (H2). Runs under a
+/// bounded timeout (shared `proc::wait_capturing`): arc's FUSE/VFS mount can
+/// stall, and without a bound that would hang the whole `vex` call.
 fn arc(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = std::process::Command::new("arc")
+    let label = format!("arc {}", args.join(" "));
+    let child = Command::new("arc")
         .args(args)
         .current_dir(root)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .with_context(|| {
-            format!(
-                "failed to invoke `arc {}` — is the arc CLI installed and on PATH?",
-                args.join(" ")
-            )
+            format!("failed to invoke `{label}` — is the arc CLI installed and on PATH?")
         })?;
+    let output = wait_capturing(child, vcs_timeout(), &label)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("arc {} failed: {}", args.join(" "), stderr.trim());
+        bail!("{label} failed: {}", stderr.trim());
     }
     Ok(output.stdout)
 }

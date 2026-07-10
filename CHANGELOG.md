@@ -6,15 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed — bounded timeout on the svn diff-scoping backend
+### Fixed — bounded timeout on the svn and arc diff-scoping backends
 
-- Every `svn` invocation in the diff-scoping backend now runs under a bounded
-  wall-clock timeout (default 60s, override `VEX_VCS_TIMEOUT_SECS=<secs>`).
-  Previously `vex search --since <rev>` on an svn checkout pointed at an
-  unreachable or hung server could hang `vex` indefinitely (`svn diff
-  --summarize -r <rev>:HEAD` contacts the server for a remote repo). It now
-  fails with a clear "timed out" error, and the child process is killed and
-  reaped rather than leaked.
+- Every `svn` and `arc` invocation in the diff-scoping backends now runs under a
+  bounded wall-clock timeout (default 60s, override `VEX_VCS_TIMEOUT_SECS=<secs>`,
+  shared `vcs::proc::wait_capturing`). Previously a hung backend could hang `vex`
+  indefinitely — `svn diff --summarize -r <rev>:HEAD` contacts the server for a
+  remote repo, and arc reads a FUSE/VFS mount that can stall. It now fails with a
+  clear "timed out" error, and the child process is killed and reaped rather than
+  leaked (pipes are drained on threads so large output can't deadlock the wait).
 
 ### Changed — concise MCP `content` text channel (PROTOCOL-EVOLUTION §4.1)
 

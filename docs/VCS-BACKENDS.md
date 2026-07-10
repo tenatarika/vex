@@ -380,10 +380,11 @@ shape drifts):
   paths in the capture, but no path contained a space or newline. Git
   octal-escapes such paths when `-z` is absent; whether Arc does the same (it
   has no `-z`) is unconfirmed. A path with special chars could parse wrong.
-- **No subprocess timeout.** Arc's FUSE/VFS mount can be slow or hang; an `arc`
-  invocation currently has no timeout and would hang the `vex` call. Add a
-  bounded timeout when field-verifying (std has none built-in — needs a helper
-  thread or the `wait-timeout` crate).
+- **Subprocess timeout — RESOLVED.** Arc's FUSE/VFS mount can be slow or hang;
+  every `arc` (and `svn`) invocation now runs under a bounded wall-clock timeout
+  (shared `vcs::proc::wait_capturing` / `vcs_timeout`, default 60s, override
+  `VEX_VCS_TIMEOUT_SECS`). Pure std (poll `try_wait` + thread-drained pipes +
+  kill/reap); no `wait-timeout` crate (it's dev-only via `assert_cmd`).
 
 ---
 

@@ -20,18 +20,18 @@
 //!   centralized model). `ChangedOnly` → `svn status --xml`, which lists both
 //!   local modifications and unversioned files in one offline call.
 //! - Because the `Since` call can hit the network, every `svn` invocation runs
-//!   under a bounded wall-clock timeout (`svn_timeout`, default 60s, override
-//!   `VEX_VCS_TIMEOUT_SECS`) so an unreachable/hung server can't hang `vex`.
+//!   under a bounded wall-clock timeout (shared `proc::wait_capturing` /
+//!   `vcs_timeout`, default 60s, override `VEX_VCS_TIMEOUT_SECS`) so an
+//!   unreachable/hung server can't hang `vex`.
 
-use std::io::Read;
 use std::path::Path;
-use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 
+use super::proc::{vcs_timeout, wait_capturing};
 use super::{DiffScope, Vcs, VcsCapabilities, VcsError, VcsKind, VcsResult};
 
 /// Message for the declined `SinceBranched` scope. svn has no merge-base, so
@@ -99,78 +99,12 @@ fn svn(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
         .with_context(|| {
             format!("failed to invoke `{label}` — is Subversion installed and on PATH?")
         })?;
-    let output = wait_capturing(child, svn_timeout(), &label)?;
+    let output = wait_capturing(child, vcs_timeout(), &label)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("{label} failed: {}", stderr.trim());
     }
     Ok(output.stdout)
-}
-
-/// Bounded wall-clock timeout for a single `svn` invocation. `svn diff
-/// --summarize -r<rev>:HEAD` contacts the server on a *remote* repository, so
-/// without a bound an unreachable/hung server would hang the whole `vex` call
-/// (unlike git, whose diff-scope ops are always local). Override with
-/// `VEX_VCS_TIMEOUT_SECS`; a missing/zero/invalid value uses the default.
-fn svn_timeout() -> Duration {
-    const DEFAULT_SECS: u64 = 60;
-    let secs = std::env::var("VEX_VCS_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .filter(|&s| s > 0)
-        .unwrap_or(DEFAULT_SECS);
-    Duration::from_secs(secs)
-}
-
-/// Wait for `child`, capturing stdout/stderr, killing it if it runs longer
-/// than `timeout`. Both pipes are drained on their own threads first: a child
-/// that fills a pipe buffer blocks on the write, which is indistinguishable
-/// from a hang if the parent isn't reading — so we must read concurrently, not
-/// after `wait`. On timeout the child is killed and reaped, and an actionable
-/// error is returned (never a silent empty set — H2).
-fn wait_capturing(mut child: Child, timeout: Duration, label: &str) -> Result<Output> {
-    let mut out = child.stdout.take().context("child stdout was not piped")?;
-    let mut err = child.stderr.take().context("child stderr was not piped")?;
-    let out_h = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = out.read_to_end(&mut buf);
-        buf
-    });
-    let err_h = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = err.read_to_end(&mut buf);
-        buf
-    });
-
-    let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .with_context(|| format!("waiting on `{label}`"))?
-        {
-            break status;
-        }
-        if start.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!(
-                "`{label}` timed out after {}s — unresponsive svn server? \
-                 Set VEX_VCS_TIMEOUT_SECS to adjust.",
-                timeout.as_secs()
-            );
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    };
-
-    // The child has exited; its pipes are closed, so the reader threads have
-    // finished (or will imminently) — join to collect the full output.
-    let stdout = out_h.join().unwrap_or_default();
-    let stderr = err_h.join().unwrap_or_default();
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
 }
 
 /// `Since(rev)` → `svn diff --summarize --xml -r <rev>:HEAD` (field-verified).
@@ -450,40 +384,6 @@ mod tests {
         assert!(reject_flaglike_rev("42").is_ok());
         assert!(reject_flaglike_rev("BASE").is_ok());
         assert!(reject_flaglike_rev("{2026-01-01}").is_ok());
-    }
-
-    // ---- subprocess timeout (mechanism is OS-agnostic; tests need a sleepy
-    // binary, so they are unix-gated — `sleep`/`printf` aren't on Windows) ----
-
-    #[cfg(unix)]
-    #[test]
-    fn wait_capturing_times_out_and_kills_a_hung_child() {
-        let child = Command::new("sleep")
-            .arg("30")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn sleep");
-        let err = wait_capturing(child, Duration::from_millis(150), "sleep 30")
-            .expect_err("a 30s child under a 150ms budget must time out");
-        assert!(
-            format!("{err:#}").contains("timed out"),
-            "error must name the timeout, got: {err:#}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn wait_capturing_collects_output_of_a_fast_child() {
-        let child = Command::new("printf")
-            .arg("hello")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn printf");
-        let out = wait_capturing(child, Duration::from_secs(10), "printf hello").unwrap();
-        assert!(out.status.success());
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "hello");
     }
 
     // ---- end-to-end against a real `svn` (skipped when svn is absent) ----
