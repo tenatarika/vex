@@ -654,14 +654,18 @@ pub(super) fn write_output_locked(
             }
         }
     }
-    if let Err(e) = crate::store::trigram::save(&trigram_path, &trigram_records) {
-        tracing::warn!(
-            path = %trigram_path.display(),
-            error = %e,
-            "failed to persist trigram skip-index sidecar; `vex grep` will \
-             full-walk every file until the next successful index"
-        );
-    }
+    let trigram_persisted = match crate::store::trigram::save(&trigram_path, &trigram_records) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(
+                path = %trigram_path.display(),
+                error = %e,
+                "failed to persist trigram skip-index sidecar; `vex grep` will \
+                 full-walk every file until the next successful index"
+            );
+            false
+        }
+    };
 
     let manifest_path = config::manifest_path(root);
     let manifest = Manifest {
@@ -688,6 +692,10 @@ pub(super) fn write_output_locked(
         // no-embeddings case keeps pre-1.13 readers happy and avoids
         // a misleading "normalized: true" for an empty vector array.
         vectors_normalized: (!vectors.is_empty()).then_some(true),
+        // v1.24+ — gated on the actual `index.trigram` save outcome so
+        // `vex status` provenance matches disk (same pattern as
+        // `rename_chains_built`).
+        trigram_persisted: Some(trigram_persisted),
         // Phase 14.10 — gated on the actual sidecar write outcome (see
         // `rename_chains_built` initialisation comment above). `None`
         // when chain detection wasn't reached, `Some(true)` on a

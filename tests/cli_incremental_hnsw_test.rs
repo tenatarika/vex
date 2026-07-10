@@ -180,6 +180,7 @@ fn bake_v115_index(dir: &Path) -> PathBuf {
         pattern_index: Some(true),
         pattern_index_full: Some(true),
         vectors_normalized: Some(true),
+        trigram_persisted: None,
         rename_chains_built: None,
         rename_chains_minilm_tiebreak_hits: None,
         state: vex::index::incremental_state::IncrementalState {

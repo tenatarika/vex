@@ -106,6 +106,9 @@ pub(crate) fn status(
                 // `vex update` will fall back to full HNSW rebuild.
                 // Same `jq`-friendly bool projection.
                 "body_tokens_persisted": manifest.state.body_tokens_persisted.unwrap_or(false),
+                // v1.24+ grep trigram skip-index marker — false on
+                // pre-trigram manifests / when the sidecar save failed.
+                "trigram_persisted": manifest.trigram_persisted.unwrap_or(false),
                 // v1.17 Phase 14.8 — sticky sentinel + counts. ISO date
                 // when section is present, null otherwise. Agents can
                 // `jq '.history_indexed_at // empty'` to branch on
@@ -212,6 +215,16 @@ pub(crate) fn status(
                 Some(true) => println!("Body tokens: yes (incremental HNSW update enabled)"),
                 Some(false) | None => {
                     println!("Body tokens: no (run `vex index` to enable incremental HNSW update)")
+                }
+            }
+            // v1.24+ grep trigram skip-index sidecar. Absent (pre-trigram
+            // index or a failed save) → `vex grep` full-walks every file.
+            match manifest.trigram_persisted {
+                Some(true) => {
+                    println!("Trigram skip-index: yes (`vex grep` skips non-matching files)")
+                }
+                Some(false) | None => {
+                    println!("Trigram skip-index: no (run `vex index` to speed up `vex grep`)")
                 }
             }
             // v1.17 Phase 14.8 — git_history section surface. Three

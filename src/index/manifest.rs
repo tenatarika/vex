@@ -84,6 +84,16 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vectors_normalized: Option<bool>,
 
+    /// v1.24+ grep trigram skip-index — `Some(true)` when the
+    /// `index.trigram` sidecar was written successfully this build,
+    /// `Some(false)` when the save was attempted but failed. `None` on
+    /// pre-trigram manifests. Lives on the JSON manifest (not the bincode
+    /// `state` sidecar) so adding it doesn't invalidate every existing
+    /// `index.state`. Gated on the actual save outcome so `vex status`
+    /// provenance matches disk — if the sidecar isn't there, this agrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigram_persisted: Option<bool>,
+
     /// v1.17 Phase 14.10 — `Some(true)` when the `index.rename_chains`
     /// sidecar was successfully written during this build, `Some(false)`
     /// when the write was attempted but failed (builder error, disk
@@ -369,6 +379,28 @@ mod tests {
         let pre_json = r#"{"files": {}}"#;
         let m: Manifest = serde_json::from_str(pre_json).unwrap();
         assert_eq!(m.state.body_tokens_persisted, None);
+    }
+
+    #[test]
+    fn trigram_persisted_round_trip_via_save_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let m = Manifest {
+            trigram_persisted: Some(true),
+            ..Manifest::default()
+        };
+        m.save(&path).unwrap();
+        assert_eq!(Manifest::load(&path).unwrap().trigram_persisted, Some(true));
+    }
+
+    #[test]
+    fn trigram_persisted_defaults_none_on_pre_trigram_manifest() {
+        // A pre-trigram manifest has no key → `#[serde(default)]` yields
+        // None (not a parse error), same back-compat contract as the
+        // other Option flags.
+        let pre_json = r#"{"files": {}}"#;
+        let m: Manifest = serde_json::from_str(pre_json).unwrap();
+        assert_eq!(m.trigram_persisted, None);
     }
 
     #[test]
