@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use regex::Regex;
 
+pub mod trigram;
+
 /// A single grep match in a file.
 #[derive(Debug, Clone)]
 pub struct GrepMatch {

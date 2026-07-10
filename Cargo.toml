@@ -40,6 +40,9 @@ clap = { version = "4.5", features = ["derive", "env"] }
 
 # Regex for content search
 regex = "1.10"
+# `vex grep` trigram skip-index parses the pattern's regex AST to extract
+# required literals (src/grep/trigram.rs); already in-tree transitively via regex.
+regex-syntax = "0.8"
 
 # Tree-sitter core + language grammars
 # Versions audited against crates.io latest. See docs/SUPPORTED_LANGUAGES.md.
