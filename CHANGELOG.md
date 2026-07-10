@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — `vex grep` trigram skip-index infrastructure (P1 + P2)
+
+- Groundwork for accelerating `vex grep` by skipping files that provably can't
+  match a pattern's literal. `src/grep/trigram.rs` extracts a pattern's required
+  trigrams and builds a per-file presence bloom (P1); `vex index` / `vex update`
+  now persist those blooms to an `index.trigram` sidecar alongside each file's
+  `(len, mtime)` staleness guard (P2). The bloom also rides inside the blob-cache
+  entry (**format v3 → v4**, one-time re-parse of stale entries) so it survives a
+  warm-cache re-index without re-reading files. **No user-facing behavior change
+  yet** — `vex grep` starts consuming the sidecar in P3. Absence, staleness, or a
+  malformed sidecar always degrades to a full walk (no false negatives). See
+  `docs/GREP-TRIGRAM.md`.
+
 ## [1.24.0] - 2026-07-10
 
 ### Fixed — bounded timeout on the svn and arc diff-scoping backends
@@ -3618,7 +3631,7 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.22.0...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.24.0...HEAD
 [1.22.0]: https://github.com/tenatarika/vex/compare/v1.21.0...v1.22.0
 [1.15.2]: https://github.com/tenatarika/vex/compare/v1.15.1...v1.15.2
 [1.15.1]: https://github.com/tenatarika/vex/compare/v1.15.0...v1.15.1
