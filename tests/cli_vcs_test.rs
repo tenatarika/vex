@@ -115,6 +115,40 @@ fn flag_vcs_none_forces_floor_in_git_repo() {
         .stderr(predicates::str::contains("not a git repository"));
 }
 
+/// Phase 5A: the blob-SHA parse cache is routed through the VCS backend, so
+/// `--vcs none` disables it. Indexing must still succeed via the xxh3/mtime
+/// fallback and produce a searchable index — a correctness-neutral speed
+/// degradation, never a break. (Covers the reviewers' end-to-end gap for the
+/// `--vcs`-disables-blob-cache behavior change.)
+#[test]
+fn index_with_vcs_none_still_indexes_via_xxh3_fallback() {
+    let tmp = TempDir::new().unwrap();
+    run_git(tmp.path(), &["init", "-q", "-b", "main"]);
+    run_git(tmp.path(), &["config", "user.email", "t@t"]);
+    run_git(tmp.path(), &["config", "user.name", "T"]);
+    run_git(tmp.path(), &["config", "commit.gpgsign", "false"]);
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/alpha.rs"),
+        "pub fn alpha_handler() {}\n",
+    )
+    .unwrap();
+    run_git(tmp.path(), &["add", "-A"]);
+    run_git(tmp.path(), &["commit", "-q", "-m", "init"]);
+
+    // Index with the git blob cache forcibly disabled by the backend override.
+    vex_in(tmp.path())
+        .args(["index", "--vcs", "none"])
+        .assert()
+        .success();
+    // The index is complete and searchable despite the disabled blob cache.
+    vex_in(tmp.path())
+        .args(["check", "alpha_handler"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("alpha_handler"));
+}
+
 /// `--vcs svn` routes to `SvnVcs`, which shells out to `svn`. In a directory
 /// that isn't an svn working copy (here a git repo), diff-scope resolution must
 /// fail *gracefully* with an svn-specific error — NOT fall back to git, NOT

@@ -53,7 +53,10 @@ impl Vcs for NoVcs {
     }
 
     fn capabilities(&self) -> VcsCapabilities {
-        VcsCapabilities { merge_base: false }
+        VcsCapabilities {
+            merge_base: false,
+            content_addressed: false,
+        }
     }
 
     fn ensure_repo(&self, root: &Path) -> VcsResult<()> {

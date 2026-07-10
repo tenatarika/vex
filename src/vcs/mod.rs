@@ -8,7 +8,8 @@
 //! through this trait yet — they stay git-only and hit their existing
 //! fallbacks on non-git checkouts.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 mod arc;
 mod detect;
@@ -47,19 +48,24 @@ impl VcsKind {
 
 /// Feature bits a backend advertises so callers degrade deliberately instead
 /// of guessing. Grows additively as later phases add operations
-/// (`content_addressed`, `rename_follow`, `sha_revisions`).
+/// (`rename_follow`, `sha_revisions`).
 //
-// `merge_base` is not consulted by the caller yet: git/arc always support
-// `SinceBranched`, and svn declines it directly inside `SvnVcs::changed_paths`
-// (returning `Unsupported` for that one scope) rather than via a caller-side
-// capability check. The bit is retained as the truthful, machine-observable
-// advertisement of the gap (`_meta.vex.dev/vcs`, per design §5 L3).
+// These bits are truthful, machine-observable advertisements (`_meta.vex.dev/
+// vcs`, design §5 L3); most are not yet consulted at a call site. `merge_base`:
+// svn declines `SinceBranched` directly inside `SvnVcs::changed_paths`, not via
+// a caller-side check. `content_addressed`: the parse-cache caller just calls
+// `tracked_content_ids` and treats a declined result as an empty map.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct VcsCapabilities {
     /// `DiffScope::SinceBranched` is supported (git/arc: yes; svn: no — svn
     /// branches are directory copies with no clean merge-base).
     pub merge_base: bool,
+    /// The backend keys file content by a stable content id (git/arc: blob
+    /// SHA) so the Phase-14.7 parse cache can look symbols up across
+    /// checkouts. svn has no content-addressed store → `false`. Backends with
+    /// `false` decline [`Vcs::tracked_content_ids`] (the default impl).
+    pub content_addressed: bool,
 }
 
 /// Error from a VCS operation.
@@ -153,4 +159,22 @@ pub trait Vcs: Send + Sync {
     /// (svn + `SinceBranched`) is `Unsupported`. `Ok(vec![])` means — and only
     /// means — "resolved, nothing changed".
     fn changed_paths(&self, root: &Path, scope: DiffScope) -> VcsResult<Vec<String>>;
+
+    /// Content ids (git/arc: blob SHA) for tracked regular files, keyed by
+    /// canonical absolute path — feeds the Phase-14.7 parse cache.
+    ///
+    /// **The H2 "never map error→empty" rule is INVERTED here.** Unlike
+    /// [`Vcs::changed_paths`] (where an empty set is a load-bearing answer
+    /// "nothing changed"), this is a cache *optimization*: the caller maps a
+    /// declined/failed result to an EMPTY map, meaning "no cache speedup this
+    /// run" — everything then falls through to the existing xxh3/mtime path,
+    /// with correctness unaffected. So declining is safe and expected.
+    ///
+    /// The default declines (`Unsupported`); only content-addressed backends
+    /// (git; arc once its `ls-files` is field-verified) override it.
+    fn tracked_content_ids(&self, _root: &Path) -> VcsResult<HashMap<PathBuf, String>> {
+        Err(VcsError::Unsupported(
+            "tracked_content_ids: backend has no content-addressed blob store".to_string(),
+        ))
+    }
 }

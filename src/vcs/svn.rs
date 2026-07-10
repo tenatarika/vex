@@ -48,7 +48,12 @@ impl Vcs for SvnVcs {
     fn capabilities(&self) -> VcsCapabilities {
         // svn branches are directory copies with no merge-base → SinceBranched
         // is declined (see `SINCE_BRANCHED_MSG`).
-        VcsCapabilities { merge_base: false }
+        // svn has no content-addressed blob store → declines
+        // `tracked_content_ids` (parse cache falls back to xxh3/mtime).
+        VcsCapabilities {
+            merge_base: false,
+            content_addressed: false,
+        }
     }
 
     fn ensure_repo(&self, root: &Path) -> VcsResult<()> {

@@ -27,6 +27,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `_meta.deprecated_args`). No scripted caller breaks; the rename only clarifies
   an under-descriptive name (the internal field was already `filter_path`).
 
+### Changed — blob-SHA parse cache now routed through the VCS backend (VCS-BACKENDS Phase 5)
+
+- The Phase-14.7 blob-SHA parse cache (which speeds up `vex index` / `vex
+  update` on git checkouts) now resolves its tracked-file content ids through
+  the VCS backend rather than shelling out to git unconditionally. Behavior is
+  unchanged on an auto-detected git repo. **Behavior change:** forcing a
+  non-git backend during indexing — `--vcs none` (or `arc`/`svn`) — now
+  disables the blob cache for that run and falls back to the existing
+  xxh3/mtime content hashing (slower, but correct). This is the intended trait
+  semantic: those backends have no git-compatible content-addressed store
+  (`arc`'s is git-compatible but its `ls-files` is not yet field-verified). No
+  effect on the default (no `--vcs`) path.
+
 ### Added — `--vcs` backend selection for diff-scoping (VCS-BACKENDS Phase 2)
 
 - New global `--vcs <auto|git|arc|svn|none>` flag, `$VEX_VCS` env var, and

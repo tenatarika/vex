@@ -1,13 +1,14 @@
 # VCS Backends — Design (git · Arc · svn)
 
-Status: **Phases 1-4 SHIPPED** (2026-07-10) — `Vcs` trait + `GitVcs` extraction
-(Phase 1), detection/override/`none` floor (Phase 2), field-verified `ArcVcs`
-(Phase 3) and `SvnVcs` (Phase 4). **Phase 5+ is DESIGN/growth** (§6): widening
-the trait to blob-cache / history / staleness. The plan abstracts vex's hard git
-dependency behind a `Vcs` trait so it also runs against **Yandex Arc** and
-**Subversion**, with git as the default and byte-identical current behavior
-preserved. Each phase is a separate reviewed change; blob-cache/history/staleness
-remain git-only until Phase 5+.
+Status: **Phases 1-4 SHIPPED + Phase 5A SHIPPED** (2026-07-10) — `Vcs` trait +
+`GitVcs` extraction (Phase 1), detection/override/`none` floor (Phase 2),
+field-verified `ArcVcs` (Phase 3) and `SvnVcs` (Phase 4), and the blob-SHA parse
+cache routed through the trait via `tracked_content_ids` (Phase 5A). **The rest
+of Phase 5 is DESIGN/growth** (§6): `file_history` and `dirty_count`/`head_id`.
+The plan abstracts vex's hard git dependency behind a `Vcs` trait so it also
+runs against **Yandex Arc** and **Subversion**, with git as the default and
+byte-identical current behavior preserved. Each phase is a separate reviewed
+change; **history and staleness remain git-only** until the rest of Phase 5.
 
 Grounding: the git-coupling survey (§1) enumerates every git shell-out; the
 trait (§3) is the minimal surface those sites actually need.
@@ -272,12 +273,25 @@ paths with spaces (field-verified: `src/with space.rs`). Blob-cache / history /
 staleness stay git-only (svn has no blob store; non-SHA staleness → mtime deep
 check, H1). Documented in `LIMITATIONS.md`.
 
-**Phase 5+ (growth, additive) — widen the trait** to the other subsystems once
-Arc CLI is field-verified: `tracked_content_ids` (blob cache; git/arc only,
-preserving the `ls-files` + `diff-files` dirty-exclusion two-step, M1),
-`file_history` (svn returns `partial: true` + `_meta rename_follow:false`, M4),
-`dirty_count`/`head_id` with the `deep`-flag shortcut preserved (staleness
-must not call `dirty_count` when `deep==false`). Each is its own reviewed change.
+**Phase 5A — `tracked_content_ids` (blob cache). SHIPPED (2026-07-10).** The
+Phase-14.7 blob-SHA parse cache is routed through the trait: `GitVcs` implements
+`tracked_content_ids` (the `ls-files -s` + `diff-files` dirty-exclusion two-step,
+M1, moved byte-identically from `index::parse_cache::git_blobs`), and
+`index::parse_cache::git_blobs::discover_tracked_blobs` is now a thin wrapper
+that maps a declined/failed result to an **empty map** (INVERTED H2 — a cache
+optimization, not a load-bearing "nothing changed" answer). `content_addressed`
+capability bit: git=true; **arc=false for now** (arc blob SHAs are git-compatible
+but `arc ls-files` is not yet field-verified — flip when it is); svn/none=false
+(no content-addressed store). Consequence: forcing `--vcs none/arc/svn` during
+indexing disables the git blob cache and falls back to xxh3/mtime (correct, just
+slower) — the intended trait semantic.
+
+**Phase 5B+ (growth, remaining) — widen the trait** to the other subsystems:
+`file_history` (svn returns `partial: true` + `_meta rename_follow:false`, M4;
+NB svn has no server-side grep across history, so the query-time walker does not
+port cleanly), `dirty_count`/`head_id` with the `deep`-flag shortcut preserved
+(staleness must not call `dirty_count` when `deep==false`; non-SHA backends gate
+off the equality shortcut, H1). Each is its own reviewed change.
 
 ---
 

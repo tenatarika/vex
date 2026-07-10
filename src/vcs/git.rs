@@ -11,7 +11,8 @@
 //! contract the VCS design's L1 preserves) and history is not yet routed
 //! through the `Vcs` trait. Do not dedup them.
 
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -29,7 +30,10 @@ impl Vcs for GitVcs {
     }
 
     fn capabilities(&self) -> VcsCapabilities {
-        VcsCapabilities { merge_base: true }
+        VcsCapabilities {
+            merge_base: true,
+            content_addressed: true,
+        }
     }
 
     /// Verify `root` is inside a git worktree before invoking `git diff`.
@@ -58,6 +62,15 @@ impl Vcs for GitVcs {
 
     fn changed_paths(&self, root: &Path, scope: DiffScope) -> VcsResult<Vec<String>> {
         git_changed_paths(root, scope).map_err(VcsError::Failed)
+    }
+
+    /// Blob SHAs for tracked regular files (Phase-14.7 parse cache). Any git
+    /// failure yields an EMPTY map (logged, not propagated) — the pipeline
+    /// falls through to the xxh3/mtime path, so this never returns `Err`. The
+    /// `Result` exists only for the trait default (`Unsupported`); see the
+    /// inverted-H2 note on [`Vcs::tracked_content_ids`].
+    fn tracked_content_ids(&self, root: &Path) -> VcsResult<HashMap<PathBuf, String>> {
+        Ok(discover_tracked_blobs(root))
     }
 }
 
@@ -222,6 +235,173 @@ fn try_merge_base(root: &Path, reference: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+// ---- Phase-14.7 blob-SHA parse cache: tracked-file discovery ----
+//
+// Moved verbatim from `index::parse_cache::git_blobs` when the content cache
+// was routed through the `Vcs` trait (VCS-BACKENDS Phase 5). `git ls-files -s`
+// gives the SHA of the *staged/HEAD* blob; the follow-up `git diff-files`
+// drops dirty paths so we never cache a working-tree AST under the index SHA
+// (a future clean checkout of that SHA would read back the wrong AST). Best
+// effort: any git failure returns an empty map / skips the filter — the
+// pipeline's xxh3 path absorbs the miss, no error propagated.
+
+/// Spawn `git -C <repo_root> ls-files -s` and return a map of
+/// absolute-canonical paths → 40-char hex blob SHA for every tracked regular
+/// file. Symlinks (`120000`) and gitlinks (`160000`) are excluded. Returns an
+/// empty map on any failure (git missing, non-repo, non-zero exit, non-UTF-8).
+fn discover_tracked_blobs(repo_root: &Path) -> HashMap<PathBuf, String> {
+    let output = match Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("ls-files")
+        .arg("-s")
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                "git ls-files not available — blob cache disabled for this run"
+            );
+            return HashMap::new();
+        }
+    };
+
+    if !output.status.success() {
+        tracing::debug!(
+            status = ?output.status,
+            "git ls-files exited non-zero — blob cache disabled for this run"
+        );
+        return HashMap::new();
+    }
+
+    let stdout = match std::str::from_utf8(&output.stdout) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!(error = %e, "git ls-files stdout was not UTF-8");
+            return HashMap::new();
+        }
+    };
+
+    let mut map = parse_ls_files_output(stdout, repo_root);
+
+    // Drop paths whose working tree content differs from the index. Caching
+    // those would associate the working-tree AST with the index/HEAD blob SHA
+    // and poison the cache for other checkouts.
+    let dirty = discover_dirty_paths(repo_root);
+    if !dirty.is_empty() {
+        let before = map.len();
+        map.retain(|path, _| !dirty.contains(path));
+        tracing::debug!(
+            removed = before - map.len(),
+            dirty_total = dirty.len(),
+            "dropped dirty paths from blob map"
+        );
+    }
+
+    tracing::debug!(count = map.len(), "discovered tracked blobs");
+    map
+}
+
+/// Spawn `git -C <repo_root> diff-files --name-only -z` and return the
+/// canonical-absolute paths of tracked files whose working-tree content
+/// differs from the index. Returns an empty set on any failure — the caller
+/// treats an empty set as "no dirty paths known" and skips the filter.
+fn discover_dirty_paths(repo_root: &Path) -> HashSet<PathBuf> {
+    let output = match Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("diff-files")
+        .arg("--name-only")
+        .arg("-z")
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::debug!(error = %e, "git diff-files not available — dirty-tree filter skipped");
+            return HashSet::new();
+        }
+    };
+
+    if !output.status.success() {
+        // A non-zero exit here drops the safety net that prevents poisoning
+        // the cache with parses of dirty content (mid-rebase, locked index,
+        // permission errors). Surface it at warn level so operators notice
+        // when the filter degrades to "trust everything".
+        tracing::warn!(
+            status = ?output.status,
+            "git diff-files exited non-zero — dirty-tree filter degraded to no-op"
+        );
+        return HashSet::new();
+    }
+
+    parse_diff_files_output(&output.stdout, repo_root)
+}
+
+/// Parse the raw `-z`-separated `git diff-files --name-only` output into a set
+/// of canonical absolute paths. Entries that fail to canonicalize (deleted,
+/// permission errors, …) are dropped — a missing path cannot be in the blob
+/// map anyway.
+fn parse_diff_files_output(stdout: &[u8], repo_root: &Path) -> HashSet<PathBuf> {
+    let mut out = HashSet::new();
+    for chunk in stdout.split(|&b| b == 0) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let rel = match std::str::from_utf8(chunk) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::debug!(error = %e, "diff-files path was not UTF-8");
+                continue;
+            }
+        };
+        let abs = repo_root.join(rel);
+        let canonical = match abs.canonicalize() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        out.insert(canonical);
+    }
+    out
+}
+
+/// Parse the raw `git ls-files -s` output into the `absolute_path → blob_sha`
+/// map. Each line is `<mode> <sha> <stage>\t<path>`; non-regular modes
+/// (`120000` symlink, `160000` gitlink) are skipped. Paths are canonicalized
+/// to line up with `pipeline::discover_files`; a path that fails to
+/// canonicalize is dropped (falls through to the parse path on miss).
+fn parse_ls_files_output(stdout: &str, repo_root: &Path) -> HashMap<PathBuf, String> {
+    let mut map = HashMap::new();
+    for line in stdout.lines() {
+        // Split metadata from path on the first TAB.
+        let Some((meta, rel_path)) = line.split_once('\t') else {
+            continue;
+        };
+        let mut parts = meta.split_whitespace();
+        let Some(mode) = parts.next() else {
+            continue;
+        };
+        let Some(sha) = parts.next() else {
+            continue;
+        };
+        // Only index regular file blobs. Skip symlinks (120000) and
+        // gitlinks/submodules (160000).
+        if mode != "100644" && mode != "100755" {
+            continue;
+        }
+        if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        let abs = repo_root.join(rel_path);
+        let canonical = match abs.canonicalize() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        map.insert(canonical, sha.to_string());
+    }
+    map
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +446,94 @@ mod tests {
             msg.contains("no merge-base found"),
             "expected the actionable merge-base ladder error, got: {msg}"
         );
+    }
+
+    // ---- blob-cache tracked-file parsing (moved from git_blobs.rs) ----
+
+    #[test]
+    fn parses_ls_files_output_into_map() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        // Create real files so canonicalize() succeeds.
+        std::fs::write(root.join("a.rs"), b"fn a() {}\n").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src").join("b.rs"), b"fn b() {}\n").unwrap();
+
+        let stdout = "\
+100644 1111111111111111111111111111111111111111 0\ta.rs
+100755 2222222222222222222222222222222222222222 0\tsrc/b.rs
+120000 3333333333333333333333333333333333333333 0\ta_symlink
+160000 4444444444444444444444444444444444444444 0\tsubmodule
+malformed line without tab
+100644 short_sha 0\tbad.rs
+";
+
+        let map = parse_ls_files_output(stdout, &root);
+
+        assert_eq!(map.len(), 2, "expected only two regular file blobs");
+        assert_eq!(
+            map.get(&root.join("a.rs")).map(String::as_str),
+            Some("1111111111111111111111111111111111111111")
+        );
+        assert_eq!(
+            map.get(&root.join("src").join("b.rs")).map(String::as_str),
+            Some("2222222222222222222222222222222222222222")
+        );
+    }
+
+    #[test]
+    fn path_with_embedded_tab_is_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        // Split-on-first-tab: the canonicalization step drops the non-existent
+        // path, which is the correct behaviour for missing files.
+        let stdout = "100644 1111111111111111111111111111111111111111 0\tnot_on_disk.rs\n";
+        let map = parse_ls_files_output(stdout, &root);
+        assert!(
+            map.is_empty(),
+            "non-existent paths must be filtered out by canonicalize"
+        );
+    }
+
+    #[test]
+    fn empty_ls_files_output_returns_empty_map() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        assert!(parse_ls_files_output("", &root).is_empty());
+    }
+
+    #[test]
+    fn parses_diff_files_nul_output_into_set() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        std::fs::write(root.join("dirty.rs"), b"fn dirty() {}\n").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src").join("also_dirty.rs"), b"fn x() {}\n").unwrap();
+
+        let mut stdout: Vec<u8> = Vec::new();
+        stdout.extend_from_slice(b"dirty.rs");
+        stdout.push(0);
+        stdout.extend_from_slice(b"src/also_dirty.rs");
+        stdout.push(0);
+        // A missing file (canonicalize fails) must be dropped silently.
+        stdout.extend_from_slice(b"src/does_not_exist.rs");
+        stdout.push(0);
+
+        let set = parse_diff_files_output(&stdout, &root);
+
+        assert_eq!(set.len(), 2, "expected exactly two existing dirty paths");
+        assert!(set.contains(&root.join("dirty.rs")));
+        assert!(set.contains(&root.join("src").join("also_dirty.rs")));
+        assert!(!set.contains(&root.join("src").join("does_not_exist.rs")));
+    }
+
+    #[test]
+    fn parses_diff_files_empty_output_returns_empty_set() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        assert!(parse_diff_files_output(&[], &root).is_empty());
     }
 }

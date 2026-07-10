@@ -47,7 +47,13 @@ impl Vcs for ArcVcs {
         // Arc supports merge-base (`arc merge-base --leftmost trunk HEAD`,
         // field-verified) — though `SinceBranched` uses the simpler `arc diff
         // -B`, which computes the same base in one command.
-        VcsCapabilities { merge_base: true }
+        // `content_addressed: false` for now: arc blob SHAs are git-compatible
+        // (it COULD feed the parse cache), but `arc ls-files` is not yet
+        // field-verified — so arc declines `tracked_content_ids` until it is.
+        VcsCapabilities {
+            merge_base: true,
+            content_addressed: false,
+        }
     }
 
     fn ensure_repo(&self, root: &Path) -> VcsResult<()> {
