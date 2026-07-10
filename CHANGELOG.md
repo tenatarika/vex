@@ -21,7 +21,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `(len, mtime)` guard, since grep runs without a reindex) all fall back to
   reading the file — the result set is always identical to a full walk.
 - `vex status` now reports whether the trigram skip-index is present
-  (`trigram_persisted` on the manifest). See `docs/GREP-TRIGRAM.md`.
+  (`trigram_persisted` on the manifest). A `benches/grep_trigram` bench
+  measures the win (~3.7× on a 500-file corpus where the literal is in one
+  file) and the bloom's false-positive rate by literal length (≈0% for
+  literals ≥ 6 bytes; the 2048-bit / k=1 bloom is kept as-is). See
+  `docs/GREP-TRIGRAM.md` and `docs/LIMITATIONS.md §5a`.
 
 ## [1.24.0] - 2026-07-10
 

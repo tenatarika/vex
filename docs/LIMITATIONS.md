@@ -882,6 +882,42 @@ guidance for agents:
 > macros and TypeScript property / parameter decorators remain
 > invisible — `vex grep` is the workaround there.
 
+### 5a. Trigram skip-index — when `vex grep` is fast vs falls back (v1.24+)
+
+`vex grep` builds a per-file trigram presence bloom at index time
+(`index.trigram` sidecar) and skips files that provably can't contain the
+pattern's required literal. This trims I/O — a bench on a 500-file corpus
+with the literal in one file runs ~3.7× faster with the sidecar than a
+full walk. The skip **never changes results** (see `docs/GREP-TRIGRAM.md`);
+it only decides which files to read. It quietly falls back to a full walk
+— no speedup, still correct — in these cases:
+
+- **Non-literal / short patterns.** The skip-index engages only when the
+  regex has a required literal of ≥ 3 bytes. `(?i)`, character classes,
+  alternation, and 1–2 byte patterns → full walk.
+- **Short literals are weaker.** Selectivity rises fast with literal
+  length (measured false-positive rate — files needlessly read for a
+  genuinely-absent literal): **3 bytes ≈ 7%, 4 ≈ 1%, 5 ≈ 0.5%, ≥ 6 bytes ≈
+  0%**. So typical identifier-length patterns are near-perfectly selective;
+  3–5 byte literals still skip most files but read a few extras. (The
+  2048-bit / k=1 bloom is deliberately kept at this size — the bench shows
+  it's already effectively saturated-selective for real grep patterns, so
+  a larger bloom would cost sidecar space for no practical gain.)
+- **Code files only.** Only files with a supported source extension get a
+  bloom. `vex grep` walks *everything* (md, json, toml, logs, …); those
+  have no record and are always read. The win is a fraction of the *code*
+  files walked, not of all files.
+- **Files > 1 MB and binary/minified files** are excluded from the index
+  entirely, so they have no record → always read.
+- **Edited-since-index files are always read.** A `(len, mtime)` staleness
+  guard forces a full read of any file changed after the last index (grep
+  runs without a reindex), so a stale bloom can never hide a new match.
+  Residual: a same-nanosecond, same-length edit evades the guard — the
+  standard mtime+size limitation shared with ripgrep/git.
+
+`vex status` reports whether the sidecar is present (`trigram_persisted`);
+absence just means grep full-walks until the next `vex index`.
+
 ---
 
 ## 6. `vex impact` — recommended delete-safety workflow (v1.20.0, F1)

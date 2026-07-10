@@ -247,3 +247,11 @@ harness = false
 [[bench]]
 name = "rename_chains"
 harness = false
+
+# v1.24+ grep trigram skip-index — headline `vex grep` speedup (skip-active
+# vs full-walk on a 500-file corpus) + a false-positive-rate-by-literal-length
+# table that backs the M/k tuning decision and the short-literal caveat in
+# docs/LIMITATIONS.md.
+[[bench]]
+name = "grep_trigram"
+harness = false

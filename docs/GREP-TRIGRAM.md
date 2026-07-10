@@ -159,7 +159,7 @@ therefore *only ever* a genuinely-unchanged file whose old bloom is still
 valid — a stale bloom is never carried forward for changed content. Write
 is best-effort: a save failure warns and leaves grep to full-walk.
 
-## Limitations (frame P4 bench + LIMITATIONS.md accordingly)
+## Limitations (measured in P4; see `docs/LIMITATIONS.md §5a`)
 
 - **Code files only.** Only files with a supported extension get a
   `ParsedFile`, hence a bloom. grep walks *all* files (md, json, toml,
@@ -193,7 +193,15 @@ is best-effort: a save failure warns and leaves grep to full-walk.
   edit-then-grep-without-reindex (guard reads the edited file), and a
   white-box skip proof (fool the guard with `filetime` to observe the
   skip drop a match a full read would find).
-- **P4 (next):** criterion bench + tune `BLOOM_BITS`/`k`; document the win
-  as code-files-only in `docs/LIMITATIONS.md`. Optional: Windows-specific
-  POSIX-key unit test (P3's key derivation goes through `to_rel_posix`,
-  covered indirectly by the e2e tests on the host platform).
+- **P4 (done):** `benches/grep_trigram.rs` — skip-active vs full-walk
+  (~3.7× faster on a 500-file corpus, literal in one file) + a
+  false-positive-rate-by-literal-length table. Measured FP: 3 bytes ≈ 7%,
+  4 ≈ 1%, 5 ≈ 0.5%, ≥ 6 bytes ≈ 0%. **Tuning decision: keep 2048-bit /
+  k=1** — the bloom is already effectively saturated-selective for
+  real (identifier-length) grep patterns, so a larger bloom would cost
+  sidecar space for no practical gain, and re-sizing would churn the
+  on-disk format again. Caveats documented in `docs/LIMITATIONS.md §5a`.
+  Windows POSIX-key derivation goes through `to_rel_posix`, covered
+  indirectly by the e2e tests on the host platform.
+
+**Trigram skip-index is feature-complete (P1–P4).**
