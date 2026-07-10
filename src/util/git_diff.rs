@@ -17,7 +17,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::vcs::{GitVcs, Vcs, VcsError};
+use crate::vcs::{Vcs, VcsError};
 
 // `DiffScope` moved to `crate::vcs` (it is VCS-agnostic and part of the `Vcs`
 // trait surface). Re-exported here so existing `crate::util::git_diff::DiffScope`
@@ -47,13 +47,21 @@ impl ChangedPaths {
     ///   * Repo dir is not a git repo → first `git` invocation fails with
     ///     `not a git repository` in stderr; surfaced verbatim.
     pub fn resolve(repo_root: &Path, scope: DiffScope) -> Result<Self> {
-        // Phase 1 (docs/VCS-BACKENDS.md): git is the sole backend, constructed
-        // directly. `ensure_repo` is the H3 pre-flight — `git diff` outside a
+        // Phase 2 (docs/VCS-BACKENDS.md): resolve the backend (--vcs / VEX_VCS
+        // / .vex.toml / marker auto-detect). git is the only functional
+        // backend today; a detected/forced arc/svn/none declines cleanly via
+        // `NoVcs`. `ensure_repo` is the H3 pre-flight — `git diff` outside a
         // worktree exits 0 with help, so without it a missing-repo error would
-        // leak past the success check and silently return an empty set. The
-        // `Vcs` error is collapsed to `anyhow` verbatim so the existing
+        // leak past the success check and silently return an empty set.
+        Self::resolve_with(&*crate::vcs::resolve(repo_root), repo_root, scope)
+    }
+
+    /// Resolve against a specific backend. Separated from [`Self::resolve`]
+    /// so tests (and Phase 1's byte-identity guards) can drive `GitVcs`
+    /// directly without touching the process-global override.
+    pub fn resolve_with(vcs: &dyn Vcs, repo_root: &Path, scope: DiffScope) -> Result<Self> {
+        // The `Vcs` error is collapsed to `anyhow` verbatim so the existing
         // error-substring tests still hold.
-        let vcs = GitVcs;
         vcs.ensure_repo(repo_root).map_err(VcsError::into_anyhow)?;
         let raw = vcs
             .changed_paths(repo_root, scope)
@@ -257,16 +265,11 @@ mod tests {
         assert!(cp.contains("a.rs"));
     }
 
-    #[test]
-    fn non_git_repo_errors_actionably() {
-        let tmp = TempDir::new().unwrap();
-        let err = ChangedPaths::resolve(tmp.path(), DiffScope::Since("HEAD~1")).unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("not a git repository"),
-            "expected not-a-repo error, got: {msg}"
-        );
-    }
+    // The non-git-directory error is covered deterministically by
+    // `resolve_with_none_backend_keeps_git_only_message` (below) and, on the
+    // live `resolve` path (env/marker detection), by the subprocess test in
+    // `tests/cli_vcs_test.rs`. A live-path unit test here would read ambient
+    // `$VEX_VCS` / ancestor `.vex.toml` / `.git` and be environment-dependent.
 
     #[test]
     fn empty_diff_yields_empty_set() {
@@ -366,5 +369,36 @@ mod tests {
         assert_eq!(DiffScope::Since("anything").label(), "since");
         assert_eq!(DiffScope::SinceBranched.label(), "since_branched");
         assert_eq!(DiffScope::ChangedOnly.label(), "changed_only");
+    }
+
+    // Phase 2: the `NoVcs` floor via `resolve_with` (bypasses the
+    // process-global override so it's unit-testable).
+
+    #[test]
+    fn resolve_with_none_backend_keeps_git_only_message() {
+        // A genuinely VCS-less directory (detected kind None) must reuse the
+        // historical git-only wording verbatim — byte-identical with Phase 1.
+        let tmp = TempDir::new().unwrap();
+        let none = crate::vcs::NoVcs::new(crate::vcs::VcsKind::None);
+        let err =
+            ChangedPaths::resolve_with(&none, tmp.path(), DiffScope::Since("HEAD~1")).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not a git repository"),
+            "None floor must keep the git-only message, got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn resolve_with_svn_backend_reports_not_yet_available() {
+        // A detected-but-unimplemented backend declines honestly, distinct
+        // from the plain no-repo case.
+        let tmp = TempDir::new().unwrap();
+        let svn = crate::vcs::NoVcs::new(crate::vcs::VcsKind::Svn);
+        let err = ChangedPaths::resolve_with(&svn, tmp.path(), DiffScope::ChangedOnly).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("svn backend is not yet available"),
+            "svn floor must say the backend is planned, got: {msg}"
+        );
     }
 }

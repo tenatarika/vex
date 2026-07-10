@@ -8,15 +8,18 @@
 
 use std::path::Path;
 
+mod detect;
 mod git;
-pub use git::GitVcs;
+mod none;
 
-/// Which VCS backend answered a request. Surfaced via `_meta.vex.dev/vcs`
-/// once Phase 2 wires detection; today only [`VcsKind::Git`] is produced.
-//
-// Phase-1 scaffolding: `kind()`/detection/`_meta` land in Phase 2, so the
-// non-Git variants and `as_str` are unused until then.
-#[allow(dead_code)]
+pub use detect::{install_override, resolve};
+pub use git::GitVcs;
+pub use none::NoVcs;
+
+/// Which VCS backend the resolver picked for a request. Set by `vcs::detect`
+/// from the override chain / marker walk; [`NoVcs`] reports the *detected*
+/// kind so an inert backend still names what it saw (`_meta.vex.dev/vcs`
+/// reporting lands with the first non-git backend — Phase 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VcsKind {
     Git,
@@ -25,7 +28,6 @@ pub enum VcsKind {
     None,
 }
 
-#[allow(dead_code)]
 impl VcsKind {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -41,8 +43,10 @@ impl VcsKind {
 /// of guessing. Grows additively as later phases add operations
 /// (`content_addressed`, `rename_follow`, `sha_revisions`).
 //
-// Phase-1 scaffolding: consulted by callers (e.g. SinceBranched gating) once
-// Arc/svn land; git always supports everything so nothing reads it yet.
+// `merge_base` is not consulted yet — git always supports `SinceBranched`, and
+// the only backend that declines it (svn, Phase 4) currently routes through
+// `NoVcs` which rejects every scope. The field exists so the svn backend can
+// gate `SinceBranched` precisely instead of a blanket decline.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct VcsCapabilities {
@@ -60,10 +64,8 @@ pub struct VcsCapabilities {
 /// nothing".
 #[derive(Debug)]
 pub enum VcsError {
-    /// The backend cannot perform this operation at all (capability gap).
-    /// Phase-1 scaffolding: git supports every diff scope, so only svn
-    /// (Phase 4, `SinceBranched`) constructs this — unused until then.
-    #[allow(dead_code)]
+    /// The backend cannot perform this operation at all (capability gap) —
+    /// e.g. [`NoVcs`] on any scope, or (Phase 4) svn + `SinceBranched`.
     Unsupported(String),
     /// The backend attempted the operation and it failed.
     Failed(anyhow::Error),
@@ -119,13 +121,15 @@ impl DiffScope<'_> {
 /// [`GitVcs`] directly; Phase 2 resolves via detection into a `OnceLock`,
 /// mirroring `util::config`'s `CacheResolver`).
 pub trait Vcs: Send + Sync {
-    /// Phase-1 scaffolding — read by the `_meta.vex.dev/vcs` emitter and
-    /// capability gating in Phase 2+.
+    /// The backend kind, for diagnostics / `_meta.vex.dev/vcs` reporting.
+    // No consumer yet: `_meta.vex.dev/vcs` emission is deferred to the first
+    // non-git backend (Phase 3), where "which backend answered" stops being
+    // trivially "git". `NoVcs` stores the kind regardless so it's ready.
     #[allow(dead_code)]
     fn kind(&self) -> VcsKind;
 
-    /// Phase-1 scaffolding — consulted before backend-specific scopes in
-    /// Phase 2+ (e.g. `SinceBranched` on svn).
+    /// Feature bits (e.g. `merge_base`), consulted before backend-specific
+    /// scopes once a backend can partially support them (svn, Phase 4).
     #[allow(dead_code)]
     fn capabilities(&self) -> VcsCapabilities;
 

@@ -82,6 +82,13 @@ pub struct VexConfig {
     /// `true`.
     pub pattern_index: Option<bool>,
 
+    /// VCS backend for diff-scoping (`--since` etc.). `"git"` | `"arc"` |
+    /// `"svn"` | `"none"` | `"auto"` (default: auto-detect by marker).
+    /// Overridden by `--vcs` and `$VEX_VCS`. See `docs/VCS-BACKENDS.md`.
+    /// (Phase 2: only `git` is functional; `arc`/`svn` decline until their
+    /// backends land.)
+    pub vcs: Option<String>,
+
     /// Directory containing the `.vex.toml` that produced this config.
     /// Used to resolve relative `cache_dir` paths.
     #[serde(skip)]

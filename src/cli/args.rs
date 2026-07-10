@@ -133,6 +133,41 @@ pub struct Cli {
     /// Accepts absolute paths, `~/...`, or paths relative to the current directory.
     #[arg(long, global = true, value_name = "PATH")]
     pub cache_dir: Option<PathBuf>,
+
+    /// VCS backend for diff-scoping. Overrides `$VEX_VCS` and `.vex.toml`.
+    /// `auto` (default) detects by marker (`.git`/`.svn`/`.arc`).
+    ///
+    /// Affects ONLY `--since` / `--since-branched` / `--changed-only`; it has
+    /// no effect on any other command in Phase 2. Only `git` is functional
+    /// today — `arc`/`svn`/`none` decline diff-scoping cleanly until their
+    /// backends land (see docs/VCS-BACKENDS.md).
+    #[arg(long, global = true, value_enum)]
+    pub vcs: Option<VcsArg>,
+}
+
+/// `--vcs` value. `Auto` maps to "no explicit override" (detect).
+#[derive(Copy, Clone, Debug, clap::ValueEnum)]
+pub enum VcsArg {
+    Auto,
+    Git,
+    Arc,
+    Svn,
+    None,
+}
+
+impl VcsArg {
+    /// Map to the forced [`crate::vcs::VcsKind`], or `None` for `Auto`
+    /// (fall through to env/config/detect).
+    pub fn to_forced_kind(self) -> Option<crate::vcs::VcsKind> {
+        use crate::vcs::VcsKind;
+        match self {
+            VcsArg::Auto => None,
+            VcsArg::Git => Some(VcsKind::Git),
+            VcsArg::Arc => Some(VcsKind::Arc),
+            VcsArg::Svn => Some(VcsKind::Svn),
+            VcsArg::None => Some(VcsKind::None),
+        }
+    }
 }
 
 #[derive(Copy, Clone, clap::ValueEnum)]

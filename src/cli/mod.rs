@@ -115,6 +115,12 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
     let cfg = config::load_config(&config_root)?;
     let format = resolve_format(cli.format, &cfg);
 
+    // Install the `--vcs` override once (CLI > env > config > detect, resolved
+    // in `vcs::resolve`). `None` here means "no explicit kind" (auto). Mirrors
+    // the cache-resolver install below so diff-scoping picks the backend
+    // without threading a flag through every command.
+    crate::vcs::install_override(cli.vcs.and_then(|v| v.to_forced_kind()));
+
     // Install the cache resolver (CLI > env > config > platform default).
     // Done once here so every config::index_path/index_dir call downstream
     // sees the resolved value without threading it through 60+ call sites.
