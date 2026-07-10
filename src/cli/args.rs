@@ -137,10 +137,11 @@ pub struct Cli {
     /// VCS backend for diff-scoping. Overrides `$VEX_VCS` and `.vex.toml`.
     /// `auto` (default) detects by marker (`.git`/`.svn`/`.arc`).
     ///
-    /// Affects ONLY `--since` / `--since-branched` / `--changed-only`; it has
-    /// no effect on any other command in Phase 2. Only `git` is functional
-    /// today — `arc`/`svn`/`none` decline diff-scoping cleanly until their
-    /// backends land (see docs/VCS-BACKENDS.md).
+    /// Affects ONLY `--since` / `--since-branched` / `--changed-only`; no effect
+    /// on other commands. `git` is fully verified; `arc` is a PROVISIONAL,
+    /// research-grounded backend (unverified against a real `arc` — field-verify
+    /// before trusting; see docs/VCS-BACKENDS.md §7a); `svn`/`none` decline
+    /// diff-scoping cleanly.
     #[arg(long, global = true, value_enum)]
     pub vcs: Option<VcsArg>,
 }

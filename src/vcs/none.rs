@@ -29,6 +29,10 @@ impl NoVcs {
     /// from Phase 1 for the common no-repo case.
     fn reason(&self, root: &Path) -> String {
         match self.detected {
+            // In practice only `Svn` reaches this arm since Phase 3:
+            // `detect::backend_for` routes `VcsKind::Arc` to `ArcVcs`, not
+            // `NoVcs`. `Arc` is kept here defensively — if a future path
+            // reintroduces `NoVcs::new(VcsKind::Arc)`, this wording still holds.
             VcsKind::Arc | VcsKind::Svn => format!(
                 "the {} backend is not yet available (planned — see docs/VCS-BACKENDS.md); \
                  diff-scoping requires git. Re-run without --since/--since-branched/--changed-only, \

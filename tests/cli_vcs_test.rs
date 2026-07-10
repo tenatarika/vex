@@ -39,7 +39,11 @@ fn seed_repo(dir: &Path, extra_toml: &str) {
     run_git(dir, &["config", "user.email", "t@t"]);
     run_git(dir, &["config", "user.name", "T"]);
     run_git(dir, &["config", "commit.gpgsign", "false"]);
-    std::fs::write(dir.join(".vex.toml"), format!("local_cache = true\n{extra_toml}")).unwrap();
+    std::fs::write(
+        dir.join(".vex.toml"),
+        format!("local_cache = true\n{extra_toml}"),
+    )
+    .unwrap();
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src/alpha.rs"), "pub fn alpha_handler() {}\n").unwrap();
     run_git(dir, &["add", "-A"]);
@@ -86,7 +90,14 @@ fn flag_vcs_overrides_env_none() {
     seed_repo(tmp.path(), "");
     vex_in(tmp.path())
         .env("VEX_VCS", "none")
-        .args(["search", "alpha_handler", "--since", "HEAD~1", "--vcs", "git"])
+        .args([
+            "search",
+            "alpha_handler",
+            "--since",
+            "HEAD~1",
+            "--vcs",
+            "git",
+        ])
         .assert()
         .success()
         .stdout(predicates::str::contains("alpha_handler"));
@@ -114,5 +125,24 @@ fn flag_vcs_svn_reports_not_yet_available() {
         .args(["search", "alpha", "--changed-only", "--vcs", "svn"])
         .assert()
         .failure()
-        .stderr(predicates::str::contains("svn backend is not yet available"));
+        .stderr(predicates::str::contains(
+            "svn backend is not yet available",
+        ));
+}
+
+/// `--vcs arc` routes to the (provisional) `ArcVcs`, which shells out to `arc`.
+/// On a machine without `arc` (the common case, incl. this CI) the diff-scope
+/// resolution must fail *gracefully* with an arc-specific error — NOT fall back
+/// to git, NOT return an empty set, NOT panic. This verifies the Phase-3 wiring
+/// end-to-end regardless of whether `arc` is installed (if it IS present but
+/// the dir isn't an arc checkout, `arc root` still errors with "arc" in it).
+#[test]
+fn flag_vcs_arc_routes_to_arcvcs_and_fails_gracefully_without_arc() {
+    let tmp = TempDir::new().unwrap();
+    seed_repo(tmp.path(), "");
+    vex_in(tmp.path())
+        .args(["search", "alpha", "--changed-only", "--vcs", "arc"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("arc"));
 }

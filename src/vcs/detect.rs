@@ -15,7 +15,7 @@
 use std::path::Path;
 use std::sync::OnceLock;
 
-use super::{GitVcs, NoVcs, Vcs, VcsKind};
+use super::{ArcVcs, GitVcs, NoVcs, Vcs, VcsKind};
 
 /// Process-global `--vcs` override, installed once from the parsed CLI in
 /// dispatch (mirrors `util::config`'s `CACHE_RESOLVER`). Outer `Option` =
@@ -45,8 +45,10 @@ pub fn resolve(root: &Path) -> Box<dyn Vcs> {
 fn backend_for(kind: VcsKind) -> Box<dyn Vcs> {
     match kind {
         VcsKind::Git => Box::new(GitVcs),
-        // Arc/Svn have no backend in Phase 2; `None` is the genuine floor.
-        // All three decline via `NoVcs`, which reports the detected kind.
+        // Phase 3: Arc has a (provisional, research-grounded) backend.
+        VcsKind::Arc => Box::new(ArcVcs),
+        // Svn has no backend yet (Phase 4); `None` is the genuine floor.
+        // Both decline via `NoVcs`, which reports the detected kind.
         other => Box::new(NoVcs::new(other)),
     }
 }

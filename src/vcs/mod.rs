@@ -1,17 +1,21 @@
 //! Version-control backend abstraction.
 //!
-//! v1 (Phase 1, `docs/VCS-BACKENDS.md`) covers **diff-scoping only** —
-//! `ensure_repo` + `changed_paths`. git is the sole backend and the default;
-//! Arc/svn land in later phases. Blob-cache, history, and staleness are NOT
-//! routed through this trait yet — they stay git-only and hit their existing
-//! fallbacks on non-git checkouts.
+//! Covers **diff-scoping only** — `ensure_repo` + `changed_paths`
+//! (`docs/VCS-BACKENDS.md`). git is the default and fully verified backend;
+//! [`ArcVcs`] (Yandex Arc) is a **provisional, research-grounded** backend
+//! reachable via explicit `--vcs arc` (Phase 3, unverified against a real
+//! `arc` — see `arc.rs`); svn is still a `NoVcs` floor (Phase 4). Blob-cache,
+//! history, and staleness are NOT routed through this trait yet — they stay
+//! git-only and hit their existing fallbacks on non-git checkouts.
 
 use std::path::Path;
 
+mod arc;
 mod detect;
 mod git;
 mod none;
 
+pub use arc::ArcVcs;
 pub use detect::{install_override, resolve};
 pub use git::GitVcs;
 pub use none::NoVcs;
