@@ -597,6 +597,72 @@ pub(super) fn write_output_locked(
             }
         };
 
+    // grep trigram skip-index sidecar (STORAGE-RESEARCH §2). One record
+    // per code file: the presence bloom built in `parse_files` paired
+    // with the `(len, mtime)` the file has right now, so `vex grep` can
+    // skip files that provably cannot contain the pattern's literal —
+    // guarded by a staleness check against edits made after this index.
+    // Failure is non-fatal: a missing/partial sidecar just makes grep
+    // full-walk (never a false negative).
+    //
+    // Two provenance classes in `parsed`:
+    //   - `trigram_bloom = Some` ⟺ freshly parsed this run (read path or
+    //     blob-cache hit). Emit a fresh record: pair the bloom with a
+    //     live `stat()` for `(len, mtime)`.
+    //   - `trigram_bloom = None` ⟺ reconstructed from the prior index on
+    //     `vex update` (no bytes read). Carry the OLD sidecar record
+    //     forward verbatim. A changed-but-unparseable file is dropped
+    //     from `parsed` entirely (absent → grep full-reads → safe), so a
+    //     `None` here is only ever a genuinely-unchanged file whose old
+    //     bloom is still valid — never a stale bloom for changed content.
+    let trigram_path = config::trigram_path(root);
+    let needs_carry_forward = parsed.iter().any(|f| f.trigram_bloom.is_none());
+    let old_trigram: HashMap<String, crate::store::trigram::TrigramRecord> = if needs_carry_forward
+    {
+        crate::store::trigram::load(&trigram_path)
+            .map(|recs| recs.into_iter().map(|r| (r.rel_path.clone(), r)).collect())
+            .unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+    let mut trigram_records = Vec::with_capacity(parsed.len());
+    for pf in parsed {
+        match &pf.trigram_bloom {
+            Some(bloom) => {
+                // Live stat for the staleness guard. A stat failure
+                // (deleted/renamed between parse and now) drops the
+                // record → grep full-reads that path → safe.
+                let full = root.join(&pf.path);
+                if let Ok(meta) = std::fs::metadata(&full) {
+                    if let Ok(mtime) = meta.modified() {
+                        let (mtime_secs, mtime_nanos) = crate::store::trigram::mtime_parts(mtime);
+                        trigram_records.push(crate::store::trigram::TrigramRecord {
+                            rel_path: pf.path.clone(),
+                            bloom: *bloom,
+                            len: meta.len(),
+                            mtime_secs,
+                            mtime_nanos,
+                        });
+                    }
+                }
+            }
+            None => {
+                if let Some(old) = old_trigram.get(&pf.path) {
+                    trigram_records.push(old.clone());
+                }
+                // else: absent → grep full-reads this path → safe.
+            }
+        }
+    }
+    if let Err(e) = crate::store::trigram::save(&trigram_path, &trigram_records) {
+        tracing::warn!(
+            path = %trigram_path.display(),
+            error = %e,
+            "failed to persist trigram skip-index sidecar; `vex grep` will \
+             full-walk every file until the next successful index"
+        );
+    }
+
     let manifest_path = config::manifest_path(root);
     let manifest = Manifest {
         files: file_hashes.iter().cloned().collect::<HashMap<_, _>>(),
@@ -2086,6 +2152,7 @@ mod tests {
             bound_refs: vec![],
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            trigram_bloom: None,
         }];
 
         // Pre-seed the cache with synthetic vectors keyed by the same

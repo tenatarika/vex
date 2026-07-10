@@ -107,6 +107,10 @@ pub(super) fn reconstruct_unchanged(
                 bound_refs: Vec::new(),
                 skeletons: Vec::new(),
                 cpp_includes: Vec::new(),
+                // Reconstructed from a prior index — no bytes read, so no
+                // fresh bloom. The sidecar writer carries the old record
+                // forward for this path (see output.rs trigram block).
+                trigram_bloom: None,
             });
         }
         current_path = path;
@@ -167,6 +171,8 @@ pub(super) fn reconstruct_unchanged(
             bound_refs: Vec::new(),
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
+            // Reconstructed — see the flush block above.
+            trigram_bloom: None,
         });
     }
 
@@ -486,7 +492,21 @@ pub(super) fn parse_files(
                         }));
 
                     match parsed_result {
-                        Ok(Ok(parsed)) => {
+                        Ok(Ok(mut parsed)) => {
+                            // grep trigram skip-index (STORAGE-RESEARCH §2):
+                            // build the per-file presence bloom from the raw
+                            // bytes we just read. Attaching it here means it
+                            // rides into `encode_entry`'s cache slot (so a
+                            // future cache hit restores it for free) AND into
+                            // the returned `ParsedFile` (so the sidecar writer
+                            // records it for untracked files that never touch
+                            // the cache). Over raw bytes, not body_tokens —
+                            // comments must be searchable.
+                            parsed.trigram_bloom = Some(
+                                *crate::grep::trigram::TrigramBloom::from_bytes(content.as_bytes())
+                                    .as_bytes(),
+                            );
+
                             // Encode the cache entry here (CPU-bound, runs in
                             // parallel across rayon workers) and hand the bytes
                             // off to the single drain thread for the syscalls.
