@@ -115,6 +115,44 @@ pub(crate) fn build_implementations(
     Ok(("implementations".to_string(), extra))
 }
 
+/// P3 (`docs/HIERARCHY-EDGES.md` §7, §8) — transitive-descendant
+/// counterpart to `build_implementations`. Same argv shape plus an
+/// optional `depth` passthrough (BFS hop cap on the CLI side). `depth` is
+/// range-validated to `[1, 4096]` up front (mirroring `build_impact`) so a
+/// client sending `depth: 0` gets a clean `-32602` instead of a silently
+/// empty result, and an absurd value can't drive a needless full-graph
+/// walk. The BFS is independently bounded by the cycle guard, so this cap
+/// is defense-in-depth / UX, not a safety requirement.
+pub(crate) fn build_subtypes(
+    args: &Value,
+    project_root: &str,
+    deprecated: &mut Vec<String>,
+) -> Result<(String, Vec<String>)> {
+    let symbol = read_canonical_str(args, "symbol", "name", deprecated)?
+        .ok_or_else(|| ParamError::missing("symbol"))?;
+    let limit = opt_u64(args, "limit", 50)?;
+    let mut extra = vec![
+        symbol.to_string(),
+        "--path".into(),
+        project_root.to_string(),
+        "--limit".into(),
+        limit.to_string(),
+    ];
+    if let Some(d) = opt_u64_some(args, "depth")? {
+        if !(1..=4096).contains(&d) {
+            return Err(
+                ParamError(format!("`depth` must be between 1 and 4096 (got: {d})")).into(),
+            );
+        }
+        extra.extend(["--depth".into(), d.to_string()]);
+    }
+    push_auto_update(&mut extra, args)?;
+    push_no_stale_check(&mut extra, args)?;
+    push_scope(&mut extra, args)?;
+    push_diff_scope(&mut extra, args)?;
+    Ok(("subtypes".to_string(), extra))
+}
+
 pub(crate) fn build_callers(
     args: &Value,
     project_root: &str,

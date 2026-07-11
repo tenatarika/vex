@@ -340,6 +340,28 @@ pub(crate) fn tool_descriptors() -> Value {
             }
         },
         {
+            "name": "subtypes",
+            "description": "Find every TRANSITIVE subtype of a base class / interface — the full descendant tree via extends/implements edges (not just direct implementations; use `implementations` for direct-only). Requires a v8+ index with hierarchy edges (no live-walk fallback) — if the index predates this feature or has no hierarchy section, this returns an empty result with a hint to re-run `vex index`. Supports diff scoping: `since` / `since_branched` / `changed_only` (mutually exclusive) to restrict to recently-touched code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbol": { "type": "string", "description": "Exact name of the base class / trait / interface — canonical key." },
+                    "name": { "type": "string", "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta." },
+                    "limit": { "type": "integer", "description": "Max results", "default": 50 },
+                    "depth": { "type": "integer", "description": "Max BFS hops (transitive descent) from the queried type. Bounds how many inheritance levels deep the search goes; independent of the mandatory cycle-detection guard. Must be in `[1, 4096]` (64 is a generous default real hierarchies never approach).", "default": 64, "minimum": 1, "maximum": 4096 },
+                    "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
+                    "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
+                    "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
+                },
+                "required": ["symbol"]
+            }
+        },
+        {
             "name": "callers",
             "description": "Direct callers of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over grep for `who calls Foo?` — grep on the function name hits doc comments and string literals; the call-graph edges are resolved at parse time. Phase 14.2 + 14.2.2 + 14.2.1: Python/Java function/method decorators, Kotlin annotations / C# method+constructor attributes, and TypeScript method decorators / Rust outer attributes on fns/methods emit forward edges, so `callers GetMapping` lists every Spring handler, `callers get` lists every FastAPI route, `callers HttpGet` every ASP.NET action, `callers JvmStatic` every Kotlin function annotated `@JvmStatic`, `callers Get` every Nest.js `@Get(...)`, `callers test` every Rust `#[tokio::test]` (the rightmost identifier of the decorator/attribute path becomes the callee; arguments are ignored — `#[serde(rename = \"x\")]` → `serde`, not `rename`). Rust `#[derive(...)]` is filtered (compile-time codegen, not call edges). Note the rightmost-identifier convention means `callers get` mixes decorator handlers with any regular `.get()` call — narrow with `include`/`exclude` if needed. Pair with `paths` for multi-hop chains. Supports diff scoping: `since` / `since_branched` / `changed_only` (mutually exclusive) to restrict callers to recently-touched code.",
             "inputSchema": {

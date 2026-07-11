@@ -47,6 +47,7 @@ pub(crate) fn build_command(tool: &str, args: &Value, project_root: &str) -> Res
         "usages" => graph::build_usages(args, project_root, &mut deprecated)?,
         "impact" => graph::build_impact(args, project_root, &mut deprecated)?,
         "implementations" => graph::build_implementations(args, project_root, &mut deprecated)?,
+        "subtypes" => graph::build_subtypes(args, project_root, &mut deprecated)?,
         "callers" => graph::build_callers(args, project_root, &mut deprecated)?,
         "callees" => graph::build_callees(args, project_root, &mut deprecated)?,
         "paths" => graph::build_paths(args, project_root, &mut deprecated)?,
