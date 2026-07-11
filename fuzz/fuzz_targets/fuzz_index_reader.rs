@@ -12,6 +12,19 @@
 //!   copy_nonoverlapping path. Adversarial section headers with
 //!   ref_edges_len that isn't a multiple of RefEdge::SIZE, or that
 //!   point past mmap end, or that index past the section.
+//! - has_hierarchy_edges() / hierarchy_edges_all() /
+//!   find_hierarchy_edges_by_symbol(idx) — v8 hierarchy_edges section
+//!   (HIERARCHY-EDGES P1-P4, commits cb0cd71..3e27455). This is the
+//!   RESOLVED, FST-free half: a sorted `HierarchyPostingEntry[]` array
+//!   walked via manual binary search + bounds-checked MaybeUninit copies,
+//!   mirroring the ref_edge path above. Adversarial `edges_len`/`index_len`/
+//!   `postings_len` that aren't multiples of the record size, or that point
+//!   past mmap end, or posting entries whose `posting_offset` runs past the
+//!   postings sub-section, must all degrade to empty/skip — never panic.
+//!   The parallel FST-keyed `unresolved_hierarchy` section (name lookup) is
+//!   deliberately NOT exercised here — see `fuzz_unresolved_hierarchy.rs`,
+//!   which mirrors the `fuzz_unresolved_refs` fst-panic-exclusion rationale
+//!   below for `find_ref_edges_by_symbol`.
 //!
 //! Goal: no panics, no UB, no out-of-bounds reads. Errors are fine.
 
@@ -76,4 +89,19 @@ fuzz_target!(|data: &[u8]| {
     // BEFORE the unwind can be caught, so this fuzz target excludes the
     // call. Re-enable when production wires the FST lookup or when we
     // switch to a Result-returning FST API.
+
+    // v8 hierarchy_edges section (P1-P4) — sorted-array + binary search,
+    // FST-free, safe to fuzz directly through the same open reader.
+    let _ = reader.has_hierarchy_edges();
+    let all_edges = reader.hierarchy_edges_all();
+    let hier_count = all_edges.len().min(100) as u32;
+
+    for i in 0..hier_count {
+        let _ = reader.find_hierarchy_edges_by_symbol(i);
+    }
+    // OOB / boundary probes — exhaustively cover degenerate `to_sym_idx`
+    // values a corrupt or adversarial index could plausibly encode.
+    let _ = reader.find_hierarchy_edges_by_symbol(hier_count);
+    let _ = reader.find_hierarchy_edges_by_symbol(0);
+    let _ = reader.find_hierarchy_edges_by_symbol(u32::MAX);
 });

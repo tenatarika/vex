@@ -22,6 +22,7 @@ through their binary loaders.
 | `fuzz_rename_chains_load` | rename-chains sidecar |
 | `fuzz_incremental_hnsw` | incremental HNSW graph sidecar |
 | `fuzz_unresolved_refs` | cross-repo unresolved-refs section |
+| `fuzz_unresolved_hierarchy` | v8 unresolved-hierarchy section (FST-keyed extends/implements parents outside the corpus) |
 
 Source-text targets drive the public parse API; loader targets use the
 `#[doc(hidden)] pub fn __fuzz_*` shim pattern to reach `pub(crate)` loaders

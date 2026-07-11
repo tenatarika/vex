@@ -108,5 +108,15 @@ name = "fuzz_kotlin_binder"
 path = "fuzz_targets/fuzz_kotlin_binder.rs"
 doc = false
 
+# HIERARCHY-EDGES P2 (commits cb0cd71..3e27455) — unresolved_hierarchy
+# section reader (`UnresolvedHierarchyReader`, name-keyed FST + postings
+# for extends/implements parents outside the corpus). Mirrors
+# fuzz_unresolved_refs for the parallel FST-keyed hierarchy section; the
+# resolved (FST-free, sorted-array) half is fuzzed in fuzz_index_reader.
+[[bin]]
+name = "fuzz_unresolved_hierarchy"
+path = "fuzz_targets/fuzz_unresolved_hierarchy.rs"
+doc = false
+
 [workspace]
 members = ["."]
