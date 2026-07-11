@@ -1284,7 +1284,11 @@ fn read_hierarchy_posting_list(postings: &[u8], offset: usize) -> Vec<u32> {
     }
     let count =
         u32::from_le_bytes(postings[offset..offset + 4].try_into().unwrap_or([0; 4])) as usize;
-    let mut out = Vec::with_capacity(count);
+    // Cap the speculative allocation to what the blob can hold (4 bytes per
+    // entry) so a crafted `count` can't trigger a huge OOM alloc; the loop
+    // below still bounds-checks every read.
+    let max_entries = postings.len().saturating_sub(offset + 4) / 4;
+    let mut out = Vec::with_capacity(count.min(max_entries));
     let mut pos = offset + 4;
     for _ in 0..count {
         if pos + 4 > postings.len() {
@@ -1303,6 +1307,20 @@ mod tests {
     use crate::store::format::{
         CallGraphHeader, Header, PatternSkeletonHeader, V5SectionHeader, MAGIC, VERSION,
     };
+
+    /// OOM-cap regression: a posting list whose `count` prefix is
+    /// `u32::MAX` but whose blob holds a single entry must return just that
+    /// entry (and, implicitly, not pre-allocate 4 GiB — the test completing
+    /// instantly is the proof). Guards the `count.min(max_entries)` cap
+    /// shared by every `read_posting_list` variant across the store readers.
+    #[test]
+    fn read_hierarchy_posting_list_caps_alloc_on_crafted_huge_count() {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&u32::MAX.to_le_bytes()); // count = 4_294_967_295
+        blob.extend_from_slice(&7u32.to_le_bytes()); // one real entry
+        let out = read_hierarchy_posting_list(&blob, 0);
+        assert_eq!(out, vec![7]);
+    }
 
     /// Build a minimal but byte-valid v8 index header block on disk so we
     /// can mutate one field at a time and assert `IndexReader::open`

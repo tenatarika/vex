@@ -220,7 +220,11 @@ impl<'a> UnresolvedHierarchyReader<'a> {
                 .try_into()
                 .unwrap_or([0; 4]),
         ) as usize;
-        let mut out = Vec::with_capacity(count);
+        // Cap the speculative allocation to what the blob can hold (4 bytes
+        // per entry) so a crafted `count` can't trigger a huge OOM alloc; the
+        // loop below still bounds-checks every read.
+        let max_entries = self.posting_data.len().saturating_sub(offset + 4) / 4;
+        let mut out = Vec::with_capacity(count.min(max_entries));
         let mut pos = offset + 4;
         for _ in 0..count {
             if pos + 4 > self.posting_data.len() {
