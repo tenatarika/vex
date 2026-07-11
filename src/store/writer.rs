@@ -6,9 +6,10 @@ use anyhow::{ensure, Context, Result};
 
 use super::call_graph::{build_callees_fst, build_callers_fst, CallEdgeBuilder};
 use super::format::{
-    CallEdge, CallGraphHeader, Header, PatternSkeletonHeader, SymbolRecord, UnresolvedRefsHeader,
-    V5SectionHeader, MAGIC, VECTOR_DIM, VERSION,
+    CallEdge, CallGraphHeader, Header, HierarchyHeader, PatternSkeletonHeader, SymbolRecord,
+    UnresolvedRefsHeader, V5SectionHeader, MAGIC, VECTOR_DIM, VERSION,
 };
+use super::hierarchy_edges::build_hierarchy_section;
 use super::include_resolver;
 use super::pattern_skeletons::build_pattern_skeleton_section;
 use super::ref_edges::{build_ref_edges_section, RefEdgeBuilder};
@@ -749,6 +750,16 @@ fn write_index_to(
     let (unresolved_edge_bytes, unresolved_fst_bytes, unresolved_post_bytes) =
         build_unresolved_section(&unresolved_ref_builders)?;
 
+    // v8 hierarchy_edges section (P1 — format-only scaffold, no
+    // extraction pipeline yet). Always empty in production until P2
+    // wires `src/hierarchy/queries.rs` captures through here; the write
+    // path below is fully real regardless so a populated section (as
+    // built directly by tests via `build_hierarchy_section`) round-trips
+    // correctly through `write_index_full` today.
+    let hierarchy_edge_builders: Vec<super::hierarchy_edges::HierarchyEdgeBuilder> = Vec::new();
+    let (hierarchy_edge_bytes, hierarchy_index_bytes, hierarchy_postings_bytes) =
+        build_hierarchy_section(&hierarchy_edge_builders)?;
+
     // Build v6 pattern skeleton section (empty slice → all-zero header fields,
     // non-empty → populated sub-sections). The version bump to v6 is
     // unconditional — presence of the header is what gates Inc 5's prefilter.
@@ -756,16 +767,18 @@ fn write_index_to(
     let (skel_section, skel_fingerprints) =
         build_pattern_skeleton_section(pattern_skeletons, &mut no_intern_fn, lang_fingerprints)?;
 
-    // Calculate section offsets — v7 places CallGraphHeader, V5SectionHeader,
-    // PatternSkeletonHeader, and UnresolvedRefsHeader immediately after the
-    // base Header, so Symbols starts at:
+    // Calculate section offsets — v8 places CallGraphHeader, V5SectionHeader,
+    // PatternSkeletonHeader, UnresolvedRefsHeader, and HierarchyHeader
+    // immediately after the base Header, so Symbols starts at:
     //   Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE
     //   + PatternSkeletonHeader::SIZE + UnresolvedRefsHeader::SIZE
+    //   + HierarchyHeader::SIZE
     let cg_header_offset = Header::SIZE as u64;
     let v5_header_offset = cg_header_offset + CallGraphHeader::SIZE as u64;
     let pat_header_offset = v5_header_offset + V5SectionHeader::SIZE as u64;
     let unres_header_offset = pat_header_offset + PatternSkeletonHeader::SIZE as u64;
-    let symbols_offset = unres_header_offset + UnresolvedRefsHeader::SIZE as u64;
+    let hier_header_offset = unres_header_offset + UnresolvedRefsHeader::SIZE as u64;
+    let symbols_offset = hier_header_offset + HierarchyHeader::SIZE as u64;
     let symbols_size = records.len() * SymbolRecord::SIZE;
 
     let vectors_offset = symbols_offset + symbols_size as u64;
@@ -831,6 +844,27 @@ fn write_index_to(
     let unresolved_edges_len = unresolved_edge_bytes.len() as u64;
     let unresolved_fst_offset = unresolved_edges_offset + unresolved_edges_len;
     let unresolved_postings_offset = unresolved_fst_offset + unresolved_fst_bytes.len() as u64;
+
+    // v8 hierarchy_edges sub-sections. Align the edges array to 4 bytes so
+    // HierarchyEdge (align_of == 4) can be cast from the mmap. Positioned
+    // as the LAST variable-length section in the file, after the v7
+    // unresolved postings.
+    let hierarchy_unaligned = unresolved_postings_offset + unresolved_post_bytes.len() as u64;
+    let hierarchy_edges_offset = (hierarchy_unaligned + 3) & !3u64;
+    let hierarchy_edges_pad = (hierarchy_edges_offset - hierarchy_unaligned) as usize;
+    let hierarchy_edges_len = hierarchy_edge_bytes.len() as u64;
+    let hierarchy_index_offset = hierarchy_edges_offset + hierarchy_edges_len;
+    let hierarchy_index_len = hierarchy_index_bytes.len() as u64;
+    let hierarchy_postings_offset = hierarchy_index_offset + hierarchy_index_len;
+
+    let hierarchy_header = HierarchyHeader {
+        edges_offset: hierarchy_edges_offset,
+        edges_len: hierarchy_edges_len,
+        index_offset: hierarchy_index_offset,
+        index_len: hierarchy_index_len,
+        postings_offset: hierarchy_postings_offset,
+        postings_len: hierarchy_postings_bytes.len() as u64,
+    };
 
     let unresolved_refs_header = UnresolvedRefsHeader {
         unresolved_edges_offset,
@@ -959,6 +993,18 @@ fn write_index_to(
     };
     w.write_all(unres_header_bytes)?;
 
+    // v8: HierarchyHeader immediately after UnresolvedRefsHeader. Always
+    // written (P1 — zeroed lengths since the section is empty until P2
+    // wires extraction). SAFETY: HierarchyHeader is #[repr(C)] with fixed
+    // layout.
+    let hier_header_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            &hierarchy_header as *const HierarchyHeader as *const u8,
+            HierarchyHeader::SIZE,
+        )
+    };
+    w.write_all(hier_header_bytes)?;
+
     for rec in &records {
         // SAFETY: SymbolRecord is #[repr(C)] with fixed layout
         let bytes: &[u8] = unsafe {
@@ -1042,6 +1088,14 @@ fn write_index_to(
     w.write_all(&unresolved_edge_bytes)?;
     w.write_all(&unresolved_fst_bytes)?;
     w.write_all(&unresolved_post_bytes)?;
+
+    // v8 hierarchy_edges sub-sections, 4-byte aligned before the records.
+    if hierarchy_edges_pad > 0 {
+        w.write_all(&[0u8; 3][..hierarchy_edges_pad])?;
+    }
+    w.write_all(&hierarchy_edge_bytes)?;
+    w.write_all(&hierarchy_index_bytes)?;
+    w.write_all(&hierarchy_postings_bytes)?;
 
     // Flush the BufWriter, then recover the inner File so we can fsync it
     // before the caller atomic-renames. Without sync_all() between flush

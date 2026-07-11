@@ -59,10 +59,10 @@ fn write_and_open(tmp: &TempDir, parsed: &[ParsedFile], edges: &[CallEdgeBuilder
 
 #[test]
 fn current_version_is_5() {
-    // Bumped to 7 in multi-repo Phase 6 (adds UnresolvedRefsHeader for
-    // cross-repo strict-usages fallback). v3..v6 indexes still open
-    // because MIN_SUPPORTED_VERSION stays at 3.
-    assert_eq!(VERSION, 7);
+    // Bumped to 8 for the typed hierarchy edge section P1 scaffold (adds
+    // HierarchyHeader for `extends`/`implements`/`uses` edges). v3..v7
+    // indexes still open because MIN_SUPPORTED_VERSION stays at 3.
+    assert_eq!(VERSION, 8);
 }
 
 #[test]

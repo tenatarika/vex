@@ -1,12 +1,13 @@
 //! Binary index file format specification.
 //!
-//! Layout (v7 — current):
+//! Layout (v8 — current):
 //! ```text
 //! [Header]                  fixed (168 B) - magic, version, counts, section offsets
 //! [CallGraphHeader]         fixed (128 B) - call graph section offsets (v4+)
 //! [V5SectionHeader]         fixed (48  B) - ref edges section offsets (v5+)
 //! [PatternSkeletonHeader]   fixed (168 B) - pattern skeleton section offsets + fingerprints (v6+)
 //! [UnresolvedRefsHeader]    fixed (48  B) - unresolved-by-name ref section offsets (v7+)
+//! [HierarchyHeader]         fixed (48  B) - typed hierarchy edge section offsets (v8+)
 //! [Symbols Section]         variable      - fixed-size symbol records
 //! [Vectors Section]         variable      - dense f32 arrays (vector_dim each)
 //! [Strings Section]         variable      - deduplicated string pool
@@ -30,6 +31,9 @@
 //! [Unresolved Edges]        variable      - fixed-size UnresolvedRef records (v7+)
 //! [Unresolved Edges FST]    variable      - fst::Map (lowercased name → posting offset) (v7+)
 //! [Unresolved Edges Posts]  variable      - posting lists (count, [edge_idx]) (v7+)
+//! [Hierarchy Edges]         variable      - fixed-size HierarchyEdge array, sorted by to_sym_idx (v8+)
+//! [Hierarchy Index]         variable      - sorted HierarchyPostingEntry array, binary-searched (v8+)
+//! [Hierarchy Postings]      variable      - posting lists (count, [edge_idx]) (v8+)
 //! ```
 //!
 //! Layout v3 (legacy, still readable): same as v4 minus `CallGraphHeader`
@@ -38,7 +42,7 @@
 //! and v4 — version dispatch happens at the reader.
 
 pub const MAGIC: &[u8; 4] = b"VEXI";
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 /// Oldest format version this build can still open for read.
 /// v3 and v4 indexes continue to read without the v5-only sections —
 /// `vex usages --strict` will refuse, everything else still works.
@@ -110,6 +114,14 @@ impl Header {
     /// unavailable on those until `vex index` rebuilds at v7.
     pub fn has_unresolved_refs_header(&self) -> bool {
         self.version >= 7
+    }
+
+    /// Whether this index format carries a [`HierarchyHeader`]
+    /// immediately after the [`UnresolvedRefsHeader`]. v3..v7 indexes do
+    /// not — the typed hierarchy edge section (`extends`/`implements`)
+    /// is unavailable on those until `vex index` rebuilds at v8.
+    pub fn has_hierarchy_header(&self) -> bool {
+        self.version >= 8
     }
 }
 
@@ -236,7 +248,9 @@ impl PatternSkeletonHeader {
 /// so a workspace query can re-resolve them against a sibling member that does
 /// define the symbol (gtags-style ordered fallback). Exactly 6 `u64` fields
 /// (SIZE == 48), same shape as [`V5SectionHeader`] — DO NOT add fields without
-/// updating the `symbols_offset` chain in `writer.rs`.
+/// updating the `symbols_offset` chain in `writer.rs`. Since v8 a
+/// [`HierarchyHeader`] sits immediately downstream of this one in the
+/// chain — this is no longer the last header before `symbols_offset`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UnresolvedRefsHeader {
@@ -255,6 +269,44 @@ pub struct UnresolvedRefsHeader {
 }
 
 impl UnresolvedRefsHeader {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+}
+
+/// Section offsets and lengths for the v8-only section (typed hierarchy
+/// edges — `extends`/`implements`/`uses`, see `docs/HIERARCHY-EDGES.md`).
+/// Located in the file at exactly `Header::SIZE + CallGraphHeader::SIZE +
+/// V5SectionHeader::SIZE + PatternSkeletonHeader::SIZE +
+/// UnresolvedRefsHeader::SIZE` when `header.version >= 8`. Absent from
+/// v3..v7 files.
+///
+/// This is a fixed-size header **always written** (zeroed when the
+/// section is empty — P1 never populates it, since extraction lands in
+/// P2). Exactly 6 `u64` fields (SIZE == 48), same shape as
+/// [`V5SectionHeader`] / [`UnresolvedRefsHeader`] — DO NOT add fields
+/// without updating the `symbols_offset` chain in `writer.rs`.
+///
+/// Sub-sections:
+/// - **edges**: sorted [`HierarchyEdge`][] records, sorted by `to_sym_idx`
+///   (the resolved parent). Record count is `edges_len / HierarchyEdge::SIZE`.
+/// - **index**: sorted [`HierarchyPostingEntry`][] records, also sorted by
+///   `to_sym_idx` — binary-searched (NOT an FST; `to_sym_idx` is already a
+///   dense array index, see `docs/HIERARCHY-EDGES.md` §3.4) to find the
+///   posting-list offset for a given parent symbol.
+/// - **postings**: for each distinct `to_sym_idx`, a `[u32 count][u32
+///   edge_idx; count]` block indexing into the `edges` array — the CSR
+///   posting lists enumerating every child edge for that parent.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct HierarchyHeader {
+    pub edges_offset: u64,
+    pub edges_len: u64,
+    pub index_offset: u64,
+    pub index_len: u64,
+    pub postings_offset: u64,
+    pub postings_len: u64,
+}
+
+impl HierarchyHeader {
     pub const SIZE: usize = std::mem::size_of::<Self>();
 }
 
@@ -352,6 +404,118 @@ impl UnresolvedRef {
     }
 }
 
+/// Typed hierarchy edge kind (`extends` / `implements` / trait-mixin
+/// `uses`), Kythe-style rather than SCIP-style — see
+/// `docs/HIERARCHY-EDGES.md` §3.2. This is the **in-memory decode type
+/// only**; the on-disk field is always the raw packed `u32`
+/// ([`HierarchyEdge::line_and_kind`]), decoded via [`TryFrom<u8>`],
+/// **never `mem::transmute`** — a reserved/unknown byte (3..=255, which
+/// will appear once `Overrides`/`Satisfies` land, or from a corrupt file)
+/// must decode to "unknown kind", never undefined behaviour.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // P1 format scaffold — no extraction pipeline emits this yet (P2)
+pub enum EdgeKind {
+    /// Nominal class inheritance (Rust supertrait, Python base,
+    /// Java/TS/C#/Kotlin/Swift/C++ `extends`, Ruby `<`).
+    Extends = 0,
+    /// Nominal interface conformance (Java/C#/Kotlin/TS `implements`).
+    Implements = 1,
+    /// Trait/mixin composition (PHP `use`, Ruby include/extend/prepend).
+    Uses = 2,
+    // reserved 3..=254 — Overrides, Satisfies (Go structural) added
+    // later, no format bump required (see §3.2 / §9).
+}
+
+impl TryFrom<u8> for EdgeKind {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(EdgeKind::Extends),
+            1 => Ok(EdgeKind::Implements),
+            2 => Ok(EdgeKind::Uses),
+            _ => Err(()),
+        }
+    }
+}
+
+/// One typed hierarchy edge (v8+, format-only in P1 — the section is
+/// empty until P2 wires extraction). `to_sym_idx` is the resolved
+/// **parent** (supertype/interface) symbol index — the CSR grouping key
+/// the section is sorted and indexed by. `from_sym_idx` is the resolved
+/// **child** (subtype/implementer) symbol index, kept (unlike
+/// [`RefEdge`], which only keeps the site) because a hierarchy query's
+/// useful output is a symbol name, not just a file:line — see
+/// `docs/HIERARCHY-EDGES.md` §3.3 Q5. `from_file_id` indexes the file
+/// table for the file where the `extends`/`implements` clause lives.
+///
+/// `line_and_kind` packs an 8-bit [`EdgeKind`] discriminant in the top
+/// byte and a 24-bit 1-based line number in the low three bytes — same
+/// bit layout as [`RefEdge::col_and_kind`], decode via
+/// [`HierarchyEdge::edge_kind_bits`] / [`HierarchyEdge::line`], and
+/// [`EdgeKind::try_from`] for the safe enum decode (never
+/// `mem::transmute`). Unlike `RefEdge`'s 24-bit *column* (unreachable in
+/// real source), a 24-bit *line* ceiling (16,777,215) is reachable on
+/// generated/adversarial files, so the builder
+/// (`hierarchy_edges::pack_line_and_kind`) rejects an over-cap line with
+/// a real `Result` error rather than silently truncating.
+///
+/// 16 bytes, `#[repr(C)]`, four `u32` fields (align 4, no padding).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct HierarchyEdge {
+    pub to_sym_idx: u32,
+    pub from_sym_idx: u32,
+    pub from_file_id: u32,
+    pub line_and_kind: u32,
+}
+
+impl HierarchyEdge {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+
+    /// Raw `EdgeKind` discriminant byte. Decode via
+    /// `EdgeKind::try_from(edge.edge_kind_bits())` — never
+    /// `mem::transmute` — since an unrecognised value (reserved for
+    /// future kinds, or corrupt input) must degrade to "unknown kind",
+    /// not undefined behaviour.
+    #[allow(dead_code)] // exercised by integration/reader tests; documents the bit layout
+    pub fn edge_kind_bits(&self) -> u8 {
+        (self.line_and_kind >> 24) as u8
+    }
+
+    /// 1-based line number, unpacked from the low 24 bits.
+    #[allow(dead_code)] // exercised by integration/reader tests; documents the bit layout
+    pub fn line(&self) -> u32 {
+        self.line_and_kind & 0x00FF_FFFF
+    }
+}
+
+/// One entry in the sorted [`HierarchyHeader`] index sub-section (v8+).
+/// `to_sym_idx` is the parent symbol index (the CSR grouping key,
+/// matching [`HierarchyEdge::to_sym_idx`]); `posting_offset` is the byte
+/// offset into the postings blob where that parent's `[u32 count][u32
+/// edge_idx; count]` block begins.
+///
+/// This is a **plain sorted array binary-searched with
+/// `partition_point`**, deliberately NOT an FST — `to_sym_idx` is already
+/// a dense array index into the Symbols section, so an FST (which buys
+/// prefix compression and fuzzy/range queries neither of which apply to
+/// a dense integer key) would be strictly worse. See
+/// `docs/HIERARCHY-EDGES.md` §3.4 for the locked rationale.
+///
+/// 8 bytes, `#[repr(C)]`, two `u32` fields (align 4, no padding).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct HierarchyPostingEntry {
+    pub to_sym_idx: u32,
+    pub posting_offset: u32,
+}
+
+impl HierarchyPostingEntry {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+}
+
 /// One caller → callee edge. The caller is identified by `caller_sym_idx`
 /// (an index into the Symbols section, resolving to the enclosing function
 /// definition). The callee is stored as a string offset into the Strings
@@ -385,4 +549,42 @@ pub struct SymbolRecord {
 
 impl SymbolRecord {
     pub const SIZE: usize = std::mem::size_of::<Self>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hierarchy_header_is_forty_eight_bytes() {
+        // Pinned: 6 × u64, same shape as V5SectionHeader /
+        // UnresolvedRefsHeader. Adding fields would silently drift
+        // `symbols_offset` in writer.rs.
+        assert_eq!(HierarchyHeader::SIZE, 48);
+    }
+
+    #[test]
+    fn hierarchy_edge_is_sixteen_bytes() {
+        assert_eq!(HierarchyEdge::SIZE, 16);
+        assert_eq!(std::mem::align_of::<HierarchyEdge>(), 4);
+    }
+
+    #[test]
+    fn hierarchy_posting_entry_is_eight_bytes() {
+        assert_eq!(HierarchyPostingEntry::SIZE, 8);
+        assert_eq!(std::mem::align_of::<HierarchyPostingEntry>(), 4);
+    }
+
+    #[test]
+    fn edge_kind_try_from_decodes_known_values() {
+        assert_eq!(EdgeKind::try_from(0u8), Ok(EdgeKind::Extends));
+        assert_eq!(EdgeKind::try_from(1u8), Ok(EdgeKind::Implements));
+        assert_eq!(EdgeKind::try_from(2u8), Ok(EdgeKind::Uses));
+    }
+
+    #[test]
+    fn edge_kind_try_from_rejects_reserved_and_corrupt_values() {
+        assert!(EdgeKind::try_from(3u8).is_err());
+        assert!(EdgeKind::try_from(255u8).is_err());
+    }
 }

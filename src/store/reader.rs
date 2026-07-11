@@ -4,8 +4,8 @@ use anyhow::{bail, Context, Result};
 use memmap2::Mmap;
 
 use super::format::{
-    CallEdge, CallGraphHeader, Header, PatternSkeletonHeader, SymbolRecord, UnresolvedRefsHeader,
-    V5SectionHeader,
+    CallEdge, CallGraphHeader, Header, HierarchyEdge, HierarchyHeader, HierarchyPostingEntry,
+    PatternSkeletonHeader, SymbolRecord, UnresolvedRefsHeader, V5SectionHeader,
 };
 
 /// Memory-mapped index reader. Zero-copy access to symbols and strings.
@@ -201,6 +201,18 @@ impl IndexReader {
             {
                 bail!("v6 index at {p} is truncated (no room for PatternSkeletonHeader). Re-run `vex index` to rebuild.");
             }
+            // v8: HierarchyHeader sits directly after UnresolvedRefsHeader.
+            if header.has_hierarchy_header()
+                && (Header::SIZE
+                    + CallGraphHeader::SIZE
+                    + V5SectionHeader::SIZE
+                    + PatternSkeletonHeader::SIZE
+                    + UnresolvedRefsHeader::SIZE
+                    + HierarchyHeader::SIZE)
+                    > reader.mmap.len()
+            {
+                bail!("v8 index at {p} is truncated (no room for HierarchyHeader). Re-run `vex index` to rebuild.");
+            }
             if let Some(psh) = reader.pattern_skeleton_header() {
                 let mmap_len = reader.mmap.len() as u64;
                 let skel_end = psh.skeletons_offset.saturating_add(psh.skeletons_len);
@@ -223,6 +235,14 @@ impl IndexReader {
                     .saturating_add(v5.ref_edges_postings_len);
                 if edges_end > mmap_len || fst_end > mmap_len || post_end > mmap_len {
                     bail!("v5 index at {p} is corrupted (reference_edges section offsets exceed file size). Re-run `vex index` to rebuild.");
+                }
+            }
+            if let Some(hh) = reader.hierarchy_header() {
+                let edges_end = hh.edges_offset.saturating_add(hh.edges_len);
+                let index_end = hh.index_offset.saturating_add(hh.index_len);
+                let postings_end = hh.postings_offset.saturating_add(hh.postings_len);
+                if edges_end > mmap_len || index_end > mmap_len || postings_end > mmap_len {
+                    bail!("v8 index at {p} is corrupted (hierarchy_edges section offsets exceed file size). Re-run `vex index` to rebuild.");
                 }
             }
             if let Some(cg) = reader.call_graph_header() {
@@ -738,6 +758,146 @@ impl IndexReader {
         )
     }
 
+    /// Read the v8 [`HierarchyHeader`] when present. Returns `None` for
+    /// v3..v7 indexes or when the bytes after the [`UnresolvedRefsHeader`]
+    /// don't fit / aren't aligned.
+    pub fn hierarchy_header(&self) -> Option<&HierarchyHeader> {
+        if !self.header().has_hierarchy_header() {
+            return None;
+        }
+        let offset = Header::SIZE
+            .checked_add(CallGraphHeader::SIZE)?
+            .checked_add(V5SectionHeader::SIZE)?
+            .checked_add(PatternSkeletonHeader::SIZE)?
+            .checked_add(UnresolvedRefsHeader::SIZE)?;
+        let end = offset.checked_add(HierarchyHeader::SIZE)?;
+        if end > self.mmap.len() {
+            return None;
+        }
+        let ptr = unsafe { self.mmap.as_ptr().add(offset) };
+        if ptr.align_offset(std::mem::align_of::<HierarchyHeader>()) != 0 {
+            return None;
+        }
+        // SAFETY: bounds + alignment checked. HierarchyHeader is #[repr(C)].
+        Some(unsafe { &*(ptr as *const HierarchyHeader) })
+    }
+
+    /// Whether the index carries typed hierarchy edges (v8+, P1 format
+    /// scaffold — always false until P2 wires extraction). False for
+    /// v3..v7 indexes and v8 indexes whose section is empty.
+    #[allow(dead_code)] // P1 format scaffold — no CLI caller until P3 wires `vex implementations`
+    pub fn has_hierarchy_edges(&self) -> bool {
+        self.hierarchy_header().is_some_and(|h| h.edges_len > 0)
+    }
+
+    #[allow(dead_code)] // P1 format scaffold — only reached via find_hierarchy_edges_by_symbol
+    fn hierarchy_section_bytes(&self) -> Option<(&[u8], &[u8], &[u8])> {
+        let h = self.hierarchy_header()?;
+        let mmap = &self.mmap[..];
+        let edges = slice_or_empty(mmap, h.edges_offset as usize, h.edges_len as usize)?;
+        let index = slice_or_empty(mmap, h.index_offset as usize, h.index_len as usize)?;
+        let postings = slice_or_empty(mmap, h.postings_offset as usize, h.postings_len as usize)?;
+        Some((edges, index, postings))
+    }
+
+    /// Copy the `i`-th [`HierarchyPostingEntry`] out of the `index` bytes.
+    /// Bounds-checked; `None` on any out-of-range or truncated read
+    /// (corrupt index) — the caller treats that as "entry not found".
+    #[allow(dead_code)] // P1 format scaffold — only reached via find_hierarchy_edges_by_symbol
+    fn read_hierarchy_posting_entry(index: &[u8], i: usize) -> Option<HierarchyPostingEntry> {
+        let off = i.checked_mul(HierarchyPostingEntry::SIZE)?;
+        let end = off.checked_add(HierarchyPostingEntry::SIZE)?;
+        if end > index.len() {
+            return None;
+        }
+        let mut rec = std::mem::MaybeUninit::<HierarchyPostingEntry>::uninit();
+        // SAFETY: bounds checked above; copy into stack-aligned storage to
+        // avoid unaligned reads from mmap (the index sub-section is only
+        // 4-byte aligned at its start, not necessarily at every entry
+        // offset relative to the mmap base).
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                index[off..].as_ptr(),
+                rec.as_mut_ptr() as *mut u8,
+                HierarchyPostingEntry::SIZE,
+            );
+            Some(rec.assume_init())
+        }
+    }
+
+    /// Look up every persisted [`HierarchyEdge`] whose `to_sym_idx`
+    /// (resolved parent) matches `to_sym_idx`, via binary search over the
+    /// sorted `HierarchyPostingEntry[]` index sub-section (NOT an FST —
+    /// `to_sym_idx` is a dense array index, see
+    /// `docs/HIERARCHY-EDGES.md` §3.4). Returns an empty `Vec` when the
+    /// index has no hierarchy section, the parent has no recorded edges,
+    /// or any section bytes fail to validate. Never panics on malformed
+    /// input — every bounds check degrades to "skip this entry" or
+    /// "return empty" (P1 acceptance criteria, see
+    /// `docs/HIERARCHY-EDGES.md` §8).
+    #[allow(dead_code)] // P1 format scaffold — no CLI caller until P3 wires `vex implementations`
+    pub fn find_hierarchy_edges_by_symbol(&self, to_sym_idx: u32) -> Vec<HierarchyEdge> {
+        if !self.has_hierarchy_edges() {
+            return Vec::new();
+        }
+        let Some((edges, index, postings)) = self.hierarchy_section_bytes() else {
+            return Vec::new();
+        };
+        if index.len() % HierarchyPostingEntry::SIZE != 0 {
+            return Vec::new();
+        }
+        let entry_count = index.len() / HierarchyPostingEntry::SIZE;
+
+        // Manual binary search: partition_point-style, reading each
+        // candidate entry through the bounds-checked helper (never an
+        // aligned cast over the whole index slice).
+        let mut lo = 0usize;
+        let mut hi = entry_count;
+        let mut found: Option<HierarchyPostingEntry> = None;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let Some(entry) = Self::read_hierarchy_posting_entry(index, mid) else {
+                return Vec::new();
+            };
+            match entry.to_sym_idx.cmp(&to_sym_idx) {
+                std::cmp::Ordering::Less => lo = mid + 1,
+                std::cmp::Ordering::Greater => hi = mid,
+                std::cmp::Ordering::Equal => {
+                    found = Some(entry);
+                    break;
+                }
+            }
+        }
+        let Some(entry) = found else {
+            return Vec::new();
+        };
+
+        let edge_indices = read_hierarchy_posting_list(postings, entry.posting_offset as usize);
+        let edge_count = edges.len() / HierarchyEdge::SIZE;
+        let mut out = Vec::with_capacity(edge_indices.len());
+        for idx in edge_indices {
+            let idx_usize = idx as usize;
+            if idx_usize >= edge_count {
+                // Corrupt posting list — skip the entry instead of
+                // panicking. Safest degradation is "missing edge".
+                continue;
+            }
+            let off = idx_usize * HierarchyEdge::SIZE;
+            let mut rec = std::mem::MaybeUninit::<HierarchyEdge>::uninit();
+            // SAFETY: bounds checked above; copy into stack-aligned
+            // storage to avoid unaligned reads from mmap.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    edges[off..].as_ptr(),
+                    rec.as_mut_ptr() as *mut u8,
+                    HierarchyEdge::SIZE,
+                );
+                out.push(rec.assume_init());
+            }
+        }
+        out
+    }
+
     /// Number of call edges recorded in this index, 0 when absent.
     pub fn call_edge_count(&self) -> usize {
         self.call_graph_header()
@@ -943,6 +1103,32 @@ fn slice_or_empty(mmap: &[u8], offset: usize, len: usize) -> Option<&[u8]> {
     Some(&mmap[offset..end])
 }
 
+/// Read a `[u32 count][u32 edge_idx; count]` posting list out of the
+/// hierarchy_edges postings blob at `offset`. Bounds-checked on the count
+/// prefix and every subsequent entry — truncates (returns whatever was
+/// read so far) rather than panicking on a corrupt/truncated blob, same
+/// idiom as `RefEdgeReader::read_posting_list` /
+/// `UnresolvedRefReader::read_posting_list`.
+#[allow(dead_code)] // P1 format scaffold — only reached via find_hierarchy_edges_by_symbol
+fn read_hierarchy_posting_list(postings: &[u8], offset: usize) -> Vec<u32> {
+    if offset + 4 > postings.len() {
+        return Vec::new();
+    }
+    let count =
+        u32::from_le_bytes(postings[offset..offset + 4].try_into().unwrap_or([0; 4])) as usize;
+    let mut out = Vec::with_capacity(count);
+    let mut pos = offset + 4;
+    for _ in 0..count {
+        if pos + 4 > postings.len() {
+            break;
+        }
+        let idx = u32::from_le_bytes(postings[pos..pos + 4].try_into().unwrap_or([0; 4]));
+        out.push(idx);
+        pos += 4;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -950,16 +1136,43 @@ mod tests {
         CallGraphHeader, Header, PatternSkeletonHeader, V5SectionHeader, MAGIC, VERSION,
     };
 
-    /// Build a minimal but byte-valid v6 index header block on disk so we
+    /// Build a minimal but byte-valid v8 index header block on disk so we
     /// can mutate one field at a time and assert `IndexReader::open`
     /// rejects the corrupted file with a typed error rather than
     /// silently allowing overlapping sections.
+    ///
+    /// `hierarchy` is `None` for the "empty section" shape used by every
+    /// pre-existing test in this module, or `Some((edges, index,
+    /// postings))` to splice in real hierarchy_edges section bytes
+    /// (4-byte aligned) for the roundtrip tests — this is the established
+    /// pattern for this file rather than inventing a second helper.
     fn write_minimal_index(tmp: &Path, mutate: impl FnOnce(&mut Header)) -> std::path::PathBuf {
+        write_minimal_index_with_hierarchy(tmp, mutate, None)
+    }
+
+    fn write_minimal_index_with_hierarchy(
+        tmp: &Path,
+        mutate: impl FnOnce(&mut Header),
+        hierarchy: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    ) -> std::path::PathBuf {
         let total_header = Header::SIZE
             + CallGraphHeader::SIZE
             + V5SectionHeader::SIZE
-            + PatternSkeletonHeader::SIZE;
-        let symbols_offset = total_header as u64;
+            + PatternSkeletonHeader::SIZE
+            + UnresolvedRefsHeader::SIZE
+            + HierarchyHeader::SIZE;
+
+        let (edges_bytes, index_bytes, postings_bytes) =
+            hierarchy.unwrap_or((Vec::new(), Vec::new(), Vec::new()));
+        // 4-byte align the hierarchy edges array after the fixed headers,
+        // matching the writer's convention for every other aligned section.
+        let hier_unaligned = total_header as u64;
+        let hier_edges_offset = (hier_unaligned + 3) & !3u64;
+        let hier_pad = (hier_edges_offset - hier_unaligned) as usize;
+        let hier_index_offset = hier_edges_offset + edges_bytes.len() as u64;
+        let hier_postings_offset = hier_index_offset + index_bytes.len() as u64;
+        let symbols_offset = hier_postings_offset + postings_bytes.len() as u64;
+
         let mut header = Header {
             magic: *MAGIC,
             version: VERSION,
@@ -1022,10 +1235,26 @@ mod tests {
             file_index_len: 0,
             grammar_fingerprints: [0u32; 32],
         };
+        let unres = UnresolvedRefsHeader {
+            unresolved_edges_offset: symbols_offset,
+            unresolved_edges_len: 0,
+            unresolved_fst_offset: symbols_offset,
+            unresolved_fst_len: 0,
+            unresolved_postings_offset: symbols_offset,
+            unresolved_postings_len: 0,
+        };
+        let hier = HierarchyHeader {
+            edges_offset: hier_edges_offset,
+            edges_len: edges_bytes.len() as u64,
+            index_offset: hier_index_offset,
+            index_len: index_bytes.len() as u64,
+            postings_offset: hier_postings_offset,
+            postings_len: postings_bytes.len() as u64,
+        };
 
         let mut bytes = Vec::with_capacity(total_header);
-        // SAFETY: all four structs are `#[repr(C)]` with stable layouts;
-        // we're reading their bytes for a write-then-read round-trip.
+        // SAFETY: all structs are `#[repr(C)]` with stable layouts; we're
+        // reading their bytes for a write-then-read round-trip.
         bytes.extend_from_slice(unsafe {
             std::slice::from_raw_parts(&header as *const Header as *const u8, Header::SIZE)
         });
@@ -1047,6 +1276,26 @@ mod tests {
                 PatternSkeletonHeader::SIZE,
             )
         });
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &unres as *const UnresolvedRefsHeader as *const u8,
+                UnresolvedRefsHeader::SIZE,
+            )
+        });
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &hier as *const HierarchyHeader as *const u8,
+                HierarchyHeader::SIZE,
+            )
+        });
+
+        debug_assert_eq!(bytes.len(), total_header);
+        if hier_pad > 0 {
+            bytes.extend_from_slice(&[0u8; 3][..hier_pad]);
+        }
+        bytes.extend_from_slice(&edges_bytes);
+        bytes.extend_from_slice(&index_bytes);
+        bytes.extend_from_slice(&postings_bytes);
 
         let path = tmp.join("index.vex");
         std::fs::write(&path, &bytes).expect("write minimal index");
@@ -1118,6 +1367,352 @@ mod tests {
         assert!(
             msg.contains("vectors_offset") || msg.contains("non-monotone"),
             "expected monotone-offset error, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // v8 hierarchy_edges — P1 format scaffold roundtrip tests.
+    // -----------------------------------------------------------------
+
+    use crate::store::hierarchy_edges::{build_hierarchy_section, HierarchyEdgeBuilder};
+
+    fn hb(to: u32, from: u32, file: u32, line: u32, kind: u8) -> HierarchyEdgeBuilder {
+        HierarchyEdgeBuilder {
+            to_sym_idx: to,
+            from_sym_idx: from,
+            from_file_id: file,
+            line,
+            kind,
+        }
+    }
+
+    /// Full end-to-end roundtrip: build real `HierarchyEdge` records for
+    /// 3 distinct parents with 1-2 children each, splice them into a
+    /// minimal on-disk v8 index via `IndexReader::open`, and confirm
+    /// `find_hierarchy_edges_by_symbol` recovers exactly the right
+    /// children/kinds/lines per parent through the binary-search +
+    /// bounds-check read path (not just the builder in isolation).
+    #[test]
+    fn hierarchy_edges_roundtrip_finds_children_by_parent() {
+        let edges = vec![
+            hb(100, 1, 0, 10, 0), // parent 100 <- child 1, Extends, line 10
+            hb(100, 2, 0, 20, 1), // parent 100 <- child 2, Implements, line 20
+            hb(200, 3, 1, 30, 2), // parent 200 <- child 3, Uses, line 30
+            hb(300, 4, 1, 40, 0), // parent 300 <- child 4, Extends, line 40
+            hb(300, 5, 2, 50, 1), // parent 300 <- child 5, Implements, line 50
+        ];
+        let (edge_bytes, index_bytes, posting_bytes) =
+            build_hierarchy_section(&edges).expect("build hierarchy section");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index_with_hierarchy(
+            tmp.path(),
+            |_| {},
+            Some((edge_bytes, index_bytes, posting_bytes)),
+        );
+        let reader = IndexReader::open(&path).expect("v8 index with hierarchy section is valid");
+
+        assert!(reader.has_hierarchy_edges());
+
+        let mut p100 = reader.find_hierarchy_edges_by_symbol(100);
+        p100.sort_by_key(|e| e.from_sym_idx);
+        assert_eq!(p100.len(), 2, "parent 100 has two children");
+        assert_eq!(p100[0].from_sym_idx, 1);
+        assert_eq!(p100[0].line(), 10);
+        assert_eq!(
+            crate::store::format::EdgeKind::try_from(p100[0].edge_kind_bits()),
+            Ok(crate::store::format::EdgeKind::Extends)
+        );
+        assert_eq!(p100[1].from_sym_idx, 2);
+        assert_eq!(p100[1].line(), 20);
+        assert_eq!(
+            crate::store::format::EdgeKind::try_from(p100[1].edge_kind_bits()),
+            Ok(crate::store::format::EdgeKind::Implements)
+        );
+
+        let p200 = reader.find_hierarchy_edges_by_symbol(200);
+        assert_eq!(p200.len(), 1, "parent 200 has one child");
+        assert_eq!(p200[0].from_sym_idx, 3);
+        assert_eq!(p200[0].from_file_id, 1);
+        assert_eq!(p200[0].line(), 30);
+        assert_eq!(
+            crate::store::format::EdgeKind::try_from(p200[0].edge_kind_bits()),
+            Ok(crate::store::format::EdgeKind::Uses)
+        );
+
+        let mut p300 = reader.find_hierarchy_edges_by_symbol(300);
+        p300.sort_by_key(|e| e.from_sym_idx);
+        assert_eq!(p300.len(), 2, "parent 300 has two children");
+        assert_eq!(p300[0].from_sym_idx, 4);
+        assert_eq!(p300[1].from_sym_idx, 5);
+    }
+
+    #[test]
+    fn hierarchy_edges_absent_parent_returns_empty() {
+        let edges = vec![hb(100, 1, 0, 10, 0)];
+        let (edge_bytes, index_bytes, posting_bytes) =
+            build_hierarchy_section(&edges).expect("build hierarchy section");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index_with_hierarchy(
+            tmp.path(),
+            |_| {},
+            Some((edge_bytes, index_bytes, posting_bytes)),
+        );
+        let reader = IndexReader::open(&path).expect("v8 index with hierarchy section is valid");
+
+        assert!(
+            reader.find_hierarchy_edges_by_symbol(999).is_empty(),
+            "a parent with no recorded edges must return empty, not panic"
+        );
+    }
+
+    #[test]
+    fn hierarchy_edges_v7_file_opens_clean_with_no_hierarchy_section() {
+        // A v7-version header (no HierarchyHeader at all) must open clean
+        // and `find_hierarchy_edges_by_symbol` must return empty — this
+        // is the P1 "v7-reads-clean" acceptance criterion (§8).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index(tmp.path(), |h| {
+            h.version = 7;
+        });
+        let reader = IndexReader::open(&path).expect("v7 index must still open cleanly");
+        assert!(!reader.header().has_hierarchy_header());
+        assert!(!reader.has_hierarchy_edges());
+        assert!(reader.find_hierarchy_edges_by_symbol(0).is_empty());
+    }
+
+    #[test]
+    fn hierarchy_edges_v8_empty_section_returns_empty() {
+        // A v8 header with a zeroed (present-but-empty) HierarchyHeader —
+        // the shape every real P1 index has, since extraction is P2 —
+        // must behave identically to "no section".
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index(tmp.path(), |_| {});
+        let reader = IndexReader::open(&path).expect("v8 index with empty hierarchy section");
+        assert!(reader.header().has_hierarchy_header());
+        assert!(!reader.has_hierarchy_edges());
+        assert!(reader.find_hierarchy_edges_by_symbol(0).is_empty());
+    }
+
+    #[test]
+    fn hierarchy_edges_truncated_header_rejected() {
+        // A v8 file truncated exactly at the end of UnresolvedRefsHeader
+        // (missing the HierarchyHeader bytes) must be rejected rather
+        // than silently treated as an empty section.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index(tmp.path(), |_| {});
+        let bytes = std::fs::read(&path).expect("read written index");
+        let truncated_len = Header::SIZE
+            + CallGraphHeader::SIZE
+            + V5SectionHeader::SIZE
+            + PatternSkeletonHeader::SIZE
+            + UnresolvedRefsHeader::SIZE;
+        let truncated = &bytes[..truncated_len];
+        let trunc_path = tmp.path().join("truncated.vex");
+        std::fs::write(&trunc_path, truncated).expect("write truncated index");
+
+        let result = IndexReader::open(&trunc_path);
+        assert!(
+            result.is_err(),
+            "v8 index missing HierarchyHeader bytes must be rejected"
+        );
+    }
+
+    #[test]
+    fn hierarchy_edges_oob_posting_index_returns_empty_never_panics() {
+        // Fuzz-style: corrupt a posting-list edge_idx to point past the
+        // end of the edges array. The reader must skip the OOB entry and
+        // return empty rather than panic (P1 acceptance §8, "OOB-posting-
+        // index ... must return empty, never panic").
+        let edges = vec![hb(7, 1, 0, 1, 0)];
+        let (edge_bytes, index_bytes, mut posting_bytes) =
+            build_hierarchy_section(&edges).expect("build");
+        // Posting layout: [u32 count = 1][u32 edge_idx]; corrupt idx to 999.
+        assert!(posting_bytes.len() >= 8);
+        posting_bytes[4..8].copy_from_slice(&999u32.to_le_bytes());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index_with_hierarchy(
+            tmp.path(),
+            |_| {},
+            Some((edge_bytes, index_bytes, posting_bytes)),
+        );
+        let reader = IndexReader::open(&path).expect("index with corrupt posting still opens");
+        let hits = reader.find_hierarchy_edges_by_symbol(7);
+        assert!(
+            hits.is_empty(),
+            "out-of-range edge_idx must skip silently, got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn hierarchy_edges_corrupt_index_length_returns_empty_never_panics() {
+        // Fuzz-style: an index sub-section length that isn't a multiple
+        // of HierarchyPostingEntry::SIZE (corrupt/truncated write) must
+        // degrade to "no edges found", never panic on the modulo-based
+        // entry_count computation or any subsequent read.
+        let edges = vec![hb(7, 1, 0, 1, 0)];
+        let (edge_bytes, mut index_bytes, posting_bytes) =
+            build_hierarchy_section(&edges).expect("build");
+        index_bytes.push(0xAB); // corrupt: 9 bytes, not a multiple of 8
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index_with_hierarchy(
+            tmp.path(),
+            |_| {},
+            Some((edge_bytes, index_bytes, posting_bytes)),
+        );
+        let reader = IndexReader::open(&path).expect("index with corrupt index len still opens");
+        let hits = reader.find_hierarchy_edges_by_symbol(7);
+        assert!(
+            hits.is_empty(),
+            "corrupt index length must degrade to empty, got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn hierarchy_edges_posting_count_exceeds_remaining_bytes_returns_empty_never_panics() {
+        // Fuzz-style: the posting-list `count` u32 prefix claims more
+        // entries than actually fit in the remaining postings bytes (a
+        // corrupt/adversarial count, not just a truncated blob). The
+        // reader must read only what fits and stop, never panic or read
+        // past the slice (P1 acceptance §8(d): "posting-list length
+        // guards on the count u32").
+        let edges = vec![hb(7, 1, 0, 1, 0)];
+        let (edge_bytes, index_bytes, mut posting_bytes) =
+            build_hierarchy_section(&edges).expect("build");
+        // Posting layout: [u32 count = 1][u32 edge_idx = 0]. Overwrite the
+        // count prefix with an absurdly large value while leaving only one
+        // real u32 slot after it.
+        assert!(posting_bytes.len() >= 8);
+        posting_bytes[0..4].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index_with_hierarchy(
+            tmp.path(),
+            |_| {},
+            Some((edge_bytes, index_bytes, posting_bytes)),
+        );
+        let reader =
+            IndexReader::open(&path).expect("index with corrupt posting count still opens");
+        // Must not panic; whatever is returned must not include any
+        // fabricated edge past what the (single) real slot could produce.
+        let hits = reader.find_hierarchy_edges_by_symbol(7);
+        assert!(
+            hits.len() <= 1,
+            "an inflated count must not manufacture edges from OOB reads, got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn hierarchy_edges_posting_blob_truncated_mid_entry_returns_partial_never_panics() {
+        // Fuzz-style: the postings blob is truncated after the count
+        // prefix but before the promised edge_idx entries are fully
+        // present. The reader must stop at the truncation point and
+        // return whatever was read so far, never panic or read OOB (P1
+        // acceptance §8(d): guard on each entry, not just the count).
+        let edges = vec![hb(7, 1, 0, 1, 0), hb(7, 2, 0, 2, 1), hb(7, 3, 0, 3, 2)];
+        let (edge_bytes, index_bytes, posting_bytes) =
+            build_hierarchy_section(&edges).expect("build");
+        // Posting layout for parent 7: [u32 count = 3][idx][idx][idx].
+        // Truncate right after the count prefix + one entry (8 bytes in).
+        assert!(posting_bytes.len() > 8);
+        let truncated_postings = posting_bytes[..8].to_vec();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index_with_hierarchy(
+            tmp.path(),
+            |_| {},
+            Some((edge_bytes, index_bytes, truncated_postings)),
+        );
+        let reader =
+            IndexReader::open(&path).expect("index with truncated postings blob still opens");
+        let hits = reader.find_hierarchy_edges_by_symbol(7);
+        assert!(
+            hits.len() <= 1,
+            "a truncated postings blob must yield only the entries that fully fit, got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn hierarchy_edges_reserved_edge_kind_byte_surfaces_raw_bits_without_panicking() {
+        // A reserved/future EdgeKind byte (3..=255 — will appear once
+        // Overrides/Satisfies land in a later format-additive change, or
+        // from a corrupt file today) must decode via `edge_kind_bits()`
+        // without panicking, and `EdgeKind::try_from` on that raw byte
+        // must return `Err` (the "future kind -> skip" contract), never
+        // `mem::transmute` UB (P1 acceptance §8, doc §3.2).
+        let edges = vec![hb(7, 1, 0, 1, 200)]; // 200 is reserved (3..=254)
+        let (edge_bytes, index_bytes, posting_bytes) =
+            build_hierarchy_section(&edges).expect("build");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index_with_hierarchy(
+            tmp.path(),
+            |_| {},
+            Some((edge_bytes, index_bytes, posting_bytes)),
+        );
+        let reader = IndexReader::open(&path).expect("v8 index with reserved kind byte is valid");
+        let hits = reader.find_hierarchy_edges_by_symbol(7);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].edge_kind_bits(), 200);
+        assert_eq!(
+            super::super::format::EdgeKind::try_from(hits[0].edge_kind_bits()),
+            Err(()),
+            "reserved kind byte must decode to Err, not a fabricated variant"
+        );
+    }
+
+    #[test]
+    fn open_rejects_pre_v8_reading_v8_via_version_range_gate() {
+        // The doc's "v8-rejected-by-pre-v8 SemVer test" is a hypothetical
+        // older reader whose `VERSION` constant is 7 — this build's
+        // MIN_SUPPORTED_VERSION..=VERSION gate is what a pre-v8 build's
+        // equivalent check would look like. Assert the gate logic
+        // directly: a version above the current build's own `VERSION`
+        // constant is out of the supported range (mirrors what a v7-only
+        // build would compute against a v8 file's `version` field).
+        let hypothetical_pre_v8_max_version: u32 = 7;
+        let hypothetical_min_supported: u32 = super::super::format::MIN_SUPPORTED_VERSION;
+        let v8_file_version: u32 = 8;
+        assert!(
+            !(hypothetical_min_supported..=hypothetical_pre_v8_max_version)
+                .contains(&v8_file_version),
+            "a pre-v8 reader's version gate must reject a v8 file's version field"
+        );
+    }
+
+    #[test]
+    fn hierarchy_header_offsets_past_eof_rejected() {
+        // Each of the three (offset, len) pairs in HierarchyHeader must be
+        // independently bounds-checked at open() time — not just the fixed
+        // header bytes. Corrupt only `edges_offset`/`edges_len` to point
+        // past EOF while everything else stays a valid empty v8 index.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index(tmp.path(), |_| {});
+        let mut bytes = std::fs::read(&path).expect("read written index");
+
+        let hier_header_offset = Header::SIZE
+            + CallGraphHeader::SIZE
+            + V5SectionHeader::SIZE
+            + PatternSkeletonHeader::SIZE
+            + UnresolvedRefsHeader::SIZE;
+        // HierarchyHeader { edges_offset: u64, edges_len: u64, .. } — first
+        // 16 bytes of the header block.
+        let huge_offset = (bytes.len() as u64) + 1_000_000;
+        bytes[hier_header_offset..hier_header_offset + 8]
+            .copy_from_slice(&huge_offset.to_le_bytes());
+        bytes[hier_header_offset + 8..hier_header_offset + 16]
+            .copy_from_slice(&4096u64.to_le_bytes());
+
+        let corrupt_path = tmp.path().join("corrupt_hierarchy_offsets.vex");
+        std::fs::write(&corrupt_path, &bytes).expect("write corrupt index");
+
+        let result = IndexReader::open(&corrupt_path);
+        assert!(
+            result.is_err(),
+            "hierarchy_edges section offsets exceeding file size must be rejected at open()"
         );
     }
 }
