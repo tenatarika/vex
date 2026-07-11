@@ -357,6 +357,12 @@ pub(super) const RUBY_MIXIN_PATTERN_START: usize = 1;
 /// so `relation_label` is never called for them — they're listed in the
 /// arm only because `Language` is non-exhaustive at the match site and a
 /// stray future caller would otherwise hit a wildcard with no label.
+///
+/// **Coupling:** `extract::relation_to_edge_kind` maps these strings to
+/// `EdgeKind` discriminants. Adding a new label here (e.g. splitting a real
+/// `"implements"` out of `"extends"`) requires updating that mapping in
+/// lockstep — the `every_known_relation_label_maps_to_intended_kind` test in
+/// `extract.rs` is the tripwire that fails if the two drift apart.
 pub(super) fn relation_label(lang: Language, pattern_index: usize) -> &'static str {
     match lang {
         Language::Rust => "impl",

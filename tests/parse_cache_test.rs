@@ -44,7 +44,7 @@
 //! ```text
 //! offset  size  field
 //!      0     4  magic = b"VXBC"
-//!      4     2  CACHE_FORMAT_VERSION: u16 (little-endian; 4 since v1.24)
+//!      4     2  CACHE_FORMAT_VERSION: u16 (little-endian; 5 since hierarchy-edges P2)
 //!      6     4  grammar_fingerprint: u32 (little-endian)
 //!     10     1  trigram_bloom_present: u8
 //!     11   256  trigram_bloom slot
@@ -68,7 +68,9 @@ use tempfile::TempDir;
 // Step 4 must create this module and re-export BlobCache.
 // Until then this import causes a compile error (intended RED failure).
 use vex::index::parse_cache::BlobCache;
-use vex::index::symbols::{ParsedFile, ParsedRef, ParsedSymbol, RawCallEdge, SymbolKind};
+use vex::index::symbols::{
+    HierarchyCapture, ParsedFile, ParsedRef, ParsedSymbol, RawCallEdge, SymbolKind,
+};
 use vex::parse::language::Language;
 // BoundRef, BindTarget, RefKind, UsePath — Step 4 must add Serialize/Deserialize.
 use vex::parse::scope::{BindTarget, BoundRef, RefKind, UsePath};
@@ -82,13 +84,15 @@ use vex::store::pattern_skeletons::grammar_fingerprint_for_lang;
 // updating this const silently turns the corrupt-payload test into a
 // version-mismatch test (the version gate fires before payload decode).
 const MAGIC: &[u8; 4] = b"VXBC";
-const CACHE_FORMAT_VERSION: u16 = 4;
+// Bumped 4 -> 5 alongside `parse_cache::CACHE_FORMAT_VERSION` for the
+// hierarchy-edges P2 `ParsedFile.hierarchy_captures` field addition.
+const CACHE_FORMAT_VERSION: u16 = 5;
 /// Width of the trigram-bloom slot that follows the 1-byte `present` flag.
 const BLOOM_SLOT_LEN: usize = 256;
 
-/// Write a format-correct v4 header (magic + version + fingerprint +
-/// `present = 0` + zeroed bloom slot) so a following payload is decoded
-/// at the right offset. Used by the hand-built cache-file tests.
+/// Write a format-correct current-version header (magic + version +
+/// fingerprint + `present = 0` + zeroed bloom slot) so a following payload
+/// is decoded at the right offset. Used by the hand-built cache-file tests.
 fn write_v4_header<W: std::io::Write>(f: &mut W, fingerprint: u32) {
     f.write_all(MAGIC).unwrap();
     f.write_all(&CACHE_FORMAT_VERSION.to_le_bytes()).unwrap();
@@ -157,6 +161,15 @@ fn make_rich_parsed_file() -> ParsedFile {
         has_block: true,
     };
 
+    let hierarchy_capture = HierarchyCapture {
+        // Step: HierarchyCapture must derive Serialize + Deserialize (P2,
+        // hierarchy-edges CACHE_FORMAT_VERSION bump 4 -> 5).
+        child_name: "my_function".to_string(),
+        parent_name: "SomeBase".to_string(),
+        kind: 0, // EdgeKind::Extends
+        line: 10,
+    };
+
     ParsedFile {
         path: "src/lib.rs".to_string(),
         symbols: vec![symbol],
@@ -166,6 +179,7 @@ fn make_rich_parsed_file() -> ParsedFile {
         skeletons: vec![skeleton],
         cpp_includes: Vec::new(),
         trigram_bloom: None,
+        hierarchy_captures: vec![hierarchy_capture],
     }
 }
 
@@ -217,6 +231,28 @@ fn assert_parsed_file_eq(a: &ParsedFile, b: &ParsedFile) {
         b.bound_refs.len(),
         "bound_refs length mismatch"
     );
+    assert_eq!(
+        a.hierarchy_captures.len(),
+        b.hierarchy_captures.len(),
+        "hierarchy_captures length mismatch"
+    );
+    for (i, (ha, hb)) in a
+        .hierarchy_captures
+        .iter()
+        .zip(b.hierarchy_captures.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            ha.child_name, hb.child_name,
+            "hierarchy_captures[{i}].child_name"
+        );
+        assert_eq!(
+            ha.parent_name, hb.parent_name,
+            "hierarchy_captures[{i}].parent_name"
+        );
+        assert_eq!(ha.kind, hb.kind, "hierarchy_captures[{i}].kind");
+        assert_eq!(ha.line, hb.line, "hierarchy_captures[{i}].line");
+    }
     assert_eq!(
         a.skeletons.len(),
         b.skeletons.len(),
@@ -497,6 +533,49 @@ fn blob_cache_lookup_with_corrupt_payload_returns_none() {
     );
 }
 
+// ── Test 6b: a real pre-hierarchy-captures (v4) entry version-misses ─────────
+
+/// Hierarchy-edges P2 bumped `CACHE_FORMAT_VERSION` 4 -> 5 because
+/// `ParsedFile` gained `hierarchy_captures: Vec<HierarchyCapture>` as a
+/// normal (non-skip) serde field, changing the bincode payload shape. A
+/// stale v4 entry — header says version 4, payload has no
+/// `hierarchy_captures` bytes — must be treated as a miss (forcing a
+/// re-parse) rather than being fed to `bincode::deserialize::<ParsedFile>`,
+/// which would either error or (worse) silently misread trailing bytes.
+#[test]
+fn blob_cache_lookup_rejects_stale_v4_entry_missing_hierarchy_captures() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+
+    let sha = "0ldc0ffee0ldc0ffee0ldc0ffee0ldc0ffee0ldc";
+    let shard_dir = root.join(&sha[..2]);
+    fs::create_dir_all(&shard_dir).unwrap();
+    let cache_file = shard_dir.join(format!("{sha}.bin"));
+
+    // A v4 payload never had `hierarchy_captures` on the wire; simulate it
+    // with an arbitrary non-empty byte blob standing in for the shorter,
+    // struct-incompatible v4 bincode encoding. The version byte alone is
+    // enough to make `lookup` reject it before it ever reaches decode.
+    let fingerprint = grammar_fingerprint_for_lang(Language::Rust);
+    let stale_version: u16 = 4;
+    let mut f = fs::File::create(&cache_file).unwrap();
+    f.write_all(MAGIC).unwrap();
+    f.write_all(&stale_version.to_le_bytes()).unwrap();
+    f.write_all(&fingerprint.to_le_bytes()).unwrap();
+    f.write_all(&[0u8]).unwrap(); // present = 0
+    f.write_all(&[0u8; BLOOM_SLOT_LEN]).unwrap();
+    f.write_all(&[0u8; 8]).unwrap(); // stand-in v4-shaped payload bytes
+    drop(f);
+
+    let cache = BlobCache::new(root);
+    let result = cache.lookup(sha, Language::Rust);
+    assert!(
+        result.is_none(),
+        "a v4 entry must version-miss under CACHE_FORMAT_VERSION 5, not be \
+         mis-deserialized as a (shorter) ParsedFile"
+    );
+}
+
 // ── Test 7: evict_to_cap removes oldest entries ───────────────────────────────
 
 /// Insert 3 cache entries (by writing them as files directly), backdate
@@ -534,6 +613,7 @@ fn blob_cache_evict_to_cap_removes_oldest_entries() {
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
             trigram_bloom: None,
+            hierarchy_captures: Vec::new(),
         };
         let payload = bincode::serialize(&pf).expect("serialize");
         let mut f = fs::File::create(&path).unwrap();
@@ -617,6 +697,7 @@ fn blob_cache_evict_to_cap_under_cap_is_noop() {
         skeletons: Vec::new(),
         cpp_includes: Vec::new(),
         trigram_bloom: None,
+        hierarchy_captures: Vec::new(),
     };
     let payload = bincode::serialize(&pf).expect("serialize");
     let mut f = fs::File::create(&path).unwrap();

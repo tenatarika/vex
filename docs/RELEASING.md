@@ -165,13 +165,14 @@ struct.
   bump on any structural change to `ParsedFile` or any of its
   transitively serialized members (`ParsedSymbol`, `ParsedRef`,
   `RawCallEdge`, `BoundRef`, `BindTarget`, `RefKind`, `UsePath`,
-  `Skeleton`, `SymbolKind`). New variant on a serialized enum,
-  field added or removed on a serialized struct, changed `repr` on
-  a `#[repr(u8)]` enum — all qualify. The blob cache treats a
-  version mismatch as a miss and overwrites lazily, so missing a
-  bump only costs cache invalidation work on the next user run,
-  not a correctness incident — but the bump is still cheap
-  insurance.
+  `Skeleton`, `SymbolKind`, `HierarchyCapture`). New variant on a
+  serialized enum, field added or removed on a serialized struct,
+  changed `repr` on a `#[repr(u8)]` enum — all qualify. The blob
+  cache treats a version mismatch as a miss and overwrites lazily,
+  so missing a bump only costs cache invalidation work on the next
+  user run, not a correctness incident — but the bump is still
+  cheap insurance. (Bumped to `5` for the hierarchy-edges P2
+  `ParsedFile.hierarchy_captures` field.)
 
 The v6 binary index, by contrast, carries grammar fingerprints inline
 and self-invalidates without a manual bump — see

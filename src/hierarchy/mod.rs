@@ -7,8 +7,11 @@ use tree_sitter::{Parser, Query, QueryCursor};
 
 use crate::parse::language::Language;
 
+mod extract;
 mod queries;
 use queries::{inheritance_query, relation_label};
+
+pub(crate) use extract::capture_hierarchy_edges;
 
 /// A match where a class/struct implements or extends a base type.
 #[derive(Debug, Clone)]

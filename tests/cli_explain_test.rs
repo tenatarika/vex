@@ -99,6 +99,7 @@ fn write_duplicate_project(dir: &Path) {
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
             trigram_bloom: None,
+            hierarchy_captures: Vec::new(),
         },
         ParsedFile {
             path: "src/beta.rs".to_string(),
@@ -109,6 +110,7 @@ fn write_duplicate_project(dir: &Path) {
             skeletons: Vec::new(),
             cpp_includes: Vec::new(),
             trigram_bloom: None,
+            hierarchy_captures: Vec::new(),
         },
     ];
     let vectors = vec![ones(), near_ones()];

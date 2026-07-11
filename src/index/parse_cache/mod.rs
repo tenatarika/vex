@@ -76,7 +76,15 @@ pub const MAGIC: &[u8; 4] = b"VXBC";
 ///   header and the bincode payload. v3 entries have no slot; treating
 ///   them as misses forces a one-time re-parse that rebuilds the bloom
 ///   from bytes, after which v4 entries carry it for free on every hit.
-pub const CACHE_FORMAT_VERSION: u16 = 4;
+/// - `5`: hierarchy-edges P2 (`docs/HIERARCHY-EDGES.md` §8/§4) — added
+///   `ParsedFile.hierarchy_captures: Vec<HierarchyCapture>`, a normal
+///   (non-`#[serde(skip)]`) field, so it's part of the bincode payload
+///   itself. v4 entries decode to a shorter payload — bincode would either
+///   error or, worse, silently misinterpret trailing bytes as unrelated
+///   fields on a struct-shape change like this. Treating v4 as a miss
+///   forces a one-time re-parse, after which v5 entries carry
+///   `hierarchy_captures` for free on every hit.
+pub const CACHE_FORMAT_VERSION: u16 = 5;
 
 /// On-disk header size: 4 (magic) + 2 (version) + 4 (fingerprint).
 const HEADER_SIZE: usize = 10;

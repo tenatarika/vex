@@ -101,6 +101,7 @@ fn mk_parsed_file(path: &str, name: &str) -> ParsedFile {
         skeletons: Vec::new(),
         cpp_includes: Vec::new(),
         trigram_bloom: None,
+        hierarchy_captures: Vec::new(),
     }
 }
 

@@ -218,6 +218,27 @@ persisted instead of filtered against a query string. The child is a local
 definition (already in the symbol table); the parent is a syntactic name to be
 resolved in Pass-2.
 
+**Shipped as** `crate::hierarchy::capture_hierarchy_edges(tree, content, lang)
+-> Vec<HierarchyCapture>` (`src/hierarchy/extract.rs`), called from
+`parse::parse_file` (`src/parse/mod.rs`) and carried on
+`ParsedFile.hierarchy_captures` (`src/index/symbols.rs`) — a normal serde
+field, so it rides the blob-cache bincode payload for free on a warm hit
+(`CACHE_FORMAT_VERSION` bumped 4 → 5). It does **not** thread a single shared
+`Tree` through `parse_file`: every extraction phase in that function
+(`extract_symbols_and_imports`, `extract_references_ast`,
+`extract_call_edges`, `bind_refs`, `extract_skeletons`, and now
+`capture_hierarchy_edges`) independently calls the pooled per-thread
+`parser_pool::parse_text` — that's the codebase's existing convention, not a
+regression introduced here.
+
+**P2 scope note (Implements deferred):** `relation_label` (`queries.rs`) does
+not currently distinguish interface `implements` from class `extends` — it
+lumps Java/TS/C#/Kotlin `implements` under the `"extends"` label. So the P2
+mapping is `"extends"/"inherits"/"impl"` → `EdgeKind::Extends`,
+`"uses"/"include"` → `EdgeKind::Uses`, and **`EdgeKind::Implements` (1) is
+never emitted in P2.** Splitting interface clauses out of `relation_label` is
+a documented follow-up, out of scope here.
+
 ## 5. Resolution — reuse `name_to_global` Pass-2 (consistency over novelty)
 
 Parent-name → global-symbol resolution reuses the `name_to_global` maps built by

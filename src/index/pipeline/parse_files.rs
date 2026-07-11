@@ -111,6 +111,10 @@ pub(super) fn reconstruct_unchanged(
                 // fresh bloom. The sidecar writer carries the old record
                 // forward for this path (see output.rs trigram block).
                 trigram_bloom: None,
+                // P2a (carry-forward of hierarchy edges for unchanged
+                // files) is a separate follow-up task; P2 only extracts on
+                // fresh parses, so reconstructed files get none here.
+                hierarchy_captures: Vec::new(),
             });
         }
         current_path = path;
@@ -173,6 +177,9 @@ pub(super) fn reconstruct_unchanged(
             cpp_includes: Vec::new(),
             // Reconstructed — see the flush block above.
             trigram_bloom: None,
+            // P2a carry-forward is a separate follow-up task (see the
+            // per-flush comment above).
+            hierarchy_captures: Vec::new(),
         });
     }
 

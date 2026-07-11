@@ -49,6 +49,7 @@ fn one_symbol_parsed() -> Vec<ParsedFile> {
         skeletons: Vec::new(),
         cpp_includes: Vec::new(),
         trigram_bloom: None,
+        hierarchy_captures: Vec::new(),
     }]
 }
 

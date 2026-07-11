@@ -299,6 +299,25 @@ pub struct RawCallEdge {
     pub line: usize,
 }
 
+/// One raw hierarchy relation captured at parse time (P2,
+/// `docs/HIERARCHY-EDGES.md` §4) — `class Child extends/implements/uses
+/// Parent`. `child_name` is a local definition already present in this
+/// file's `symbols`; `parent_name` is a syntactic name only, resolved to a
+/// global symbol index (or spilled to `unresolved_hierarchy`) by the
+/// writer's post-loop Pass-2 pass (§5) — extraction never resolves names
+/// itself. `kind` is an [`crate::store::format::EdgeKind`] discriminant
+/// (`Extends = 0` / `Uses = 2`; `Implements = 1` is not emitted in P2 —
+/// see `docs/HIERARCHY-EDGES.md` §4 note). `line` is the 1-based line of
+/// the child's declaration site (the `class`/`impl` clause), matching
+/// what `vex implementations` prints today.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HierarchyCapture {
+    pub child_name: String,
+    pub parent_name: String,
+    pub kind: u8,
+    pub line: u32,
+}
+
 /// Result of parsing a single file.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParsedFile {
@@ -345,4 +364,16 @@ pub struct ParsedFile {
     /// old record forward instead of building a fresh one.
     #[serde(skip)]
     pub trigram_bloom: Option<[u8; crate::grep::trigram::BLOOM_BYTES]>,
+    /// P2 (`docs/HIERARCHY-EDGES.md` §4) — raw `extends`/`implements`/`uses`
+    /// captures extracted from the same tree-sitter tree as `symbols`, via
+    /// `crate::hierarchy::capture_hierarchy_edges` reusing the
+    /// `hierarchy::queries` SCM. A **normal serde field** (unlike
+    /// `trigram_bloom`): it rides the blob-cache bincode payload as-is, so a
+    /// warm cache hit restores it for free, same as `symbols`/`bound_refs`.
+    /// Empty for languages with no inheritance query (e.g. Go — structural
+    /// typing has no syntactic edge) and for files reconstructed from a
+    /// prior index during `vex update` without re-parsing — carrying
+    /// hierarchy captures forward for unchanged files is the separate P2a
+    /// task (§8), not handled here.
+    pub hierarchy_captures: Vec<HierarchyCapture>,
 }

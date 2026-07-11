@@ -107,6 +107,7 @@ fn prebuild_index(dir: &Path, entries: &[Entry]) {
                 skeletons: Vec::new(),
                 cpp_includes: Vec::new(),
                 trigram_bloom: None,
+                hierarchy_captures: Vec::new(),
             });
             parsed.len() - 1
         });
@@ -166,6 +167,7 @@ fn similar_bails_when_index_has_no_vectors() {
         skeletons: Vec::new(),
         cpp_includes: Vec::new(),
         trigram_bloom: None,
+        hierarchy_captures: Vec::new(),
     }];
     write_index_full(&parsed, &[], 384, &cache_root.join("index.vex")).unwrap();
 

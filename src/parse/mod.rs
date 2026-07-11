@@ -80,6 +80,18 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
     // 11.4 Inc 4 — extract pattern skeletons while source is hot. T2/T3
     // langs return an empty Vec via the allowlist short-circuit.
     let skeletons = crate::pattern::skeleton::extract_skeletons(content, lang);
+    // P2 (`docs/HIERARCHY-EDGES.md` §4) — raw extends/implements/uses
+    // captures, reusing the same `hierarchy::queries` SCM the live
+    // `vex implementations` walk uses. Uses the pooled per-thread parser
+    // like every other extraction phase above/below (this file has no
+    // single shared `Tree` threaded through parse_file — see
+    // callgraph::extract_call_edges / scope::bind_refs /
+    // pattern::skeleton::extract_skeletons for the same pattern), so this
+    // is not a second cold parse, just another pass over the pooled tree.
+    let hierarchy_captures = match crate::parse::parser_pool::parse_text(lang, content) {
+        Ok(tree) => crate::hierarchy::capture_hierarchy_edges(&tree, content, lang),
+        Err(_) => Vec::new(),
+    };
     // Phase 14.1: inject a synthetic per-file `<module:path>` symbol when the
     // file produces any sentinel edge (module-scope call site). The sentinel
     // is `caller_fn_name.is_empty() && caller_fn_line == 0`; pipeline
@@ -113,6 +125,7 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
         // read/cache decision. Left `None` for the parse layer's own
         // callers (tests, direct parses).
         trigram_bloom: None,
+        hierarchy_captures,
     })
 }
 
