@@ -87,8 +87,11 @@ subprocess.run(['$VEX', 'index', '--path', '$project'], capture_output=True)
 print(f'{(time.time()-start)*1000:.0f}')
 ")
     local vex_json=$($VEX status --path "$project" --format json 2>/dev/null)
-    local vex_syms=$(echo "$vex_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('symbols',0))" 2>/dev/null)
-    local vex_size=$(echo "$vex_json" | python3 -c "import sys,json; b=json.load(sys.stdin).get('size_bytes',0); print(f'{b/1024:.0f}K' if b<1048576 else f'{b/1048576:.1f}M')" 2>/dev/null)
+    # `vex status --format json` uses the standard envelope
+    # ({protocol_version, capabilities, _meta, results}); the counters live
+    # under `results`. Fall back to the flat shape for a pre-envelope vex.
+    local vex_syms=$(echo "$vex_json" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',d); print(r.get('symbols',0))" 2>/dev/null)
+    local vex_size=$(echo "$vex_json" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',d); b=r.get('size_bytes',0); print(f'{b/1024:.0f}K' if b<1048576 else f'{b/1048576:.1f}M')" 2>/dev/null)
     log "  vex:       ${vex_ms}ms  ${vex_syms} symbols  ${vex_size}"
 
     # ast-index
