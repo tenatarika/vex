@@ -1107,6 +1107,79 @@ narrower. Design: `docs/VCS-BACKENDS.md`.
 
 ---
 
+## 9. Typed hierarchy edges (`vex implementations` / `vex subtypes`)
+
+`vex implementations` (direct children of a type) and `vex subtypes`
+(transitive-down closure) are backed by a persisted, purely-syntactic
+tree-sitter extraction (`docs/HIERARCHY-EDGES.md`). "Purely syntactic"
+means the extractor never resolves types, never expands macros, and never
+runs a build — it only recognizes specific grammar shapes
+(`extends`/`implements`/`class X(Y)`/`impl Trait for Struct`/…) at parse
+time. That gives it the same speed and zero-build-dependency profile as
+the rest of vex, at the cost of the gaps below. As with the rest of this
+document: these are cases where a hierarchy edge is **not extracted at
+all** (a clean, honest miss), not cases where vex reports a wrong edge.
+
+- **Go: no `implements` edge at all.** Go's interface satisfaction is
+  structural (any type with the right method set satisfies an interface,
+  with no `implements`-style clause in source), so there is nothing
+  syntactic to capture. `queries.rs` returns `None` for `Language::Go`
+  entirely — this is a categorical blind spot, not a partial one. The
+  reserved `EdgeKind::Satisfies` would need real method-set inference to
+  fill this in; not planned.
+- **TypeScript structural conformance & declaration merging are not
+  extracted.** A TS class can satisfy an interface with no `implements`
+  clause at all (structural typing), and a type's effective parent set can
+  span multiple merged/partial declarations across files. Only the
+  syntactic `extends`/`implements` clause on a single declaration is
+  captured — the structurally-satisfied and merged-declaration cases are
+  simply invisible.
+- **Rust `#[derive(...)]` / macro-generated `impl` blocks are not
+  extracted.** A `#[derive(Clone)]`-style attribute expands to a real
+  `impl` only after macro expansion, which tree-sitter never performs —
+  the parser sees an attribute node, not an `impl_item`. Any hierarchy
+  edge that only exists post-expansion is invisible.
+- **C++ macro'd base-class lists are not extracted.** `class X : BASE_MACRO`
+  is preprocessor-blind the same way; tree-sitter sees whatever token the
+  macro invocation is, not the expanded base-class name, so the edge is
+  never captured.
+- **Aliased imports can capture the wrong parent name.** `import { Foo as
+  Bar } from ...` / `use foo::Foo as Bar` style aliasing means the
+  `extends`/`implements` clause names the *alias* token, not the real
+  type — the captured `parent_name` can therefore resolve to nothing (spills
+  unresolved) or, if the alias happens to collide with an unrelated
+  in-scope name, to the wrong symbol. **Java is exempt**: Java has no
+  syntax for aliasing a type import, so this gap does not apply there.
+- **Ambiguous parent names are dropped, never guessed.** When a parent
+  name matches more than one symbol in the index (e.g. two types named
+  `Handler` in different modules), resolution bails rather than picking
+  one — the edge is silently not recorded, matching the same
+  single-candidate-or-bail policy `vex usages --strict` ref-edge
+  resolution already uses (`docs/HIERARCHY-EDGES.md` §5, Q1). This is
+  different from the external/zero-candidate case: a parent that matches
+  *no* local symbol still spills to the unresolved-hierarchy section (not
+  lost, just not turned into a real edge) and remains visible to
+  `--workspace` cross-repo resolution.
+- **`EdgeKind::Implements` is reserved but not yet emitted.** The current
+  extraction lumps interface `implements` (Java/C#/Kotlin/TS) under the
+  same `EdgeKind::Extends` value as class `extends` — splitting the two
+  apart in `queries.rs`'s relation labels is a documented follow-up, out
+  of scope for P1-P4 (`docs/HIERARCHY-EDGES.md` §4).
+- **`Overrides` / `Satisfies` are reserved `EdgeKind` values, not emitted.**
+  Both need resolved types to be sound (`Overrides` needs parameter-type
+  resolution for overload disambiguation; `Satisfies` needs Go method-set
+  inference) — neither is attempted by the purely-syntactic extractor.
+  Reserving the discriminant values means adding them later is
+  data-additive, not a format bump.
+
+For completeness, one item that is explicitly **not** a limitation: `vex
+update`'s incremental carry-forward of hierarchy edges for unchanged files
+(P2a) is correct and re-resolves against the new index on every update, so
+a moved/renamed/deleted parent is handled the same as a full reindex would
+handle it — it is not a source of staleness.
+
+---
+
 ## Coverage matrix (one-line summary)
 
 | Query | T1 strict | T1 default | T2 (line-scan) | Module-level | Decorator | String-resolved |
@@ -1114,7 +1187,8 @@ narrower. Design: `docs/VCS-BACKENDS.md`.
 | `vex search` | ✅ | ✅ | ✅ | n/a (it finds names) | n/a | n/a |
 | `vex usages` | ✅ binder | ✅ AST idents | ⚠️ regex (FPs) | ✅ if symbol used by name | ❌ | ❌ |
 | `vex callers` | ✅ | ✅ | ✅ | ✅ via `<module:>` (14.1) | ⚠️ Python+Java (14.2), Kotlin+C# (14.2.2), TS+Rust (14.2.1); class-level → 14.6 | ❌ (15) |
-| `vex implementations` | ✅ | ✅ | ⚠️ depends on grammar query | n/a | n/a | n/a |
+| `vex implementations` | ✅ index-backed (§9), live-walk fallback | ✅ | ⚠️ depends on grammar query; ❌ Go (§9) | n/a | n/a | n/a |
+| `vex subtypes` | ✅ index-only, no live-walk fallback (§9) | ✅ | ⚠️ depends on grammar query; ❌ Go (§9) | n/a | n/a | n/a |
 | `vex grep` | ✅ all | ✅ all | ✅ all | ✅ | ✅ | ✅ (literal) |
 
 Legend: ✅ covered · ⚠️ partial · ❌ invisible

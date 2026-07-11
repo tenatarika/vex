@@ -6,6 +6,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — typed hierarchy edges (`vex implementations` index-backed + `vex subtypes`)
+
+- vex now persists type-hierarchy relationships (`class X extends Y`, `class X
+  implements I`, trait/mixin composition) as an indexed, mmap-backed `HierarchyEdge`
+  section (format v8) instead of re-discovering them on every call.
+  `vex implementations <T>` is now an index lookup (FST resolve + one
+  `find_hierarchy_edges_by_symbol` binary search) instead of a full parallel
+  tree-sitter re-parse of the whole tree — the original live walk
+  (`crate::hierarchy::find_implementations`) is kept as an automatic fallback for
+  indexes that predate the section, so there is no behavior regression.
+- New command **`vex subtypes <T> [--depth N]`** — the transitive-down closure
+  over `Extends`/`Implements` edges (direct children, grandchildren, …), each row
+  labelled with its BFS hop depth. A cycle guard (`visited` set) plus a hard
+  depth cap make the query-time BFS safe against malformed/adversarial input
+  (self-edges, mutual cycles). `Uses` edges (trait/mixin composition) are
+  excluded from the transitive walk on purpose — mixing in a trait doesn't make
+  you a subtype of everything the trait itself composes. Index-only, no
+  live-walk fallback (a transitive closure needs the persisted graph).
+  Available as both a CLI subcommand and an MCP tool.
+- `vex update` carries hierarchy edges forward for unchanged files and
+  re-resolves them against the new index on every update, so a moved/renamed/
+  deleted parent type is handled correctly without a full reindex.
+- `docs/LIMITATIONS.md` §9 documents the honest extraction gaps: Go has no
+  `implements` edge at all (structural typing), TypeScript structural
+  conformance/declaration merging is under-reported, Rust `#[derive(...)]` /
+  macro-generated impls and C++ macro'd base lists are invisible to
+  tree-sitter, aliased imports can capture the wrong parent name (Java
+  exempt), and ambiguous parent names are dropped rather than guessed.
+- `benches/hierarchy.rs` measures the index-lookup win on a synthetic
+  150-implementer corpus: `implementations_index` ~268 ns vs
+  `implementations_live_walk` ~22.7 ms (~85,000× speedup at this corpus size),
+  and `subtypes_bfs` ~1.1 µs across a 20-level inheritance chain. See
+  `docs/HIERARCHY-EDGES.md`.
+
 ## [1.24.1] - 2026-07-11
 
 ### Added — `vex grep` trigram skip-index (P1–P4)

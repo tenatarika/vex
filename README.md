@@ -232,7 +232,8 @@ vex completions zsh > ~/.zfunc/_vex
 | **`vex impact <name> [--depth N] [--exclude-docs]`** | **NEW (v1.20.0, F1).** One-call delete-safety blast-radius report. Composes four reference channels — strict refs (binder-resolved), FST refs, `grep \b<Name>\b`, and direct call-graph callers — into a single verdict (`safe` / `unsafe` / `uncertain`) with a per-channel evidence sample. Use this BEFORE proposing to delete or rename a symbol; one call replaces the manual usages→grep→callers dance. Verdict rule: `unsafe` if strict refs OR call-graph callers report >0 (binder/graph confirms real usage); `uncertain` if only text channels hit (likely string-dispatch / comment / decorator); `safe` only when every channel returns zero. **v1.21.0:** `--depth N` (`1..16`) walks the call graph backward to surface indirect callers at depth ≥ 2; `--exclude-docs` drops prose-format mentions (`*.md`/`*.txt`/…) so a CHANGELOG-only symbol flips to `safe`. |
 | `vex pattern '<pat>' --lang <lang> [--why]` | AST pattern matching with metavariables (`$NAME`, `$_`, `$$$`, plus the v6 named multi-line forms `$$$BODY` / `$$ARGS`). Repeated metavars enforce back-references. Space-flanked ` && ` / ` || ` compose sub-patterns (AND requires both shapes in the file with shared captures agreeing; OR takes the union). When a v6 index is present an indexed prefilter narrows candidates to lang-matching files with the right root kind; falls back to live-scan otherwise. `--why` surfaces a JSON `ScanTrace` (mode / root_kind / candidate vs total / fallback reason) on stderr — and under `_meta.why` in the MCP response. |
 | `vex outline <file> [--kind fn]` | Show file structure, optionally filter by symbol kind. |
-| `vex implementations <name>` | Find types that extend/implement a base class, trait, or interface (incl. generic-parameterised: `class Foo : Repository<T>`). |
+| `vex implementations <name>` | Find types that extend/implement a base class, trait, or interface (incl. generic-parameterised: `class Foo : Repository<T>`). **Index-backed (v8 hierarchy section)** — a `find_hierarchy_edges_by_symbol` FST + binary-search lookup, falling back to the original live tree-sitter walk only when the index lacks the section. Bench (`benches/hierarchy.rs`, 150 implementers): **~265 ns index-backed vs ~22.7 ms live walk — ~85,000× faster.** |
+| **`vex subtypes <name> [--depth N]`** | **NEW.** Transitive-down closure over `extends`/`implements` edges (direct children, grandchildren, …), each row labelled with its BFS hop depth. Excludes `Uses` (trait/mixin composition) from the walk — mixing in a trait doesn't make you a subtype of everything the trait itself composes. Index-only, no live-walk fallback (requires an index with the v8 hierarchy section). Bench: ~1.1 µs for a 20-hop transitive chain. |
 | `vex callers <name>` | Direct callers of a function (fast path via persistent call graph; falls back to live tree-sitter scan when the index is missing). |
 | `vex callees <name>` | Direct callees of a function (same fast path). |
 | **`vex paths <from> <to> [--max-hops N]`** | **NEW.** Enumerate all caller chains from `from` to `to` over the persistent call graph. Bounded DFS with cycle prevention; default `--max-hops 6`. |
@@ -255,7 +256,7 @@ vex completions zsh > ~/.zfunc/_vex
 
 ### Per-query filters (every search-shaped command)
 
-All search-shaped commands (`search`, `usages`, `pattern`, `show`, `grep`, `implementations`, `callers`, `callees`, `paths`, `reachable`, `tests-for`, `similar`, `duplicates`, `diff`, `bundle`) accept:
+All search-shaped commands (`search`, `usages`, `pattern`, `show`, `grep`, `implementations`, `subtypes`, `callers`, `callees`, `paths`, `reachable`, `tests-for`, `similar`, `duplicates`, `diff`, `bundle`) accept:
 
 - **`--include <glob>` / `--exclude <glob>`** (repeatable, gitignore syntax) — per-call path scoping that doesn't require re-indexing. `--exclude` wins over `--include`. Example: `vex search Foo --include 'src/**' --exclude '**/*.gen.*'`.
 - **`--filter-path <substring>`** (alias `--filter`) — path-substring filter. Composes AND with the globs.
@@ -817,7 +818,7 @@ cargo build --release -p vex-mcp
 
 `VEX_DEVICE` (v1.16.0) picks the GPU execution provider when the binary was built with `gpu-cuda` / `gpu-directml` / `gpu-coreml` — relevant when an MCP-driven `index` / `update` call rebuilds semantic embeddings on a large repo (51× CUDA / 29× DirectML over CPU on MiniLM-L6). `auto` is safe on CPU-only builds (degrades silently). Run `vex gpu` once to confirm the EP actually engages.
 
-**MCP Tools (26):**
+**MCP Tools (27):**
 - `search` — 3-way hybrid (structural + BM25 + semantic); accepts `filter` / `include` / `exclude` / `kind` / `context_path` / `no_bm25` / `--why` / metadata filters / diff-scope (`since` / `since_branched` / `changed_only`)
 - `find_symbol` — exact name lookup
 - `find_similar` — semantic search by free-form description
@@ -830,6 +831,7 @@ cargo build --release -p vex-mcp
 - `grep` — regex content search
 - `pattern` — AST pattern matching with metavar back-references; diff-scope; `--why`
 - `implementations` — find types extending a base class/trait/interface (incl. generics); diff-scope
+- `subtypes` — transitive-down closure over extends/implements edges (direct children, grandchildren, …), depth-labelled; index-only (no live-walk fallback); `depth` / diff-scope
 - `callers` / `callees` — direct callgraph navigation (fast path via persistent index); diff-scope
 - `paths` — enumerate caller chains between two functions
 - `reachable` — transitive callers of a target
@@ -927,6 +929,7 @@ Use vex for code search instead of grep or manual file reading:
 - `vex pattern '<pat>' --lang <lang> --why` — emit ScanTrace on stderr (mode / candidate vs total / fallback reason)
 - `vex outline path/to/file.py` — file structure overview
 - `vex implementations "BaseService"` — find types extending a class/interface
+- `vex subtypes "BaseService"` — transitive-down closure over extends/implements edges (direct children, grandchildren, …)
 - `vex callers "function_name"` — find all callers (~4ms via persistent call graph)
 - `vex callees "function_name"` — find all callees (~4ms via persistent call graph)
 - `vex similar "SymbolName"` — semantically close symbols (requires --semantic index)

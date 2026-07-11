@@ -1,9 +1,13 @@
 # Typed hierarchy edge section (`extends` / `implements` / …) — design
 
-Status: **DESIGN — reviewed, decisions LOCKED, ready for P1 scaffold.** Ranked #1
+Status: **SHIPPED — P1, P2, P2a, P3, P4 all COMPLETE.** Ranked #1
 in `docs/STORAGE-RESEARCH.md` ("Adopt — Typed hierarchy edge section"). Reviewed by
 architect + rust-reviewer + store-agent (all APPROVE-WITH-CHANGES); their must-fixes
-and the Q1–Q5 lock-ins are folded in below (§10 records the decisions).
+and the Q1–Q5 lock-ins are folded in below (§10 records the decisions). `vex
+implementations` is index-backed with a live-walk fallback; `vex subtypes` is a
+new index-only transitive-BFS command; `benches/hierarchy.rs` (P4) measures the
+index-vs-live-walk speedup; `docs/LIMITATIONS.md` §9 documents the honest
+extraction gaps.
 
 ## 1. Goal
 
@@ -368,9 +372,19 @@ structures. Deferral is format-safe *because* the record keeps `from_sym_idx`
 - **P3** — wire `vex implementations` to the index (**live-walk fallback preserved**
   when the section is absent) + `vex subtypes` (with the §7 cycle guard); `vex
   status` line ("Hierarchy edges: N"); MCP `implementations` swap.
-- **P4** — bench + LIMITATIONS.md honesty section (§9) + docs. Watch item: per-BFS-
-  hop `Vec` allocation in the accessor — iterator-based accessor if measurable.
-  (`vex supertypes` is a separate v9 effort, not P4.)
+- **P4 — SHIPPED.** `benches/hierarchy.rs` (three Criterion benches on a
+  150-implementer + 20-level-chain synthetic corpus): `implementations_index`
+  (v8 section: FST lookup + `find_hierarchy_edges_by_symbol` binary search)
+  measured **~268 ns**; `implementations_live_walk` (pre-P3 parallel
+  tree-sitter re-parse of the whole corpus, same query) measured **~22.7 ms**
+  — a **~85,000×** speedup at this corpus size, confirming the index-lookup
+  design goal (§1) in practice, not just in complexity terms. `subtypes_bfs`
+  (query-time transitive BFS across a 20-hop chain, §7 Q4) measured **~1.1
+  µs** — confirms the "bounded BFS is microseconds" rationale for rejecting
+  build-time materialization. Full honesty writeup in `docs/LIMITATIONS.md`
+  §9. The per-BFS-hop `Vec` allocation in the accessor was **not** a
+  measurable bottleneck at this scale (µs-level total cost) — left as-is,
+  no follow-up filed. (`vex supertypes` remains a separate v9 effort, not P4.)
 
 ## 9. Limitations (honest, → docs/LIMITATIONS.md)
 

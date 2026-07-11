@@ -255,3 +255,11 @@ harness = false
 [[bench]]
 name = "grep_trigram"
 harness = false
+
+# Typed hierarchy edges P4 (docs/HIERARCHY-EDGES.md §8) — `implementations_index`
+# (v8 section lookup) vs `implementations_live_walk` (pre-P3 tree-sitter
+# re-parse) on a 150-implementer corpus, plus `subtypes_bfs` transitive-walk
+# cost on a 20-level inheritance chain.
+[[bench]]
+name = "hierarchy"
+harness = false
