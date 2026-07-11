@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.25.1] - 2026-07-11
+
+### Fixed
+
+- Hardened every posting-list reader (`ref_edges`, `unresolved_refs`,
+  `unresolved_hierarchy`, `call_graph`, and the resolved hierarchy section)
+  against an out-of-memory denial-of-service: each read a `count` straight
+  from the memory-mapped index and passed it to `Vec::with_capacity`, so a
+  crafted/corrupt index could force a huge speculative allocation before the
+  per-entry bounds check ran. The pre-allocation is now capped at
+  `count.min(remaining_bytes / 4)`; returned results are unchanged.
+
 ## [1.25.0] - 2026-07-11
 
 ### Added — typed hierarchy edges (`vex implementations` index-backed + `vex subtypes`)
@@ -3677,7 +3689,8 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.25.0...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.25.1...HEAD
+[1.25.1]: https://github.com/tenatarika/vex/compare/v1.25.0...v1.25.1
 [1.25.0]: https://github.com/tenatarika/vex/compare/v1.24.1...v1.25.0
 [1.24.1]: https://github.com/tenatarika/vex/compare/v1.24.0...v1.24.1
 [1.22.0]: https://github.com/tenatarika/vex/compare/v1.21.0...v1.22.0
