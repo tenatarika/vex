@@ -331,15 +331,40 @@ structures. Deferral is format-safe *because* the record keeps `from_sym_idx`
   parse time; resolve parent names in a **post-loop pass** (§5); build the sorted-
   array section; unconditional spill to `unresolved_hierarchy` (§3.5).
 - **P2a** — **`vex update` carry-forward (architect CRITICAL-1 + store-agent HIGH —
-  mandatory, its own sub-task).** Unchanged files are NOT re-parsed
+  mandatory, its own sub-task). SHIPPED.** Unchanged files are NOT re-parsed
   (`reconstruct_unchanged` rebuilds `ParsedFile` with `bound_refs: Vec::new()`), so
   parse-time hierarchy captures vanish for them — the first `vex update` after ship
-  would silently drop every unchanged file's edges. Mirror the ref-edge machinery:
-  a `ReconstructedHierarchyEdge` type in `src/index/types.rs`, a `reader.rs`
-  `hierarchy_edges_all()` accessor to read the *old* index's edges, and a remap/re-
-  resolve pass positioned like `writer.rs:645-724`. aqa must test `vex index` then
-  `vex update` on a single-file change and assert unchanged-file implementers
-  survive.
+  would silently drop every unchanged file's edges.
+  **Doc correction:** the paragraph originally here proposed mirroring the
+  ref-edge machinery verbatim (a `ReconstructedHierarchyEdge` type in
+  `src/index/types.rs` plus a remap/re-resolve pass positioned like
+  `writer.rs:645-724`). That path was **not taken** — it's unnecessary. The
+  ref-edge carry-forward needs a separate type + writer-side pass because
+  `RefEdge` targets are stored as a resolved `to_sym_idx` with no name to
+  re-resolve from; hierarchy captures are different — `HierarchyCapture {
+  child_name, parent_name, kind, line }` is **name-based**, and the existing
+  `resolve_hierarchy_captures` post-loop pass (§5) already reads straight off
+  `ParsedFile.hierarchy_captures`. So the shipped mechanism
+  ("reconstruct-captures-and-re-resolve") just rebuilds `HierarchyCapture`s
+  from the OLD index and assigns them to the reconstructed `ParsedFile` —
+  zero new types, zero new writer-side pass. Concretely:
+  `IndexReader::hierarchy_edges_all()` and `IndexReader::unresolved_hierarchy_all()`
+  (`src/store/reader.rs`) enumerate every resolved/unresolved edge in the OLD
+  index; `reconstruct_unchanged` (`src/index/pipeline/parse_files.rs`) buckets
+  them by `from_file_id` and, per unchanged file, looks up the child/parent
+  names via `reader.symbol()` (resolved) or the verbatim FST key (unresolved)
+  and populates `ParsedFile.hierarchy_captures`. The existing
+  `resolve_hierarchy_captures` pass then re-resolves everything against the
+  NEW index uniformly, which is *more* correct than a verbatim `to_sym_idx`
+  copy: a parent that moved to a different (changed) file, was renamed, or
+  was deleted is handled for free (re-resolves to the new location, or
+  correctly falls through to an unresolved spill) instead of carrying a
+  stale/wrong index forward. Regression coverage:
+  `tests/incremental_consistency_hierarchy.rs` (four `pipeline::run` /
+  `pipeline::update` end-to-end tests: unchanged-file survival, parent-moves,
+  parent-deleted-spills-unresolved, and multi-iteration stability) plus unit
+  tests in `src/store/reader.rs` and
+  `src/index/pipeline/parse_files.rs::hierarchy_carry_forward_tests`.
 - **P3** — wire `vex implementations` to the index (**live-walk fallback preserved**
   when the section is absent) + `vex subtypes` (with the §7 cycle guard); `vex
   status` line ("Hierarchy edges: N"); MCP `implementations` swap.

@@ -480,7 +480,7 @@ impl UnresolvedRef {
 /// must decode to "unknown kind", never undefined behaviour.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // decode-only enum — no CLI caller decodes edge_kind_bits() until P3
+#[allow(dead_code)] // `Implements` is reserved but never constructed in P2 (queries lump it under `Extends`)
 pub enum EdgeKind {
     /// Nominal class inheritance (Rust supertrait, Python base,
     /// Java/TS/C#/Kotlin/Swift/C++ `extends`, Ruby `<`).
@@ -545,13 +545,11 @@ impl HierarchyEdge {
     /// `mem::transmute` — since an unrecognised value (reserved for
     /// future kinds, or corrupt input) must degrade to "unknown kind",
     /// not undefined behaviour.
-    #[allow(dead_code)] // exercised by integration/reader tests; documents the bit layout
     pub fn edge_kind_bits(&self) -> u8 {
         (self.line_and_kind >> 24) as u8
     }
 
     /// 1-based line number, unpacked from the low 24 bits.
-    #[allow(dead_code)] // exercised by integration/reader tests; documents the bit layout
     pub fn line(&self) -> u32 {
         self.line_and_kind & 0x00FF_FFFF
     }
@@ -611,13 +609,11 @@ impl UnresolvedHierarchyEdge {
 
     /// Raw `EdgeKind` discriminant byte — decode via `EdgeKind::try_from`,
     /// never `mem::transmute` (same rationale as [`HierarchyEdge::edge_kind_bits`]).
-    #[allow(dead_code)] // exercised by integration/reader tests; documents the bit layout
     pub fn edge_kind_bits(&self) -> u8 {
         (self.line_and_kind >> 24) as u8
     }
 
     /// 1-based line number, unpacked from the low 24 bits.
-    #[allow(dead_code)] // exercised by integration/reader tests; documents the bit layout
     pub fn line(&self) -> u32 {
         self.line_and_kind & 0x00FF_FFFF
     }

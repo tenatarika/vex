@@ -371,9 +371,12 @@ pub struct ParsedFile {
     /// `trigram_bloom`): it rides the blob-cache bincode payload as-is, so a
     /// warm cache hit restores it for free, same as `symbols`/`bound_refs`.
     /// Empty for languages with no inheritance query (e.g. Go — structural
-    /// typing has no syntactic edge) and for files reconstructed from a
-    /// prior index during `vex update` without re-parsing — carrying
-    /// hierarchy captures forward for unchanged files is the separate P2a
-    /// task (§8), not handled here.
+    /// typing has no syntactic edge). For files reconstructed from a prior
+    /// index during `vex update` without re-parsing, this is populated by
+    /// the P2a carry-forward in `reconstruct_unchanged`
+    /// (`src/index/pipeline/parse_files.rs`) — old resolved/unresolved
+    /// hierarchy edges are read back out of the OLD index and rebuilt as
+    /// captures here, so the writer's existing `resolve_hierarchy_captures`
+    /// post-loop pass re-resolves them against the NEW index uniformly.
     pub hierarchy_captures: Vec<HierarchyCapture>,
 }

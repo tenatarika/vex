@@ -1523,10 +1523,9 @@ mod hierarchy_resolution_tests {
 
     #[test]
     fn empty_hierarchy_captures_produce_no_panics_and_no_sections() {
-        // Reconstructed/unchanged files carry empty hierarchy_captures
-        // (P2a carry-forward is explicitly out of scope for P2) — the
-        // writer must handle this without panicking and simply emit
-        // empty hierarchy sections.
+        // A file with genuinely no hierarchy relations (not a P2a
+        // reconstructed-unchanged file — see parse_files.rs for that path)
+        // must not panic and must simply emit empty hierarchy sections.
         let file = mk_file("a.rs", vec![mk_sym("Foo", SymbolKind::Class, 1)], vec![]);
         let parsed = vec![file];
 

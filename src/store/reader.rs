@@ -804,15 +804,12 @@ impl IndexReader {
         Some(unsafe { &*(ptr as *const HierarchyHeader) })
     }
 
-    /// Whether the index carries typed hierarchy edges (v8+, P1 format
-    /// scaffold — always false until P2 wires extraction). False for
+    /// Whether the index carries typed hierarchy edges (v8+). False for
     /// v3..v7 indexes and v8 indexes whose section is empty.
-    #[allow(dead_code)] // P1 format scaffold — no CLI caller until P3 wires `vex implementations`
     pub fn has_hierarchy_edges(&self) -> bool {
         self.hierarchy_header().is_some_and(|h| h.edges_len > 0)
     }
 
-    #[allow(dead_code)] // P1 format scaffold — only reached via find_hierarchy_edges_by_symbol
     fn hierarchy_section_bytes(&self) -> Option<(&[u8], &[u8], &[u8])> {
         let h = self.hierarchy_header()?;
         let mmap = &self.mmap[..];
@@ -920,6 +917,49 @@ impl IndexReader {
         out
     }
 
+    /// Every resolved [`HierarchyEdge`] recorded in this index, walked
+    /// directly off the `edges` sub-section byte array (NOT via the
+    /// `to_sym_idx`-keyed posting index — that index is keyed by
+    /// **parent**, so "every edge whose child lives in file F" needs a
+    /// full enumerate-then-filter, same shape as
+    /// [`Self::unresolved_refs_all`]). Used by the `vex update`
+    /// carry-forward (`reconstruct_unchanged`) so unchanged files keep
+    /// their hierarchy edges across incremental updates (P2a). Empty when
+    /// there is no hierarchy section (pre-v8 index, or a v8 index with no
+    /// edges). Bounds-checked; a truncated/corrupt `edges` sub-section
+    /// yields as many whole records as fit, never panics.
+    pub fn hierarchy_edges_all(&self) -> Vec<HierarchyEdge> {
+        if !self.has_hierarchy_edges() {
+            return Vec::new();
+        }
+        let Some((edges, _index, _postings)) = self.hierarchy_section_bytes() else {
+            return Vec::new();
+        };
+        let count = edges.len() / HierarchyEdge::SIZE;
+        let mut out = Vec::with_capacity(count);
+        for idx in 0..count {
+            let off = idx * HierarchyEdge::SIZE;
+            let end = off + HierarchyEdge::SIZE;
+            if end > edges.len() {
+                break;
+            }
+            let mut rec = std::mem::MaybeUninit::<HierarchyEdge>::uninit();
+            // SAFETY: bounds checked above; copy into stack-aligned
+            // storage to avoid unaligned reads from mmap (the edges
+            // sub-section is only guaranteed 4-byte aligned at its
+            // start, not necessarily at every record offset).
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    edges[off..].as_ptr(),
+                    rec.as_mut_ptr() as *mut u8,
+                    HierarchyEdge::SIZE,
+                );
+                out.push(rec.assume_init());
+            }
+        }
+        out
+    }
+
     /// Read the v8 [`UnresolvedHierarchyHeader`] when present. Returns
     /// `None` for v3..v7 indexes or when the bytes after the
     /// [`HierarchyHeader`] don't fit / aren't aligned. Mirrors
@@ -949,13 +989,11 @@ impl IndexReader {
     /// Whether the index carries unresolved-by-name hierarchy edges (v8+,
     /// P2). False for v3..v7 indexes and v8 indexes whose Pass-2 left
     /// nothing unresolved.
-    #[allow(dead_code)] // no CLI caller until P3 wires `vex implementations`/`vex subtypes`
     pub fn has_unresolved_hierarchy_edges(&self) -> bool {
         self.unresolved_hierarchy_header()
             .is_some_and(|h| h.edges_len > 0)
     }
 
-    #[allow(dead_code)] // only reached via find_unresolved_hierarchy_by_name
     fn unresolved_hierarchy_section_bytes(&self) -> Option<(&[u8], &[u8], &[u8])> {
         let h = self.unresolved_hierarchy_header()?;
         let mmap = &self.mmap[..];
@@ -994,6 +1032,36 @@ impl IndexReader {
                 );
                 Vec::new()
             })
+    }
+
+    /// Every `(parent_name, UnresolvedHierarchyEdge)` pair recorded in this
+    /// index, FST-key order (verbatim case). Empty when there is no
+    /// unresolved-hierarchy section. Used by the `vex update` carry-forward
+    /// (`reconstruct_unchanged`, P2a) so unchanged files keep their external
+    /// (unresolved) supertype names across incremental updates. Mirrors
+    /// [`Self::unresolved_refs_all`]; FST traversal is wrapped in
+    /// `catch_unwind` for the same defense-in-depth reason as
+    /// [`Self::find_ref_edges_by_symbol`].
+    pub fn unresolved_hierarchy_all(&self) -> Vec<(String, UnresolvedHierarchyEdge)> {
+        if !self.has_unresolved_hierarchy_edges() {
+            return Vec::new();
+        }
+        let Some((edges, fst, post)) = self.unresolved_hierarchy_section_bytes() else {
+            return Vec::new();
+        };
+        let Ok(reader) =
+            super::unresolved_hierarchy::UnresolvedHierarchyReader::new(fst, post, edges)
+        else {
+            return Vec::new();
+        };
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reader.iter_all())).unwrap_or_else(
+            |_| {
+                tracing::warn!(
+                    "unresolved_hierarchy FST traversal panicked on corrupt bytes; returning empty result"
+                );
+                Vec::new()
+            },
+        )
     }
 
     /// Number of call edges recorded in this index, 0 when absent.
@@ -1253,6 +1321,21 @@ mod tests {
         mutate: impl FnOnce(&mut Header),
         hierarchy: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
     ) -> std::path::PathBuf {
+        write_minimal_index_with_hierarchy_sections(tmp, mutate, hierarchy, None)
+    }
+
+    /// Splice BOTH the resolved `hierarchy_edges` section AND the
+    /// `unresolved_hierarchy` section into a minimal on-disk v8 index.
+    /// `hierarchy` is `(edges, index, postings)` for the resolved section;
+    /// `unresolved_hierarchy` is `(edges, fst, postings)` for the parallel
+    /// unresolved section — both default to all-zeroed/empty when `None`,
+    /// matching every other test in this module.
+    fn write_minimal_index_with_hierarchy_sections(
+        tmp: &Path,
+        mutate: impl FnOnce(&mut Header),
+        hierarchy: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+        unresolved_hierarchy: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    ) -> std::path::PathBuf {
         let total_header = Header::SIZE
             + CallGraphHeader::SIZE
             + V5SectionHeader::SIZE
@@ -1263,6 +1346,8 @@ mod tests {
 
         let (edges_bytes, index_bytes, postings_bytes) =
             hierarchy.unwrap_or((Vec::new(), Vec::new(), Vec::new()));
+        let (uh_edges_bytes, uh_fst_bytes, uh_postings_bytes) =
+            unresolved_hierarchy.unwrap_or((Vec::new(), Vec::new(), Vec::new()));
         // 4-byte align the hierarchy edges array after the fixed headers,
         // matching the writer's convention for every other aligned section.
         let hier_unaligned = total_header as u64;
@@ -1270,7 +1355,14 @@ mod tests {
         let hier_pad = (hier_edges_offset - hier_unaligned) as usize;
         let hier_index_offset = hier_edges_offset + edges_bytes.len() as u64;
         let hier_postings_offset = hier_index_offset + index_bytes.len() as u64;
-        let symbols_offset = hier_postings_offset + postings_bytes.len() as u64;
+        // unresolved_hierarchy sub-section immediately follows, 4-byte
+        // aligned the same way.
+        let uh_unaligned = hier_postings_offset + postings_bytes.len() as u64;
+        let uh_edges_offset = (uh_unaligned + 3) & !3u64;
+        let uh_pad = (uh_edges_offset - uh_unaligned) as usize;
+        let uh_fst_offset = uh_edges_offset + uh_edges_bytes.len() as u64;
+        let uh_postings_offset = uh_fst_offset + uh_fst_bytes.len() as u64;
+        let symbols_offset = uh_postings_offset + uh_postings_bytes.len() as u64;
 
         let mut header = Header {
             magic: *MAGIC,
@@ -1350,15 +1442,13 @@ mod tests {
             postings_offset: hier_postings_offset,
             postings_len: postings_bytes.len() as u64,
         };
-        // Always-zeroed: no test in this module populates
-        // unresolved_hierarchy (that's the writer's own roundtrip tests).
         let unres_hier = UnresolvedHierarchyHeader {
-            edges_offset: symbols_offset,
-            edges_len: 0,
-            fst_offset: symbols_offset,
-            fst_len: 0,
-            postings_offset: symbols_offset,
-            postings_len: 0,
+            edges_offset: uh_edges_offset,
+            edges_len: uh_edges_bytes.len() as u64,
+            fst_offset: uh_fst_offset,
+            fst_len: uh_fst_bytes.len() as u64,
+            postings_offset: uh_postings_offset,
+            postings_len: uh_postings_bytes.len() as u64,
         };
 
         let mut bytes = Vec::with_capacity(total_header);
@@ -1411,6 +1501,12 @@ mod tests {
         bytes.extend_from_slice(&edges_bytes);
         bytes.extend_from_slice(&index_bytes);
         bytes.extend_from_slice(&postings_bytes);
+        if uh_pad > 0 {
+            bytes.extend_from_slice(&[0u8; 3][..uh_pad]);
+        }
+        bytes.extend_from_slice(&uh_edges_bytes);
+        bytes.extend_from_slice(&uh_fst_bytes);
+        bytes.extend_from_slice(&uh_postings_bytes);
 
         let path = tmp.join("index.vex");
         std::fs::write(&path, &bytes).expect("write minimal index");
@@ -1829,5 +1925,169 @@ mod tests {
             result.is_err(),
             "hierarchy_edges section offsets exceeding file size must be rejected at open()"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // P2a carry-forward accessors: hierarchy_edges_all / unresolved_hierarchy_all
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn hierarchy_edges_all_enumerates_every_edge_regardless_of_parent() {
+        // Unlike find_hierarchy_edges_by_symbol (keyed by to_sym_idx, one
+        // parent at a time), hierarchy_edges_all must return every edge
+        // across every parent — this is what reconstruct_unchanged needs
+        // to bucket by from_file_id.
+        let edges = vec![
+            hb(100, 1, 0, 10, 0),
+            hb(100, 2, 0, 20, 1),
+            hb(200, 3, 1, 30, 2),
+            hb(300, 4, 1, 40, 0),
+        ];
+        let (edge_bytes, index_bytes, posting_bytes) =
+            build_hierarchy_section(&edges).expect("build");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index_with_hierarchy(
+            tmp.path(),
+            |_| {},
+            Some((edge_bytes, index_bytes, posting_bytes)),
+        );
+        let reader = IndexReader::open(&path).expect("open");
+
+        let mut all = reader.hierarchy_edges_all();
+        all.sort_by_key(|e| e.from_sym_idx);
+        assert_eq!(
+            all.len(),
+            4,
+            "must enumerate all 4 edges across all parents"
+        );
+        assert_eq!(all[0].from_sym_idx, 1);
+        assert_eq!(all[0].to_sym_idx, 100);
+        assert_eq!(all[3].from_sym_idx, 4);
+        assert_eq!(all[3].to_sym_idx, 300);
+    }
+
+    #[test]
+    fn hierarchy_edges_all_empty_when_no_section() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index(tmp.path(), |h| {
+            h.version = 7;
+        });
+        let reader = IndexReader::open(&path).expect("v7 index opens clean");
+        assert!(
+            reader.hierarchy_edges_all().is_empty(),
+            "a v7 index (no hierarchy section at all) must yield empty, never panic"
+        );
+    }
+
+    #[test]
+    fn hierarchy_edges_all_empty_when_section_present_but_zero_edges() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index(tmp.path(), |_| {});
+        let reader = IndexReader::open(&path).expect("v8 index with zeroed hierarchy section");
+        assert!(reader.hierarchy_edges_all().is_empty());
+    }
+
+    #[test]
+    fn hierarchy_edges_all_truncated_edges_yields_whole_records_only() {
+        // A trailing partial record (corrupt/truncated write) must not
+        // panic — the accessor should stop at the last whole record.
+        let edges = vec![hb(100, 1, 0, 10, 0), hb(100, 2, 0, 20, 1)];
+        let (mut edge_bytes, index_bytes, posting_bytes) =
+            build_hierarchy_section(&edges).expect("build");
+        edge_bytes.push(0xAB); // trailing partial byte, not a whole HierarchyEdge
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index_with_hierarchy(
+            tmp.path(),
+            |_| {},
+            Some((edge_bytes, index_bytes, posting_bytes)),
+        );
+        let reader = IndexReader::open(&path).expect("open");
+        let all = reader.hierarchy_edges_all();
+        assert_eq!(
+            all.len(),
+            2,
+            "must recover exactly the whole records, ignoring the trailing partial byte"
+        );
+    }
+
+    use crate::store::unresolved_hierarchy::{
+        build_unresolved_hierarchy_section, UnresolvedHierarchyEdgeBuilder,
+    };
+
+    fn uhb(
+        name: &str,
+        from: u32,
+        file: u32,
+        line: u32,
+        kind: u8,
+    ) -> UnresolvedHierarchyEdgeBuilder {
+        UnresolvedHierarchyEdgeBuilder {
+            parent_name: name.to_string(),
+            from_sym_idx: from,
+            from_file_id: file,
+            line,
+            kind,
+        }
+    }
+
+    /// Splice ONLY unresolved_hierarchy section bytes into a minimal v8
+    /// index (resolved hierarchy_edges section stays empty) — thin wrapper
+    /// over `write_minimal_index_with_hierarchy_sections`.
+    fn write_minimal_index_with_unresolved_hierarchy(
+        tmp: &Path,
+        edges: &[UnresolvedHierarchyEdgeBuilder],
+    ) -> std::path::PathBuf {
+        let (edge_bytes, fst_bytes, post_bytes) =
+            build_unresolved_hierarchy_section(edges).expect("build unresolved hierarchy section");
+        write_minimal_index_with_hierarchy_sections(
+            tmp,
+            |_| {},
+            None,
+            Some((edge_bytes, fst_bytes, post_bytes)),
+        )
+    }
+
+    #[test]
+    fn unresolved_hierarchy_all_enumerates_every_edge_with_parent_name() {
+        let edges = vec![
+            uhb("Foo", 1, 0, 10, 0),
+            uhb("Bar", 2, 1, 20, 2),
+            uhb("Foo", 3, 2, 30, 0),
+        ];
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index_with_unresolved_hierarchy(tmp.path(), &edges);
+        let reader = IndexReader::open(&path).expect("open");
+
+        let mut all = reader.unresolved_hierarchy_all();
+        all.sort_by_key(|(name, e)| (name.clone(), e.from_sym_idx));
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].0, "Bar");
+        assert_eq!(all[1].0, "Foo");
+        assert_eq!(all[1].1.from_sym_idx, 1);
+        assert_eq!(all[2].0, "Foo");
+        assert_eq!(all[2].1.from_sym_idx, 3);
+    }
+
+    #[test]
+    fn unresolved_hierarchy_all_empty_when_no_section() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index(tmp.path(), |h| {
+            h.version = 7;
+        });
+        let reader = IndexReader::open(&path).expect("v7 index opens clean");
+        assert!(
+            reader.unresolved_hierarchy_all().is_empty(),
+            "a v7 index (no unresolved_hierarchy section) must yield empty, never panic"
+        );
+    }
+
+    #[test]
+    fn unresolved_hierarchy_all_empty_when_section_present_but_zero_edges() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_minimal_index(tmp.path(), |_| {});
+        let reader = IndexReader::open(&path).expect("v8 index with zeroed section");
+        assert!(reader.unresolved_hierarchy_all().is_empty());
     }
 }

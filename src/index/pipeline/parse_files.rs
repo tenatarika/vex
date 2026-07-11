@@ -20,7 +20,7 @@ use anyhow::Result;
 use rayon::prelude::*;
 
 use crate::index::hasher;
-use crate::index::symbols::{ParsedFile, ParsedSymbol, RawCallEdge, SymbolKind};
+use crate::index::symbols::{HierarchyCapture, ParsedFile, ParsedSymbol, RawCallEdge, SymbolKind};
 use crate::index::types::{ReconstructedRef, ReconstructedUnresolvedRef};
 use crate::parse;
 use crate::parse::language::Language;
@@ -111,9 +111,11 @@ pub(super) fn reconstruct_unchanged(
                 // fresh bloom. The sidecar writer carries the old record
                 // forward for this path (see output.rs trigram block).
                 trigram_bloom: None,
-                // P2a (carry-forward of hierarchy edges for unchanged
-                // files) is a separate follow-up task; P2 only extracts on
-                // fresh parses, so reconstructed files get none here.
+                // Placeholder — overwritten below (P2a carry-forward
+                // block) for files that had hierarchy edges in the OLD
+                // index. Left empty here because that block runs after
+                // every `ParsedFile` has been assembled and needs the
+                // final `path` to look up the OLD file_id.
                 hierarchy_captures: Vec::new(),
             });
         }
@@ -177,8 +179,7 @@ pub(super) fn reconstruct_unchanged(
             cpp_includes: Vec::new(),
             // Reconstructed — see the flush block above.
             trigram_bloom: None,
-            // P2a carry-forward is a separate follow-up task (see the
-            // per-flush comment above).
+            // Placeholder — see the per-flush comment above.
             hierarchy_captures: Vec::new(),
         });
     }
@@ -344,6 +345,124 @@ pub(super) fn reconstruct_unchanged(
                 col: edge.col_and_kind & 0x00FF_FFFF,
                 kind,
             });
+        }
+    }
+
+    // P2a (`docs/HIERARCHY-EDGES.md` §8, architect CRITICAL-1 — mandatory):
+    // carry forward hierarchy captures for unchanged files.
+    //
+    // Unlike `reconstructed_refs`/`reconstructed_unresolved_refs` (which
+    // feed a SEPARATE writer-side re-emission pass keyed on OLD
+    // file_id → OLD path → NEW file_id), this uses the
+    // "reconstruct-captures-and-re-resolve" mechanism: rebuild
+    // `HierarchyCapture { child_name, parent_name, kind, line }` tuples
+    // (the exact shape `capture_hierarchy_edges` would have produced on a
+    // fresh parse) and stash them directly on `ParsedFile.hierarchy_captures`
+    // for the unchanged file. The EXISTING `resolve_hierarchy_captures`
+    // post-loop pass in `store::writer` then re-resolves them against the
+    // NEW index uniformly — no separate remap/re-resolve pass needed here,
+    // because captures are NAME-based (not index-based) and file_id is
+    // assigned fresh during writer assembly.
+    //
+    // Why re-resolve instead of copying the OLD resolved `to_sym_idx`
+    // verbatim: a parent that moved to a different (changed) file, was
+    // renamed, or was deleted entirely is only handled correctly by feeding
+    // the name through Pass-2 again — a stale sym_idx carried forward
+    // verbatim could point at the wrong (or a since-reused) symbol slot.
+    //
+    // Both the resolved hierarchy_edges section (keyed by `to_sym_idx`,
+    // i.e. by PARENT) and the unresolved_hierarchy section (keyed by
+    // parent NAME) are read via their `_all()` enumeration accessors and
+    // bucketed by `from_file_id` up front — a single pass over each
+    // section, not one `hierarchy_edges_all()` call per unchanged file.
+    if reader.has_hierarchy_edges() || reader.has_unresolved_hierarchy_edges() {
+        let mut resolved_by_file: HashMap<u32, Vec<HierarchyCapture>> = HashMap::new();
+
+        for edge in reader.hierarchy_edges_all() {
+            let Some(child_rec) = reader.symbol(edge.from_sym_idx as usize) else {
+                tracing::warn!(
+                    from_sym_idx = edge.from_sym_idx,
+                    "hierarchy_edges corruption: from_sym_idx past symbol_count"
+                );
+                continue;
+            };
+            let child_name = reader.read_string(child_rec.name_offset);
+            if child_name.is_empty() {
+                continue;
+            }
+            let Some(parent_rec) = reader.symbol(edge.to_sym_idx as usize) else {
+                tracing::warn!(
+                    to_sym_idx = edge.to_sym_idx,
+                    "hierarchy_edges corruption: to_sym_idx past symbol_count"
+                );
+                continue;
+            };
+            let parent_name = reader.read_string(parent_rec.name_offset);
+            if parent_name.is_empty() {
+                continue;
+            }
+            resolved_by_file
+                .entry(edge.from_file_id)
+                .or_default()
+                .push(HierarchyCapture {
+                    child_name: child_name.to_string(),
+                    parent_name: parent_name.to_string(),
+                    kind: edge.edge_kind_bits(),
+                    line: edge.line(),
+                });
+        }
+
+        let mut unresolved_by_file: HashMap<u32, Vec<HierarchyCapture>> = HashMap::new();
+        for (parent_name, edge) in reader.unresolved_hierarchy_all() {
+            if parent_name.is_empty() {
+                continue;
+            }
+            let Some(child_rec) = reader.symbol(edge.from_sym_idx as usize) else {
+                tracing::warn!(
+                    from_sym_idx = edge.from_sym_idx,
+                    "unresolved_hierarchy corruption: from_sym_idx past symbol_count"
+                );
+                continue;
+            };
+            let child_name = reader.read_string(child_rec.name_offset);
+            if child_name.is_empty() {
+                continue;
+            }
+            unresolved_by_file
+                .entry(edge.from_file_id)
+                .or_default()
+                .push(HierarchyCapture {
+                    child_name: child_name.to_string(),
+                    parent_name,
+                    kind: edge.edge_kind_bits(),
+                    line: edge.line(),
+                });
+        }
+
+        if !resolved_by_file.is_empty() || !unresolved_by_file.is_empty() {
+            // OLD path -> OLD file_id, built once (not per-file / per-edge)
+            // so the per-file lookup below is O(1) instead of an O(files)
+            // linear scan over `old_file_paths` for every unchanged file.
+            let old_file_id_by_path: HashMap<&str, u32> = old_file_paths
+                .iter()
+                .enumerate()
+                .map(|(fid, path)| (path.as_str(), fid as u32))
+                .collect();
+
+            for pf in &mut parsed_files {
+                // changed/deleted files never reach `parsed_files` in this
+                // function (filtered at the top of the main loop), so no
+                // extra changed/deleted guard is needed here — every entry
+                // in `parsed_files` is by construction an unchanged file.
+                let Some(&file_id) = old_file_id_by_path.get(pf.path.as_str()) else {
+                    continue;
+                };
+                let mut caps = resolved_by_file.remove(&file_id).unwrap_or_default();
+                if let Some(mut extra) = unresolved_by_file.remove(&file_id) {
+                    caps.append(&mut extra);
+                }
+                pf.hierarchy_captures = caps;
+            }
         }
     }
 
@@ -680,4 +799,219 @@ pub(super) fn discover_files(root: &Path, excludes: &[String]) -> Result<Vec<std
     }
 
     Ok(files)
+}
+
+#[cfg(test)]
+mod hierarchy_carry_forward_tests {
+    //! P2a (`docs/HIERARCHY-EDGES.md` §8) unit tests for the
+    //! `reconstruct_unchanged` hierarchy-capture carry-forward, isolated
+    //! from the full `pipeline::run`/`pipeline::update` harness (that
+    //! end-to-end coverage lives in
+    //! `tests/incremental_consistency_hierarchy.rs`). These build a
+    //! minimal on-disk index directly via `write_index_full` — with real
+    //! `HierarchyCapture`s on a `ParsedFile` so the writer's existing
+    //! `resolve_hierarchy_captures` populates real hierarchy_edges /
+    //! unresolved_hierarchy sections — then call `reconstruct_unchanged`
+    //! against that index and assert the rebuilt `ParsedFile.hierarchy_captures`
+    //! match what a fresh parse would have produced.
+    use super::*;
+    use crate::store::format::EdgeKind;
+    use crate::store::reader::IndexReader;
+    use crate::store::writer::write_index_full;
+
+    fn mk_sym(name: &str, kind: SymbolKind, line: usize) -> ParsedSymbol {
+        ParsedSymbol {
+            name: name.to_string(),
+            kind,
+            line,
+            signature: None,
+            doc: None,
+            body_tokens: None,
+        }
+    }
+
+    fn mk_file(
+        path: &str,
+        symbols: Vec<ParsedSymbol>,
+        captures: Vec<HierarchyCapture>,
+    ) -> ParsedFile {
+        ParsedFile {
+            path: path.to_string(),
+            symbols,
+            refs: Vec::new(),
+            call_edges: Vec::new(),
+            bound_refs: Vec::new(),
+            skeletons: Vec::new(),
+            cpp_includes: Vec::new(),
+            trigram_bloom: None,
+            hierarchy_captures: captures,
+        }
+    }
+
+    #[test]
+    fn reconstruct_unchanged_carries_forward_resolved_hierarchy_capture() {
+        // a.rs defines Base; b.rs defines Derived extending Base
+        // (resolved edge). Neither file is in `changed`/`deleted`, so
+        // reconstruct_unchanged must rebuild the capture for b.rs.
+        let file_a = mk_file("a.rs", vec![mk_sym("Base", SymbolKind::Class, 1)], vec![]);
+        let file_b = mk_file(
+            "b.rs",
+            vec![mk_sym("Derived", SymbolKind::Class, 5)],
+            vec![HierarchyCapture {
+                child_name: "Derived".to_string(),
+                parent_name: "Base".to_string(),
+                kind: EdgeKind::Extends as u8,
+                line: 5,
+            }],
+        );
+        let parsed = vec![file_a, file_b];
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let index_path = tmp.path().join("index.vex");
+        write_index_full(&parsed, &[], 384, &index_path).expect("write index");
+
+        let reader = IndexReader::open(&index_path).expect("open index");
+        assert!(
+            reader.has_hierarchy_edges(),
+            "fixture must produce a resolved edge"
+        );
+
+        let changed: HashSet<&str> = HashSet::new();
+        let deleted: HashSet<&str> = HashSet::new();
+        let recon = reconstruct_unchanged(&reader, &changed, &deleted, None);
+
+        let b_file = recon
+            .parsed_files
+            .iter()
+            .find(|f| f.path == "b.rs")
+            .expect("b.rs must be reconstructed");
+        assert_eq!(
+            b_file.hierarchy_captures.len(),
+            1,
+            "b.rs's hierarchy capture must be carried forward, not dropped"
+        );
+        let cap = &b_file.hierarchy_captures[0];
+        assert_eq!(cap.child_name, "Derived");
+        assert_eq!(cap.parent_name, "Base");
+        assert_eq!(cap.kind, EdgeKind::Extends as u8);
+        assert_eq!(cap.line, 5);
+    }
+
+    #[test]
+    fn reconstruct_unchanged_carries_forward_unresolved_hierarchy_capture() {
+        // b.rs's Derived extends an external/stdlib "Base" with zero
+        // local candidates — spills to unresolved_hierarchy. The
+        // carry-forward must reconstruct the SAME capture shape so
+        // Pass-2 spills it again on the next write (still unresolved,
+        // since nothing in this fixture defines "Base" locally).
+        let file_b = mk_file(
+            "b.rs",
+            vec![mk_sym("Derived", SymbolKind::Class, 5)],
+            vec![HierarchyCapture {
+                child_name: "Derived".to_string(),
+                parent_name: "ExternalBase".to_string(),
+                kind: EdgeKind::Extends as u8,
+                line: 5,
+            }],
+        );
+        let parsed = vec![file_b];
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let index_path = tmp.path().join("index.vex");
+        write_index_full(&parsed, &[], 384, &index_path).expect("write index");
+
+        let reader = IndexReader::open(&index_path).expect("open index");
+        assert!(
+            reader.has_unresolved_hierarchy_edges(),
+            "fixture must produce an unresolved spill"
+        );
+        assert!(!reader.has_hierarchy_edges(), "must NOT be a resolved edge");
+
+        let changed: HashSet<&str> = HashSet::new();
+        let deleted: HashSet<&str> = HashSet::new();
+        let recon = reconstruct_unchanged(&reader, &changed, &deleted, None);
+
+        let b_file = recon
+            .parsed_files
+            .iter()
+            .find(|f| f.path == "b.rs")
+            .expect("b.rs must be reconstructed");
+        assert_eq!(
+            b_file.hierarchy_captures.len(),
+            1,
+            "b.rs's unresolved hierarchy capture must be carried forward"
+        );
+        let cap = &b_file.hierarchy_captures[0];
+        assert_eq!(cap.child_name, "Derived");
+        assert_eq!(cap.parent_name, "ExternalBase");
+        assert_eq!(cap.kind, EdgeKind::Extends as u8);
+    }
+
+    #[test]
+    fn reconstruct_unchanged_skips_captures_for_changed_files() {
+        // b.rs is in the `changed` set — its capture must NOT be carried
+        // forward (it's about to be re-parsed with fresh captures).
+        let file_a = mk_file("a.rs", vec![mk_sym("Base", SymbolKind::Class, 1)], vec![]);
+        let file_b = mk_file(
+            "b.rs",
+            vec![mk_sym("Derived", SymbolKind::Class, 5)],
+            vec![HierarchyCapture {
+                child_name: "Derived".to_string(),
+                parent_name: "Base".to_string(),
+                kind: EdgeKind::Extends as u8,
+                line: 5,
+            }],
+        );
+        let parsed = vec![file_a, file_b];
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let index_path = tmp.path().join("index.vex");
+        write_index_full(&parsed, &[], 384, &index_path).expect("write index");
+
+        let reader = IndexReader::open(&index_path).expect("open index");
+
+        let mut changed: HashSet<&str> = HashSet::new();
+        changed.insert("b.rs");
+        let deleted: HashSet<&str> = HashSet::new();
+        let recon = reconstruct_unchanged(&reader, &changed, &deleted, None);
+
+        assert!(
+            recon.parsed_files.iter().all(|f| f.path != "b.rs"),
+            "changed files must not appear in the reconstructed set at all"
+        );
+        // a.rs (unchanged, no captures of its own) must still reconstruct
+        // cleanly with an empty hierarchy_captures — no false-positive
+        // carry-forward of b.rs's capture onto the wrong file.
+        let a_file = recon
+            .parsed_files
+            .iter()
+            .find(|f| f.path == "a.rs")
+            .expect("a.rs must be reconstructed");
+        assert!(a_file.hierarchy_captures.is_empty());
+    }
+
+    #[test]
+    fn reconstruct_unchanged_handles_index_with_no_hierarchy_section() {
+        // Simulates a pre-P2 v8 index (or effectively v7 — no hierarchy
+        // captures were ever written) via a fixture with zero captures.
+        // reconstruct_unchanged must not panic and must produce empty
+        // hierarchy_captures for every reconstructed file.
+        let file_a = mk_file("a.rs", vec![mk_sym("Foo", SymbolKind::Class, 1)], vec![]);
+        let parsed = vec![file_a];
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let index_path = tmp.path().join("index.vex");
+        write_index_full(&parsed, &[], 384, &index_path).expect("write index");
+
+        let reader = IndexReader::open(&index_path).expect("open index");
+        assert!(!reader.has_hierarchy_edges());
+        assert!(!reader.has_unresolved_hierarchy_edges());
+
+        let changed: HashSet<&str> = HashSet::new();
+        let deleted: HashSet<&str> = HashSet::new();
+        let recon = reconstruct_unchanged(&reader, &changed, &deleted, None);
+
+        assert_eq!(recon.parsed_files.len(), 1);
+        assert!(recon.parsed_files[0].hierarchy_captures.is_empty());
+    }
 }

@@ -164,6 +164,28 @@ impl<'a> UnresolvedHierarchyReader<'a> {
         out
     }
 
+    /// Iterate every `(parent_name, edge)` pair in the section, in FST-key
+    /// order (verbatim case, mirrors [`Self::find_by_name`]'s key). Used by
+    /// the `vex update` carry-forward (P2a) — `reconstruct_unchanged` reads
+    /// the old index's unresolved hierarchy edges through here and rebuilds
+    /// `HierarchyCapture`s for unchanged files so the writer's post-loop
+    /// Pass-2 can re-resolve them against the NEW index. Mirrors
+    /// [`super::unresolved_refs::UnresolvedRefReader::iter_all`].
+    pub fn iter_all(&self) -> Vec<(String, UnresolvedHierarchyEdge)> {
+        use fst::Streamer;
+        let mut out = Vec::new();
+        let mut stream = self.fst_map.stream();
+        while let Some((key, offset)) = stream.next() {
+            let name = String::from_utf8_lossy(key).into_owned();
+            for idx in self.read_posting_list(offset) {
+                if let Some(rec) = self.edge_at(idx) {
+                    out.push((name.clone(), rec));
+                }
+            }
+        }
+        out
+    }
+
     /// Copy the `idx`-th [`UnresolvedHierarchyEdge`] out of the mmap'd
     /// record array. `None` when `idx` is out of range (corrupt posting
     /// list) — the caller treats that as a missing edge, the safest
@@ -342,5 +364,40 @@ mod tests {
             reader.find_by_name("Foo").is_empty(),
             "out-of-range edge_idx must skip silently"
         );
+    }
+
+    #[test]
+    fn iter_all_enumerates_every_edge_with_its_parent_name() {
+        let edges = vec![
+            b("Foo", 1, 0, 10, 0),
+            b("Bar", 2, 1, 20, 2),
+            b("Foo", 3, 2, 30, 0),
+        ];
+        let (edge_bytes, fst_bytes, post_bytes) =
+            build_unresolved_hierarchy_section(&edges).expect("build");
+        let reader =
+            UnresolvedHierarchyReader::new(&fst_bytes, &post_bytes, &edge_bytes).expect("reader");
+
+        let mut all = reader.iter_all();
+        all.sort_by_key(|(name, e)| (name.clone(), e.from_sym_idx));
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].0, "Bar");
+        assert_eq!(all[0].1.from_sym_idx, 2);
+        assert_eq!(all[1].0, "Foo");
+        assert_eq!(all[1].1.from_sym_idx, 1);
+        assert_eq!(all[2].0, "Foo");
+        assert_eq!(all[2].1.from_sym_idx, 3);
+    }
+
+    #[test]
+    fn iter_all_on_empty_section_returns_empty() {
+        // Constructing a reader over an empty section isn't meaningful
+        // (fst::Map::new requires valid FST bytes); this documents that
+        // the reader-level accessor (IndexReader::unresolved_hierarchy_all)
+        // short-circuits via has_unresolved_hierarchy_edges() before ever
+        // constructing a reader — see store/reader.rs.
+        let edges: Vec<UnresolvedHierarchyEdgeBuilder> = vec![];
+        let (e, f, p) = build_unresolved_hierarchy_section(&edges).expect("build");
+        assert!(e.is_empty() && f.is_empty() && p.is_empty());
     }
 }
