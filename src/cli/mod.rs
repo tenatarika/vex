@@ -19,6 +19,7 @@ pub(crate) mod cmd_self_update;
 pub(crate) mod cmd_show;
 pub(crate) mod cmd_similar;
 pub(crate) mod cmd_status;
+pub(crate) mod cmd_subtypes;
 pub(crate) mod cmd_tests_for;
 pub(crate) mod cmd_trivial;
 pub(crate) mod cmd_update;
@@ -424,6 +425,26 @@ fn dispatch_inner(cli: Cli) -> Result<()> {
             name,
             path,
             limit,
+            auto_update,
+            no_stale_check,
+            scope,
+            diff,
+        ),
+        Commands::Subtypes {
+            name,
+            path,
+            limit,
+            depth,
+            auto_update,
+            no_stale_check,
+            scope,
+            diff,
+        } => cmd_subtypes::subtypes(
+            &ctx,
+            name,
+            path,
+            limit,
+            depth,
             auto_update,
             no_stale_check,
             scope,

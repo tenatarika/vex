@@ -822,7 +822,6 @@ impl IndexReader {
     /// Copy the `i`-th [`HierarchyPostingEntry`] out of the `index` bytes.
     /// Bounds-checked; `None` on any out-of-range or truncated read
     /// (corrupt index) — the caller treats that as "entry not found".
-    #[allow(dead_code)] // P1 format scaffold — only reached via find_hierarchy_edges_by_symbol
     fn read_hierarchy_posting_entry(index: &[u8], i: usize) -> Option<HierarchyPostingEntry> {
         let off = i.checked_mul(HierarchyPostingEntry::SIZE)?;
         let end = off.checked_add(HierarchyPostingEntry::SIZE)?;
@@ -854,7 +853,11 @@ impl IndexReader {
     /// input — every bounds check degrades to "skip this entry" or
     /// "return empty" (P1 acceptance criteria, see
     /// `docs/HIERARCHY-EDGES.md` §8).
-    #[allow(dead_code)] // P1 format scaffold — no CLI caller until P3 wires `vex implementations`
+    ///
+    /// P3: this is now the primary data source for `vex implementations`
+    /// and `vex subtypes` (see `src/cli/cmd_implementations.rs` /
+    /// `src/cli/cmd_subtypes.rs`) whenever the index carries a v8
+    /// hierarchy section.
     pub fn find_hierarchy_edges_by_symbol(&self, to_sym_idx: u32) -> Vec<HierarchyEdge> {
         if !self.has_hierarchy_edges() {
             return Vec::new();
@@ -1275,7 +1278,6 @@ fn slice_or_empty(mmap: &[u8], offset: usize, len: usize) -> Option<&[u8]> {
 /// read so far) rather than panicking on a corrupt/truncated blob, same
 /// idiom as `RefEdgeReader::read_posting_list` /
 /// `UnresolvedRefReader::read_posting_list`.
-#[allow(dead_code)] // P1 format scaffold — only reached via find_hierarchy_edges_by_symbol
 fn read_hierarchy_posting_list(postings: &[u8], offset: usize) -> Vec<u32> {
     if offset + 4 > postings.len() {
         return Vec::new();

@@ -841,7 +841,9 @@ docs/GPU_SUPPORT.md §11 — heavy embedders / shared GPU only)."
         enable: bool,
     },
 
-    /// Find all types that inherit from / implement a base class, trait, or interface (no index needed)
+    /// Find all types that inherit from / implement a base class, trait, or interface.
+    /// Uses the indexed hierarchy-edge section (v8+) when available; falls back to a
+    /// live tree-sitter walk otherwise, so it still works with no index at all.
     Implementations {
         /// Base class, trait, or interface name to search for
         name: String,
@@ -853,6 +855,45 @@ docs/GPU_SUPPORT.md §11 — heavy embedders / shared GPU only)."
         /// Max results to return
         #[arg(short, long, default_value = "50")]
         limit: usize,
+
+        /// Auto-update index if stale (or bootstrap if missing) before searching.
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
+
+        #[command(flatten)]
+        diff: DiffFilterArgs,
+    },
+
+    /// Find every TRANSITIVE subtype of a base class, trait, or interface — the full
+    /// descendant tree via `extends`/`implements` edges (contrast with `implementations`,
+    /// which only reports direct implementers). Requires a v8+ index with hierarchy
+    /// edges: there is no live-walk fallback, since a transitive closure needs the
+    /// persisted graph. `docs/HIERARCHY-EDGES.md` §7/§8 (P3).
+    Subtypes {
+        /// Base class, trait, or interface name to search for
+        name: String,
+
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Max results to return
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+
+        /// Max BFS hops (transitive descent) from the queried type.
+        /// Independent of the mandatory cycle-detection visited-set — both
+        /// guards are required (`docs/HIERARCHY-EDGES.md` §7). 64 is a
+        /// generous default that real-world type hierarchies never approach.
+        #[arg(long, default_value = "64")]
+        depth: usize,
 
         /// Auto-update index if stale (or bootstrap if missing) before searching.
         #[arg(long)]

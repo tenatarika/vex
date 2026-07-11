@@ -79,6 +79,17 @@ pub(crate) fn status(
     } else {
         None
     };
+    // P3 (`docs/HIERARCHY-EDGES.md` §8) — typed hierarchy edge count. No
+    // manifest field tracks this (the reader section itself is the
+    // source of truth), so read the byte length straight off the v8
+    // header and divide by the fixed record size — cheaper than fully
+    // decoding every edge via `hierarchy_edges_all()` on this
+    // light/frequent command's hot path.
+    let hierarchy_edge_count = reader
+        .hierarchy_header()
+        .map(|h| (h.edges_len as usize) / crate::store::format::HierarchyEdge::SIZE)
+        .unwrap_or(0);
+    let unresolved_hierarchy_count = reader.unresolved_hierarchy_all().len();
 
     match ctx.format {
         OutputFormat::Json => {
@@ -109,6 +120,14 @@ pub(crate) fn status(
                 // v1.24+ grep trigram skip-index marker — false on
                 // pre-trigram manifests / when the sidecar save failed.
                 "trigram_persisted": manifest.trigram_persisted.unwrap_or(false),
+                // P3 (`docs/HIERARCHY-EDGES.md` §8) — typed hierarchy
+                // edge counts. `hierarchy_edges` is 0 on pre-v8 indexes
+                // or a v8 index whose extraction never ran / found
+                // nothing; `unresolved_hierarchy` is the parallel
+                // by-name spill count (external/unresolved supertypes,
+                // §3.5) and is likewise 0 when absent.
+                "hierarchy_edges": hierarchy_edge_count,
+                "unresolved_hierarchy": unresolved_hierarchy_count,
                 // v1.17 Phase 14.8 — sticky sentinel + counts. ISO date
                 // when section is present, null otherwise. Agents can
                 // `jq '.history_indexed_at // empty'` to branch on
@@ -226,6 +245,21 @@ pub(crate) fn status(
                 Some(false) | None => {
                     println!("Trigram skip-index: no (run `vex index` to speed up `vex grep`)")
                 }
+            }
+            // P3 (`docs/HIERARCHY-EDGES.md` §8) — typed hierarchy edge
+            // section surface. No manifest field tracks this; the reader
+            // section itself is the source of truth, so gate on
+            // `reader.has_hierarchy_edges()` directly (mirrors the
+            // Some(true)/Some(false)|None two-branch style used above,
+            // just keyed off the reader instead of the manifest).
+            if reader.has_hierarchy_edges() {
+                println!(
+                    "Hierarchy edges: {hierarchy_edge_count} (`vex implementations`/`vex subtypes` use the index)"
+                );
+            } else {
+                println!(
+                    "Hierarchy edges: no (run `vex index` to enable `vex implementations`/`vex subtypes` index lookups)"
+                );
             }
             // v1.17 Phase 14.8 — git_history section surface. Three
             // shapes: present + stats (the typical post-build case),

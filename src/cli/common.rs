@@ -74,6 +74,7 @@ pub(crate) fn extract_path_hint(cmd: &Commands) -> Option<std::path::PathBuf> {
         | Commands::Grep { path, .. }
         | Commands::Status { path, .. }
         | Commands::Implementations { path, .. }
+        | Commands::Subtypes { path, .. }
         | Commands::Callers { path, .. }
         | Commands::Callees { path, .. }
         | Commands::Diff { path, .. }
