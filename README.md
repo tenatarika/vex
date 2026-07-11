@@ -29,7 +29,7 @@ $ vex bundle --mode symbol --symbol Foo    # body + callers + callees + similar 
 
 ## Why Vex?
 
-- **~4ms search** after indexing — FST-based O(query_len) lookup, not O(symbols). Requires a pre-built index (indexing takes 20ms-600ms+ depending on project size)
+- **~4-5ms search** after indexing — FST-based O(query_len) lookup, not O(symbols); constant regardless of project size. Requires a pre-built index. Indexing is a one-time cost (hundreds of ms on typical projects) and builds *more* than a plain text index — FST + BM25 + call graph + type-hierarchy + trigram skip-index — so it trades a slower build for far cheaper, richer queries (see [Benchmarks](#benchmarks))
 - **3-channel hybrid search** — structural FST (names) + BM25 (rare body terms) + semantic HNSW (meaning), fused via Reciprocal Rank Fusion. Find symbols when you don't know the exact name AND when generic semantic-only search would be too noisy
 - **Persistent call graph** — `vex callers`/`vex callees` reads from an FST built at index time (~4ms), not a live tree-sitter scan (seconds). Module-scope expressions are reported via synthetic `<module:path>` callers (Phase 14.1); Python + Java function/method decorators (Phase 14.2), Kotlin annotations + C# method/constructor attributes (Phase 14.2.2), and TypeScript method decorators + Rust outer attributes (Phase 14.2.1) emit forward edges to their targets. Class-level decorators remain invisible — see [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
 - **Pluggable embedder** — `Embedder` trait + registry; swap MiniLM-L6-v2 for future code-specific models (BGE, CodeBERT) without touching call sites
@@ -54,11 +54,11 @@ See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for the full coverage matrix, c
 |  | **vex** | **ripgrep** | **ast-index** | **ast-grep** | **Serena** |
 |---|---|---|---|---|---|
 | **What it searches** | Symbol definitions | All text | Symbol definitions | AST patterns | Symbols (via LSP) |
-| **Requires indexing?** | Yes (20ms-600ms+) | No | Yes | No | No |
-| **Search speed** | **~4ms** (pre-built FST) | 75-120ms (disk scan) | 22-60ms (SQLite) | ~30ms (scan) | LSP-dependent |
+| **Requires indexing?** | Yes (~0.3-1s) | No | Yes (faster build) | No | No |
+| **Search speed** | **~4-5ms** (pre-built FST, constant) | scales w/ corpus (~8ms small → 100ms+ large) | ~8-12ms (SQLite) | ~30ms (scan) | LSP-dependent |
 | **Semantic search** | HNSW + embeddings | -- | -- | -- | -- |
 | **Pattern matching** | `fn $NAME($$$)` | regex only | -- | `fn $NAME($$$)` | regex only |
-| **Index size** | **5 MB** / 20K syms | no index | 190 MB / 20K syms | no index | no index |
+| **Index size** | **~1.5-2x smaller** than ast-index | no index | SQLite + FTS5 | no index | no index |
 | **Token efficiency** | **6-88x** fewer than rg | baseline | ~3x fewer than rg | N/A | N/A |
 | **Symbol body extraction** | `vex show` | -- | -- | -- | -- |
 | **Languages** | 19 | any | 10+ | 10+ | 40+ (LSP) |
@@ -541,59 +541,47 @@ vex pattern 'fn $N($$$)' --lang rust --why 2>trace.json
 
 ## Benchmarks
 
-Compared against [ast-index](https://github.com/defendend/Claude-ast-index-search) v3.31.0 (SQLite + FTS5) and [ripgrep](https://github.com/BurntSushi/ripgrep) 14.x.
+Compared against [ast-index](https://github.com/defendend/Claude-ast-index-search) v3.31.0 (SQLite + FTS5) and [ripgrep](https://github.com/BurntSushi/ripgrep) 15.1.0.
+
+**Methodology:** measured 2026-07-11 on Apple Silicon (macOS), vex v1.25.1, release build, cold cache, non-semantic index. Search is the average of 10 runs. Reproduce with `./benches/bench.sh` (point `VEX_BENCH_LARGE_PROJECTS` at your own repos for larger corpora). Numbers are machine-specific — treat the ratios, not the absolutes, as the signal.
 
 ### Indexing
 
-| Project | vex | ast-index | Speedup | vex size | ast-index size |
-|---------|-----|-----------|---------|----------|----------------|
-| Small (2K lines Rust) | **16 ms** | 48 ms | **3.0x** | 43 KB | 490 KB |
-| Medium (31K lines Rust) | **37 ms** | 112 ms | **3.0x** | 314 KB | 3.4 MB |
-| Large (1247 Python files) | **183 ms** | 633 ms | **3.5x** | 1.8 MB | 15.9 MB |
+| Project | vex | ast-index | vex size | ast-index size |
+|---------|-----|-----------|----------|----------------|
+| Small (vex itself, 6.5K symbols) | 651 ms | **248 ms** | **4.4 MB** | 6.5 MB |
+| Medium (ast-index repo, 2.3K symbols) | 315 ms | **111 ms** | **1.6 MB** | 3.4 MB |
 
-Index size: **10-11x smaller** than ast-index (mmap binary + FST vs SQLite + FTS5).
-
-Note: projects with `--semantic` indexing are slower due to ONNX embedding generation.
+**Honest read:** vex indexing is ~2.5-3x *slower* than ast-index — it builds far more at index time (FST + BM25 + persistent call graph + resolved reference edges + a v8 type-hierarchy section + a trigram skip-index + pattern skeletons), where ast-index builds a SQLite + FTS5 store. That one-time cost buys the constant-time queries below; the resulting index is still **~1.5-2x smaller** on disk (mmap + FST vs SQLite). Projects indexed with `--semantic` are slower again (ONNX embedding generation) and produce a larger index.
 
 ### Search: vex vs ast-index vs ripgrep
 
-#### Medium project (31K lines Rust, avg 10 runs)
+Medium project (ast-index repo, 31K lines Rust, avg 10 runs):
 
 | Query | vex | ast-index | rg -w | vex vs rg |
 |-------|-----|-----------|-------|-----------|
-| Query A | **4.9 ms** | 9.5 ms | 54.2 ms | **11x** |
-| Query B | **4.6 ms** | 9.5 ms | 8.9 ms | **1.9x** |
-| Query C | **4.5 ms** | 9.2 ms | 8.6 ms | **1.9x** |
-| Query D | **5.0 ms** | 12.1 ms | 9.3 ms | **1.9x** |
+| `search` | **4.7 ms** | 8.3 ms | 9.2 ms | **2.0x** |
+| `SymbolKind` | **4.6 ms** | 8.2 ms | 8.6 ms | **1.9x** |
+| `parse_file` | **4.6 ms** | 7.9 ms | 8.7 ms | **1.9x** |
+| `IndexReader` | **4.7 ms** | 11.7 ms | 8.6 ms | **1.8x** |
 
-#### Large project (20K symbols, Python/JS/SQL, avg 10 runs)
-
-| Query | vex | ast-index | rg -w | vex vs rg | Results (def/text) |
-|-------|-----|-----------|-------|-----------|-------------------|
-| Symbol 1 | **6.0 ms** | 59.7 ms | 84.6 ms | **14x** | 1 / 4 |
-| Symbol 2 | **3.7 ms** | 44.5 ms | 78.5 ms | **21x** | 2 / 5 |
-| Symbol 3 | **3.9 ms** | 22.7 ms | 76.7 ms | **20x** | 1 / 20 |
-| Symbol 4 | **3.8 ms** | 43.1 ms | 77.5 ms | **21x** | 1 / 2 |
-| Symbol 5 | **3.6 ms** | 33.7 ms | 77.3 ms | **21x** | 1 / 22 |
-| Symbol 6 | **3.8 ms** | 43.3 ms | 76.9 ms | **20x** | 1 / 8 |
-| Symbol 7 | **4.0 ms** | 42.5 ms | 74.9 ms | **19x** | 1 / 6 |
-| Symbol 8 | **3.7 ms** | 42.8 ms | 78.4 ms | **21x** | 1 / 2 |
-
-**Key takeaway**: vex search is constant ~4 ms (FST O(query_len)), regardless of project size — but this assumes a pre-built index. The comparison with ripgrep is not apples-to-apples: rg scans raw text with no indexing, while vex looks up a pre-built index. The real advantage is amortized: vex returns only symbol definitions (precise, token-efficient), while rg returns all text occurrences (noisy, expensive in LLM contexts).
+**Key takeaway**: vex search is constant ~4-5 ms (FST O(query_len)) regardless of project size — this is the win the slower index build pays for. The ripgrep comparison is not apples-to-apples: rg scans raw text with no index, so it scales with corpus size (single-digit ms on this 31K-line repo, 100 ms+ on large ones), while vex does a pre-built FST lookup. The durable advantage is amortized and qualitative: vex returns only symbol *definitions* (precise, token-efficient), while rg returns every text occurrence (noisy, expensive in LLM contexts).
 
 ### Pattern Matching (vex only)
+
+Medium project (ast-index repo, Rust):
 
 | Pattern | Time | Matches |
 |---------|------|---------|
 | `fn $NAME($$$) -> Result` | 31 ms | 50 |
-| `pub struct $NAME` | 32 ms | 45 |
-| `fn $NAME($$$)` | 31 ms | 50 |
+| `pub struct $NAME` | 27 ms | 44 |
+| `fn $NAME($$$)` | 29 ms | 50 |
 
 ast-index and ripgrep do not support AST pattern matching.
 
 ### Semantic Search
 
-Queries where structural search returns 0 results but semantic finds relevant symbols:
+Illustrative (semantic *capability*, not a latency benchmark) — queries where structural search returns 0 results but semantic finds relevant symbols:
 
 | Query | Structural | Semantic |
 |-------|-----------|----------|
@@ -604,6 +592,8 @@ Queries where structural search returns 0 results but semantic finds relevant sy
 | "handle errors and exceptions" | 0 | **20** |
 
 ### HNSW vs Brute-Force (semantic vector search)
+
+_The latency figures below were measured on an earlier build and not re-run in the v1.25.1 pass — read them as the scaling *shape* (HNSW stays flat, brute-force grows linearly), not current absolutes._
 
 Semantic search embeds the query via ONNX (~55ms) then searches stored vectors. HNSW (usearch) replaces brute-force O(N) scan with O(log N) approximate nearest neighbor search:
 
