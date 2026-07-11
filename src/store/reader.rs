@@ -5,7 +5,8 @@ use memmap2::Mmap;
 
 use super::format::{
     CallEdge, CallGraphHeader, Header, HierarchyEdge, HierarchyHeader, HierarchyPostingEntry,
-    PatternSkeletonHeader, SymbolRecord, UnresolvedRefsHeader, V5SectionHeader,
+    PatternSkeletonHeader, SymbolRecord, UnresolvedHierarchyEdge, UnresolvedHierarchyHeader,
+    UnresolvedRefsHeader, V5SectionHeader,
 };
 
 /// Memory-mapped index reader. Zero-copy access to symbols and strings.
@@ -213,6 +214,19 @@ impl IndexReader {
             {
                 bail!("v8 index at {p} is truncated (no room for HierarchyHeader). Re-run `vex index` to rebuild.");
             }
+            // v8: UnresolvedHierarchyHeader sits directly after HierarchyHeader.
+            if header.has_unresolved_hierarchy_header()
+                && (Header::SIZE
+                    + CallGraphHeader::SIZE
+                    + V5SectionHeader::SIZE
+                    + PatternSkeletonHeader::SIZE
+                    + UnresolvedRefsHeader::SIZE
+                    + HierarchyHeader::SIZE
+                    + UnresolvedHierarchyHeader::SIZE)
+                    > reader.mmap.len()
+            {
+                bail!("v8 index at {p} is truncated (no room for UnresolvedHierarchyHeader). Re-run `vex index` to rebuild.");
+            }
             if let Some(psh) = reader.pattern_skeleton_header() {
                 let mmap_len = reader.mmap.len() as u64;
                 let skel_end = psh.skeletons_offset.saturating_add(psh.skeletons_len);
@@ -243,6 +257,14 @@ impl IndexReader {
                 let postings_end = hh.postings_offset.saturating_add(hh.postings_len);
                 if edges_end > mmap_len || index_end > mmap_len || postings_end > mmap_len {
                     bail!("v8 index at {p} is corrupted (hierarchy_edges section offsets exceed file size). Re-run `vex index` to rebuild.");
+                }
+            }
+            if let Some(uhh) = reader.unresolved_hierarchy_header() {
+                let edges_end = uhh.edges_offset.saturating_add(uhh.edges_len);
+                let fst_end = uhh.fst_offset.saturating_add(uhh.fst_len);
+                let postings_end = uhh.postings_offset.saturating_add(uhh.postings_len);
+                if edges_end > mmap_len || fst_end > mmap_len || postings_end > mmap_len {
+                    bail!("v8 index at {p} is corrupted (unresolved_hierarchy section offsets exceed file size). Re-run `vex index` to rebuild.");
                 }
             }
             if let Some(cg) = reader.call_graph_header() {
@@ -898,6 +920,82 @@ impl IndexReader {
         out
     }
 
+    /// Read the v8 [`UnresolvedHierarchyHeader`] when present. Returns
+    /// `None` for v3..v7 indexes or when the bytes after the
+    /// [`HierarchyHeader`] don't fit / aren't aligned. Mirrors
+    /// [`Self::hierarchy_header`] / [`Self::unresolved_refs_header`].
+    pub fn unresolved_hierarchy_header(&self) -> Option<&UnresolvedHierarchyHeader> {
+        if !self.header().has_unresolved_hierarchy_header() {
+            return None;
+        }
+        let offset = Header::SIZE
+            .checked_add(CallGraphHeader::SIZE)?
+            .checked_add(V5SectionHeader::SIZE)?
+            .checked_add(PatternSkeletonHeader::SIZE)?
+            .checked_add(UnresolvedRefsHeader::SIZE)?
+            .checked_add(HierarchyHeader::SIZE)?;
+        let end = offset.checked_add(UnresolvedHierarchyHeader::SIZE)?;
+        if end > self.mmap.len() {
+            return None;
+        }
+        let ptr = unsafe { self.mmap.as_ptr().add(offset) };
+        if ptr.align_offset(std::mem::align_of::<UnresolvedHierarchyHeader>()) != 0 {
+            return None;
+        }
+        // SAFETY: bounds + alignment checked. UnresolvedHierarchyHeader is #[repr(C)].
+        Some(unsafe { &*(ptr as *const UnresolvedHierarchyHeader) })
+    }
+
+    /// Whether the index carries unresolved-by-name hierarchy edges (v8+,
+    /// P2). False for v3..v7 indexes and v8 indexes whose Pass-2 left
+    /// nothing unresolved.
+    #[allow(dead_code)] // no CLI caller until P3 wires `vex implementations`/`vex subtypes`
+    pub fn has_unresolved_hierarchy_edges(&self) -> bool {
+        self.unresolved_hierarchy_header()
+            .is_some_and(|h| h.edges_len > 0)
+    }
+
+    #[allow(dead_code)] // only reached via find_unresolved_hierarchy_by_name
+    fn unresolved_hierarchy_section_bytes(&self) -> Option<(&[u8], &[u8], &[u8])> {
+        let h = self.unresolved_hierarchy_header()?;
+        let mmap = &self.mmap[..];
+        let edges = slice_or_empty(mmap, h.edges_offset as usize, h.edges_len as usize)?;
+        let fst = slice_or_empty(mmap, h.fst_offset as usize, h.fst_len as usize)?;
+        let post = slice_or_empty(mmap, h.postings_offset as usize, h.postings_len as usize)?;
+        Some((edges, fst, post))
+    }
+
+    /// Look up every persisted [`UnresolvedHierarchyEdge`] recorded for the
+    /// verbatim parent `name` (case-sensitive — unlike
+    /// [`Self::find_unresolved_refs_by_name`], this section does NOT
+    /// lowercase its key; see `docs/HIERARCHY-EDGES.md` §3.5). Returns an
+    /// empty `Vec` when the index has no unresolved-hierarchy section, the
+    /// FST misses the key, or the bytes don't validate. FST traversal is
+    /// wrapped in `catch_unwind` for the same defense-in-depth reason as
+    /// [`Self::find_ref_edges_by_symbol`].
+    #[allow(dead_code)] // no CLI caller until P3 wires `vex implementations`/`vex subtypes`
+    pub fn find_unresolved_hierarchy_by_name(&self, name: &str) -> Vec<UnresolvedHierarchyEdge> {
+        if !self.has_unresolved_hierarchy_edges() {
+            return Vec::new();
+        }
+        let Some((edges, fst, post)) = self.unresolved_hierarchy_section_bytes() else {
+            return Vec::new();
+        };
+        let Ok(reader) =
+            super::unresolved_hierarchy::UnresolvedHierarchyReader::new(fst, post, edges)
+        else {
+            return Vec::new();
+        };
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reader.find_by_name(name)))
+            .unwrap_or_else(|_| {
+                tracing::warn!(
+                    name,
+                    "unresolved_hierarchy FST traversal panicked on corrupt bytes; returning empty result"
+                );
+                Vec::new()
+            })
+    }
+
     /// Number of call edges recorded in this index, 0 when absent.
     pub fn call_edge_count(&self) -> usize {
         self.call_graph_header()
@@ -1160,7 +1258,8 @@ mod tests {
             + V5SectionHeader::SIZE
             + PatternSkeletonHeader::SIZE
             + UnresolvedRefsHeader::SIZE
-            + HierarchyHeader::SIZE;
+            + HierarchyHeader::SIZE
+            + UnresolvedHierarchyHeader::SIZE;
 
         let (edges_bytes, index_bytes, postings_bytes) =
             hierarchy.unwrap_or((Vec::new(), Vec::new(), Vec::new()));
@@ -1251,6 +1350,16 @@ mod tests {
             postings_offset: hier_postings_offset,
             postings_len: postings_bytes.len() as u64,
         };
+        // Always-zeroed: no test in this module populates
+        // unresolved_hierarchy (that's the writer's own roundtrip tests).
+        let unres_hier = UnresolvedHierarchyHeader {
+            edges_offset: symbols_offset,
+            edges_len: 0,
+            fst_offset: symbols_offset,
+            fst_len: 0,
+            postings_offset: symbols_offset,
+            postings_len: 0,
+        };
 
         let mut bytes = Vec::with_capacity(total_header);
         // SAFETY: all structs are `#[repr(C)]` with stable layouts; we're
@@ -1286,6 +1395,12 @@ mod tests {
             std::slice::from_raw_parts(
                 &hier as *const HierarchyHeader as *const u8,
                 HierarchyHeader::SIZE,
+            )
+        });
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &unres_hier as *const UnresolvedHierarchyHeader as *const u8,
+                UnresolvedHierarchyHeader::SIZE,
             )
         });
 

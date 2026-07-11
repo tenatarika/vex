@@ -8,6 +8,7 @@
 //! [PatternSkeletonHeader]   fixed (168 B) - pattern skeleton section offsets + fingerprints (v6+)
 //! [UnresolvedRefsHeader]    fixed (48  B) - unresolved-by-name ref section offsets (v7+)
 //! [HierarchyHeader]         fixed (48  B) - typed hierarchy edge section offsets (v8+)
+//! [UnresolvedHierarchyHeader] fixed (48 B) - unresolved-by-name hierarchy section offsets (v8+)
 //! [Symbols Section]         variable      - fixed-size symbol records
 //! [Vectors Section]         variable      - dense f32 arrays (vector_dim each)
 //! [Strings Section]         variable      - deduplicated string pool
@@ -34,6 +35,9 @@
 //! [Hierarchy Edges]         variable      - fixed-size HierarchyEdge array, sorted by to_sym_idx (v8+)
 //! [Hierarchy Index]         variable      - sorted HierarchyPostingEntry array, binary-searched (v8+)
 //! [Hierarchy Postings]      variable      - posting lists (count, [edge_idx]) (v8+)
+//! [Unres. Hierarchy Edges]  variable      - fixed-size UnresolvedHierarchyEdge records (v8+)
+//! [Unres. Hierarchy FST]    variable      - fst::Map (verbatim parent name → posting offset) (v8+)
+//! [Unres. Hierarchy Posts]  variable      - posting lists (count, [edge_idx]) (v8+)
 //! ```
 //!
 //! Layout v3 (legacy, still readable): same as v4 minus `CallGraphHeader`
@@ -121,6 +125,17 @@ impl Header {
     /// not — the typed hierarchy edge section (`extends`/`implements`)
     /// is unavailable on those until `vex index` rebuilds at v8.
     pub fn has_hierarchy_header(&self) -> bool {
+        self.version >= 8
+    }
+
+    /// Whether this index format carries an [`UnresolvedHierarchyHeader`]
+    /// immediately after the [`HierarchyHeader`]. v3..v7 indexes do not —
+    /// external/unresolved supertype names (`extends SomeStdlibClass`) are
+    /// unavailable on those until `vex index` rebuilds at v8. Same version
+    /// gate as [`Self::has_hierarchy_header`] (both sections landed together
+    /// in P2, see `docs/HIERARCHY-EDGES.md` §3.5) — kept as a separate
+    /// method so callers document *which* section they depend on.
+    pub fn has_unresolved_hierarchy_header(&self) -> bool {
         self.version >= 8
     }
 }
@@ -283,7 +298,10 @@ impl UnresolvedRefsHeader {
 /// section is empty — P1 never populates it, since extraction lands in
 /// P2). Exactly 6 `u64` fields (SIZE == 48), same shape as
 /// [`V5SectionHeader`] / [`UnresolvedRefsHeader`] — DO NOT add fields
-/// without updating the `symbols_offset` chain in `writer.rs`.
+/// without updating the `symbols_offset` chain in `writer.rs`. Since P2
+/// an [`UnresolvedHierarchyHeader`] sits immediately downstream of this
+/// one in the chain — this is no longer the last header before
+/// `symbols_offset`.
 ///
 /// Sub-sections:
 /// - **edges**: sorted [`HierarchyEdge`][] records, sorted by `to_sym_idx`
@@ -307,6 +325,54 @@ pub struct HierarchyHeader {
 }
 
 impl HierarchyHeader {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+}
+
+/// Section offsets and lengths for the v8-only `unresolved_hierarchy`
+/// section (external/unresolved supertype names — `class Foo extends
+/// SomeStdlibClass` where the parent is outside the corpus, see
+/// `docs/HIERARCHY-EDGES.md` §3.5). Located in the file at exactly
+/// `Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE +
+/// PatternSkeletonHeader::SIZE + UnresolvedRefsHeader::SIZE +
+/// HierarchyHeader::SIZE` when `header.version >= 8`. Absent from v3..v7
+/// files.
+///
+/// **Q3 locked: a PARALLEL section, NOT a reuse of [`UnresolvedRefsHeader`]**
+/// — `UnresolvedRef` has no field to distinguish a hierarchy edge from a
+/// normal reference, and the ref-edge spill gate runs
+/// `is_meaningful_identifier` (which rejects pure-lowercase identifiers
+/// without `_`, silently dropping Ruby/Python/PHP lowercase mixin/base
+/// names). This section spills **unconditionally** — a name from an
+/// `extends`/`implements`/`use` clause is meaningful by construction.
+///
+/// This is a fixed-size header **always written** (zeroed when the
+/// section is empty). Exactly 6 `u64` fields (SIZE == 48), same shape as
+/// [`V5SectionHeader`] / [`UnresolvedRefsHeader`] / [`HierarchyHeader`] —
+/// DO NOT add fields without updating the `symbols_offset` chain in
+/// `writer.rs`. This is currently the LAST header before `symbols_offset`.
+///
+/// Sub-sections (mirrors [`UnresolvedRefsHeader`], keyed on the verbatim
+/// parent name rather than a lowercased reference name):
+/// - **edges**: fixed-size [`UnresolvedHierarchyEdge`] records (12 bytes
+///   each). Record count is `edges_len / UnresolvedHierarchyEdge::SIZE`.
+/// - **fst**: `fst::Map` keyed on the **verbatim** (case-preserved) parent
+///   name — unlike `UnresolvedRefsHeader::unresolved_fst_offset`, this key
+///   is NOT lowercased, since supertype names are case-sensitive symbols,
+///   not free-text references. Values are `u64` offsets into `postings`.
+/// - **postings**: for each name key, a `[u32 count][u32 edge_idx; count]`
+///   block indexing into the `edges` array.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UnresolvedHierarchyHeader {
+    pub edges_offset: u64,
+    pub edges_len: u64,
+    pub fst_offset: u64,
+    pub fst_len: u64,
+    pub postings_offset: u64,
+    pub postings_len: u64,
+}
+
+impl UnresolvedHierarchyHeader {
     pub const SIZE: usize = std::mem::size_of::<Self>();
 }
 
@@ -414,7 +480,7 @@ impl UnresolvedRef {
 /// must decode to "unknown kind", never undefined behaviour.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // P1 format scaffold — no extraction pipeline emits this yet (P2)
+#[allow(dead_code)] // decode-only enum — no CLI caller decodes edge_kind_bits() until P3
 pub enum EdgeKind {
     /// Nominal class inheritance (Rust supertrait, Python base,
     /// Java/TS/C#/Kotlin/Swift/C++ `extends`, Ruby `<`).
@@ -516,6 +582,47 @@ impl HierarchyPostingEntry {
     pub const SIZE: usize = std::mem::size_of::<Self>();
 }
 
+/// One unresolved-by-name hierarchy edge (v8+, `unresolved_hierarchy`
+/// section — see [`UnresolvedHierarchyHeader`] /
+/// `docs/HIERARCHY-EDGES.md` §3.5). Same shape as [`HierarchyEdge`] minus
+/// `to_sym_idx` — the parent name is the FST key in
+/// [`UnresolvedHierarchyHeader`], not stored on the record.
+///
+/// `from_sym_idx` is the resolved **child** symbol index (kept for the
+/// same reason as [`HierarchyEdge::from_sym_idx`] — the useful output is
+/// a symbol name); `from_file_id` indexes the file table; `line_and_kind`
+/// packs an 8-bit [`EdgeKind`] discriminant in the top byte and a 24-bit
+/// 1-based line number in the low three bytes, identical bit layout to
+/// [`HierarchyEdge::line_and_kind`] — pack via
+/// [`crate::store::hierarchy_edges::pack_line_and_kind`] (shared, not
+/// duplicated), decode via [`Self::edge_kind_bits`] / [`Self::line`].
+///
+/// 12 bytes, `#[repr(C)]`, three `u32` fields (align 4, no padding).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UnresolvedHierarchyEdge {
+    pub from_sym_idx: u32,
+    pub from_file_id: u32,
+    pub line_and_kind: u32,
+}
+
+impl UnresolvedHierarchyEdge {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+
+    /// Raw `EdgeKind` discriminant byte — decode via `EdgeKind::try_from`,
+    /// never `mem::transmute` (same rationale as [`HierarchyEdge::edge_kind_bits`]).
+    #[allow(dead_code)] // exercised by integration/reader tests; documents the bit layout
+    pub fn edge_kind_bits(&self) -> u8 {
+        (self.line_and_kind >> 24) as u8
+    }
+
+    /// 1-based line number, unpacked from the low 24 bits.
+    #[allow(dead_code)] // exercised by integration/reader tests; documents the bit layout
+    pub fn line(&self) -> u32 {
+        self.line_and_kind & 0x00FF_FFFF
+    }
+}
+
 /// One caller → callee edge. The caller is identified by `caller_sym_idx`
 /// (an index into the Symbols section, resolving to the enclosing function
 /// definition). The callee is stored as a string offset into the Strings
@@ -573,6 +680,20 @@ mod tests {
     fn hierarchy_posting_entry_is_eight_bytes() {
         assert_eq!(HierarchyPostingEntry::SIZE, 8);
         assert_eq!(std::mem::align_of::<HierarchyPostingEntry>(), 4);
+    }
+
+    #[test]
+    fn unresolved_hierarchy_header_is_forty_eight_bytes() {
+        // Pinned: 6 × u64, same shape as V5SectionHeader /
+        // UnresolvedRefsHeader / HierarchyHeader. Adding fields would
+        // silently drift `symbols_offset` in writer.rs.
+        assert_eq!(UnresolvedHierarchyHeader::SIZE, 48);
+    }
+
+    #[test]
+    fn unresolved_hierarchy_edge_is_twelve_bytes() {
+        assert_eq!(UnresolvedHierarchyEdge::SIZE, 12);
+        assert_eq!(std::mem::align_of::<UnresolvedHierarchyEdge>(), 4);
     }
 
     #[test]

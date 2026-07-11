@@ -65,6 +65,109 @@ fn resolve_by_name_and_path(
         }
     }
 }
+
+/// P2 hierarchy-capture resolution pass (`docs/HIERARCHY-EDGES.md` §5).
+/// Runs strictly after the per-file `bound_refs` loop closes so
+/// `name_to_global` / `sym_to_file_id` are fully populated — a
+/// `class X extends Y` may name a parent defined in any file, including
+/// one parsed later than `X`'s own file. Reads only; never mutates the
+/// shared maps, so it cannot corrupt the ref-edge resolution that already
+/// ran (architect HIGH-2, LOCKED placement).
+///
+/// For each file's `hierarchy_captures`:
+/// - `child_name` is resolved to a `SymbolRecord` position **within this
+///   file only** (filtering `name_to_global`'s candidates by
+///   `sym_to_file_id`) — the child is always a local definition, so a
+///   same-named symbol in a different file must not be picked.
+/// - `parent_name` is resolved via `name_to_global` mirroring the
+///   ref-edge single-candidate rule exactly (Q1 LOCKED):
+///   - exactly one candidate → resolved edge.
+///   - zero candidates (external/stdlib parent) → spill to
+///     `unresolved_hierarchy`, keyed by the verbatim name. Spilled
+///     **unconditionally** — no `is_meaningful_identifier` gate (§3.5).
+///   - more than one candidate (ambiguous) → dropped entirely, not
+///     spilled (ambiguous is a distinct outcome from zero-candidates).
+///
+/// An unresolvable `child_name` (no local definition found — shouldn't
+/// normally happen for a parsed def) drops that capture silently; this
+/// mirrors the existing skip-arms in the ref-edge loop above (e.g.
+/// `BindTarget::Local(_) => None`), which also degrade silently rather
+/// than logging per-occurrence noise.
+fn resolve_hierarchy_captures(
+    parsed: &[ParsedFile],
+    file_ids: &HashMap<String, u32>,
+    name_to_global: &HashMap<&str, Vec<u32>>,
+    sym_to_file_id: &[u32],
+) -> (
+    Vec<super::hierarchy_edges::HierarchyEdgeBuilder>,
+    Vec<super::unresolved_hierarchy::UnresolvedHierarchyEdgeBuilder>,
+) {
+    let mut resolved = Vec::new();
+    let mut unresolved = Vec::new();
+
+    for file in parsed {
+        if file.hierarchy_captures.is_empty() {
+            continue;
+        }
+        let Some(&file_id) = file_ids.get(&file.path) else {
+            continue;
+        };
+
+        for cap in &file.hierarchy_captures {
+            // Child must be a local definition in THIS file. Filtering
+            // name_to_global's (project-wide) candidates down to the
+            // ones whose sym_to_file_id matches this file_id gives the
+            // same-file scoping without needing a separate per-file
+            // base_idx map.
+            let child_idx = name_to_global
+                .get(cap.child_name.as_str())
+                .and_then(|cands| {
+                    cands
+                        .iter()
+                        .copied()
+                        .find(|&idx| sym_to_file_id.get(idx as usize) == Some(&file_id))
+                });
+            let Some(from_sym_idx) = child_idx else {
+                continue;
+            };
+
+            match name_to_global.get(cap.parent_name.as_str()) {
+                Some(cands) if cands.len() == 1 => {
+                    resolved.push(super::hierarchy_edges::HierarchyEdgeBuilder {
+                        to_sym_idx: cands[0],
+                        from_sym_idx,
+                        from_file_id: file_id,
+                        line: cap.line,
+                        kind: cap.kind,
+                    });
+                }
+                Some(_) => {
+                    // Ambiguous (>1 candidate) — bail on this edge, do
+                    // not guess and do NOT spill (distinct outcome from
+                    // zero-candidates). Matches the ref-edge Unresolved
+                    // arm's single-candidate rule (writer.rs above).
+                }
+                None => {
+                    // Zero candidates — external/stdlib parent. Spill by
+                    // verbatim name, unconditionally (no meaningful-
+                    // identifier gate — see unresolved_hierarchy.rs).
+                    unresolved.push(
+                        super::unresolved_hierarchy::UnresolvedHierarchyEdgeBuilder {
+                            parent_name: cap.parent_name.clone(),
+                            from_sym_idx,
+                            from_file_id: file_id,
+                            line: cap.line,
+                            kind: cap.kind,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    (resolved, unresolved)
+}
+
 use crate::pattern::skeleton::Skeleton;
 
 /// Vector dimension to record in the Header when no vectors are written.
@@ -750,15 +853,26 @@ fn write_index_to(
     let (unresolved_edge_bytes, unresolved_fst_bytes, unresolved_post_bytes) =
         build_unresolved_section(&unresolved_ref_builders)?;
 
-    // v8 hierarchy_edges section (P1 — format-only scaffold, no
-    // extraction pipeline yet). Always empty in production until P2
-    // wires `src/hierarchy/queries.rs` captures through here; the write
-    // path below is fully real regardless so a populated section (as
-    // built directly by tests via `build_hierarchy_section`) round-trips
-    // correctly through `write_index_full` today.
-    let hierarchy_edge_builders: Vec<super::hierarchy_edges::HierarchyEdgeBuilder> = Vec::new();
+    // v8 hierarchy_edges + unresolved_hierarchy sections (P2,
+    // `docs/HIERARCHY-EDGES.md` §5). A SEPARATE pass, positioned after the
+    // per-file `bound_refs` loop closes (architect HIGH-2, LOCKED) — a
+    // `class X extends Y` can name a parent defined in ANY file, including
+    // one parsed later, so resolution needs the *complete* `name_to_global`
+    // map, exactly like the reconstructed-ref second pass above. This
+    // region is already sequential (no rayon risk) and only *reads*
+    // `name_to_global` / `sym_to_file_id` — it cannot corrupt the ref-edge
+    // resolution performed above.
+    let (hierarchy_edge_builders, unresolved_hierarchy_builders) =
+        resolve_hierarchy_captures(parsed, &file_ids, &name_to_global, &sym_to_file_id);
     let (hierarchy_edge_bytes, hierarchy_index_bytes, hierarchy_postings_bytes) =
         build_hierarchy_section(&hierarchy_edge_builders)?;
+    let (
+        unresolved_hierarchy_edge_bytes,
+        unresolved_hierarchy_fst_bytes,
+        unresolved_hierarchy_post_bytes,
+    ) = super::unresolved_hierarchy::build_unresolved_hierarchy_section(
+        &unresolved_hierarchy_builders,
+    )?;
 
     // Build v6 pattern skeleton section (empty slice → all-zero header fields,
     // non-empty → populated sub-sections). The version bump to v6 is
@@ -768,17 +882,20 @@ fn write_index_to(
         build_pattern_skeleton_section(pattern_skeletons, &mut no_intern_fn, lang_fingerprints)?;
 
     // Calculate section offsets — v8 places CallGraphHeader, V5SectionHeader,
-    // PatternSkeletonHeader, UnresolvedRefsHeader, and HierarchyHeader
-    // immediately after the base Header, so Symbols starts at:
+    // PatternSkeletonHeader, UnresolvedRefsHeader, HierarchyHeader, and
+    // UnresolvedHierarchyHeader immediately after the base Header, so
+    // Symbols starts at:
     //   Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE
     //   + PatternSkeletonHeader::SIZE + UnresolvedRefsHeader::SIZE
-    //   + HierarchyHeader::SIZE
+    //   + HierarchyHeader::SIZE + UnresolvedHierarchyHeader::SIZE
     let cg_header_offset = Header::SIZE as u64;
     let v5_header_offset = cg_header_offset + CallGraphHeader::SIZE as u64;
     let pat_header_offset = v5_header_offset + V5SectionHeader::SIZE as u64;
     let unres_header_offset = pat_header_offset + PatternSkeletonHeader::SIZE as u64;
     let hier_header_offset = unres_header_offset + UnresolvedRefsHeader::SIZE as u64;
-    let symbols_offset = hier_header_offset + HierarchyHeader::SIZE as u64;
+    let unresolved_hier_header_offset = hier_header_offset + HierarchyHeader::SIZE as u64;
+    let symbols_offset =
+        unresolved_hier_header_offset + super::format::UnresolvedHierarchyHeader::SIZE as u64;
     let symbols_size = records.len() * SymbolRecord::SIZE;
 
     let vectors_offset = symbols_offset + symbols_size as u64;
@@ -846,9 +963,7 @@ fn write_index_to(
     let unresolved_postings_offset = unresolved_fst_offset + unresolved_fst_bytes.len() as u64;
 
     // v8 hierarchy_edges sub-sections. Align the edges array to 4 bytes so
-    // HierarchyEdge (align_of == 4) can be cast from the mmap. Positioned
-    // as the LAST variable-length section in the file, after the v7
-    // unresolved postings.
+    // HierarchyEdge (align_of == 4) can be cast from the mmap.
     let hierarchy_unaligned = unresolved_postings_offset + unresolved_post_bytes.len() as u64;
     let hierarchy_edges_offset = (hierarchy_unaligned + 3) & !3u64;
     let hierarchy_edges_pad = (hierarchy_edges_offset - hierarchy_unaligned) as usize;
@@ -864,6 +979,29 @@ fn write_index_to(
         index_len: hierarchy_index_len,
         postings_offset: hierarchy_postings_offset,
         postings_len: hierarchy_postings_bytes.len() as u64,
+    };
+
+    // v8 unresolved_hierarchy sub-sections. Align the edges array to 4
+    // bytes so UnresolvedHierarchyEdge (align_of == 4) can be cast from
+    // the mmap. Positioned as the LAST variable-length section in the
+    // file, after the hierarchy_edges postings.
+    let unresolved_hier_unaligned =
+        hierarchy_postings_offset + hierarchy_postings_bytes.len() as u64;
+    let unresolved_hier_edges_offset = (unresolved_hier_unaligned + 3) & !3u64;
+    let unresolved_hier_edges_pad =
+        (unresolved_hier_edges_offset - unresolved_hier_unaligned) as usize;
+    let unresolved_hier_edges_len = unresolved_hierarchy_edge_bytes.len() as u64;
+    let unresolved_hier_fst_offset = unresolved_hier_edges_offset + unresolved_hier_edges_len;
+    let unresolved_hier_postings_offset =
+        unresolved_hier_fst_offset + unresolved_hierarchy_fst_bytes.len() as u64;
+
+    let unresolved_hierarchy_header = super::format::UnresolvedHierarchyHeader {
+        edges_offset: unresolved_hier_edges_offset,
+        edges_len: unresolved_hier_edges_len,
+        fst_offset: unresolved_hier_fst_offset,
+        fst_len: unresolved_hierarchy_fst_bytes.len() as u64,
+        postings_offset: unresolved_hier_postings_offset,
+        postings_len: unresolved_hierarchy_post_bytes.len() as u64,
     };
 
     let unresolved_refs_header = UnresolvedRefsHeader {
@@ -994,9 +1132,9 @@ fn write_index_to(
     w.write_all(unres_header_bytes)?;
 
     // v8: HierarchyHeader immediately after UnresolvedRefsHeader. Always
-    // written (P1 — zeroed lengths since the section is empty until P2
-    // wires extraction). SAFETY: HierarchyHeader is #[repr(C)] with fixed
-    // layout.
+    // written; lengths are non-zero once P2 extraction resolves any
+    // hierarchy captures. SAFETY: HierarchyHeader is #[repr(C)] with
+    // fixed layout.
     let hier_header_bytes: &[u8] = unsafe {
         std::slice::from_raw_parts(
             &hierarchy_header as *const HierarchyHeader as *const u8,
@@ -1004,6 +1142,18 @@ fn write_index_to(
         )
     };
     w.write_all(hier_header_bytes)?;
+
+    // v8: UnresolvedHierarchyHeader immediately after HierarchyHeader.
+    // Always written (zeroed lengths when no captures spilled). SAFETY:
+    // UnresolvedHierarchyHeader is #[repr(C)] with fixed layout.
+    let unresolved_hier_header_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            &unresolved_hierarchy_header as *const super::format::UnresolvedHierarchyHeader
+                as *const u8,
+            super::format::UnresolvedHierarchyHeader::SIZE,
+        )
+    };
+    w.write_all(unresolved_hier_header_bytes)?;
 
     for rec in &records {
         // SAFETY: SymbolRecord is #[repr(C)] with fixed layout
@@ -1097,6 +1247,15 @@ fn write_index_to(
     w.write_all(&hierarchy_index_bytes)?;
     w.write_all(&hierarchy_postings_bytes)?;
 
+    // v8 unresolved_hierarchy sub-sections, 4-byte aligned before the
+    // records. Positioned as the LAST variable-length section in the file.
+    if unresolved_hier_edges_pad > 0 {
+        w.write_all(&[0u8; 3][..unresolved_hier_edges_pad])?;
+    }
+    w.write_all(&unresolved_hierarchy_edge_bytes)?;
+    w.write_all(&unresolved_hierarchy_fst_bytes)?;
+    w.write_all(&unresolved_hierarchy_post_bytes)?;
+
     // Flush the BufWriter, then recover the inner File so we can fsync it
     // before the caller atomic-renames. Without sync_all() between flush
     // and rename, a crash/power-loss between rename and writeback can
@@ -1165,4 +1324,218 @@ fn is_cpp_path(path: &str) -> bool {
         .next()
         .and_then(crate::parse::language::Language::from_extension)
         == Some(crate::parse::language::Language::Cpp)
+}
+
+#[cfg(test)]
+mod hierarchy_resolution_tests {
+    //! P2 (`docs/HIERARCHY-EDGES.md` §5) writer-side resolution roundtrip
+    //! tests. These exercise `write_index_full` → `IndexReader::open` end
+    //! to end, proving the section is queryable through the real on-disk
+    //! format rather than just the in-memory builder shape (already
+    //! covered by `hierarchy_edges.rs` / `unresolved_hierarchy.rs`'s own
+    //! unit tests).
+    use super::*;
+    use crate::index::symbols::{HierarchyCapture, ParsedSymbol, SymbolKind};
+    use crate::store::format::EdgeKind;
+    use crate::store::reader::IndexReader;
+
+    fn mk_sym(name: &str, kind: SymbolKind, line: usize) -> ParsedSymbol {
+        ParsedSymbol {
+            name: name.to_string(),
+            kind,
+            line,
+            signature: None,
+            doc: None,
+            body_tokens: None,
+        }
+    }
+
+    fn mk_file(
+        path: &str,
+        symbols: Vec<ParsedSymbol>,
+        captures: Vec<HierarchyCapture>,
+    ) -> ParsedFile {
+        ParsedFile {
+            path: path.to_string(),
+            symbols,
+            refs: Vec::new(),
+            call_edges: Vec::new(),
+            bound_refs: Vec::new(),
+            skeletons: Vec::new(),
+            cpp_includes: Vec::new(),
+            trigram_bloom: None,
+            hierarchy_captures: captures,
+        }
+    }
+
+    /// Resolve `name` to its `SymbolRecord` position by scanning the
+    /// on-disk symbol records — the tests below need this to translate a
+    /// child/parent name into the index the reader's `to_sym_idx` /
+    /// `from_sym_idx` fields carry.
+    fn find_symbol_idx(reader: &IndexReader, name: &str) -> u32 {
+        for i in 0..reader.symbol_count() {
+            if let Some(rec) = reader.symbol(i) {
+                if reader.read_string(rec.name_offset) == name {
+                    return i as u32;
+                }
+            }
+        }
+        panic!("symbol {name} not found in written index");
+    }
+
+    #[test]
+    fn resolved_parent_in_another_file_is_queryable_by_implementations() {
+        // File A defines Base; file B defines Derived extending Base.
+        // Base is parsed AFTER Derived's file is enumerated in the file
+        // list is irrelevant — resolution must not depend on file order
+        // since name_to_global is built over the complete parsed set
+        // before this pass runs.
+        let file_a = mk_file("a.rs", vec![mk_sym("Base", SymbolKind::Class, 1)], vec![]);
+        let file_b = mk_file(
+            "b.rs",
+            vec![mk_sym("Derived", SymbolKind::Class, 5)],
+            vec![HierarchyCapture {
+                child_name: "Derived".to_string(),
+                parent_name: "Base".to_string(),
+                kind: EdgeKind::Extends as u8,
+                line: 5,
+            }],
+        );
+        let parsed = vec![file_a, file_b];
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out = tmp.path().join("index.vex");
+        write_index_full(&parsed, &[], DEFAULT_VECTOR_DIM, &out).expect("write index");
+
+        let reader = IndexReader::open(&out).expect("open index");
+        let base_idx = find_symbol_idx(&reader, "Base");
+        let derived_idx = find_symbol_idx(&reader, "Derived");
+
+        let edges = reader.find_hierarchy_edges_by_symbol(base_idx);
+        assert_eq!(edges.len(), 1, "exactly one child edge for Base");
+        assert_eq!(edges[0].from_sym_idx, derived_idx);
+        assert_eq!(edges[0].edge_kind_bits(), EdgeKind::Extends as u8);
+        assert_eq!(edges[0].line(), 5);
+
+        // No spill: Base resolved uniquely, so nothing should land in the
+        // unresolved_hierarchy section for this name.
+        assert!(reader.find_unresolved_hierarchy_by_name("Base").is_empty());
+    }
+
+    #[test]
+    fn external_parent_spills_to_unresolved_hierarchy() {
+        let file = mk_file(
+            "a.rs",
+            vec![mk_sym("Foo", SymbolKind::Class, 3)],
+            vec![HierarchyCapture {
+                child_name: "Foo".to_string(),
+                parent_name: "StdlibThing".to_string(),
+                kind: EdgeKind::Extends as u8,
+                line: 3,
+            }],
+        );
+        let parsed = vec![file];
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out = tmp.path().join("index.vex");
+        write_index_full(&parsed, &[], DEFAULT_VECTOR_DIM, &out).expect("write index");
+
+        let reader = IndexReader::open(&out).expect("open index");
+        let foo_idx = find_symbol_idx(&reader, "Foo");
+
+        let spilled = reader.find_unresolved_hierarchy_by_name("StdlibThing");
+        assert_eq!(spilled.len(), 1, "external parent must spill, not drop");
+        assert_eq!(spilled[0].from_sym_idx, foo_idx);
+        assert_eq!(spilled[0].edge_kind_bits(), EdgeKind::Extends as u8);
+        assert_eq!(spilled[0].line(), 3);
+
+        // No resolved edge exists for a name that was never a local
+        // symbol (there's no sym_idx to key find_hierarchy_edges_by_symbol
+        // on — the absence is itself the proof there's no bogus edge).
+        assert!(!reader.has_hierarchy_edges());
+    }
+
+    #[test]
+    fn ambiguous_parent_emits_no_edge_at_all() {
+        // Two files each define a distinct `Bar` class. A third file's
+        // `Baz extends Bar` cannot be resolved unambiguously.
+        let file_a = mk_file("a.rs", vec![mk_sym("Bar", SymbolKind::Class, 1)], vec![]);
+        let file_b = mk_file("b.rs", vec![mk_sym("Bar", SymbolKind::Class, 1)], vec![]);
+        let file_c = mk_file(
+            "c.rs",
+            vec![mk_sym("Baz", SymbolKind::Class, 2)],
+            vec![HierarchyCapture {
+                child_name: "Baz".to_string(),
+                parent_name: "Bar".to_string(),
+                kind: EdgeKind::Extends as u8,
+                line: 2,
+            }],
+        );
+        let parsed = vec![file_a, file_b, file_c];
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out = tmp.path().join("index.vex");
+        write_index_full(&parsed, &[], DEFAULT_VECTOR_DIM, &out).expect("write index");
+
+        let reader = IndexReader::open(&out).expect("open index");
+
+        // Neither resolved nor spilled — ambiguous is a distinct outcome.
+        assert!(
+            !reader.has_hierarchy_edges(),
+            "ambiguous parent must not produce a resolved edge"
+        );
+        assert!(
+            reader.find_unresolved_hierarchy_by_name("Bar").is_empty(),
+            "ambiguous parent must NOT spill to unresolved_hierarchy either"
+        );
+    }
+
+    #[test]
+    fn lowercase_external_parent_still_spills_unconditionally() {
+        // Simulates Ruby `include mymodule` — is_meaningful_identifier
+        // would reject a pure-lowercase identifier without `_`, but this
+        // section must NOT apply that gate (LOCKED, §3.5).
+        let file = mk_file(
+            "a.rb",
+            vec![mk_sym("Widget", SymbolKind::Class, 4)],
+            vec![HierarchyCapture {
+                child_name: "Widget".to_string(),
+                parent_name: "mymodule".to_string(),
+                kind: EdgeKind::Uses as u8,
+                line: 4,
+            }],
+        );
+        let parsed = vec![file];
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out = tmp.path().join("index.vex");
+        write_index_full(&parsed, &[], DEFAULT_VECTOR_DIM, &out).expect("write index");
+
+        let reader = IndexReader::open(&out).expect("open index");
+        let spilled = reader.find_unresolved_hierarchy_by_name("mymodule");
+        assert_eq!(
+            spilled.len(),
+            1,
+            "lowercase mixin name must spill despite is_meaningful_identifier's gate elsewhere"
+        );
+        assert_eq!(spilled[0].edge_kind_bits(), EdgeKind::Uses as u8);
+    }
+
+    #[test]
+    fn empty_hierarchy_captures_produce_no_panics_and_no_sections() {
+        // Reconstructed/unchanged files carry empty hierarchy_captures
+        // (P2a carry-forward is explicitly out of scope for P2) — the
+        // writer must handle this without panicking and simply emit
+        // empty hierarchy sections.
+        let file = mk_file("a.rs", vec![mk_sym("Foo", SymbolKind::Class, 1)], vec![]);
+        let parsed = vec![file];
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out = tmp.path().join("index.vex");
+        write_index_full(&parsed, &[], DEFAULT_VECTOR_DIM, &out).expect("write index");
+
+        let reader = IndexReader::open(&out).expect("open index");
+        assert!(!reader.has_hierarchy_edges());
+        assert!(!reader.has_unresolved_hierarchy_edges());
+    }
 }

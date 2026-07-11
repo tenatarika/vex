@@ -1,12 +1,12 @@
-//! `hierarchy_edges` section construction (P1 — format-only scaffold).
+//! `hierarchy_edges` section construction.
 //!
 //! Typed hierarchy edges (`extends` / `implements` / trait-mixin `uses`) —
 //! see `docs/HIERARCHY-EDGES.md` for the full design. This module builds the
 //! on-disk `HierarchyEdge[]` / `HierarchyPostingEntry[]` / postings blobs
-//! from in-memory builder records. P1 has no extraction pipeline, so
-//! `build_hierarchy_section` is always called with an empty slice in
-//! production — but the write path is fully real, exercised end-to-end by
-//! the reader's roundtrip tests.
+//! from in-memory builder records. P1 shipped this module format-only
+//! (`build_hierarchy_section` always called with an empty slice); P2 wires
+//! `writer::resolve_hierarchy_captures` to populate real builders from
+//! parsed `HierarchyCapture`s.
 //!
 //! Mirrors [`super::ref_edges`]'s shape (sort → serialise records → group
 //! into posting lists), with one deliberate, LOCKED difference: the index
