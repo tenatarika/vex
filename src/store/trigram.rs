@@ -409,10 +409,24 @@ mod tests {
     }
 
     #[test]
-    fn mtime_parts_is_deterministic_and_round_trips_post_epoch() {
+    fn mtime_parts_matches_duration_since_and_is_deterministic() {
         let t = UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 123_456_789);
-        assert_eq!(mtime_parts(t), (1_700_000_000, 123_456_789));
-        // Same input → same output is all the staleness guard needs.
+        // `mtime_parts` must report exactly what `duration_since` yields for
+        // the same `SystemTime` — it adds no truncation of its own. We derive
+        // the expected pair from `t` rather than hard-coding the nanos:
+        // Windows stores `SystemTime` as 100 ns FILETIME ticks, so the
+        // sub-second part of `t` is coarser than the 123_456_789 we passed in.
+        // That's fine for the staleness guard — the writer and the grep reader
+        // both observe the same stored value — so the test pins delegation +
+        // determinism, not a platform-specific nanosecond count.
+        let d = t.duration_since(UNIX_EPOCH).unwrap();
+        assert_eq!(mtime_parts(t), (d.as_secs() as i64, d.subsec_nanos()));
+        assert_eq!(
+            d.as_secs(),
+            1_700_000_000,
+            "seconds are exact on every platform"
+        );
+        // Same input → same output is what the guard's compare relies on.
         assert_eq!(mtime_parts(t), mtime_parts(t));
     }
 
