@@ -134,6 +134,15 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub cache_dir: Option<PathBuf>,
 
+    /// Load config from this file instead of searching for `.vex.toml`.
+    /// Overrides `$VEX_CONFIG` and the `.vex.toml` walk-up — use it to keep
+    /// config OUT of the repo entirely (e.g. `--config ~/vex/contract.toml`).
+    /// Accepts absolute paths or `~/...`; relative paths in the file (like
+    /// `cache_dir`) resolve against the config file's own directory. A missing
+    /// or invalid path here is a hard error (unlike the silent walk-up).
+    #[arg(long, global = true, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+
     /// VCS backend for diff-scoping. Overrides `$VEX_VCS` and `.vex.toml`.
     /// `auto` (default) detects by marker (`.git`/`.svn`/`.arc`).
     ///

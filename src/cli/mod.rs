@@ -89,7 +89,12 @@ fn build_workspace_resolver(
         // `load_config(&m.root)` is given the already-canonical member root
         // (workspace/mod.rs), and walk-up preserves canonicality, so
         // `source_dir` is canonical here — no /tmp→/private/tmp symlink miss.
-        let owns_override = member_cfg.source_dir.as_deref() == Some(m.root.as_path())
+        // An explicit `--config`/`$VEX_CONFIG` override is shared across the
+        // whole workspace by construction — its `source_dir` (the config
+        // file's own dir) could coincidentally equal a member root, so never
+        // treat any member as owning it. Fall through to `default`.
+        let owns_override = !config::override_active()
+            && member_cfg.source_dir.as_deref() == Some(m.root.as_path())
             && (member_cfg.cache_dir.is_some() || member_cfg.local_cache == Some(true));
         if owns_override {
             members.push((
@@ -109,7 +114,15 @@ pub fn dispatch(cli: Cli) -> Result<std::process::ExitCode> {
     exit_code::finish(dispatch_inner(cli))
 }
 
-fn dispatch_inner(cli: Cli) -> Result<()> {
+fn dispatch_inner(mut cli: Cli) -> Result<()> {
+    // Install the `--config` / `$VEX_CONFIG` override (CLI > env) BEFORE any
+    // `load_config` runs, so an explicit external config file replaces the
+    // `.vex.toml` walk-up everywhere (main config + every workspace-member
+    // load) without threading a flag through each call site.
+    config::install_config_override(config::resolve_config_override(std::mem::take(
+        &mut cli.config,
+    )));
+
     // Load project config from .vex.toml — anchored to project root, not cwd
     let root_hint = extract_path_hint(&cli.command);
     let config_root = resolve_root(root_hint)?;

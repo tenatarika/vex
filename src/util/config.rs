@@ -95,9 +95,82 @@ pub struct VexConfig {
     pub source_dir: Option<PathBuf>,
 }
 
+/// Process-wide override for the config-file location, installed once at
+/// startup from `--config` / `$VEX_CONFIG` before any `load_config` call.
+/// `Some(path)` makes `load_config` load exactly that file instead of walking
+/// up for `.vex.toml` (so a repo needs no in-tree config); `None` keeps the
+/// walk-up. Mirrors `vcs::install_override`'s OnceLock install pattern.
+static CONFIG_OVERRIDE: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// Resolve the effective config-file override with `--config` > `$VEX_CONFIG`
+/// precedence (CLI wins), expanding a leading `~`. `None` when neither is set
+/// (fall back to the `.vex.toml` walk-up). An EMPTY `$VEX_CONFIG` counts as
+/// unset — matching the `$VEX_CACHE_DIR` guard — so a `VEX_CONFIG=` in a shell
+/// / `.env` template falls back to the walk-up instead of hard-failing on an
+/// empty path. `var_os` (not `var`) preserves non-UTF-8 filesystem paths.
+pub fn resolve_config_override(cli: Option<PathBuf>) -> Option<PathBuf> {
+    cli.or_else(|| {
+        std::env::var_os("VEX_CONFIG")
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+    })
+    .map(|p| expand_user(&p))
+}
+
+/// Install the config-file override once, before any `load_config`. Idempotent
+/// (later calls are ignored), matching the vcs/cache OnceLock installs.
+///
+/// DO NOT call this from a `#[cfg(test)]` unit test: `CONFIG_OVERRIDE` is a
+/// process-wide `OnceLock` with no safe reset, so one unit test installing an
+/// override permanently pins it for every other test in the same nextest
+/// binary. The load-with-override path is covered by fresh-process
+/// `assert_cmd` integration tests (`tests/cli_config_test.rs`) instead — same
+/// discipline as `vcs::install_override`.
+pub fn install_config_override(path: Option<PathBuf>) {
+    let _ = CONFIG_OVERRIDE.set(path);
+}
+
+/// True iff an explicit `--config` / `$VEX_CONFIG` override is installed. The
+/// workspace resolver uses this to SKIP its per-member "owns its cache config"
+/// check: an external config is shared by every member by construction, so it
+/// is never a member-specific override — and its `source_dir` (the config
+/// file's own directory) could otherwise coincidentally equal a member root
+/// and be misread as an owned override, misrouting that member's cache.
+pub fn override_active() -> bool {
+    matches!(CONFIG_OVERRIDE.get(), Some(Some(_)))
+}
+
 /// Search for `.vex.toml` starting from `start_dir`, walking up to filesystem root.
 /// Returns the parsed config, or a default if no file is found.
+///
+/// An explicit `--config` / `$VEX_CONFIG` override (installed via
+/// [`install_config_override`]) short-circuits the walk-up entirely: that file
+/// is loaded directly, and a missing/unreadable/invalid explicit path is a hard
+/// error (the user pointed at it) rather than a silent fall-back. `source_dir`
+/// is set to the override file's parent, so relative paths in it (e.g.
+/// `cache_dir`) resolve against the config's own directory — same rule as a
+/// walk-up hit, just anchored at the external location. A bare relative
+/// `--config name.toml` has `parent() == ""`, so its relative paths resolve
+/// against the process cwd (`Path::new("").join(x) == x`).
 pub fn load_config(start_dir: &Path) -> Result<VexConfig> {
+    if let Some(Some(path)) = CONFIG_OVERRIDE.get() {
+        // One guard for both "missing" and "is a directory": `is_file()` is
+        // false for both, giving a crisp message instead of a raw OS error
+        // (ENOENT / EISDIR) from `read_to_string`.
+        if !path.is_file() {
+            anyhow::bail!(
+                "--config / $VEX_CONFIG path {} is not a readable file",
+                path.display()
+            );
+        }
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("read --config / $VEX_CONFIG file {}", path.display()))?;
+        let mut config: VexConfig =
+            toml::from_str(&content).with_context(|| format!("parse {}", path.display()))?;
+        config.source_dir = path.parent().map(Path::to_path_buf);
+        tracing::debug!(path = %path.display(), "loaded config (explicit --config/$VEX_CONFIG)");
+        return Ok(config);
+    }
     let mut dir = start_dir.to_path_buf();
     loop {
         let candidate = dir.join(".vex.toml");
@@ -843,6 +916,63 @@ mod tests {
             }
         }
         f();
+    }
+
+    #[test]
+    #[serial]
+    fn config_override_none_when_neither_flag_nor_env_set() {
+        with_env_vars(&[("VEX_CONFIG", None)], || {
+            assert_eq!(resolve_config_override(None), None);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn config_override_uses_env_when_flag_absent() {
+        with_env_vars(&[("VEX_CONFIG", Some("/tmp/env-config.toml"))], || {
+            assert_eq!(
+                resolve_config_override(None),
+                Some(PathBuf::from("/tmp/env-config.toml"))
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn config_override_flag_beats_env() {
+        with_env_vars(&[("VEX_CONFIG", Some("/tmp/env-config.toml"))], || {
+            assert_eq!(
+                resolve_config_override(Some(PathBuf::from("/tmp/flag-config.toml"))),
+                Some(PathBuf::from("/tmp/flag-config.toml"))
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn config_override_expands_tilde() {
+        with_env_vars(&[("VEX_CONFIG", None)], || {
+            let out =
+                resolve_config_override(Some(PathBuf::from("~/vex/contract.toml"))).expect("some");
+            // With a resolvable home, `~` is expanded — no literal leading `~`.
+            if home_dir().is_some() {
+                assert!(
+                    !out.to_string_lossy().starts_with('~'),
+                    "tilde not expanded: {}",
+                    out.display()
+                );
+            }
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn config_override_empty_env_is_treated_as_unset() {
+        // `VEX_CONFIG=` (empty) must fall back to the walk-up, not hard-fail on
+        // an empty path — mirrors the VEX_CACHE_DIR empty-is-unset guard.
+        with_env_vars(&[("VEX_CONFIG", Some(""))], || {
+            assert_eq!(resolve_config_override(None), None);
+        });
     }
 
     #[test]

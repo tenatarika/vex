@@ -341,6 +341,20 @@ semantic = true
 
 CLI flags always override config values. Use `--no-semantic` to explicitly disable semantic mode when the config enables it. The `VEX_DEVICE` and `VEX_EMBEDDER` environment variables act as **global defaults across all projects** (lowest precedence, below `.vex.toml`) — see [GPU Acceleration](#gpu-acceleration).
 
+### Keeping config out of the repo
+
+Don't want a `.vex.toml` inside the repository (can't `.gitignore` it, shared checkout, etc.)? vex never creates one on its own — only `vex init` writes it — and you have two ways to keep config external:
+
+- **`--config <path>` / `$VEX_CONFIG`** — point vex at a config file anywhere on disk. It replaces the in-repo lookup entirely, so the repo stays clean:
+  ```bash
+  vex --config ~/vex/this-repo.toml search Foo
+  export VEX_CONFIG=~/vex/this-repo.toml   # or set it once per shell
+  ```
+  `--config` beats `$VEX_CONFIG`; a missing/invalid path is a hard error (vex won't silently fall back). Relative paths *inside* that file resolve against the file's own directory.
+- **A parent directory** — config lookup walks up from the project to the filesystem root, so a `.vex.toml` placed in any ancestor (e.g. `~/work/.vex.toml`, or `~/.vex.toml` for a machine-wide default) is picked up for every repo beneath it, with none living in the repos themselves.
+
+The index itself is never written into the repo — it lives in the cache dir (`--cache-dir` / `$VEX_CACHE_DIR` / platform cache), so a clean repo is just a matter of config placement.
+
 ### Staleness Detection
 
 Vex detects when the index is stale and warns before search:
