@@ -76,8 +76,9 @@ impl Language {
     ///
     /// assert_eq!(Language::from_extension("rs"), Some(Language::Rust));
     /// assert_eq!(Language::from_extension("py"), Some(Language::Python));
-    /// // JS variants share the TypeScript grammar.
+    /// // JS variants (incl. ESM .mjs / CommonJS .cjs) share the TypeScript grammar.
     /// assert_eq!(Language::from_extension("jsx"), Some(Language::TypeScript));
+    /// assert_eq!(Language::from_extension("mjs"), Some(Language::TypeScript));
     /// assert_eq!(Language::from_extension("zig"), None);
     /// ```
     pub fn from_extension(ext: &str) -> Option<Self> {
@@ -85,7 +86,7 @@ impl Language {
             "rs" => Some(Self::Rust),
             "kt" | "kts" => Some(Self::Kotlin),
             "ts" | "tsx" => Some(Self::TypeScript),
-            "js" | "jsx" => Some(Self::TypeScript),
+            "js" | "jsx" | "mjs" | "cjs" => Some(Self::TypeScript),
             "py" => Some(Self::Python),
             "go" => Some(Self::Go),
             "java" => Some(Self::Java),
@@ -237,5 +238,18 @@ mod tests {
         assert_eq!(ids.len(), Language::ALL.len(), "duplicate variant in ALL");
         assert_eq!(*ids.first().unwrap(), 1, "lang_id starts at 1");
         assert_eq!(*ids.last().unwrap(), 19, "lang_id ends at 19");
+    }
+
+    /// All JavaScript flavours — classic, JSX, ESM (`.mjs`), CommonJS
+    /// (`.cjs`) — route through the TypeScript grammar.
+    #[test]
+    fn js_variants_map_to_typescript() {
+        for ext in ["js", "jsx", "mjs", "cjs", "ts", "tsx"] {
+            assert_eq!(
+                Language::from_extension(ext),
+                Some(Language::TypeScript),
+                "extension {ext:?} should map to TypeScript"
+            );
+        }
     }
 }

@@ -23,7 +23,7 @@
 //! | T3   | YAML, TOML, Bash, Lua                                                  | empty (final) |
 //!
 //! JavaScript shares the TypeScript grammar (`Language::TypeScript`)
-//! via `"js" | "jsx" → TypeScript` in the extension map, so the T1
+//! via `"js" | "jsx" | "mjs" | "cjs" → TypeScript` in the extension map, so the T1
 //! TypeScript allowlist already covers it — no separate JS row.
 //!
 //! An empty allowlist short-circuits to `Vec::new()`, so unrolled-T2
