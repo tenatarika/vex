@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.25.2] - 2026-07-14
+
+### Added
+
+- `.mjs` (ESM) and `.cjs` (CommonJS) files are now indexed and searchable.
+  Both extensions map to the same tree-sitter grammar already used for
+  `.js`/`.jsx`, so `vex check`/`show`/`search` find symbols defined in them.
+- `--config <path>` / `$VEX_CONFIG` to load a `.vex.toml` config from outside
+  the indexed repository.
+
+### Fixed
+
+- `vex bench` now reads symbol and size counts from the `status` response
+  envelope instead of a stale top-level field.
+
 ## [1.25.1] - 2026-07-11
 
 ### Fixed
