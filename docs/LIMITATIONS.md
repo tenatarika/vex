@@ -918,6 +918,25 @@ it only decides which files to read. It quietly falls back to a full walk
 `vex status` reports whether the sidecar is present (`trigram_persisted`);
 absence just means grep full-walks until the next `vex index`.
 
+### 5b. Binary-file skip (v1.25+)
+
+`vex grep` skips files it judges binary rather than reading them, matching
+ripgrep's default. Two layers: (1) an extension denylist (`png`, `xlsx`,
+`ttf`, `pdf`, `zip`, `pyc`, `so`, …) drops known-binary files before they
+are opened; (2) for anything else, the first 8 KB is sniffed and the file
+is skipped if it contains a NUL byte or > 5% control bytes. This was driven
+by a measurement (`docs/FMINDEX-RESEARCH.md` §"A0 measurement"): on a real
+3.6 GB repo ~86 % of a rare-token grep's reads were binary assets, and the
+denylist cut warm read time ~3×.
+
+**Deliberate consequence:** a *text* file with a stray NUL byte or a
+high-control-byte prefix in its first 8 KB is treated as binary and omitted
+from results — as is any file with a denylisted extension, even if its
+bytes are actually text. There is no `--text`/`-a` escape hatch yet (tracked
+follow-up). Text formats that merely *look* binary-adjacent — `svg` (XML),
+`json`, `csv`, `txt`, `scss` — are intentionally NOT denylisted and are
+still searched.
+
 ---
 
 ## 6. `vex impact` — recommended delete-safety workflow (v1.20.0, F1)

@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `vex grep` now skips binary files instead of reading them, matching
+  ripgrep's default. Known-binary extensions (png, xlsx, ttf, pdf, zip, pyc,
+  so, …) are dropped before opening; any other file whose first 8 KB contains
+  a NUL byte or > 5% control bytes is skipped after a cheap sniff. On a real
+  3.6 GB repo this cut warm rare-token grep read time ~3× (a measurement found
+  ~86% of such a grep's reads were binary assets). A text file with a stray
+  NUL in its first 8 KB, or a denylisted extension, is now omitted from
+  results; there is no `--text` override yet. Text formats (svg, json, csv,
+  txt, scss) are not denylisted and are still searched.
+
 ## [1.25.2] - 2026-07-14
 
 ### Added
