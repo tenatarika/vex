@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.25.3] - 2026-07-17
+
 ### Changed
 
 - `vex grep` now skips binary files instead of reading them, matching
