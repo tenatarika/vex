@@ -29,21 +29,28 @@ pub struct GrepMatch {
 /// non-literal pattern, or a stale record → the file is read as before, so
 /// the result set is identical to a full walk — the skip-index only trims
 /// I/O, never matches.
+///
+/// `force_text` is the `--text`/`-a` escape hatch (ripgrep parity): when
+/// `true`, both binary-skip layers (extension denylist in
+/// [`discover_files`], content sniff in [`read_text_skip_binary`]) are
+/// bypassed and every file is read whole, still subject only to the
+/// UTF-8-validity check. See `docs/LIMITATIONS.md` §5b.
 pub fn search(
     root: &Path,
     pattern: &str,
     filter_path: Option<&str>,
     limit: usize,
     excludes: &[String],
+    force_text: bool,
 ) -> Result<Vec<GrepMatch>> {
     let re = Regex::new(pattern).context("invalid regex pattern")?;
     let skip = TrigramSkip::build(root, pattern);
-    let files = discover_files(root, filter_path, excludes, skip.as_ref())?;
+    let files = discover_files(root, filter_path, excludes, skip.as_ref(), force_text)?;
 
     let matches: Vec<GrepMatch> = files
         .par_iter()
         .flat_map(|path| {
-            let content = match read_text_skip_binary(path) {
+            let content = match read_text_skip_binary(path, force_text) {
                 Some(c) => c,
                 None => return Vec::new(), // binary or unreadable — skip silently
             };
@@ -118,9 +125,21 @@ fn is_binary_bytes(sample: &[u8]) -> bool {
 ///
 /// One deliberate semantic change: a text file with a stray NUL byte (or a
 /// high-control-byte prefix) in its first 8 KB is now treated as binary and
-/// skipped, matching ripgrep's default (no `--text` escape hatch offered).
-fn read_text_skip_binary(path: &Path) -> Option<String> {
+/// skipped, matching ripgrep's default — unless `force_text` (the
+/// `--text`/`-a` escape hatch) is set, in which case the sniff is skipped
+/// entirely: the whole file is read and only UTF-8 validity gates the
+/// result, matching the pre-binary-skip default. vex greps line-by-line
+/// over a Rust `String`, so it cannot lossy-decode — a truly invalid-UTF-8
+/// file is still skipped even with `force_text`.
+fn read_text_skip_binary(path: &Path, force_text: bool) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
+
+    if force_text {
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).ok()?;
+        return String::from_utf8(buf).ok();
+    }
+
     // Sniff the head only. `take` + `read_to_end` retries `Interrupted`
     // internally and grows the buffer to fit, so a small file never pays for
     // a full 8 KB zeroed allocation.
@@ -154,6 +173,10 @@ fn read_text_skip_binary(path: &Path) -> Option<String> {
 /// deliberately NOT listed: they fall through to [`read_text_skip_binary`]'s
 /// sniff, which reads them if textual and skips them only on a real NUL /
 /// high-control prefix — avoiding a false-negative on text-in-`.dat`.
+///
+/// Bypassed entirely by the `--text`/`-a` escape hatch (`force_text` in
+/// [`discover_files`]) — a denylisted extension is still opened and read
+/// when the caller explicitly asks to force-read binaries.
 fn is_binary_ext(path: &Path) -> bool {
     matches!(
         path.extension()
@@ -282,6 +305,7 @@ fn discover_files(
     filter_path: Option<&str>,
     excludes: &[String],
     skip: Option<&TrigramSkip>,
+    force_text: bool,
 ) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
@@ -302,7 +326,8 @@ fn discover_files(
 
         // Drop definitely-binary files by extension before we even stat or
         // open them — the cheapest possible skip (see `is_binary_ext`).
-        if is_binary_ext(&path) {
+        // `force_text` (the `--text`/`-a` escape hatch) bypasses this.
+        if !force_text && is_binary_ext(&path) {
             continue;
         }
 
@@ -358,7 +383,7 @@ mod tests {
     #[test]
     fn grep_finds_string_in_content() {
         let dir = setup_test_dir();
-        let matches = search(dir.path(), "40 MINUTE", None, 50, &[]).unwrap();
+        let matches = search(dir.path(), "40 MINUTE", None, 50, &[], false).unwrap();
         assert_eq!(matches.len(), 1);
         assert!(matches[0].path.contains("config.py"));
         assert_eq!(matches[0].line, 1);
@@ -367,14 +392,14 @@ mod tests {
     #[test]
     fn grep_regex_pattern() {
         let dir = setup_test_dir();
-        let matches = search(dir.path(), r"def \w+\(\)", None, 50, &[]).unwrap();
+        let matches = search(dir.path(), r"def \w+\(\)", None, 50, &[], false).unwrap();
         assert_eq!(matches.len(), 2); // hello() and get_user()
     }
 
     #[test]
     fn grep_with_path_filter() {
         let dir = setup_test_dir();
-        let matches = search(dir.path(), "def", Some("api"), 50, &[]).unwrap();
+        let matches = search(dir.path(), "def", Some("api"), 50, &[], false).unwrap();
         assert_eq!(matches.len(), 1);
         // Path separators differ between Unix (`api/routes.py`) and
         // Windows (`api\routes.py`); assert on the directory name only.
@@ -388,14 +413,14 @@ mod tests {
     #[test]
     fn grep_respects_limit() {
         let dir = setup_test_dir();
-        let matches = search(dir.path(), ".", None, 2, &[]).unwrap();
+        let matches = search(dir.path(), ".", None, 2, &[], false).unwrap();
         assert_eq!(matches.len(), 2);
     }
 
     #[test]
     fn grep_invalid_regex_returns_error() {
         let dir = setup_test_dir();
-        assert!(search(dir.path(), "[invalid", None, 50, &[]).is_err());
+        assert!(search(dir.path(), "[invalid", None, 50, &[], false).is_err());
     }
 
     #[test]
@@ -407,7 +432,7 @@ mod tests {
         content.extend_from_slice(b"\nneedle_after_nul\n");
         fs::write(dir.path().join("binary.dat"), &content).unwrap();
 
-        let matches = search(dir.path(), "needle_after_nul", None, 50, &[]).unwrap();
+        let matches = search(dir.path(), "needle_after_nul", None, 50, &[], false).unwrap();
         assert!(
             matches.is_empty(),
             "expected NUL-containing file to be skipped, got {matches:?}"
@@ -418,7 +443,7 @@ mod tests {
     fn grep_matches_normal_utf8_source_file() {
         // Regression: the real hit still found for plain text files.
         let dir = setup_test_dir();
-        let matches = search(dir.path(), "40 MINUTE", None, 50, &[]).unwrap();
+        let matches = search(dir.path(), "40 MINUTE", None, 50, &[], false).unwrap();
         assert_eq!(matches.len(), 1);
         assert!(matches[0].path.contains("config.py"));
     }
@@ -434,7 +459,7 @@ mod tests {
         content.extend_from_slice(&[0xFF, 0xFE]); // invalid UTF-8
         fs::write(dir.path().join("late_invalid.dat"), &content).unwrap();
 
-        let matches = search(dir.path(), "needle_marker", None, 50, &[]).unwrap();
+        let matches = search(dir.path(), "needle_marker", None, 50, &[], false).unwrap();
         assert!(
             matches.is_empty(),
             "expected late-invalid-UTF-8 file to be skipped, got {matches:?}"
@@ -452,7 +477,7 @@ mod tests {
         content.extend_from_slice(b"needle_control\n");
         fs::write(dir.path().join("control.dat"), &content).unwrap();
 
-        let matches = search(dir.path(), "needle_control", None, 50, &[]).unwrap();
+        let matches = search(dir.path(), "needle_control", None, 50, &[], false).unwrap();
         assert!(
             matches.is_empty(),
             "expected high-control-ratio file to be skipped, got {matches:?}"
@@ -498,7 +523,7 @@ mod tests {
         content.push_str("let needle_past_sniff = 1;\n");
         fs::write(dir.path().join("big.rs"), &content).unwrap();
 
-        let matches = search(dir.path(), "needle_past_sniff", None, 50, &[]).unwrap();
+        let matches = search(dir.path(), "needle_past_sniff", None, 50, &[], false).unwrap();
         assert_eq!(
             matches.len(),
             1,
@@ -519,7 +544,7 @@ mod tests {
         assert_eq!(content.len(), SNIFF_BYTES);
         fs::write(dir.path().join("exact.rs"), &content).unwrap();
 
-        let matches = search(dir.path(), marker, None, 50, &[]).unwrap();
+        let matches = search(dir.path(), marker, None, 50, &[], false).unwrap();
         assert_eq!(matches.len(), 1);
     }
 
@@ -529,7 +554,7 @@ mod tests {
         // by the extension denylist — dropped in discover_files before open.
         let dir = setup_test_dir();
         fs::write(dir.path().join("image.png"), b"needle_in_png\n").unwrap();
-        let matches = search(dir.path(), "needle_in_png", None, 50, &[]).unwrap();
+        let matches = search(dir.path(), "needle_in_png", None, 50, &[], false).unwrap();
         assert!(
             matches.is_empty(),
             "expected .png to be skipped by extension, got {matches:?}"
@@ -577,7 +602,7 @@ mod tests {
     fn grep_skips_uppercase_binary_extension_end_to_end() {
         let dir = setup_test_dir();
         fs::write(dir.path().join("PHOTO.PNG"), b"needle_in_caps_png\n").unwrap();
-        let matches = search(dir.path(), "needle_in_caps_png", None, 50, &[]).unwrap();
+        let matches = search(dir.path(), "needle_in_caps_png", None, 50, &[], false).unwrap();
         assert!(
             matches.is_empty(),
             "uppercase .PNG must be skipped, got {matches:?}"
@@ -590,7 +615,73 @@ mod tests {
         // read_to_end appends nothing → Some("") → zero matches, no panic.
         let dir = setup_test_dir();
         fs::write(dir.path().join("empty.rs"), b"").unwrap();
-        let matches = search(dir.path(), "anything", None, 50, &[]).unwrap();
+        let matches = search(dir.path(), "anything", None, 50, &[], false).unwrap();
         assert!(matches.iter().all(|m| !m.path.contains("empty.rs")));
+    }
+
+    #[test]
+    fn grep_force_text_bypasses_binary_extension_denylist() {
+        // A .png whose bytes are actually plain ASCII: denylisted by
+        // extension, so the default (false) skips it, but force_text=true
+        // must bypass discover_files's extension filter and find the match.
+        let dir = setup_test_dir();
+        fs::write(dir.path().join("image.png"), b"needle_in_png\n").unwrap();
+
+        let matches = search(dir.path(), "needle_in_png", None, 50, &[], true).unwrap();
+        assert_eq!(
+            matches.len(),
+            1,
+            "force_text=true must read a .png with textual bytes, got {matches:?}"
+        );
+        assert!(matches[0].path.contains("image.png"));
+
+        let matches = search(dir.path(), "needle_in_png", None, 50, &[], false).unwrap();
+        assert!(
+            matches.is_empty(),
+            "default (force_text=false) must still skip .png by extension"
+        );
+    }
+
+    #[test]
+    fn grep_force_text_bypasses_nul_content_sniff() {
+        // A NUL byte in the first 8 KB is valid UTF-8 (NUL is a legal code
+        // point), so String::from_utf8 succeeds once the sniff is skipped;
+        // the needle sits on a line after the NUL and must still be found.
+        let dir = setup_test_dir();
+        let mut content = vec![0u8; 100];
+        content.extend_from_slice(b"\nneedle_after_nul_force\n");
+        fs::write(dir.path().join("binary.dat"), &content).unwrap();
+
+        let matches = search(dir.path(), "needle_after_nul_force", None, 50, &[], true).unwrap();
+        assert_eq!(
+            matches.len(),
+            1,
+            "force_text=true must read past a NUL prefix, got {matches:?}"
+        );
+        assert!(matches[0].path.contains("binary.dat"));
+
+        let matches = search(dir.path(), "needle_after_nul_force", None, 50, &[], false).unwrap();
+        assert!(
+            matches.is_empty(),
+            "default (force_text=false) must still skip the NUL-prefixed file"
+        );
+    }
+
+    #[test]
+    fn grep_force_text_still_skips_truly_invalid_utf8() {
+        // force_text only removes the ext-denylist + content-sniff skips; a
+        // file whose bytes are not valid UTF-8 at all still yields None from
+        // String::from_utf8, matching the pre-binary-skip default (vex greps
+        // line-by-line over a Rust String and cannot lossy-decode).
+        let dir = setup_test_dir();
+        let mut content = b"needle_invalid_utf8\n".to_vec();
+        content.extend_from_slice(&[0xFF, 0xFE, 0xFA]); // invalid UTF-8
+        fs::write(dir.path().join("truly_invalid.bin"), &content).unwrap();
+
+        let matches = search(dir.path(), "needle_invalid_utf8", None, 50, &[], true).unwrap();
+        assert!(
+            matches.is_empty(),
+            "force_text=true must still skip genuinely invalid UTF-8, got {matches:?}"
+        );
     }
 }

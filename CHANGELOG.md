@@ -15,8 +15,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   3.6 GB repo this cut warm rare-token grep read time ~3× (a measurement found
   ~86% of such a grep's reads were binary assets). A text file with a stray
   NUL in its first 8 KB, or a denylisted extension, is now omitted from
-  results; there is no `--text` override yet. Text formats (svg, json, csv,
-  txt, scss) are not denylisted and are still searched.
+  results. Text formats (svg, json, csv, txt, scss) are not denylisted and
+  are still searched.
+- `vex grep` gained `-a`/`--text` (ripgrep parity) to force-read every file,
+  bypassing the binary-extension denylist and content sniff above; the MCP
+  `grep` tool exposes the same via a `text` boolean input.
 
 ## [1.25.2] - 2026-07-14
 

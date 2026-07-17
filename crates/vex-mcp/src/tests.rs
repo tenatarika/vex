@@ -2277,6 +2277,24 @@ fn workspace_omitted_does_not_push_flag() {
 }
 
 #[test]
+fn grep_text_true_pushes_flag() {
+    let extra = args_for("grep", json!({ "pattern": "Foo", "text": true }));
+    assert!(
+        extra.iter().any(|a| a == "--text"),
+        "grep with text=true must push --text, got: {extra:?}"
+    );
+}
+
+#[test]
+fn grep_text_omitted_does_not_push_flag() {
+    let extra = args_for("grep", json!({ "pattern": "Foo" }));
+    assert!(
+        !extra.iter().any(|a| a == "--text"),
+        "grep without text must not push --text, got: {extra:?}"
+    );
+}
+
+#[test]
 fn search_workspace_drops_why_clap_conflict() {
     // `--workspace` conflicts_with `--why` on the CLI; workspace wins.
     let extra = args_for(

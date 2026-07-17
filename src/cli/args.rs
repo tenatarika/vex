@@ -801,6 +801,13 @@ pub enum Commands {
         /// `--path`/cwd), grouping matches by repo. See docs/MULTIREPO.md.
         #[arg(long)]
         workspace: bool,
+
+        /// Force-read every file, bypassing the binary-extension denylist
+        /// and the NUL/control-byte content sniff (ripgrep `-a` parity). A
+        /// file with genuinely invalid UTF-8 is still skipped. See
+        /// docs/LIMITATIONS.md §5b.
+        #[arg(short = 'a', long)]
+        text: bool,
     },
 
     /// Show index statistics

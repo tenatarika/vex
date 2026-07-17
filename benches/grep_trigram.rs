@@ -161,7 +161,7 @@ fn bench_skip_active(c: &mut Criterion) {
     set_sidecar(fx, true);
     // Sanity: the rare literal must still match exactly once WITH the skip
     // active (proves the skip-index didn't drop the real hit).
-    let hits = grep::search(&fx.root, &fx.rare_literal, None, 100, &[]).unwrap();
+    let hits = grep::search(&fx.root, &fx.rare_literal, None, 100, &[], false).unwrap();
     assert_eq!(
         hits.len(),
         1,
@@ -172,7 +172,7 @@ fn bench_skip_active(c: &mut Criterion) {
     group.sample_size(20);
     group.bench_function("skip_active_rare_literal", |b| {
         b.iter(|| {
-            let hits = grep::search(&fx.root, &fx.rare_literal, None, 100, &[]).unwrap();
+            let hits = grep::search(&fx.root, &fx.rare_literal, None, 100, &[], false).unwrap();
             black_box(hits.len())
         })
     });
@@ -183,14 +183,14 @@ fn bench_full_walk(c: &mut Criterion) {
     let fx = fixture();
     set_sidecar(fx, false);
     // Same query, same result — only the I/O differs (every file read).
-    let hits = grep::search(&fx.root, &fx.rare_literal, None, 100, &[]).unwrap();
+    let hits = grep::search(&fx.root, &fx.rare_literal, None, 100, &[], false).unwrap();
     assert_eq!(hits.len(), 1);
 
     let mut group = c.benchmark_group("grep_trigram");
     group.sample_size(20);
     group.bench_function("full_walk_rare_literal", |b| {
         b.iter(|| {
-            let hits = grep::search(&fx.root, &fx.rare_literal, None, 100, &[]).unwrap();
+            let hits = grep::search(&fx.root, &fx.rare_literal, None, 100, &[], false).unwrap();
             black_box(hits.len())
         })
     });

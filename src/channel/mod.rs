@@ -604,7 +604,7 @@ impl Channel for GrepWordBoundaryChannel {
     fn run(&self, ctx: &ChannelContext<'_>) -> Result<ChannelOutput> {
         let escaped = regex::escape(ctx.symbol);
         let pattern = format!(r"\b{escaped}\b");
-        let raw = crate::grep::search(ctx.root, &pattern, None, GREP_HARD_CAP, ctx.excludes)
+        let raw = crate::grep::search(ctx.root, &pattern, None, GREP_HARD_CAP, ctx.excludes, false)
             .context("grep word-boundary scan")?;
         let pre_filter_count = raw.len();
         let mut hits = Vec::new();

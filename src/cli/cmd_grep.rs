@@ -24,6 +24,7 @@ pub(crate) fn grep(
     scope: ScopeArgs,
     diff: DiffFilterArgs,
     workspace: bool,
+    text: bool,
 ) -> Result<()> {
     if workspace {
         return grep_workspace(
@@ -34,6 +35,7 @@ pub(crate) fn grep(
             path,
             &scope,
             &diff,
+            text,
         );
     }
 
@@ -46,6 +48,7 @@ pub(crate) fn grep(
         &scope,
         &diff,
         ctx.excludes,
+        text,
     )?;
 
     // v1.12.0 S8.2 — signal "no matches" for the exit-code contract.
@@ -84,6 +87,10 @@ pub(crate) fn grep(
 
 /// Scan one repo for `pattern`, applying the scope + diff filters and the
 /// result cap. No index is involved — `grep` walks the filesystem.
+///
+/// `text` is the `--text`/`-a` escape hatch: forces every file to be read
+/// regardless of the binary-extension denylist or content sniff.
+#[allow(clippy::too_many_arguments)]
 fn grep_in_root(
     root: &Path,
     pattern: &str,
@@ -92,6 +99,7 @@ fn grep_in_root(
     scope: &ScopeArgs,
     diff: &DiffFilterArgs,
     excludes: &[String],
+    text: bool,
 ) -> Result<Vec<GrepMatch>> {
     let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
     let changed_paths = resolve_diff_filter(root, diff)?;
@@ -103,7 +111,7 @@ fn grep_in_root(
     } else {
         usize::MAX
     };
-    let matches = crate::grep::search(root, pattern, filter_path, fetch_limit, excludes)?;
+    let matches = crate::grep::search(root, pattern, filter_path, fetch_limit, excludes, text)?;
     Ok(matches
         .into_iter()
         .filter(|m| {
@@ -134,6 +142,7 @@ fn grep_workspace(
     path: Option<std::path::PathBuf>,
     scope: &ScopeArgs,
     diff: &DiffFilterArgs,
+    text: bool,
 ) -> Result<()> {
     // No local_cache guard here: `grep` scans the filesystem and never
     // touches an index dir, so a hash-less cache layout is harmless.
@@ -153,6 +162,7 @@ fn grep_workspace(
             scope,
             diff,
             &member_cfg.exclude,
+            text,
         )?;
         any |= !matches.is_empty();
         per_repo.push((m.display_name.clone(), matches));

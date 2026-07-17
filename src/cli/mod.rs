@@ -415,6 +415,7 @@ fn dispatch_inner(mut cli: Cli) -> Result<()> {
             scope,
             diff,
             workspace,
+            text,
         } => cmd_grep::grep(
             &ctx,
             pattern,
@@ -424,6 +425,7 @@ fn dispatch_inner(mut cli: Cli) -> Result<()> {
             scope,
             diff,
             workspace,
+            text,
         ),
         Commands::Implementations {
             name,

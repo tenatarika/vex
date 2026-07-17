@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::args::{
     push_auto_update, push_diff_scope, push_kind, push_metadata, push_no_stale_check, push_scope,
-    push_workspace,
+    push_text, push_workspace,
 };
 use crate::params::{opt_bool, opt_f64, opt_str, opt_u64, read_canonical_str, req_str, ParamError};
 
@@ -189,6 +189,7 @@ pub(crate) fn build_grep(
     }
     push_scope(&mut extra, args)?;
     push_workspace(&mut extra, args)?;
+    push_text(&mut extra, args)?;
     Ok(("grep".to_string(), extra))
 }
 

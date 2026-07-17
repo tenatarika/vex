@@ -783,6 +783,11 @@ expression: descriptors
           "description": "Absolute path to the project root (defaults to the MCP working directory)",
           "type": "string"
         },
+        "text": {
+          "default": false,
+          "description": "Force-read every file, bypassing the binary-file skip (extension denylist + NUL/high-control content sniff). Escape hatch for a legitimately-textual file that got misclassified as binary; a genuinely invalid-UTF-8 file is still skipped. CLI equivalent: `-a`/`--text` (ripgrep parity).",
+          "type": "boolean"
+        },
         "workspace": {
           "default": false,
           "description": "Multi-repo: fan out across every repo declared in the nearest `.vex-workspace.toml` (set `project_root` at or above it — the manifest is found by walking up). Results become an object `{workspace, repos:[...]}` grouped by repo, NOT the flat per-tool array — branch on shape. `why` is ignored in workspace mode (single-repo only).",

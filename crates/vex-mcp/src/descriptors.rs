@@ -313,7 +313,8 @@ pub(crate) fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "text": { "type": "boolean", "description": "Force-read every file, bypassing the binary-file skip (extension denylist + NUL/high-control content sniff). Escape hatch for a legitimately-textual file that got misclassified as binary; a genuinely invalid-UTF-8 file is still skipped. CLI equivalent: `-a`/`--text` (ripgrep parity).", "default": false }
                 },
                 "required": ["pattern"]
             }

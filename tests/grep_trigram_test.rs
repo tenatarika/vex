@@ -66,7 +66,7 @@ fn indexed_project(name: &str, files: &[(&str, &str)]) -> (TempDir, std::path::P
 }
 
 fn grep(root: &Path, pattern: &str) -> Vec<grep::GrepMatch> {
-    grep::search(root, pattern, None, 100, &[]).unwrap()
+    grep::search(root, pattern, None, 100, &[], false).unwrap()
 }
 
 // ── Correctness: skip-index active, results identical to a full walk ─────────

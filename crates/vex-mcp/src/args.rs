@@ -40,6 +40,17 @@ pub(crate) fn push_workspace(extra: &mut Vec<String>, args: &Value) -> Result<()
     Ok(())
 }
 
+/// Push `--text` when the caller opted into the binary-skip escape hatch
+/// (`text: true`). CLI-side this is `grep`'s `-a`/`--text` flag: force-read
+/// every file, bypassing the extension denylist and content sniff — see
+/// `docs/LIMITATIONS.md` §5b.
+pub(crate) fn push_text(extra: &mut Vec<String>, args: &Value) -> Result<()> {
+    if opt_bool(args, "text", false)? {
+        extra.push("--text".into());
+    }
+    Ok(())
+}
+
 /// Translate the optional `gpu: bool` (and advanced `device: string`) MCP args
 /// into the CLI `--gpu` / `--no-gpu` / `--device` flags for `index`/`update`.
 /// Tri-state on purpose: an absent `gpu` forwards nothing (so `.vex.toml gpu` /

@@ -932,10 +932,15 @@ denylist cut warm read time ~3×.
 **Deliberate consequence:** a *text* file with a stray NUL byte or a
 high-control-byte prefix in its first 8 KB is treated as binary and omitted
 from results — as is any file with a denylisted extension, even if its
-bytes are actually text. There is no `--text`/`-a` escape hatch yet (tracked
-follow-up). Text formats that merely *look* binary-adjacent — `svg` (XML),
-`json`, `csv`, `txt`, `scss` — are intentionally NOT denylisted and are
-still searched.
+bytes are actually text. Text formats that merely *look* binary-adjacent —
+`svg` (XML), `json`, `csv`, `txt`, `scss` — are intentionally NOT
+denylisted and are still searched.
+
+**Escape hatch:** `vex grep -a/--text <pattern>` forces every file to be
+read, bypassing both the extension denylist and the content sniff. The MCP
+`grep` tool exposes the same behavior via the `text: true` boolean input.
+A genuinely invalid-UTF-8 file is still skipped even with `--text` — vex
+greps line-by-line over a Rust `String` and cannot lossy-decode.
 
 ---
 
