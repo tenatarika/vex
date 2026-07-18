@@ -7,7 +7,8 @@
 //! of truth for which languages contribute to the persistent call graph.
 //!
 //! Isolated from `extractor` so adding a language requires only a new
-//! match arm here plus registration in `extractor::COMPILED_QUERIES` —
+//! match arm here — `extractor::CG_QUERY_CELLS` auto-discovers it by
+//! probing this fn over `Language::ALL` (no separate registration), and
 //! walker logic stays untouched. The Phase 14.6 `module_call.name`
 //! capture cooperates with `extractor::MODULE_CALL_CAPTURE`.
 

@@ -5,10 +5,11 @@
 //! index time to populate the persistent call-graph sections.
 //! `callers_in_source` / `callees_in_source` are the live-scan helpers
 //! invoked by the public `find_callers` / `find_callees` query API in
-//! `super`. The compiled-`Query` map (`COMPILED_QUERIES`) is initialised
-//! lazily at first call and reused across every subsequent file —
-//! `tree_sitter::Query` is `Send + Sync` so a `LazyLock<HashMap>` is the
-//! right shape for cross-thread reuse via `rayon`.
+//! `super`. The compiled-`Query` cache (`CG_QUERY_CELLS`) compiles each
+//! language's query lazily on the first file of that language and reuses it
+//! across every subsequent file — `tree_sitter::Query` is `Send + Sync` so a
+//! map of `OnceLock` cells is the right shape for cross-thread reuse via
+//! `rayon`.
 //!
 //! Isolated from the query SCM (`super::queries`) so adding a language
 //! is a queries-only change once the walker covers the necessary node
@@ -16,7 +17,7 @@
 //! callers cross a single module boundary.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Query, QueryCursor};
@@ -189,39 +190,63 @@ pub fn extract_call_edges(content: &str, lang: Language) -> Vec<(String, usize, 
     edges
 }
 
-/// Per-language compiled callgraph `Query`. Phase 14.2 grew the Python
-/// query from 3 patterns to 7 and Java from 1 to 5, which made the
-/// per-file `Query::new` cost (called inside `par_iter` from
-/// `find_callers` / `find_callees`) a real hot-path concern on
-/// Python-heavy repos. The map is built lazily on first access; each
-/// entry is compiled once and reused across every subsequent file.
-/// `Query` is `Send + Sync` (read-only after compile).
-static COMPILED_QUERIES: LazyLock<HashMap<Language, Query>> = LazyLock::new(|| {
+/// Per-language compiled callgraph `Query`, compiled **lazily per language on
+/// the first file of that language**. Phase 14.2 grew the Python query from 3
+/// patterns to 7 and Java from 1 to 5, which made the per-file `Query::new`
+/// cost (called inside `par_iter` from `find_callers` / `find_callees`) a real
+/// hot-path concern on Python-heavy repos — hence caching.
+///
+/// The cache is a map of **per-language `OnceLock` cells**, not an eagerly
+/// populated map. The previous `LazyLock<HashMap<Language, Query>>` compiled
+/// the callgraph query for ALL ~19 languages on first access, so a `vex update`
+/// touching a single Rust file paid ~69 ms compiling 18 irrelevant grammars'
+/// queries on every process (measured — see `docs/STORAGE-RESEARCH.md`
+/// §"parse_files init attribution"). Now each language's query compiles only
+/// when a file of that language is first parsed; a single-language repo pays
+/// for one grammar.
+///
+/// The outer map still enumerates `Language::ALL` and probes `callgraph_query`
+/// (cheap — it returns a `&'static str`, no compilation), so its keyset stays
+/// the canonical "this grammar contributes to the persistent call graph"
+/// registry: adding a language remains a queries-only change (S10, v1.12.0 —
+/// closes the S3 review-finding). Each `OnceLock<Option<Query>>` holds
+/// `Some(query)` on success or `None` on compile failure (logged once, never
+/// retried). `Query` / `OnceLock` are `Send + Sync`, so `get_or_init` is safe
+/// under the `rayon` parse fan-out.
+static CG_QUERY_CELLS: LazyLock<HashMap<Language, OnceLock<Option<Query>>>> = LazyLock::new(|| {
     let mut m = HashMap::new();
-    // Iterate every supported language and probe `callgraph_query`; the
-    // returned `Some(_)` set is the canonical "this grammar contributes
-    // to the persistent call graph" registry. Adding a new language is
-    // now a queries-only change — no risk of forgetting to register it
-    // here. (S10, v1.12.0 — closes the S3 review-finding.)
     for &lang in Language::ALL {
-        if let Some(src) = callgraph_query(lang) {
-            match Query::new(&lang.ts_language(), src) {
-                Ok(q) => {
-                    m.insert(lang, q);
-                }
-                Err(e) => {
-                    tracing::error!(
-                        lang = lang.as_str(),
-                        error = %e,
-                        "failed to compile callgraph query at startup; \
-                         per-file extraction will return empty for this language"
-                    );
-                }
-            }
+        if callgraph_query(lang).is_some() {
+            m.insert(lang, OnceLock::new());
         }
     }
     m
 });
+
+/// Lazily-compiled callgraph query for `lang`, or `None` when the language has
+/// no callgraph query registered or its compilation failed. Compiles on the
+/// first call per language, then returns the cached result for every
+/// subsequent file (shared read-only across `rayon` workers).
+fn compiled_query(lang: Language) -> Option<&'static Query> {
+    CG_QUERY_CELLS
+        .get(&lang)?
+        .get_or_init(|| {
+            let src = callgraph_query(lang)?;
+            match Query::new(&lang.ts_language(), src) {
+                Ok(q) => Some(q),
+                Err(e) => {
+                    tracing::error!(
+                        lang = lang.as_str(),
+                        error = %e,
+                        "failed to compile callgraph query; \
+                         per-file extraction will return empty for this language"
+                    );
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
 
 /// Phase 14.6 capture name for class-level decorator / annotation
 /// targets that should attribute to module scope. Bypasses the
@@ -235,7 +260,7 @@ const MODULE_CALL_CAPTURE: &str = "module_call.name";
 
 /// Extract function definitions and call expressions from source.
 fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<Call>)> {
-    let query = COMPILED_QUERIES.get(&lang)?;
+    let query = compiled_query(lang)?;
 
     // v1.12.0 P3 — pooled per-thread parser; v1.23.0 — guarded by the
     // shared `parse_text` budget.
@@ -490,4 +515,62 @@ fn rust_derive_filter_skip(lang: Language, host: tree_sitter::Node, content: &st
         return false;
     }
     &content[first.byte_range()] == "derive"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Registry safety: every language whose `callgraph_query` returns a
+    /// pattern MUST actually compile against its grammar. The old eager
+    /// `COMPILED_QUERIES` surfaced a broken `.scm` (or a grammar ABI drift)
+    /// as a `tracing::error!` at first-access; the lazy per-language cache
+    /// would surface it only when a file of that language is first parsed.
+    /// This test pulls that failure back to compile-of-the-test-suite time,
+    /// preserving the "adding a language is a queries-only change" contract
+    /// without the per-process all-langs compilation cost.
+    #[test]
+    fn every_registered_callgraph_query_compiles() {
+        for &lang in Language::ALL {
+            if callgraph_query(lang).is_some() {
+                assert!(
+                    compiled_query(lang).is_some(),
+                    "callgraph query for {lang:?} is registered but failed to compile"
+                );
+            }
+        }
+    }
+
+    /// A language with no registered callgraph query resolves to `None`
+    /// (not a panic / not an empty-but-present entry) — the same
+    /// `extract_callgraph` short-circuit the old `HashMap::get` gave.
+    #[test]
+    fn unregistered_language_has_no_compiled_query() {
+        for &lang in Language::ALL {
+            if callgraph_query(lang).is_none() {
+                assert!(
+                    compiled_query(lang).is_none(),
+                    "{lang:?} has no callgraph query yet compiled_query returned Some"
+                );
+            }
+        }
+    }
+
+    /// The whole point of the `OnceLock` cell is that a language's query is
+    /// compiled ONCE and reused — repeated calls must hand back the *same*
+    /// `&'static Query`, not recompile per call. Pin pointer identity so a
+    /// future "simplification" that drops the cache (recompiling on every
+    /// `compiled_query`) is caught here instead of silently regressing the
+    /// `vex update` latency win this cache exists for.
+    #[test]
+    fn compiled_query_is_cached_same_pointer() {
+        // Rust is always registered (has a callgraph query); use it as the probe.
+        let a = compiled_query(Language::Rust).expect("rust callgraph query compiles");
+        let b = compiled_query(Language::Rust).expect("rust callgraph query compiles");
+        assert!(
+            std::ptr::eq(a, b),
+            "compiled_query returned distinct pointers → query is being recompiled, \
+             not cached"
+        );
+    }
 }

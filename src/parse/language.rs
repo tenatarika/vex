@@ -38,7 +38,7 @@ impl Language {
     /// use vex::parse::language::Language;
     ///
     /// // Iterate every supported language — used by callgraph's
-    /// // `COMPILED_QUERIES` and pattern-skeleton fingerprinting so a
+    /// // `CG_QUERY_CELLS` and pattern-skeleton fingerprinting so a
     /// // new language additions don't need per-consumer registration.
     /// for &lang in Language::ALL {
     ///     assert!(lang.lang_id() >= 1 && lang.lang_id() <= 19);
@@ -223,7 +223,7 @@ mod tests {
 
     /// Pin the `Language::ALL` cardinality so a future variant addition
     /// that forgets to update the slice surfaces here instead of silently
-    /// shrinking language-iterating consumers (callgraph `COMPILED_QUERIES`,
+    /// shrinking language-iterating consumers (callgraph `CG_QUERY_CELLS`,
     /// pattern-skeleton grammar fingerprints, …).
     #[test]
     fn all_slice_covers_every_variant() {
