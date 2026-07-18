@@ -13,7 +13,61 @@
 //! Isolated from the matcher so adding a language is a queries-only
 //! change once the matcher's grammar coverage already handles it.
 
+use std::collections::HashMap;
+use std::sync::{LazyLock, OnceLock};
+
+use tree_sitter::Query;
+
 use crate::parse::language::Language;
+
+/// Per-language compiled inheritance `Query`, compiled **lazily on the first
+/// file of that language** and cached for the process lifetime.
+///
+/// Mirrors `callgraph::extractor::CG_QUERY_CELLS`. Both consumers previously
+/// called `Query::new` on **every** invocation — `capture_hierarchy_edges`
+/// runs per indexed file (see its "runs on every indexed file" note) and
+/// `find_in_source` per live-scanned file — so a full index recompiled the
+/// same inheritance query once per file. The outer map still enumerates
+/// `Language::ALL` and probes `inheritance_query` (cheap — a `&'static str`,
+/// no compilation), so its keyset stays the registry and "adding a language
+/// is a queries-only change" holds. Each `OnceLock<Option<Query>>` holds
+/// `Some(query)` on success or `None` on compile failure (logged once, never
+/// retried). `Query` / `OnceLock` are `Send + Sync`, so `get_or_init` is safe
+/// under the `rayon` fan-out both consumers run.
+static HIER_QUERY_CELLS: LazyLock<HashMap<Language, OnceLock<Option<Query>>>> =
+    LazyLock::new(|| {
+        let mut m = HashMap::new();
+        for &lang in Language::ALL {
+            if inheritance_query(lang).is_some() {
+                m.insert(lang, OnceLock::new());
+            }
+        }
+        m
+    });
+
+/// Lazily-compiled inheritance query for `lang`, or `None` when the language
+/// has no inheritance query registered or its compilation failed. Compiled
+/// once per language, then shared read-only across every subsequent file.
+pub(super) fn compiled_inheritance_query(lang: Language) -> Option<&'static Query> {
+    HIER_QUERY_CELLS
+        .get(&lang)?
+        .get_or_init(|| {
+            let src = inheritance_query(lang)?;
+            match Query::new(&lang.ts_language(), src) {
+                Ok(q) => Some(q),
+                Err(e) => {
+                    tracing::error!(
+                        lang = lang.as_str(),
+                        error = %e,
+                        "failed to compile inheritance query; \
+                         hierarchy extraction will return empty for this language"
+                    );
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
 
 /// Get the inheritance tree-sitter query for a language, if supported.
 pub(super) fn inheritance_query(lang: Language) -> Option<&'static str> {
@@ -383,5 +437,59 @@ pub(super) fn relation_label(lang: Language, pattern_index: usize) -> &'static s
         | Language::Html
         | Language::Yaml
         | Language::Toml => "extends",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Registry safety: every language whose `inheritance_query` returns a
+    /// pattern MUST compile against its grammar. The old per-call `Query::new`
+    /// surfaced a broken `.scm` only when a file of that language was scanned;
+    /// the lazy cache would do the same. This test pulls that failure back to
+    /// test-suite time, keeping "adding a language is a queries-only change".
+    #[test]
+    fn every_registered_inheritance_query_compiles() {
+        for &lang in Language::ALL {
+            if inheritance_query(lang).is_some() {
+                assert!(
+                    compiled_inheritance_query(lang).is_some(),
+                    "inheritance query for {lang:?} is registered but failed to compile"
+                );
+            }
+        }
+    }
+
+    /// A language with no inheritance query resolves to `None` — the same
+    /// short-circuit `capture_hierarchy_edges` / `find_in_source` gave when
+    /// `inheritance_query` returned `None`.
+    #[test]
+    fn unregistered_language_has_no_compiled_inheritance_query() {
+        for &lang in Language::ALL {
+            if inheritance_query(lang).is_none() {
+                assert!(
+                    compiled_inheritance_query(lang).is_none(),
+                    "{lang:?} has no inheritance query yet compiled_inheritance_query returned Some"
+                );
+            }
+        }
+    }
+
+    /// The whole point of the cache is compile-once-reuse: repeated calls must
+    /// return the SAME `&'static Query`, not recompile per call (the per-file
+    /// waste this change removes). Pins pointer identity so a future refactor
+    /// that drops the cache is caught here.
+    #[test]
+    fn compiled_inheritance_query_is_cached_same_pointer() {
+        // Rust always has an inheritance query.
+        let a =
+            compiled_inheritance_query(Language::Rust).expect("rust inheritance query compiles");
+        let b =
+            compiled_inheritance_query(Language::Rust).expect("rust inheritance query compiles");
+        assert!(
+            std::ptr::eq(a, b),
+            "compiled_inheritance_query returned distinct pointers → recompiling, not cached"
+        );
     }
 }

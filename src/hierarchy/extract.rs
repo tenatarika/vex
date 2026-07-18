@@ -7,14 +7,14 @@
 //! caller-supplied `base_name` filter.
 
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Query, QueryCursor};
+use tree_sitter::QueryCursor;
 
 use crate::index::symbols::HierarchyCapture;
 use crate::parse::language::Language;
 use crate::parse::NodeTextExt;
 use crate::store::format::EdgeKind;
 
-use super::queries::{inheritance_query, relation_label};
+use super::queries::{compiled_inheritance_query, relation_label};
 
 /// Map a `relation_label` string onto an [`EdgeKind`] discriminant.
 ///
@@ -51,15 +51,13 @@ pub(crate) fn capture_hierarchy_edges(
     content: &str,
     lang: Language,
 ) -> Vec<HierarchyCapture> {
-    let query_src = match inheritance_query(lang) {
+    // Cached, lazily-compiled per language (this path runs on every indexed
+    // file — see the fn doc). `None` covers both "no inheritance query for
+    // this grammar" and "query failed to compile", matching the prior
+    // two-step early-returns exactly.
+    let query = match compiled_inheritance_query(lang) {
         Some(q) => q,
         None => return Vec::new(),
-    };
-
-    let ts_lang = lang.ts_language();
-    let query = match Query::new(&ts_lang, query_src) {
-        Ok(q) => q,
-        Err(_) => return Vec::new(),
     };
 
     let base_idx = match query.capture_index_for_name("base") {
@@ -73,7 +71,7 @@ pub(crate) fn capture_hierarchy_edges(
 
     let source = content.as_bytes();
     let mut cursor = QueryCursor::new();
-    let mut query_matches = cursor.matches(&query, tree.root_node(), source);
+    let mut query_matches = cursor.matches(query, tree.root_node(), source);
     let mut captures = Vec::new();
 
     while let Some(m) = query_matches.next() {

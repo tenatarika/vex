@@ -3,13 +3,13 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::{Parser, QueryCursor};
 
 use crate::parse::language::Language;
 
 mod extract;
 mod queries;
-use queries::{inheritance_query, relation_label};
+use queries::{compiled_inheritance_query, inheritance_query, relation_label};
 
 pub(crate) use extract::capture_hierarchy_edges;
 
@@ -63,18 +63,12 @@ pub fn find_implementations(
 
 /// Find all implementations of `base_name` in a single source string.
 fn find_in_source(content: &str, lang: Language, path: &str, base_name: &str) -> Vec<ImplMatch> {
-    let query_src = match inheritance_query(lang) {
+    let query = match compiled_inheritance_query(lang) {
         Some(q) => q,
         None => return Vec::new(),
     };
 
     let ts_lang = lang.ts_language();
-
-    let query = match Query::new(&ts_lang, query_src) {
-        Ok(q) => q,
-        Err(_) => return Vec::new(),
-    };
-
     let mut parser = Parser::new();
     if parser.set_language(&ts_lang).is_err() {
         return Vec::new();
@@ -95,7 +89,7 @@ fn find_in_source(content: &str, lang: Language, path: &str, base_name: &str) ->
     };
 
     let mut cursor = QueryCursor::new();
-    let mut query_matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
+    let mut query_matches = cursor.matches(query, tree.root_node(), content.as_bytes());
     let mut results = Vec::new();
 
     while let Some(m) = query_matches.next() {
