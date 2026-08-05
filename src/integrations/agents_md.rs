@@ -35,7 +35,7 @@ This repository is indexed by [vex](https://github.com/tenatarika/vex). Prefer `
 | Fuzzy / multi-word keyword search   | `vex search "<phrase>"`            |
 | Regex content search                | `vex grep <pattern>`               |
 | AST pattern match                   | `vex pattern '<pat>' --lang <X>`   |
-| Symbol-level diff vs base           | `vex diff --base origin/main`      |
+| Symbol-level diff vs base           | `vex diff --base <trunk-ref>`      |
 | Near-duplicate / similar symbols    | `vex similar <Symbol>`             |
 
 **`vex check` vs `vex search`** is the most common mistake. `vex check <Symbol>` is the exact-name probe — fastest, returns a clean hit/miss with `path:line` and bypasses the ranker. `vex search <query>` is a ranked blend (FST + BM25 + semantic) that returns NEIGHBORS (callers / imports) when no symbol literally matches the query — great for "find me something about retries", wrong for "does `Foo` exist". v1.15.0 prints a stderr hint when an identifier-shaped `vex search` returns 0 FST hits.

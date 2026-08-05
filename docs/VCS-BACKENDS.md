@@ -388,6 +388,54 @@ shape drifts):
 
 ---
 
+## 7b. `vex diff` / `vex bundle --mode pr-impact` are git-only (next release)
+
+The `Vcs` trait abstracts **diff-scoping** (`changed_paths`) only. The
+symbol-level base diff behind `vex diff --base <rev>` and `vex bundle --mode
+pr-impact` needs a second, harder capability — **content-at-revision** — to
+reconstruct the *old* side of each symbol (`git show <base>:<path>`). No
+equivalent is wired up for Arc (`arc show` is unverified) or svn, so these two
+commands stay git-only for now.
+
+Following the v1.25.3 Arc field report, they no longer silently shell out to
+git when a non-git backend is selected:
+
+- **`resolved_kind == Arc | Svn` → hard error.** `crate::diff::diff_against_base`
+  bails with an actionable message naming the selected backend and pointing here,
+  instead of running `git diff` under an Arc/svn user's feet. `git` and `none`
+  fall through to the git path (a genuine non-repo errors there naturally).
+- **Nested-`.git`-in-Arcadia hint.** Detection lets a co-located `.git` win
+  (§4), so an Arc checkout with a nested `.git` resolves to `git`; when that
+  `git diff` then fails, `diff_against_base` appends a `.arc`/`.svn`-marker hint
+  (via `vcs::other_marker_hint`). The same hint is appended by
+  `ChangedPaths::resolve_with` when the git backend's `ensure_repo` fails on the
+  `--since` / `--changed-only` path — pointing the user at `--vcs arc`.
+
+Promoting these to full backend support means adding a `content_at(rev, path)`
+op to the `Vcs` trait and field-verifying `arc show` — deferred (see §6 growth
+phases).
+
+## 7c. `.vex.local.toml` auto-discovery (next release)
+
+The config walk-up (`util::config::load_config`) now stops at the first ancestor
+holding **either** `.vex.toml` **or** `.vex.local.toml`, and merges the local
+overlay on top when both exist (`merge_local`: `exclude` lists concatenate,
+scalar `Option` fields local-win). A lone `.vex.local.toml` is honoured too.
+This lets a machine-local, uncommitted overlay (e.g. a personal implicit-ignore
+list) be picked up without an explicit `$VEX_CONFIG=` — the workaround the field
+report described. An explicit `--config` / `$VEX_CONFIG` still loads exactly one
+file with **no** overlay (preserving the "config out of the repo" contract).
+
+**Co-location requirement.** The two files must live in the *same* directory to
+merge. The walk stops at the first ancestor holding either, so a lone
+`.vex.local.toml` in a deeper directory **shadows** (does not merge with) a
+`.vex.toml` higher up — a deliberate "one dir, one decision" rule that keeps
+discovery predictable rather than composing base + overlay across the whole
+walk. Users should keep `.vex.local.toml` next to their `.vex.toml` and add it
+to `.gitignore`.
+
+---
+
 ## 8. References
 
 - `src/util/git_diff.rs` — `DiffScope`, `ChangedPaths::resolve` (§1 diff group)

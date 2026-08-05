@@ -29,14 +29,16 @@ pub struct ScopeArgs {
 #[derive(Args, Clone, Debug, Default)]
 pub struct DiffFilterArgs {
     /// Restrict results to symbols in files changed between `<rev>..HEAD`.
-    /// Accepts any revision spec `git diff` understands (`main`, `HEAD~3`,
-    /// `origin/main`, a SHA, …).
+    /// Accepts any revision spec the active VCS understands — git: `main`,
+    /// `HEAD~3`, `origin/main`, a SHA; arc: `trunk`, `HEAD~3`, a revision
+    /// (must not begin with `-`). Backend selected via `--vcs`/marker.
     #[arg(long, value_name = "REV", conflicts_with_all = ["since_branched", "changed_only"])]
     pub since: Option<String>,
 
     /// Restrict results to symbols in files changed since this branch
-    /// diverged from main/master. Tries `origin/main`, `origin/master`,
-    /// `main`, then `master` in that order.
+    /// diverged from trunk. git: tries `origin/main`, `origin/master`,
+    /// `main`, then `master` in that order; arc: `arc diff -B` (merge-base
+    /// against `trunk`); svn: unsupported (no merge-base — errors out).
     #[arg(long, conflicts_with_all = ["since", "changed_only"])]
     pub since_branched: bool,
 
