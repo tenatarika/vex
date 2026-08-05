@@ -6,6 +6,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.25.4] - 2026-08-05
+
+### Added
+
+- Auto-discovery of a co-located `.vex.local.toml` overlay next to `.vex.toml`:
+  vex now merges it on top of the base config (its `exclude` patterns are added
+  to the base's, and any scalar it sets wins) without needing `$VEX_CONFIG=`.
+  Use it for a personal, machine-local ignore list you keep out of version
+  control (add it to `.gitignore`). An explicit `--config` / `$VEX_CONFIG` still
+  loads exactly one file with no overlay. The two files must be co-located to
+  merge — a lone `.vex.local.toml` in a deeper directory shadows a `.vex.toml`
+  higher up rather than merging with it.
+
+### Fixed
+
+- `vex diff` and `vex bundle --mode pr-impact` no longer silently invoke `git`
+  when a non-git backend is selected via `--vcs arc`/`--vcs svn`. They now fail
+  loudly instead: symbol-level base diff reconstructs old symbols via
+  `git show`, which has no Arc/svn equivalent wired up yet, so accepting the
+  flag and running git anyway produced misleading results. The `--since` /
+  `--changed-only` filters continue to honour Arc/svn.
+- When git is auto-detected in an Arc/svn checkout that has a nested `.git`
+  (git wins a co-located marker tie) and the git pre-flight then fails, the
+  error now suggests `--vcs arc` / `--vcs svn` instead of leaving a bare git
+  failure. Applies to both `vex diff` and the `--since`/`--changed-only` path.
+
+### Changed
+
+- `--since` / `--since-branched` help now describes the active VCS's revision
+  language and merge-base behaviour (git: `origin/main`…; arc: `arc diff -B`
+  against `trunk`; svn: `--since-branched` unsupported).
+- The generated `AGENTS.md`/`CLAUDE.md` code-search template no longer hardcodes
+  `origin/main` in its `vex diff` example, and the generated `.vex.toml` template
+  now documents the `vcs` backend option and the `.vex.local.toml` overlay.
+
 ## [1.25.3] - 2026-07-17
 
 ### Changed
