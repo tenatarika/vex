@@ -17,7 +17,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::vcs::{Vcs, VcsError};
+use crate::vcs::{Vcs, VcsError, VcsKind};
 
 // `DiffScope` moved to `crate::vcs` (it is VCS-agnostic and part of the `Vcs`
 // trait surface). Re-exported here so existing `crate::util::git_diff::DiffScope`
@@ -61,8 +61,23 @@ impl ChangedPaths {
     /// directly without touching the process-global override.
     pub fn resolve_with(vcs: &dyn Vcs, repo_root: &Path, scope: DiffScope) -> Result<Self> {
         // The `Vcs` error is collapsed to `anyhow` verbatim so the existing
-        // error-substring tests still hold.
-        vcs.ensure_repo(repo_root).map_err(VcsError::into_anyhow)?;
+        // error-substring tests still hold. When the git backend's pre-flight
+        // fails but an `.arc`/`.svn` marker exists in an ancestor, append an
+        // actionable hint — the Arcadia "nested `.git` detected as git, git
+        // fails, no clue to try `--vcs arc`" case (field report, v1.25.3).
+        vcs.ensure_repo(repo_root).map_err(|e| {
+            let err = e.into_anyhow();
+            if matches!(vcs.kind(), VcsKind::Git) {
+                if let Some(kind) = crate::vcs::other_marker_hint(repo_root) {
+                    return err.context(format!(
+                        "a .{marker} marker was found — if this is an Arc/svn checkout \
+                         with a nested .git, retry with `--vcs {marker}`",
+                        marker = kind.as_str()
+                    ));
+                }
+            }
+            err
+        })?;
         let raw = vcs
             .changed_paths(repo_root, scope)
             .map_err(VcsError::into_anyhow)?;
@@ -401,6 +416,26 @@ mod tests {
         assert!(
             msg.contains("backend is unavailable here"),
             "NoVcs Svn arm must give the defensive message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn git_ensure_repo_failure_hints_sibling_arc_marker() {
+        // The exact field-reported scenario (issue #1): an Arc checkout with a
+        // nested `.git` is detected as git; when git's pre-flight then fails,
+        // the error must suggest `--vcs arc` instead of a bare git failure.
+        // Here: a non-git tempdir carrying a sibling `.arc` marker, forced onto
+        // the git backend. `GitVcs::ensure_repo` shells `git rev-parse` and
+        // fails (no repo), then the hint fires because `.arc` is present.
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".arc")).unwrap();
+        let err =
+            ChangedPaths::resolve_with(&crate::vcs::GitVcs, tmp.path(), DiffScope::ChangedOnly)
+                .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("--vcs arc"),
+            "git pre-flight failure beside a .arc marker must hint `--vcs arc`, got: {msg}"
         );
     }
 }

@@ -84,8 +84,41 @@ pub fn diff_against_base(
     // through here later — for v1 the cost is small enough and the
     // semantics are clear in the help text.
     let root = root.canonicalize().context("canonicalize root")?;
-    let files = git_changed_files(&root, base)
-        .with_context(|| format!("list files changed between `{base}` and the working tree"))?;
+    // `vex diff` / `vex bundle --mode pr-impact` reconstruct the OLD side of
+    // each symbol via `git show <base>:<path>` — content-at-revision, which the
+    // `Vcs` trait does not expose yet and Arc/svn have no wired-up equivalent
+    // for. Reject a non-git backend LOUDLY instead of silently shelling out to
+    // git anyway (Arc field report, v1.25.3). Only Arc/svn bail here; git and
+    // `none` fall through to the git path (a genuine non-repo errors there,
+    // with the marker hint below). See docs/VCS-BACKENDS.md.
+    let kind = crate::vcs::resolved_kind(&root);
+    if matches!(kind, crate::vcs::VcsKind::Arc | crate::vcs::VcsKind::Svn) {
+        anyhow::bail!(
+            "`vex diff` / `vex bundle --mode pr-impact` support only the git \
+             backend today (selected backend: {kind}). Symbol-level diff against a \
+             base ref reconstructs old symbols via `git show`, which has no \
+             Arc/svn equivalent wired up yet — the `--since` / `--changed-only` \
+             filters DO honour {kind}. Track docs/VCS-BACKENDS.md.",
+            kind = kind.as_str()
+        );
+    }
+    let files = git_changed_files(&root, base).map_err(|e| {
+        // Nested-.git-in-Arcadia case: detection picked git (co-located `.git`
+        // wins), but `git diff` failed — if an `.arc`/`.svn` marker is present,
+        // say so instead of leaving a bare git error.
+        match crate::vcs::other_marker_hint(&root) {
+            Some(kind) => e.context(format!(
+                "list files changed between `{base}` and the working tree \
+                 (a .{marker} marker was found — `vex diff` supports only git, so \
+                 this Arc/svn checkout's symbol-level base diff is unavailable; \
+                 see docs/VCS-BACKENDS.md)",
+                marker = kind.as_str()
+            )),
+            None => e.context(format!(
+                "list files changed between `{base}` and the working tree"
+            )),
+        }
+    })?;
     let mut out: Vec<SymbolChange> = Vec::new();
     for rel in &files {
         if !is_path_eligible(rel, excludes) {

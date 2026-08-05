@@ -19,7 +19,7 @@ mod proc;
 mod svn;
 
 pub use arc::ArcVcs;
-pub use detect::{install_override, resolve};
+pub use detect::{install_override, other_marker_hint, resolve, resolved_kind};
 pub use git::GitVcs;
 pub use none::NoVcs;
 pub use svn::SvnVcs;

@@ -122,6 +122,26 @@ fn diff_missing_base_fails_with_helpful_error() {
 }
 
 #[test]
+fn diff_rejects_non_git_backend_instead_of_silently_using_git() {
+    // Arc field report (v1.25.3): `vex diff --vcs arc` must NOT silently shell
+    // out to git. `vex diff` reconstructs old symbols via `git show`, a
+    // git-only capability — so a forced non-git backend has to bail loudly.
+    // (No `arc` binary is needed: the guard trips on the resolved kind first.)
+    let tmp = TempDir::new().unwrap();
+    set_up_repo(tmp.path());
+
+    let assert = vex_in(tmp.path())
+        .args(["diff", "--base", "main", "--vcs", "arc"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains("only the git backend") && stderr.contains("arc"),
+        "expected a git-only rejection naming the arc backend, got: {stderr}"
+    );
+}
+
+#[test]
 fn renamed_file_appears_as_remove_plus_add() {
     // Documented limitation: 11.2 doesn't detect renames yet. Pin the
     // actual observed behaviour so it doesn't silently change.

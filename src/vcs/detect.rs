@@ -3,14 +3,14 @@
 //! Precedence (first wins): `--vcs` flag (process-global override) → `VEX_VCS`
 //! env → `.vex.toml` `vcs` → marker auto-detection → `none`.
 //!
-//! **Phase 2 caveats (docs/VCS-BACKENDS.md §6):**
-//! - Arc/svn have no backend yet, so a detected/forced Arc or Svn resolves to
-//!   [`NoVcs`] (diff-scoping declines cleanly). git is the only functional
-//!   backend.
-//! - Detection is **markers only** — no `arc root` FUSE probe yet. Probing and
-//!   preferring Arc over a nested `.git` would *regress* git-in-arc monorepo
-//!   users (they'd lose the diff-scoping the nested `.git` gives them today),
-//!   so the Arc-preference lands with `ArcVcs` in Phase 3.
+//! **Caveats (docs/VCS-BACKENDS.md §4/§6):**
+//! - git/arc/svn are all functional backends now (field-verified); only a
+//!   detected/forced `none` resolves to the inert [`NoVcs`] floor.
+//! - Detection is **markers only** — no `arc root` FUSE probe. A co-located
+//!   `.git` wins over a sibling `.arc`/`.svn` so git-in-arc monorepo users keep
+//!   the diff-scoping their nested `.git` gives them; when that mis-detection
+//!   bites (git preflight fails in an Arc checkout), [`other_marker_hint`]
+//!   surfaces a `--vcs arc` suggestion rather than silently switching.
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -40,6 +40,37 @@ pub fn install_override(forced: Option<VcsKind>) {
 /// Resolve the effective backend for `root`.
 pub fn resolve(root: &Path) -> Box<dyn Vcs> {
     backend_for(effective_kind(root))
+}
+
+/// The effective [`VcsKind`] for `root` (same override→env→config→marker chain
+/// as [`resolve`], without constructing a backend). Callers that shell out to a
+/// backend directly — e.g. the git-only `crate::diff` symbol-level base diff —
+/// use this to decide whether the selected backend is one they can serve.
+pub fn resolved_kind(root: &Path) -> VcsKind {
+    effective_kind(root)
+}
+
+/// When git was selected but its pre-flight / diff fails, a sibling `.arc` or
+/// `.svn` marker in an ancestor of `root` is a strong signal the user is in an
+/// Arc/svn checkout with a *nested* `.git` (git wins co-located ties in
+/// [`detect_kind`], so detection lands on Git even there). Returns the first
+/// such non-git marker kind walking up from `root`, for an actionable
+/// "try `--vcs <kind>`" hint. `None` when no other marker exists.
+///
+/// The walk is unbounded up to `/`, so in a big Arc monorepo the hint can fire
+/// on *any* git failure (a typo'd base ref, a corrupt repo) whose cwd happens
+/// to sit under a `.arc`/`.svn` root — callers phrase it as a suggestion
+/// ("a .arc marker was found — if this is an Arc checkout…"), never a diagnosis.
+pub fn other_marker_hint(root: &Path) -> Option<VcsKind> {
+    for ancestor in root.ancestors() {
+        if ancestor.join(".arc").exists() {
+            return Some(VcsKind::Arc);
+        }
+        if ancestor.join(".svn").exists() {
+            return Some(VcsKind::Svn);
+        }
+    }
+    None
 }
 
 fn backend_for(kind: VcsKind) -> Box<dyn Vcs> {
@@ -142,6 +173,23 @@ mod tests {
         assert_eq!(detect_kind(tmp.path()), VcsKind::None);
         std::fs::create_dir(tmp.path().join(".git")).unwrap();
         assert_eq!(detect_kind(tmp.path()), VcsKind::Git);
+    }
+
+    #[test]
+    fn other_marker_hint_finds_arc_and_svn_else_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // No non-git marker anywhere → no hint.
+        assert!(other_marker_hint(tmp.path()).is_none());
+        // A co-located `.git` does NOT suppress the hint — the whole point is
+        // the nested-.git-in-Arcadia case (git detected, git failed).
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir(tmp.path().join(".arc")).unwrap();
+        assert_eq!(other_marker_hint(tmp.path()), Some(VcsKind::Arc));
+
+        // `.svn` is surfaced too (the branch the arc case doesn't exercise).
+        let svn = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(svn.path().join(".svn")).unwrap();
+        assert_eq!(other_marker_hint(svn.path()), Some(VcsKind::Svn));
     }
 
     #[test]

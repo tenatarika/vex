@@ -540,6 +540,33 @@ fn bundle_pr_impact_requires_base_flag() {
 }
 
 #[test]
+fn bundle_pr_impact_rejects_non_git_backend() {
+    // Arc field report (v1.25.3): `bundle --mode pr-impact --vcs arc` shares the
+    // git-only `diff_against_base` path with `vex diff`, so it must bail loudly
+    // instead of silently shelling out to git. (No `arc` binary needed — the
+    // guard trips on the resolved kind before any diff runs.)
+    let tmp = TempDir::new().unwrap();
+    seed_pr_impact_repo(tmp.path());
+    let assert = vex_in(tmp.path())
+        .args([
+            "bundle",
+            "--mode",
+            "pr-impact",
+            "--base",
+            "HEAD",
+            "--vcs",
+            "arc",
+        ])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains("only the git backend") && stderr.contains("arc"),
+        "expected a git-only rejection naming the arc backend, got: {stderr}"
+    );
+}
+
+#[test]
 fn bundle_pr_impact_errors_when_no_call_graph() {
     let tmp = TempDir::new().unwrap();
     init_git_repo(tmp.path());
