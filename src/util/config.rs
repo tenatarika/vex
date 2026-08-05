@@ -85,8 +85,9 @@ pub struct VexConfig {
     /// VCS backend for diff-scoping (`--since` etc.). `"git"` | `"arc"` |
     /// `"svn"` | `"none"` | `"auto"` (default: auto-detect by marker).
     /// Overridden by `--vcs` and `$VEX_VCS`. See `docs/VCS-BACKENDS.md`.
-    /// (Phase 2: only `git` is functional; `arc`/`svn` decline until their
-    /// backends land.)
+    /// git/arc/svn are all field-verified for the diff-scope filters; svn
+    /// declines `--since-branched` (no merge-base), and `vex diff` /
+    /// `vex bundle --mode pr-impact` remain git-only (content-at-revision).
     pub vcs: Option<String>,
 
     /// Directory containing the `.vex.toml` that produced this config.
@@ -140,18 +141,26 @@ pub fn override_active() -> bool {
     matches!(CONFIG_OVERRIDE.get(), Some(Some(_)))
 }
 
-/// Search for `.vex.toml` starting from `start_dir`, walking up to filesystem root.
-/// Returns the parsed config, or a default if no file is found.
+/// Search for `.vex.toml` (and an optional `.vex.local.toml` overlay) starting
+/// from `start_dir`, walking up to the filesystem root. Returns the parsed
+/// config, or a default if no file is found.
+///
+/// The walk stops at the first ancestor holding **either** file. When both are
+/// present the local file is merged on top (see [`merge_local`]: `exclude`
+/// lists concatenate, scalars local-win) — an uncommitted, machine-local
+/// overlay that no longer needs `$VEX_CONFIG=` to be picked up. A lone
+/// `.vex.local.toml` with no `.vex.toml` is also honoured.
 ///
 /// An explicit `--config` / `$VEX_CONFIG` override (installed via
 /// [`install_config_override`]) short-circuits the walk-up entirely: that file
-/// is loaded directly, and a missing/unreadable/invalid explicit path is a hard
-/// error (the user pointed at it) rather than a silent fall-back. `source_dir`
-/// is set to the override file's parent, so relative paths in it (e.g.
-/// `cache_dir`) resolve against the config's own directory — same rule as a
-/// walk-up hit, just anchored at the external location. A bare relative
-/// `--config name.toml` has `parent() == ""`, so its relative paths resolve
-/// against the process cwd (`Path::new("").join(x) == x`).
+/// is loaded directly with **no** `.vex.local.toml` overlay (it preserves the
+/// "keep config out of the repo" contract), and a missing/unreadable/invalid
+/// explicit path is a hard error (the user pointed at it) rather than a silent
+/// fall-back. `source_dir` is set to the override file's parent, so relative
+/// paths in it (e.g. `cache_dir`) resolve against the config's own directory —
+/// same rule as a walk-up hit, just anchored at the external location. A bare
+/// relative `--config name.toml` has `parent() == ""`, so its relative paths
+/// resolve against the process cwd (`Path::new("").join(x) == x`).
 pub fn load_config(start_dir: &Path) -> Result<VexConfig> {
     if let Some(Some(path)) = CONFIG_OVERRIDE.get() {
         // One guard for both "missing" and "is a directory": `is_file()` is
@@ -173,14 +182,34 @@ pub fn load_config(start_dir: &Path) -> Result<VexConfig> {
     }
     let mut dir = start_dir.to_path_buf();
     loop {
-        let candidate = dir.join(".vex.toml");
-        if candidate.is_file() {
-            let content = std::fs::read_to_string(&candidate)
-                .with_context(|| format!("read {}", candidate.display()))?;
-            let mut config: VexConfig = toml::from_str(&content)
-                .with_context(|| format!("parse {}", candidate.display()))?;
-            config.source_dir = Some(dir.clone());
-            tracing::debug!(path = %candidate.display(), "loaded config");
+        let base = dir.join(".vex.toml");
+        let local = dir.join(".vex.local.toml");
+        let has_base = base.is_file();
+        let has_local = local.is_file();
+        // Stop at the first ancestor holding EITHER file. A lone
+        // `.vex.local.toml` (no committed `.vex.toml`) is a valid setup — an
+        // uncommitted, machine-local overlay (e.g. a personal ignore list)
+        // that vex now auto-discovers instead of requiring `$VEX_CONFIG=`.
+        //
+        // The two files must be CO-LOCATED to merge: because the walk stops at
+        // the first dir holding either, a lone `.vex.local.toml` in a deeper
+        // dir shadows (does not merge with) a `.vex.toml` higher up the tree.
+        // Documented in DEFAULT_CONFIG's tip; keeps discovery predictable
+        // (one dir, one decision) rather than composing across the whole walk.
+        if has_base || has_local {
+            let mut config = if has_base {
+                parse_config_file(&base, &dir)?
+            } else {
+                VexConfig {
+                    source_dir: Some(dir.clone()),
+                    ..Default::default()
+                }
+            };
+            if has_local {
+                let overlay = parse_config_file(&local, &dir)?;
+                config = merge_local(config, overlay);
+            }
+            tracing::debug!(dir = %dir.display(), has_base, has_local, "loaded config");
             return Ok(config);
         }
         if !dir.pop() {
@@ -188,6 +217,51 @@ pub fn load_config(start_dir: &Path) -> Result<VexConfig> {
         }
     }
     Ok(VexConfig::default())
+}
+
+/// Read + parse a single config file, tagging it with `source_dir = dir` so
+/// relative paths (e.g. `cache_dir`) resolve against the file's directory.
+fn parse_config_file(path: &Path, dir: &Path) -> Result<VexConfig> {
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let mut config: VexConfig =
+        toml::from_str(&content).with_context(|| format!("parse {}", path.display()))?;
+    config.source_dir = Some(dir.to_path_buf());
+    Ok(config)
+}
+
+/// Overlay a `.vex.local.toml` (`local`) on top of the base `.vex.toml`
+/// (`base`), both co-located in the same directory.
+///
+/// - `exclude` lists **concatenate** (base first, then local) so a local file
+///   *adds* ignore patterns without dropping the shared ones — the primary use
+///   case (a personal, uncommitted ignore overlay).
+/// - Every scalar `Option` field is **replaced** by the local value when local
+///   sets it (`Some`), else the base value is kept.
+/// - `source_dir` stays the base's (identical anyway — same directory).
+///
+/// The exhaustive struct literal is deliberate: adding a field to `VexConfig`
+/// forces a compile error here so its merge policy is never silently forgotten.
+fn merge_local(base: VexConfig, local: VexConfig) -> VexConfig {
+    let mut exclude = base.exclude;
+    exclude.extend(local.exclude);
+    VexConfig {
+        exclude,
+        format: local.format.or(base.format),
+        semantic: local.semantic.or(base.semantic),
+        auto_update: local.auto_update.or(base.auto_update),
+        embedder: local.embedder.or(base.embedder),
+        gpu: local.gpu.or(base.gpu),
+        device: local.device.or(base.device),
+        cache_dir: local.cache_dir.or(base.cache_dir),
+        local_cache: local.local_cache.or(base.local_cache),
+        jobs: local.jobs.or(base.jobs),
+        call_graph: local.call_graph.or(base.call_graph),
+        bm25: local.bm25.or(base.bm25),
+        pattern_index: local.pattern_index.or(base.pattern_index),
+        vcs: local.vcs.or(base.vcs),
+        source_dir: base.source_dir,
+    }
 }
 
 /// Default .vex.toml content with comments explaining each option.
@@ -281,6 +355,26 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 # but smaller index. Same persistence rules as `call_graph` / `bm25`.
 # Per-invocation override: `vex index --no-pattern-index`.
 # pattern_index = true
+
+# VCS backend for diff-scoping (`--since` / `--since-branched` / `--changed-only`
+# and `vex diff` / `vex bundle --mode pr-impact`).
+#   "auto" (default) — detect by marker: .git → git, .svn → svn, .arc → arc.
+#                      A co-located .git wins, so an Arc checkout with a nested
+#                      .git is detected as git; set `vcs = "arc"` to override.
+#   "git" | "arc" (Yandex Arc) | "svn" (Subversion) — force a backend.
+#   "none" — disable diff-scoping entirely.
+# svn declines `--since-branched` (no merge-base). `vex diff` / `bundle
+# pr-impact` are git-only for now (they reconstruct old symbols via `git show`).
+# Overridden by `--vcs` and $VEX_VCS. See docs/VCS-BACKENDS.md.
+# vcs = "auto"
+
+# Tip: settings can also live in an uncommitted `.vex.local.toml` in THIS SAME
+# directory — vex auto-discovers it (no $VEX_CONFIG needed) and merges it on
+# top: its `exclude` patterns are ADDED to the ones here, and any scalar it
+# sets wins. Use it for personal, machine-local ignores you don't want to
+# commit — remember to add `.vex.local.toml` to your `.gitignore`. It must sit
+# next to this `.vex.toml`: a lone `.vex.local.toml` in a deeper directory
+# shadows (does not merge with) a `.vex.toml` higher up the tree.
 "#;
 
 /// Process-global cache resolver. Set ONCE at CLI startup
@@ -1243,6 +1337,61 @@ mod tests {
             let cfg = VexConfig::default();
             assert_eq!(resolve_explicit_jobs(None, &cfg), Some(3));
         });
+    }
+
+    #[test]
+    fn merge_local_concats_excludes_and_local_scalars_win() {
+        let base = VexConfig {
+            exclude: vec!["vendor/**".into()],
+            format: Some("compact".into()),
+            jobs: Some(4),
+            source_dir: Some(PathBuf::from("/proj")),
+            ..Default::default()
+        };
+        let local = VexConfig {
+            exclude: vec!["secret/**".into()],
+            // local overrides format, leaves jobs untouched, sets a new field.
+            format: Some("json".into()),
+            vcs: Some("arc".into()),
+            source_dir: Some(PathBuf::from("/proj")),
+            ..Default::default()
+        };
+        let merged = merge_local(base, local);
+        assert_eq!(merged.exclude, vec!["vendor/**", "secret/**"]);
+        assert_eq!(merged.format.as_deref(), Some("json")); // local wins
+        assert_eq!(merged.jobs, Some(4)); // base kept (local None)
+        assert_eq!(merged.vcs.as_deref(), Some("arc")); // local-only field
+        assert_eq!(merged.source_dir.as_deref(), Some(Path::new("/proj")));
+    }
+
+    #[test]
+    fn load_config_merges_local_overlay_and_honours_lone_local() {
+        // Base + local co-located: excludes concat, local scalar wins.
+        let both = std::env::temp_dir().join(format!("vex-local-both-{}", std::process::id()));
+        std::fs::create_dir_all(&both).unwrap();
+        std::fs::write(
+            both.join(".vex.toml"),
+            "exclude = [\"a/**\"]\nformat = \"text\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            both.join(".vex.local.toml"),
+            "exclude = [\"b/**\"]\nformat = \"json\"\n",
+        )
+        .unwrap();
+        let cfg = load_config(&both).unwrap();
+        assert_eq!(cfg.exclude, vec!["a/**", "b/**"]);
+        assert_eq!(cfg.format.as_deref(), Some("json"));
+        std::fs::remove_dir_all(&both).ok();
+
+        // Lone `.vex.local.toml` (no committed `.vex.toml`) is still discovered.
+        let lone = std::env::temp_dir().join(format!("vex-local-lone-{}", std::process::id()));
+        std::fs::create_dir_all(&lone).unwrap();
+        std::fs::write(lone.join(".vex.local.toml"), "exclude = [\"only/**\"]\n").unwrap();
+        let cfg = load_config(&lone).unwrap();
+        assert_eq!(cfg.exclude, vec!["only/**"]);
+        assert_eq!(cfg.source_dir.as_deref(), Some(lone.as_path()));
+        std::fs::remove_dir_all(&lone).ok();
     }
 
     #[test]
