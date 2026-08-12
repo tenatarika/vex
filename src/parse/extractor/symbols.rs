@@ -41,21 +41,44 @@ pub fn extract_symbols_and_imports(
     content: &str,
     lang: Language,
 ) -> Result<(Vec<ParsedSymbol>, Vec<ParsedRef>)> {
-    let query = match queries::try_get_query(lang) {
-        Ok(q) => q,
-        Err(e) => {
-            return Err(GrammarLoadError {
-                lang,
-                reason: e.to_string(),
-            }
-            .into());
-        }
-    };
+    // Probe the query BEFORE parsing so a grammar-load failure outranks a parse
+    // failure — the pipeline aggregates the former per language instead of
+    // logging a per-file "parse failed". The core probes again (a `LazyLock`
+    // deref, free) to get the query itself.
+    symbol_query(lang)?;
 
     // v1.12.0 P3 — borrow a pooled per-thread parser instead of constructing
     // one per file. The Tree owns its data after parse(), so we can drop the
     // parser borrow before iterating with QueryCursor.
     let tree = parse_text(lang, content)?;
+    extract_symbols_and_imports_with_tree(&tree, content, lang)
+}
+
+/// The language's symbol query, or [`GrammarLoadError`] if it failed to load.
+///
+/// Single source of that conversion: `parse_file` uses it as a pre-parse guard,
+/// [`extract_symbols_and_imports`] as both guard and query source. Keeping one
+/// helper stops the guard and the real probe from drifting apart — they must
+/// produce the same error type, because `index::pipeline` downcasts to
+/// [`GrammarLoadError`] to decide between a per-language summary and a per-file
+/// parse warning.
+pub(crate) fn symbol_query(lang: Language) -> Result<&'static tree_sitter::Query> {
+    queries::try_get_query(lang).map_err(|e| {
+        GrammarLoadError {
+            lang,
+            reason: e.to_string(),
+        }
+        .into()
+    })
+}
+
+/// [`extract_symbols_and_imports`] over a tree the caller already parsed.
+pub(crate) fn extract_symbols_and_imports_with_tree(
+    tree: &tree_sitter::Tree,
+    content: &str,
+    lang: Language,
+) -> Result<(Vec<ParsedSymbol>, Vec<ParsedRef>)> {
+    let query = symbol_query(lang)?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), content.as_bytes());

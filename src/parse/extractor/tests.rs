@@ -8,6 +8,88 @@ fn symbols(src: &str, lang: Language) -> Vec<ParsedSymbol> {
     extract_symbols_and_imports(src, lang).unwrap().0
 }
 
+/// Shared-tree equivalence for symbol + import extraction
+/// (`.claude/Task/PERF-parse-once-shared-tree.md`, commit 6 — the last
+/// extractor to migrate).
+///
+/// Compares the full output, `doc` and `body_tokens` included: those two are the
+/// fields `ParsedFile`'s own serde skips or would be easy to lose, and both are
+/// produced inside this extractor (`extract_doc_above` / `extract_body_tokens`).
+#[test]
+fn with_tree_matches_the_self_parsing_entry_point_for_every_language() {
+    let fixtures: &[(Language, &str)] = &[
+        (Language::Rust, "rs"),
+        (Language::Kotlin, "kt"),
+        (Language::TypeScript, "ts"),
+        (Language::Python, "py"),
+        (Language::Go, "go"),
+        (Language::Java, "java"),
+        (Language::CSharp, "cs"),
+        (Language::Cpp, "cpp"),
+        (Language::Ruby, "rb"),
+        (Language::Swift, "swift"),
+        (Language::Php, "php"),
+        (Language::Sql, "sql"),
+        (Language::Markdown, "md"),
+        (Language::Css, "css"),
+        (Language::Html, "html"),
+        (Language::Bash, "sh"),
+        (Language::Lua, "lua"),
+        (Language::Yaml, "yaml"),
+        (Language::Toml, "toml"),
+    ];
+    assert_eq!(
+        fixtures.len(),
+        Language::ALL.len(),
+        "every language must be covered"
+    );
+
+    for &(lang, ext) in fixtures {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("tests/fixtures/sample.{ext}"));
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
+
+        let (want_syms, want_imports) =
+            extract_symbols_and_imports(&content, lang).expect("self-parsing entry point");
+        let tree = crate::parse::parser_pool::parse_text(lang, &content).expect("parse fixture");
+        let (got_syms, got_imports) =
+            extract_symbols_and_imports_with_tree(&tree, &content, lang).expect("shared-tree core");
+
+        let key = |s: &ParsedSymbol| {
+            (
+                s.name.clone(),
+                s.kind,
+                s.line,
+                s.signature.clone(),
+                s.doc.clone(),
+                s.body_tokens.clone(),
+            )
+        };
+        assert_eq!(
+            got_syms.iter().map(key).collect::<Vec<_>>(),
+            want_syms.iter().map(key).collect::<Vec<_>>(),
+            "{lang:?}: shared-tree core disagrees on symbols"
+        );
+        assert_eq!(
+            got_imports
+                .iter()
+                .map(|r| (&r.name, r.line))
+                .collect::<Vec<_>>(),
+            want_imports
+                .iter()
+                .map(|r| (&r.name, r.line))
+                .collect::<Vec<_>>(),
+            "{lang:?}: shared-tree core disagrees on imports"
+        );
+        assert!(
+            !got_syms.is_empty(),
+            "{lang:?}: fixture should yield symbols — an empty result would make \
+             this comparison vacuous"
+        );
+    }
+}
+
 /// Phase 8.4 — assert that at least one symbol from `lang`'s parse
 /// of `src` carries a non-empty `body_tokens`, AND that the tokens
 /// include each of the `expected_substrings`. Pre-8.4 these were

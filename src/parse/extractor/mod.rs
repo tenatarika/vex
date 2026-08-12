@@ -5,6 +5,10 @@ mod refs;
 mod symbols;
 
 pub use symbols::extract_symbols_and_imports;
+// Shared-tree core + the grammar-load probe `parse_file` uses as a pre-parse
+// guard. Both `pub(crate)`: no external consumer, and the core names
+// `tree_sitter::Tree`.
+pub(crate) use symbols::{extract_symbols_and_imports_with_tree, symbol_query};
 // `extract_references` is the plain-text fallback and
 // `extract_references_ast` the self-parsing entry point. Neither has an
 // in-crate caller any more — `parse_file` now goes through
