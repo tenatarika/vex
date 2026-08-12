@@ -53,7 +53,35 @@ pub fn extract_references_ast(content: &str, lang: Language) -> Result<Vec<Parse
 
     // v1.12.0 P3 — pooled per-thread parser; v1.23.0 — guarded by the
     // shared `parse_text` budget (see `super::parser_pool`).
+    //
+    // The `has_ast_ref_filter` check above stays HERE, before the parse, so a
+    // non-filter language never pays one — the core re-checks it for callers
+    // that already hold a tree.
     let tree = parse_text(lang, content)?;
+    Ok(extract_references_ast_with_tree(&tree, content, lang))
+}
+
+/// [`extract_references_ast`] over a tree the caller already parsed.
+///
+/// Infallible: the only failure the self-parsing entry point can report is its
+/// own parse, which has moved out.
+///
+/// **The `has_ast_ref_filter` short-circuit is repeated here deliberately.**
+/// `parse_file` hands this a tree for every language, including the 11 that
+/// must keep using the line-based [`extract_references`] scanner; walking the
+/// supplied tree for those would quietly change the refs FST (comment and
+/// string identifiers vanish — on the Ruby fixture, 16 refs collapse to 4).
+/// The duplication is what makes the tree an *optimisation* rather than a
+/// behaviour switch. Pinned by
+/// `with_tree_matches_the_self_parsing_entry_point_for_every_language`.
+pub(crate) fn extract_references_ast_with_tree(
+    tree: &tree_sitter::Tree,
+    content: &str,
+    lang: Language,
+) -> Vec<ParsedRef> {
+    if !lang.has_ast_ref_filter() {
+        return extract_references(content);
+    }
 
     let mut refs = Vec::new();
     // v1.12.0 P4 — collect line slices once, then pass an O(1)-indexable
@@ -62,7 +90,7 @@ pub fn extract_references_ast(content: &str, lang: Language) -> Result<Vec<Parse
     // files that compounded to O(line_count × ident_count).
     let line_slices: Vec<&str> = content.lines().collect();
     walk_for_refs(tree.root_node(), content, &line_slices, lang, &mut refs);
-    Ok(refs)
+    refs
 }
 
 fn walk_for_refs(
@@ -237,6 +265,73 @@ pub(super) fn scan_identifiers(line: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gate-#1 guard for the shared-tree refactor
+    /// (`.claude/Task/PERF-parse-once-shared-tree.md`).
+    ///
+    /// `extract_references_ast` short-circuits to the **line-based**
+    /// [`extract_references`] scanner for the 11 languages without
+    /// [`Language::has_ast_ref_filter`] — including their comments and string
+    /// interiors. `extract_references_ast_with_tree` is handed a tree by
+    /// `parse_file` regardless of language, so a core that just walks that tree
+    /// would silently re-route those 11 languages onto the AST walker: a
+    /// different refs FST and a real recall change for `vex usages` on
+    /// Ruby/PHP/Bash/…
+    ///
+    /// This asserts the two entry points agree for **every** language, which is
+    /// what pins the short-circuit inside the core.
+    #[test]
+    fn with_tree_matches_the_self_parsing_entry_point_for_every_language() {
+        let fixtures: &[(Language, &str)] = &[
+            // has_ast_ref_filter() == true — AST walker on both sides.
+            (Language::Rust, "rs"),
+            (Language::Kotlin, "kt"),
+            (Language::TypeScript, "ts"),
+            (Language::Python, "py"),
+            (Language::Go, "go"),
+            (Language::Java, "java"),
+            (Language::CSharp, "cs"),
+            (Language::Cpp, "cpp"),
+            // has_ast_ref_filter() == false — line-based scanner on both sides.
+            (Language::Ruby, "rb"),
+            (Language::Swift, "swift"),
+            (Language::Php, "php"),
+            (Language::Sql, "sql"),
+            (Language::Markdown, "md"),
+            (Language::Css, "css"),
+            (Language::Html, "html"),
+            (Language::Bash, "sh"),
+            (Language::Lua, "lua"),
+            (Language::Yaml, "yaml"),
+            (Language::Toml, "toml"),
+        ];
+        assert_eq!(
+            fixtures.len(),
+            Language::ALL.len(),
+            "every language must be covered"
+        );
+
+        for &(lang, ext) in fixtures {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("tests/fixtures/sample.{ext}"));
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
+
+            let want = extract_references_ast(&content, lang).expect("self-parsing entry point");
+            let tree = parse_text(lang, &content).expect("parse fixture");
+            let got = extract_references_ast_with_tree(&tree, &content, lang);
+
+            let want_names: Vec<_> = want.iter().map(|r| (&r.name, r.line)).collect();
+            let got_names: Vec<_> = got.iter().map(|r| (&r.name, r.line)).collect();
+            assert_eq!(
+                got_names,
+                want_names,
+                "{lang:?}: shared-tree core disagrees with extract_references_ast \
+                 (has_ast_ref_filter = {})",
+                lang.has_ast_ref_filter()
+            );
+        }
+    }
 
     fn names(content: &str, lang: Language) -> Vec<String> {
         extract_references_ast(content, lang)

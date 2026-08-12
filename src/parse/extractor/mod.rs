@@ -5,14 +5,25 @@ mod refs;
 mod symbols;
 
 pub use symbols::extract_symbols_and_imports;
-// `extract_references_ast` is the in-crate consumer (called from
-// `parse::mod`). `extract_references` is the plain-text fallback —
-// no current caller, but referenced by name in `parse::language`'s
-// `extract_references_ast` doc, so we keep the historical path
-// `crate::parse::extractor::extract_references` resolvable.
+// `extract_references` is the plain-text fallback and
+// `extract_references_ast` the self-parsing entry point. Neither has an
+// in-crate caller any more — `parse_file` now goes through
+// `extract_references_ast_with_tree` with the tree it already parsed — but both
+// stay exported: they are the documented public path
+// (`crate::parse::extractor::extract_references{,_ast}`), referenced by name
+// from `parse::language` docs and used by the `refs` unit tests as the
+// reference implementation the shared-tree core is diffed against. The `allow`
+// is needed because the `vex` binary target compiles these modules directly
+// rather than through the library, so a re-export with no in-crate caller reads
+// as an unused import there.
 #[allow(unused_imports)]
 pub use refs::extract_references;
+#[allow(unused_imports)]
 pub use refs::extract_references_ast;
+// Shared-tree core behind `extract_references_ast`, called by `parse_file`
+// with the tree it already parsed. `pub(crate)` on purpose: no consumer
+// outside the crate, and it would put `tree_sitter::Tree` in the public API.
+pub(crate) use refs::extract_references_ast_with_tree;
 
 /// Sentinel error type for grammar / query compilation failures.
 ///

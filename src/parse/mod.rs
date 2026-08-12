@@ -77,7 +77,9 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
     // parse error with `?`, so the file was dropped from the index entirely.
     let tree = parser_pool::parse_text(lang, content)?;
     let (mut symbols, imports) = extractor::extract_symbols_and_imports(content, lang)?;
-    let mut refs = extractor::extract_references_ast(content, lang)?;
+    // Reads the shared tree. Languages without `has_ast_ref_filter` still get
+    // the line-based scanner — the core keeps that short-circuit, see its docs.
+    let mut refs = extractor::extract_references_ast_with_tree(&tree, content, lang);
     refs.extend(imports);
     // Call-edge extraction is cheap (one extra tree-sitter query pass) and
     // gives the persistent call graph the data it needs. Languages without
@@ -196,14 +198,14 @@ mod parse_count_tests {
     /// `every_language_has_a_pinned_parse_count`, so adding a 20th language
     /// fails until its count is pinned here.
     const EXPECTED: &[(Language, &str, u64)] = &[
-        (Language::Rust, "rs", 6),
-        (Language::Kotlin, "kt", 6),
-        (Language::TypeScript, "ts", 6),
-        (Language::Python, "py", 6),
-        (Language::Go, "go", 6),
-        (Language::Java, "java", 6),
-        (Language::CSharp, "cs", 6),
-        (Language::Cpp, "cpp", 7),
+        (Language::Rust, "rs", 5),
+        (Language::Kotlin, "kt", 5),
+        (Language::TypeScript, "ts", 5),
+        (Language::Python, "py", 5),
+        (Language::Go, "go", 5),
+        (Language::Java, "java", 5),
+        (Language::CSharp, "cs", 5),
+        (Language::Cpp, "cpp", 6),
         (Language::Ruby, "rb", 3),
         (Language::Swift, "swift", 3),
         (Language::Php, "php", 3),
