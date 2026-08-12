@@ -81,20 +81,20 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
     // the line-based scanner — the core keeps that short-circuit, see its docs.
     let mut refs = extractor::extract_references_ast_with_tree(&tree, content, lang);
     refs.extend(imports);
-    // Call-edge extraction is cheap (one extra tree-sitter query pass) and
-    // gives the persistent call graph the data it needs. Languages without
-    // a call-graph query return an empty vec.
-    let call_edges: Vec<RawCallEdge> = crate::callgraph::extract_call_edges(content, lang)
-        .into_iter()
-        .map(
-            |(caller_fn_name, caller_fn_line, callee_name, line)| RawCallEdge {
-                caller_fn_name,
-                caller_fn_line,
-                callee_name,
-                line,
-            },
-        )
-        .collect();
+    // Call edges off the shared tree — one extra query pass, no extra parse.
+    // Languages without a call-graph query return an empty vec.
+    let call_edges: Vec<RawCallEdge> =
+        crate::callgraph::extract_call_edges_with_tree(&tree, content, lang)
+            .into_iter()
+            .map(
+                |(caller_fn_name, caller_fn_line, callee_name, line)| RawCallEdge {
+                    caller_fn_name,
+                    caller_fn_line,
+                    callee_name,
+                    line,
+                },
+            )
+            .collect();
     // Bind refs BEFORE injecting the synthetic Module symbol — binders
     // treat their `file_symbols` arg as legitimate local definitions, and
     // `<module:path>` is not a real definition.
@@ -173,19 +173,20 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
 /// expectation fails RED, which is the intended behaviour. The target is 1 for
 /// every language.
 ///
-/// State after commit 3 (hierarchy, refs and skeletons migrated):
+/// State after commit 4 (hierarchy, refs, skeletons and call edges migrated):
 ///
 /// | Count | Languages | Sites that still parse for themselves |
 /// |---|---|---|
-/// | 5 | C++ | the four below + `scope::cpp::extract_cpp_includes` |
-/// | 4 | Rust, Kotlin, TypeScript, Python, Go, Java, C# | the shared parse + symbols + call edges + binder |
+/// | 4 | C++ | the three below + `scope::cpp::extract_cpp_includes` |
+/// | 3 | Rust, Kotlin, TypeScript, Python, Go, Java, C# | the shared parse + symbols + binder |
 /// | 2 | Ruby, Swift, PHP, SQL, Markdown, CSS, HTML | the shared parse + symbols |
 /// | 2 | Bash, Lua, YAML, TOML | the shared parse + symbols |
 ///
 /// The two 2-rows have different *compositions* even though the totals match:
 /// the first group runs the skeleton walker over the shared tree, the second
-/// short-circuits on an empty allowlist. Both then read hierarchy off the shared
-/// tree. Only `symbols` still re-parses for them, which commit 6 removes.
+/// short-circuits on an empty allowlist. Both then read hierarchy and call edges
+/// off the shared tree (the latter a no-op — no callgraph query). Only `symbols`
+/// still re-parses for them, which commit 6 removes.
 #[cfg(test)]
 mod parse_count_tests {
     use super::*;
@@ -196,14 +197,14 @@ mod parse_count_tests {
     /// `every_language_has_a_pinned_parse_count`, so adding a 20th language
     /// fails until its count is pinned here.
     const EXPECTED: &[(Language, &str, u64)] = &[
-        (Language::Rust, "rs", 4),
-        (Language::Kotlin, "kt", 4),
-        (Language::TypeScript, "ts", 4),
-        (Language::Python, "py", 4),
-        (Language::Go, "go", 4),
-        (Language::Java, "java", 4),
-        (Language::CSharp, "cs", 4),
-        (Language::Cpp, "cpp", 5),
+        (Language::Rust, "rs", 3),
+        (Language::Kotlin, "kt", 3),
+        (Language::TypeScript, "ts", 3),
+        (Language::Python, "py", 3),
+        (Language::Go, "go", 3),
+        (Language::Java, "java", 3),
+        (Language::CSharp, "cs", 3),
+        (Language::Cpp, "cpp", 4),
         (Language::Ruby, "rb", 2),
         (Language::Swift, "swift", 2),
         (Language::Php, "php", 2),

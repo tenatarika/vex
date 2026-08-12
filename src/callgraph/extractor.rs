@@ -171,6 +171,28 @@ pub fn extract_call_edges(content: &str, lang: Language) -> Vec<(String, usize, 
     let Some((fns, calls)) = extract_callgraph(content, lang) else {
         return Vec::new();
     };
+    edges_from(fns, calls)
+}
+
+/// [`extract_call_edges`] over a tree the caller already parsed.
+///
+/// The `compiled_query` short-circuit lives in
+/// [`extract_callgraph_with_tree`], so languages without a callgraph query
+/// still get an empty vec off a tree they are handed — same contract as the
+/// refs and skeleton cores.
+pub(crate) fn extract_call_edges_with_tree(
+    tree: &tree_sitter::Tree,
+    content: &str,
+    lang: Language,
+) -> Vec<(String, usize, String, usize)> {
+    let Some((fns, calls)) = extract_callgraph_with_tree(tree, content, lang) else {
+        return Vec::new();
+    };
+    edges_from(fns, calls)
+}
+
+/// Attribute each call to its innermost enclosing function definition.
+fn edges_from(fns: Vec<FnDef>, calls: Vec<Call>) -> Vec<(String, usize, String, usize)> {
     let mut edges = Vec::with_capacity(calls.len());
     for call in &calls {
         // Find the innermost containing function (smallest byte range).
@@ -259,12 +281,31 @@ fn compiled_query(lang: Language) -> Option<&'static Query> {
 const MODULE_CALL_CAPTURE: &str = "module_call.name";
 
 /// Extract function definitions and call expressions from source.
+///
+/// Self-parsing entry point, used by the live-scan paths in this module
+/// (`callers_in_source` / `callees_in_source`). Index-time extraction goes
+/// through [`extract_call_edges_with_tree`] instead.
 fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<Call>)> {
-    let query = compiled_query(lang)?;
+    // The query probe stays BEFORE the parse: a language with no callgraph
+    // query must not pay a parse here. `find_callers` / `find_callees` already
+    // pre-filter on `callgraph_query(lang).is_some()`, so this is unobservable
+    // today — but reordering it would make the wrapper diverge from the shape
+    // it replaced, for no gain.
+    compiled_query(lang)?;
 
     // v1.12.0 P3 — pooled per-thread parser; v1.23.0 — guarded by the
     // shared `parse_text` budget.
     let tree = crate::parse::parser_pool::parse_text(lang, content).ok()?;
+    extract_callgraph_with_tree(&tree, content, lang)
+}
+
+/// [`extract_callgraph`] over a tree the caller already parsed.
+fn extract_callgraph_with_tree(
+    tree: &tree_sitter::Tree,
+    content: &str,
+    lang: Language,
+) -> Option<(Vec<FnDef>, Vec<Call>)> {
+    let query = compiled_query(lang)?;
 
     let fn_name_idx = query.capture_index_for_name("fn.name")?;
     let fn_body_idx = query.capture_index_for_name("fn.decl")?;

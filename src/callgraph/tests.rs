@@ -11,6 +11,60 @@ fn callees(src: &str, lang: Language, target: &str) -> Vec<CallMatch> {
     callees_in_source(src, lang, "test", target)
 }
 
+/// Shared-tree equivalence for call-edge extraction
+/// (`.claude/Task/PERF-parse-once-shared-tree.md`, commit 4).
+///
+/// `parse_file` calls `extract_call_edges_with_tree` with a tree it parsed for
+/// every language, including the 11 with no callgraph query at all. The split
+/// happens at the private `extract_callgraph`, so the two live-scan entry points
+/// (`callers_in_source` / `callees_in_source`) keep their self-parsing path —
+/// this diffs the index-time core against the public self-parsing one.
+#[test]
+fn with_tree_matches_the_self_parsing_entry_point_for_every_language() {
+    let fixtures: &[(Language, &str)] = &[
+        (Language::Rust, "rs"),
+        (Language::Kotlin, "kt"),
+        (Language::TypeScript, "ts"),
+        (Language::Python, "py"),
+        (Language::Go, "go"),
+        (Language::Java, "java"),
+        (Language::CSharp, "cs"),
+        (Language::Cpp, "cpp"),
+        (Language::Ruby, "rb"),
+        (Language::Swift, "swift"),
+        (Language::Php, "php"),
+        (Language::Sql, "sql"),
+        (Language::Markdown, "md"),
+        (Language::Css, "css"),
+        (Language::Html, "html"),
+        (Language::Bash, "sh"),
+        (Language::Lua, "lua"),
+        (Language::Yaml, "yaml"),
+        (Language::Toml, "toml"),
+    ];
+    assert_eq!(
+        fixtures.len(),
+        Language::ALL.len(),
+        "every language must be covered"
+    );
+
+    for &(lang, ext) in fixtures {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("tests/fixtures/sample.{ext}"));
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
+
+        let want = extract_call_edges(&content, lang);
+        let tree = crate::parse::parser_pool::parse_text(lang, &content).expect("parse fixture");
+        let got = extractor::extract_call_edges_with_tree(&tree, &content, lang);
+
+        assert_eq!(
+            got, want,
+            "{lang:?}: shared-tree core disagrees with extract_call_edges"
+        );
+    }
+}
+
 #[test]
 fn rust_callers() {
     let src = r#"

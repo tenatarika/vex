@@ -18,6 +18,10 @@ mod queries;
 // query for) — `extractor.rs` imports it independently for query
 // compilation, so the two `use`s are not duplicates.
 pub use extractor::extract_call_edges;
+// Shared-tree core behind `extract_call_edges`, called by `parse_file` with the
+// tree it already parsed. `pub(crate)`: no external consumer, and exporting it
+// would put `tree_sitter::Tree` in the public API.
+pub(crate) use extractor::extract_call_edges_with_tree;
 use extractor::{callees_in_source, callers_in_source};
 use queries::callgraph_query;
 
