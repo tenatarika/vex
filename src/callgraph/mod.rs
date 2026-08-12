@@ -11,12 +11,18 @@ pub mod test_patterns;
 mod extractor;
 mod queries;
 
-// `extract_call_edges` is the public seam for `index::pipeline`; the
-// other two are internal call-site helpers used by `find_callers` /
-// `find_callees` below. `callgraph_query` is reused here as the
+// `extract_call_edges` is the self-parsing public entry point (index time uses
+// `extract_call_edges_with_tree`); `callers_in_source` / `callees_in_source` are
+// internal call-site helpers used by `find_callers` / `find_callees` below. `callgraph_query` is reused here as the
 // language-filter predicate (we only walk files the engine has a
 // query for) — `extractor.rs` imports it independently for query
 // compilation, so the two `use`s are not duplicates.
+// `#[allow]`: the `vex` binary target compiles these modules directly rather
+// than linking the library, so a re-export whose only in-crate callers are
+// tests reads as unused there. `parse_file` goes through
+// `extract_call_edges_with_tree`; this stays as the public API and as the
+// reference implementation the shared-tree equivalence test diffs against.
+#[allow(unused_imports)]
 pub use extractor::extract_call_edges;
 // Shared-tree core behind `extract_call_edges`, called by `parse_file` with the
 // tree it already parsed. `pub(crate)`: no external consumer, and exporting it

@@ -1,5 +1,6 @@
-//! Symbol + import extraction — the main public seam consumed by
-//! `parse::mod`. One tree-sitter parse drives both: the SCM query
+//! Symbol + import extraction — the main seam consumed by `parse::mod`, which
+//! calls the `_with_tree` core with the one tree it parses per file. Both the
+//! SCM query and `body_tokens` ride that same tree: the SCM query
 //! (from `parse::queries`) captures named symbols and import sites,
 //! and per-symbol `body_tokens` are populated via `super::body`'s
 //! `extract_body_tokens` walker.

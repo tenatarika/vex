@@ -251,6 +251,11 @@ fn intern_static(s: String) -> &'static str {
 /// // Empty allowlist (T3 language) short-circuits to empty.
 /// assert!(extract_skeletons("[package]\nname = \"x\"", Language::Toml).is_empty());
 /// ```
+// Bin-target artifact: the binary compiles this module directly, so a `pub fn`
+// whose only in-crate callers are tests reads as dead there. `parse_file` uses
+// `extract_skeletons_with_tree`; this remains the public API, the doctested
+// entry point, and the reference implementation for the equivalence test.
+#[allow(dead_code)]
 pub fn extract_skeletons(source: &str, lang: Language) -> Vec<Skeleton> {
     // The allowlist check stays HERE, before the parse, so a language with no
     // allowlist never pays one. The core re-checks it for callers that already

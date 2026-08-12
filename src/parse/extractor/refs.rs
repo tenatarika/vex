@@ -46,6 +46,9 @@ pub fn extract_references(content: &str) -> Vec<ParsedRef> {
 /// comments and string literals) without touching the binary format.
 /// Performance cost on the binder languages is one extra tree-sitter
 /// parse per file; 11.1.2 will fuse the parses.
+// Bin-target artifact: see the `#[allow]` note on the re-exports in
+// `extractor/mod.rs`. Live-scan callers and the equivalence test use this.
+#[allow(dead_code)]
 pub fn extract_references_ast(content: &str, lang: Language) -> Result<Vec<ParsedRef>> {
     if !lang.has_ast_ref_filter() {
         return Ok(extract_references(content));

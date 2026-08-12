@@ -1,8 +1,10 @@
 //! Callgraph extraction engine — tree-sitter walking, query compilation,
 //! and edge-resolution helpers shared by every callgraph code path.
 //!
-//! `extract_call_edges` is the public seam used by `index::pipeline` at
-//! index time to populate the persistent call-graph sections.
+//! `extract_call_edges_with_tree` is the seam used by `parse::parse_file` at
+//! index time to populate the persistent call-graph sections, off the single
+//! tree that function parses. `extract_call_edges` is the same logic with its own
+//! parse, kept as the public API for callers without a tree.
 //! `callers_in_source` / `callees_in_source` are the live-scan helpers
 //! invoked by the public `find_callers` / `find_callees` query API in
 //! `super`. The compiled-`Query` cache (`CG_QUERY_CELLS`) compiles each
@@ -150,9 +152,10 @@ pub(super) fn callees_in_source(
 /// Returns an empty vec when the language has no call-graph query, when
 /// parsing fails, or when there are no calls inside a function.
 ///
-/// Used by `index::pipeline` to build the persistent call-graph sections at
-/// index time. Live-scan paths in this module still use the internal
-/// `extract_callgraph` (private — no intra-doc link).
+/// Parses `content` itself. Index-time extraction instead goes through
+/// [`extract_call_edges_with_tree`], which reuses `parse_file`'s tree; live-scan
+/// paths in this module use the internal `extract_callgraph` (private — no
+/// intra-doc link).
 ///
 /// ```
 /// use vex::parse::language::Language;
@@ -167,6 +170,8 @@ pub(super) fn callees_in_source(
 /// // Language without a callgraph query returns empty.
 /// assert!(extract_call_edges("# heading", Language::Markdown).is_empty());
 /// ```
+// Bin-target artifact: see the `#[allow]` note on the re-export in `mod.rs`.
+#[allow(dead_code)]
 pub fn extract_call_edges(content: &str, lang: Language) -> Vec<(String, usize, String, usize)> {
     let Some((fns, calls)) = extract_callgraph(content, lang) else {
         return Vec::new();
