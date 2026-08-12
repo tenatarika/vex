@@ -55,10 +55,9 @@
 //!   `enum_constant` bodies are walked in the enum's class scope rather
 //!   than a dedicated child scope.
 
-use anyhow::Result;
-use tree_sitter::Node;
+use tree_sitter::{Node, Tree};
 
-use super::walker::{parse_with, Walker};
+use super::walker::Walker;
 use super::{BoundRef, DefKind, RefKind, ScopeBinder, ScopeId, ScopeKind, UsePath};
 use crate::index::symbols::ParsedSymbol;
 use crate::parse::language::Language;
@@ -67,9 +66,17 @@ use crate::parse::NodeTextExt;
 pub struct JavaBinder;
 
 impl ScopeBinder for JavaBinder {
-    fn bind(&self, content: &str, file_symbols: &[ParsedSymbol]) -> Result<Vec<BoundRef>> {
-        let tree = parse_with(Language::Java, content)?;
-        Ok(Walker::new(content, file_symbols, dispatch).run(&tree))
+    fn lang(&self) -> Language {
+        Language::Java
+    }
+
+    fn bind_with_tree(
+        &self,
+        tree: &Tree,
+        content: &str,
+        file_symbols: &[ParsedSymbol],
+    ) -> Vec<BoundRef> {
+        Walker::new(content, file_symbols, dispatch).run(tree)
     }
 }
 

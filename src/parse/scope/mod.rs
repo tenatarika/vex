@@ -234,34 +234,174 @@ pub struct BoundRef {
     pub kind: RefKind,
 }
 
-pub trait ScopeBinder {
-    fn bind(&self, content: &str, file_symbols: &[ParsedSymbol]) -> Result<Vec<BoundRef>>;
+/// A per-language scope binder.
+///
+/// `pub(crate)`: [`Self::bind_with_tree`] names `tree_sitter::Tree`, which has
+/// no business in vex's public API, and there are no implementors outside this
+/// module. Callers outside `parse::scope` go through [`bind_refs`] /
+/// [`bind_refs_with_tree`].
+pub(crate) trait ScopeBinder {
+    /// Language this binder handles. Used by the default [`Self::bind`] to pick
+    /// a grammar; not otherwise dispatched on.
+    fn lang(&self) -> Language;
+
+    /// Bind refs against a tree the caller already parsed.
+    ///
+    /// This is the real implementation each binder provides. It is infallible:
+    /// the only failure a binder could report was its own parse, which now
+    /// happens in exactly one place.
+    fn bind_with_tree(
+        &self,
+        tree: &tree_sitter::Tree,
+        content: &str,
+        file_symbols: &[ParsedSymbol],
+    ) -> Vec<BoundRef>;
+
+    /// Parse `content` and bind against the result.
+    ///
+    /// Default body, deliberately not overridden by any binder: all 8 used to
+    /// carry an identical `parse_with(LANG, content)?` + walk pair, and that
+    /// duplicated parse is what the shared-tree refactor removes.
+    fn bind(&self, content: &str, file_symbols: &[ParsedSymbol]) -> Result<Vec<BoundRef>> {
+        let tree = walker::parse_with(self.lang(), content)?;
+        Ok(self.bind_with_tree(&tree, content, file_symbols))
+    }
 }
 
-/// Dispatch entry point used by `parse_file`. For languages without a
-/// binder we return `Ok(vec![])`, keeping the existing refs FST as the
-/// authoritative source for `vex usages` (no behavioural change).
+/// The single language → binder table. Both entry points below dispatch through
+/// it, so a new binder cannot be wired into one and forgotten in the other —
+/// which matters because `#![allow(dead_code)]` at the top of this module would
+/// suppress the "never used" warning that would otherwise catch it.
+///
+/// `&'static dyn` is free here: every binder is a unit struct, so the
+/// references are const-promoted and nothing is allocated or boxed.
+fn binder_for(lang: Language) -> Option<&'static dyn ScopeBinder> {
+    match lang {
+        Language::Rust => Some(&rust::RustBinder),
+        Language::TypeScript => Some(&typescript::TypeScriptBinder),
+        Language::CSharp => Some(&csharp::CSharpBinder),
+        Language::Cpp => Some(&cpp::CppBinder),
+        Language::Python => Some(&python::PythonBinder),
+        Language::Go => Some(&go::GoBinder),
+        Language::Java => Some(&java::JavaBinder),
+        Language::Kotlin => Some(&kotlin::KotlinBinder),
+        _ => None,
+    }
+}
+
+/// Self-parsing dispatch entry point. For languages without a binder we return
+/// `Ok(vec![])`, keeping the existing refs FST as the authoritative source for
+/// `vex usages` (no behavioural change) — and without paying a parse.
 pub fn bind_refs(
     content: &str,
     lang: Language,
     file_symbols: &[ParsedSymbol],
 ) -> Result<Vec<BoundRef>> {
-    match lang {
-        Language::Rust => rust::RustBinder.bind(content, file_symbols),
-        Language::TypeScript => typescript::TypeScriptBinder.bind(content, file_symbols),
-        Language::CSharp => csharp::CSharpBinder.bind(content, file_symbols),
-        Language::Cpp => cpp::CppBinder.bind(content, file_symbols),
-        Language::Python => python::PythonBinder.bind(content, file_symbols),
-        Language::Go => go::GoBinder.bind(content, file_symbols),
-        Language::Java => java::JavaBinder.bind(content, file_symbols),
-        Language::Kotlin => kotlin::KotlinBinder.bind(content, file_symbols),
-        _ => Ok(Vec::new()),
+    match binder_for(lang) {
+        Some(binder) => binder.bind(content, file_symbols),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// [`bind_refs`] over a tree the caller already parsed. Used by `parse_file`.
+///
+/// Infallible, and languages without a binder still yield an empty vec rather
+/// than binding off the supplied tree.
+pub(crate) fn bind_refs_with_tree(
+    tree: &tree_sitter::Tree,
+    content: &str,
+    lang: Language,
+    file_symbols: &[ParsedSymbol],
+) -> Vec<BoundRef> {
+    match binder_for(lang) {
+        Some(binder) => binder.bind_with_tree(tree, content, file_symbols),
+        None => Vec::new(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shared-tree equivalence for every binder
+    /// (`.claude/Task/PERF-parse-once-shared-tree.md`, commit 5).
+    ///
+    /// Covers all 19 languages, so it also pins the `None` arm of
+    /// [`binder_for`] — `parse_file` hands `bind_refs_with_tree` a tree
+    /// regardless of language and the 11 without a binder must still produce no
+    /// bound refs. This test is the safety net the compiler cannot provide:
+    /// `#![allow(dead_code)]` at the top of this module would suppress the
+    /// "never used" warning for a binder that got dropped from the table.
+    #[test]
+    fn with_tree_matches_the_self_parsing_entry_point_for_every_language() {
+        let fixtures: &[(Language, &str)] = &[
+            (Language::Rust, "rs"),
+            (Language::Kotlin, "kt"),
+            (Language::TypeScript, "ts"),
+            (Language::Python, "py"),
+            (Language::Go, "go"),
+            (Language::Java, "java"),
+            (Language::CSharp, "cs"),
+            (Language::Cpp, "cpp"),
+            (Language::Ruby, "rb"),
+            (Language::Swift, "swift"),
+            (Language::Php, "php"),
+            (Language::Sql, "sql"),
+            (Language::Markdown, "md"),
+            (Language::Css, "css"),
+            (Language::Html, "html"),
+            (Language::Bash, "sh"),
+            (Language::Lua, "lua"),
+            (Language::Yaml, "yaml"),
+            (Language::Toml, "toml"),
+        ];
+        assert_eq!(
+            fixtures.len(),
+            Language::ALL.len(),
+            "every language must be covered"
+        );
+
+        let mut languages_with_bindings = 0;
+        for &(lang, ext) in fixtures {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("tests/fixtures/sample.{ext}"));
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
+            let (symbols, _imports) =
+                crate::parse::extractor::extract_symbols_and_imports(&content, lang)
+                    .expect("extract symbols");
+
+            let want = bind_refs(&content, lang, &symbols).expect("self-parsing entry point");
+            let tree =
+                crate::parse::parser_pool::parse_text(lang, &content).expect("parse fixture");
+            let got = bind_refs_with_tree(&tree, &content, lang, &symbols);
+
+            let want_keys: Vec<_> = want.iter().map(|r| (&r.name, r.line, r.col)).collect();
+            let got_keys: Vec<_> = got.iter().map(|r| (&r.name, r.line, r.col)).collect();
+            assert_eq!(
+                got_keys, want_keys,
+                "{lang:?}: shared-tree binder disagrees with bind_refs"
+            );
+
+            if binder_for(lang).is_some() {
+                assert!(
+                    !got.is_empty(),
+                    "{lang:?} has a binder, so the fixture should bind something — \
+                     an empty result means the binder silently dropped out of the table"
+                );
+                languages_with_bindings += 1;
+            } else {
+                assert!(
+                    got.is_empty(),
+                    "{lang:?} has no binder and must not bind off a supplied tree"
+                );
+            }
+        }
+        assert_eq!(
+            languages_with_bindings, 8,
+            "all 8 binder languages must still be wired into binder_for"
+        );
+    }
 
     fn def(line: usize, kind: DefKind) -> LocalDef {
         LocalDef {

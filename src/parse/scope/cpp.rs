@@ -42,8 +42,7 @@
 //!   not an identifier kind so `extract_inner_identifier` returns None.
 //! - Multiple declarators in one `declaration` (`int a, b, c;`).
 
-use anyhow::Result;
-use tree_sitter::Node;
+use tree_sitter::{Node, Tree};
 
 use super::walker::{parse_with, Walker};
 use super::{BoundRef, DefKind, RefKind, ScopeBinder, ScopeId, ScopeKind, UsePath};
@@ -54,9 +53,17 @@ use crate::parse::NodeTextExt;
 pub struct CppBinder;
 
 impl ScopeBinder for CppBinder {
-    fn bind(&self, content: &str, file_symbols: &[ParsedSymbol]) -> Result<Vec<BoundRef>> {
-        let tree = parse_with(Language::Cpp, content)?;
-        Ok(Walker::new(content, file_symbols, dispatch).run(&tree))
+    fn lang(&self) -> Language {
+        Language::Cpp
+    }
+
+    fn bind_with_tree(
+        &self,
+        tree: &Tree,
+        content: &str,
+        file_symbols: &[ParsedSymbol],
+    ) -> Vec<BoundRef> {
+        Walker::new(content, file_symbols, dispatch).run(tree)
     }
 }
 
@@ -74,6 +81,15 @@ pub fn extract_cpp_includes(content: &str) -> Vec<String> {
     let Ok(tree) = parse_with(Language::Cpp, content) else {
         return Vec::new();
     };
+    extract_cpp_includes_with_tree(&tree, content)
+}
+
+/// [`extract_cpp_includes`] over a tree the caller already parsed.
+///
+/// No language gate needed — `parse_file` only calls this for
+/// [`Language::Cpp`], and the include grammar node (`preproc_include`) simply
+/// does not occur in other languages' trees.
+pub(crate) fn extract_cpp_includes_with_tree(tree: &Tree, content: &str) -> Vec<String> {
     let bytes = content.as_bytes();
     let mut out: Vec<String> = Vec::new();
     visit_for_includes(tree.root_node(), bytes, &mut out);
@@ -433,6 +449,27 @@ pub(crate) fn extract_inner_identifier(node: Node) -> Option<Node> {
 #[cfg(test)]
 mod include_extraction_tests {
     use super::*;
+
+    /// Shared-tree equivalence for include extraction
+    /// (`.claude/Task/PERF-parse-once-shared-tree.md`, commit 5). This was the
+    /// seventh parse C++ files paid — the one no other language had.
+    #[test]
+    fn with_tree_matches_the_self_parsing_entry_point() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.cpp");
+        let content = std::fs::read_to_string(&path).expect("read C++ fixture");
+
+        let want = extract_cpp_includes(&content);
+        let tree = parse_with(Language::Cpp, &content).expect("parse fixture");
+        let got = extract_cpp_includes_with_tree(&tree, &content);
+
+        assert_eq!(got, want);
+        assert_eq!(
+            want,
+            vec!["payment_gateway.h", "logger.h"],
+            "fixture should exercise quoted includes (and skip the <string> system header)"
+        );
+    }
 
     #[test]
     fn extracts_quoted_include() {

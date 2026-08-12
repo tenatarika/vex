@@ -97,14 +97,15 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
             .collect();
     // Bind refs BEFORE injecting the synthetic Module symbol — binders
     // treat their `file_symbols` arg as legitimate local definitions, and
-    // `<module:path>` is not a real definition.
-    let bound_refs = scope::bind_refs(content, lang, &symbols)?;
-    // v1.14 — C++ `#include "…"` directives. Only quoted includes; system
-    // headers and macro-named includes are skipped at extract time.
-    // Transient: the Pass-2 ref resolver consumes these in the writer and
+    // `<module:path>` is not a real definition. Languages without a binder get
+    // an empty vec; both are dispatched from one table in `scope`.
+    let bound_refs = scope::bind_refs_with_tree(&tree, content, lang, &symbols);
+    // v1.14 — C++ `#include "…"` directives, off the shared tree. Only quoted
+    // includes; system headers and macro-named includes are skipped at extract
+    // time. Transient: the Pass-2 ref resolver consumes these in the writer and
     // they never reach disk. Non-C++ files get an empty vec for free.
     let cpp_includes = if matches!(lang, Language::Cpp) {
-        scope::cpp::extract_cpp_includes(content)
+        scope::cpp::extract_cpp_includes_with_tree(&tree, content)
     } else {
         Vec::new()
     };
@@ -173,20 +174,16 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
 /// expectation fails RED, which is the intended behaviour. The target is 1 for
 /// every language.
 ///
-/// State after commit 4 (hierarchy, refs, skeletons and call edges migrated):
+/// State after commit 5 (everything except `symbols` migrated):
 ///
 /// | Count | Languages | Sites that still parse for themselves |
 /// |---|---|---|
-/// | 4 | C++ | the three below + `scope::cpp::extract_cpp_includes` |
-/// | 3 | Rust, Kotlin, TypeScript, Python, Go, Java, C# | the shared parse + symbols + binder |
-/// | 2 | Ruby, Swift, PHP, SQL, Markdown, CSS, HTML | the shared parse + symbols |
-/// | 2 | Bash, Lua, YAML, TOML | the shared parse + symbols |
+/// | 2 | all 19 | the shared parse + `extract_symbols_and_imports` |
 ///
-/// The two 2-rows have different *compositions* even though the totals match:
-/// the first group runs the skeleton walker over the shared tree, the second
-/// short-circuits on an empty allowlist. Both then read hierarchy and call edges
-/// off the shared tree (the latter a no-op — no callgraph query). Only `symbols`
-/// still re-parses for them, which commit 6 removes.
+/// Every language has converged: C++ lost both its binder parse and its
+/// `extract_cpp_includes` parse, so the per-language spread that made the
+/// earlier tables interesting is gone. `symbols` is the last self-parser, and
+/// commit 6 takes every row to 1.
 #[cfg(test)]
 mod parse_count_tests {
     use super::*;
@@ -197,14 +194,14 @@ mod parse_count_tests {
     /// `every_language_has_a_pinned_parse_count`, so adding a 20th language
     /// fails until its count is pinned here.
     const EXPECTED: &[(Language, &str, u64)] = &[
-        (Language::Rust, "rs", 3),
-        (Language::Kotlin, "kt", 3),
-        (Language::TypeScript, "ts", 3),
-        (Language::Python, "py", 3),
-        (Language::Go, "go", 3),
-        (Language::Java, "java", 3),
-        (Language::CSharp, "cs", 3),
-        (Language::Cpp, "cpp", 4),
+        (Language::Rust, "rs", 2),
+        (Language::Kotlin, "kt", 2),
+        (Language::TypeScript, "ts", 2),
+        (Language::Python, "py", 2),
+        (Language::Go, "go", 2),
+        (Language::Java, "java", 2),
+        (Language::CSharp, "cs", 2),
+        (Language::Cpp, "cpp", 2),
         (Language::Ruby, "rb", 2),
         (Language::Swift, "swift", 2),
         (Language::Php, "php", 2),
