@@ -1,0 +1,162 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 3,
+      "name": "--invoice-border"
+    },
+    {
+      "doc": null,
+      "line": 4,
+      "name": "--invoice-paid"
+    },
+    {
+      "doc": null,
+      "line": 7,
+      "name": "invoice-table"
+    },
+    {
+      "doc": null,
+      "line": 13,
+      "name": "invoice-table__row--paid"
+    },
+    {
+      "doc": null,
+      "line": 18,
+      "name": "invoice-table__amount"
+    },
+    {
+      "doc": null,
+      "line": 24,
+      "name": "invoice-table__amount"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [],
+    "call_edges": [],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "tests/fixtures/sample.css",
+    "refs": [
+      {
+        "context": "/* Invoice table styling used by the InvoiceList component. */",
+        "line": 1,
+        "name": "Invoice"
+      },
+      {
+        "context": "/* Invoice table styling used by the InvoiceList component. */",
+        "line": 1,
+        "name": "InvoiceList"
+      },
+      {
+        "context": ".invoice-table__row--paid {",
+        "line": 13,
+        "name": "table__row"
+      },
+      {
+        "context": ".invoice-table__amount {",
+        "line": 18,
+        "name": "table__amount"
+      },
+      {
+        "context": ".invoice-table__amount {",
+        "line": 24,
+        "name": "table__amount"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 4,
+        "has_block": true,
+        "ident": ":root",
+        "kind": "rule_set",
+        "parent_kind": null,
+        "start_row": 1
+      },
+      {
+        "end_row": 10,
+        "has_block": true,
+        "ident": ".invoice-table",
+        "kind": "rule_set",
+        "parent_kind": null,
+        "start_row": 6
+      },
+      {
+        "end_row": 15,
+        "has_block": true,
+        "ident": ".invoice-table__row--paid",
+        "kind": "rule_set",
+        "parent_kind": null,
+        "start_row": 12
+      },
+      {
+        "end_row": 20,
+        "has_block": true,
+        "ident": ".invoice-table__amount",
+        "kind": "rule_set",
+        "parent_kind": null,
+        "start_row": 17
+      },
+      {
+        "end_row": 26,
+        "has_block": true,
+        "ident": null,
+        "kind": "media_statement",
+        "parent_kind": null,
+        "start_row": 22
+      },
+      {
+        "end_row": 25,
+        "has_block": true,
+        "ident": ".invoice-table__amount",
+        "kind": "rule_set",
+        "parent_kind": "block",
+        "start_row": 23
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": "--invoice-border",
+        "kind": "Property",
+        "line": 3,
+        "name": "--invoice-border",
+        "signature": "--invoice-border: #d0d7de;"
+      },
+      {
+        "body_tokens": "--invoice-paid",
+        "kind": "Property",
+        "line": 4,
+        "name": "--invoice-paid",
+        "signature": "--invoice-paid: #1a7f37;"
+      },
+      {
+        "body_tokens": "invoice-table",
+        "kind": "Class",
+        "line": 7,
+        "name": "invoice-table",
+        "signature": "invoice-table {"
+      },
+      {
+        "body_tokens": "invoice-table__row--paid",
+        "kind": "Class",
+        "line": 13,
+        "name": "invoice-table__row--paid",
+        "signature": "invoice-table__row--paid {"
+      },
+      {
+        "body_tokens": "invoice-table__amount",
+        "kind": "Class",
+        "line": 18,
+        "name": "invoice-table__amount",
+        "signature": "invoice-table__amount {"
+      },
+      {
+        "body_tokens": "invoice-table__amount",
+        "kind": "Class",
+        "line": 24,
+        "name": "invoice-table__amount",
+        "signature": "invoice-table__amount {"
+      }
+    ]
+  }
+}

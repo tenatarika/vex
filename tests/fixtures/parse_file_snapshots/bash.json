@@ -1,0 +1,127 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 7,
+      "name": "charge_invoice"
+    },
+    {
+      "doc": null,
+      "line": 14,
+      "name": "process_batch"
+    },
+    {
+      "doc": null,
+      "line": 21,
+      "name": "main"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [],
+    "call_edges": [],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "tests/fixtures/sample.sh",
+    "refs": [
+      {
+        "context": "# Charges an invoice through the StripeClient CLI wrapper.",
+        "line": 4,
+        "name": "Charges"
+      },
+      {
+        "context": "# Charges an invoice through the StripeClient CLI wrapper.",
+        "line": 4,
+        "name": "StripeClient"
+      },
+      {
+        "context": "readonly RETRY_ATTEMPTS=3",
+        "line": 5,
+        "name": "RETRY_ATTEMPTS"
+      },
+      {
+        "context": "charge_invoice() {",
+        "line": 7,
+        "name": "charge_invoice"
+      },
+      {
+        "context": "local invoice_id=\"$1\"",
+        "line": 8,
+        "name": "invoice_id"
+      },
+      {
+        "context": "echo \"charging ${invoice_id} via StripeClient\"",
+        "line": 10,
+        "name": "invoice_id"
+      },
+      {
+        "context": "echo \"charging ${invoice_id} via StripeClient\"",
+        "line": 10,
+        "name": "StripeClient"
+      },
+      {
+        "context": "stripe_client charge --amount \"${amount}\"",
+        "line": 11,
+        "name": "stripe_client"
+      },
+      {
+        "context": "process_batch() {",
+        "line": 14,
+        "name": "process_batch"
+      },
+      {
+        "context": "local batch_file=\"$1\"",
+        "line": 15,
+        "name": "batch_file"
+      },
+      {
+        "context": "while read -r invoice_id amount; do",
+        "line": 16,
+        "name": "invoice_id"
+      },
+      {
+        "context": "charge_invoice \"${invoice_id}\" \"${amount}\"",
+        "line": 17,
+        "name": "charge_invoice"
+      },
+      {
+        "context": "charge_invoice \"${invoice_id}\" \"${amount}\"",
+        "line": 17,
+        "name": "invoice_id"
+      },
+      {
+        "context": "done < \"${batch_file}\"",
+        "line": 18,
+        "name": "batch_file"
+      },
+      {
+        "context": "process_batch \"${1:-invoices.txt}\"",
+        "line": 22,
+        "name": "process_batch"
+      }
+    ],
+    "skeletons": [],
+    "symbols": [
+      {
+        "body_tokens": "via stripeclient charging",
+        "kind": "Function",
+        "line": 7,
+        "name": "charge_invoice",
+        "signature": "charge_invoice() {"
+      },
+      {
+        "body_tokens": null,
+        "kind": "Function",
+        "line": 14,
+        "name": "process_batch",
+        "signature": "process_batch() {"
+      },
+      {
+        "body_tokens": null,
+        "kind": "Function",
+        "line": 21,
+        "name": "main",
+        "signature": "main() {"
+      }
+    ]
+  }
+}

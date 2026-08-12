@@ -1,0 +1,28 @@
+# Billing service deployment, consumed by StripePaymentProcessor.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-service
+  labels:
+    app: billing
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: billing
+  template:
+    metadata:
+      labels:
+        app: billing
+    spec:
+      containers:
+        - name: billing
+          image: registry.internal/billing:1.4.2
+          env:
+            - name: PAYMENT_PROCESSOR
+              value: StripePaymentProcessor
+            - name: RETRY_ATTEMPTS
+              value: "3"
+          resources:
+            limits:
+              memory: 512Mi

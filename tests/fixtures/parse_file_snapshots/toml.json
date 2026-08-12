@@ -1,0 +1,253 @@
+{
+  "docs": [
+    {
+      "doc": "Billing service configuration read by StripePaymentProcessor.",
+      "line": 2,
+      "name": "service"
+    },
+    {
+      "doc": null,
+      "line": 3,
+      "name": "name"
+    },
+    {
+      "doc": null,
+      "line": 4,
+      "name": "port"
+    },
+    {
+      "doc": null,
+      "line": 6,
+      "name": "payments"
+    },
+    {
+      "doc": null,
+      "line": 7,
+      "name": "processor"
+    },
+    {
+      "doc": null,
+      "line": 8,
+      "name": "retry_attempts"
+    },
+    {
+      "doc": null,
+      "line": 9,
+      "name": "timeout_ms"
+    },
+    {
+      "doc": null,
+      "line": 11,
+      "name": "payments.stripe"
+    },
+    {
+      "doc": null,
+      "line": 12,
+      "name": "api_base"
+    },
+    {
+      "doc": null,
+      "line": 13,
+      "name": "webhook_path"
+    },
+    {
+      "doc": null,
+      "line": 15,
+      "name": "database"
+    },
+    {
+      "doc": null,
+      "line": 16,
+      "name": "url"
+    },
+    {
+      "doc": null,
+      "line": 17,
+      "name": "pool_size"
+    },
+    {
+      "doc": null,
+      "line": 19,
+      "name": "migrations"
+    },
+    {
+      "doc": null,
+      "line": 20,
+      "name": "version"
+    },
+    {
+      "doc": null,
+      "line": 21,
+      "name": "name"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [],
+    "call_edges": [],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "tests/fixtures/sample.toml",
+    "refs": [
+      {
+        "context": "# Billing service configuration read by StripePaymentProcessor.",
+        "line": 1,
+        "name": "Billing"
+      },
+      {
+        "context": "# Billing service configuration read by StripePaymentProcessor.",
+        "line": 1,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "processor = \"StripePaymentProcessor\"",
+        "line": 7,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "retry_attempts = 3",
+        "line": 8,
+        "name": "retry_attempts"
+      },
+      {
+        "context": "timeout_ms = 5000",
+        "line": 9,
+        "name": "timeout_ms"
+      },
+      {
+        "context": "api_base = \"https://api.stripe.com/v1\"",
+        "line": 12,
+        "name": "api_base"
+      },
+      {
+        "context": "webhook_path = \"/hooks/stripe\"",
+        "line": 13,
+        "name": "webhook_path"
+      },
+      {
+        "context": "pool_size = 16",
+        "line": 17,
+        "name": "pool_size"
+      },
+      {
+        "context": "name = \"create_invoices\"",
+        "line": 21,
+        "name": "create_invoices"
+      }
+    ],
+    "skeletons": [],
+    "symbols": [
+      {
+        "body_tokens": "port billing name service",
+        "kind": "Class",
+        "line": 2,
+        "name": "service",
+        "signature": "[service]"
+      },
+      {
+        "body_tokens": "billing name",
+        "kind": "Property",
+        "line": 3,
+        "name": "name",
+        "signature": "name = \"billing\""
+      },
+      {
+        "body_tokens": "port",
+        "kind": "Property",
+        "line": 4,
+        "name": "port",
+        "signature": "port = 8080"
+      },
+      {
+        "body_tokens": "timeout_ms retry_attempts stripepaymentprocessor processor payments",
+        "kind": "Class",
+        "line": 6,
+        "name": "payments",
+        "signature": "[payments]"
+      },
+      {
+        "body_tokens": "stripepaymentprocessor processor",
+        "kind": "Property",
+        "line": 7,
+        "name": "processor",
+        "signature": "processor = \"StripePaymentProcessor\""
+      },
+      {
+        "body_tokens": "retry_attempts",
+        "kind": "Property",
+        "line": 8,
+        "name": "retry_attempts",
+        "signature": "retry_attempts = 3"
+      },
+      {
+        "body_tokens": "timeout_ms",
+        "kind": "Property",
+        "line": 9,
+        "name": "timeout_ms",
+        "signature": "timeout_ms = 5000"
+      },
+      {
+        "body_tokens": "hooksstripe webhook_path httpsapistripecomv1 api_base payments.stripe stripe payments",
+        "kind": "Class",
+        "line": 11,
+        "name": "payments.stripe",
+        "signature": "[payments.stripe]"
+      },
+      {
+        "body_tokens": "httpsapistripecomv1 api_base",
+        "kind": "Property",
+        "line": 12,
+        "name": "api_base",
+        "signature": "api_base = \"https://api.stripe.com/v1\""
+      },
+      {
+        "body_tokens": "hooksstripe webhook_path",
+        "kind": "Property",
+        "line": 13,
+        "name": "webhook_path",
+        "signature": "webhook_path = \"/hooks/stripe\""
+      },
+      {
+        "body_tokens": "pool_size postgreslocalhostbilling url database",
+        "kind": "Class",
+        "line": 15,
+        "name": "database",
+        "signature": "[database]"
+      },
+      {
+        "body_tokens": "postgreslocalhostbilling url",
+        "kind": "Property",
+        "line": 16,
+        "name": "url",
+        "signature": "url = \"postgres://localhost/billing\""
+      },
+      {
+        "body_tokens": "pool_size",
+        "kind": "Property",
+        "line": 17,
+        "name": "pool_size",
+        "signature": "pool_size = 16"
+      },
+      {
+        "body_tokens": "create_invoices name 0001 version migrations",
+        "kind": "Class",
+        "line": 19,
+        "name": "migrations",
+        "signature": "[[migrations]]"
+      },
+      {
+        "body_tokens": "0001 version",
+        "kind": "Property",
+        "line": 20,
+        "name": "version",
+        "signature": "version = \"0001\""
+      },
+      {
+        "body_tokens": "create_invoices name",
+        "kind": "Property",
+        "line": 21,
+        "name": "name",
+        "signature": "name = \"create_invoices\""
+      }
+    ]
+  }
+}

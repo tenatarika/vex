@@ -1,0 +1,104 @@
+{
+  "docs": [
+    {
+      "doc": "Billing service deployment, consumed by StripePaymentProcessor.",
+      "line": 2,
+      "name": "apiVersion"
+    },
+    {
+      "doc": null,
+      "line": 3,
+      "name": "kind"
+    },
+    {
+      "doc": null,
+      "line": 4,
+      "name": "metadata"
+    },
+    {
+      "doc": null,
+      "line": 8,
+      "name": "spec"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [],
+    "call_edges": [],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "tests/fixtures/sample.yaml",
+    "refs": [
+      {
+        "context": "# Billing service deployment, consumed by StripePaymentProcessor.",
+        "line": 1,
+        "name": "Billing"
+      },
+      {
+        "context": "# Billing service deployment, consumed by StripePaymentProcessor.",
+        "line": 1,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "apiVersion: apps/v1",
+        "line": 2,
+        "name": "apiVersion"
+      },
+      {
+        "context": "kind: Deployment",
+        "line": 3,
+        "name": "Deployment"
+      },
+      {
+        "context": "matchLabels:",
+        "line": 11,
+        "name": "matchLabels"
+      },
+      {
+        "context": "- name: PAYMENT_PROCESSOR",
+        "line": 22,
+        "name": "PAYMENT_PROCESSOR"
+      },
+      {
+        "context": "value: StripePaymentProcessor",
+        "line": 23,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "- name: RETRY_ATTEMPTS",
+        "line": 24,
+        "name": "RETRY_ATTEMPTS"
+      }
+    ],
+    "skeletons": [],
+    "symbols": [
+      {
+        "body_tokens": "apiVersion",
+        "kind": "Property",
+        "line": 2,
+        "name": "apiVersion",
+        "signature": "apiVersion: apps/v1"
+      },
+      {
+        "body_tokens": "kind",
+        "kind": "Property",
+        "line": 3,
+        "name": "kind",
+        "signature": "kind: Deployment"
+      },
+      {
+        "body_tokens": "metadata",
+        "kind": "Property",
+        "line": 4,
+        "name": "metadata",
+        "signature": "metadata:"
+      },
+      {
+        "body_tokens": "spec",
+        "kind": "Property",
+        "line": 8,
+        "name": "spec",
+        "signature": "spec:"
+      }
+    ]
+  }
+}

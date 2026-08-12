@@ -1,0 +1,319 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 5,
+      "name": "PaymentProcessor"
+    },
+    {
+      "doc": null,
+      "line": 7,
+      "name": "process"
+    },
+    {
+      "doc": null,
+      "line": 10,
+      "name": "Retryable"
+    },
+    {
+      "doc": null,
+      "line": 12,
+      "name": "withRetry"
+    },
+    {
+      "doc": "Implements PaymentProcessor against the StripeClient SDK.",
+      "line": 19,
+      "name": "StripePaymentProcessor"
+    },
+    {
+      "doc": null,
+      "line": 25,
+      "name": "__construct"
+    },
+    {
+      "doc": null,
+      "line": 30,
+      "name": "process"
+    },
+    {
+      "doc": null,
+      "line": 35,
+      "name": "charge"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [],
+    "call_edges": [],
+    "cpp_includes": [],
+    "hierarchy_captures": [
+      {
+        "child_name": "StripePaymentProcessor",
+        "kind": 0,
+        "line": 19,
+        "parent_name": "PaymentProcessor"
+      },
+      {
+        "child_name": "StripePaymentProcessor",
+        "kind": 2,
+        "line": 19,
+        "parent_name": "Retryable"
+      }
+    ],
+    "path": "tests/fixtures/sample.php",
+    "refs": [
+      {
+        "context": "namespace App\\Billing;",
+        "line": 3,
+        "name": "App"
+      },
+      {
+        "context": "namespace App\\Billing;",
+        "line": 3,
+        "name": "Billing"
+      },
+      {
+        "context": "interface PaymentProcessor",
+        "line": 5,
+        "name": "PaymentProcessor"
+      },
+      {
+        "context": "public function process(int $amount): TransactionId;",
+        "line": 7,
+        "name": "TransactionId"
+      },
+      {
+        "context": "trait Retryable",
+        "line": 10,
+        "name": "Retryable"
+      },
+      {
+        "context": "public function withRetry(callable $operation, int $attempts = 3)",
+        "line": 12,
+        "name": "withRetry"
+      },
+      {
+        "context": "// Implements PaymentProcessor against the StripeClient SDK.",
+        "line": 18,
+        "name": "Implements"
+      },
+      {
+        "context": "// Implements PaymentProcessor against the StripeClient SDK.",
+        "line": 18,
+        "name": "PaymentProcessor"
+      },
+      {
+        "context": "// Implements PaymentProcessor against the StripeClient SDK.",
+        "line": 18,
+        "name": "StripeClient"
+      },
+      {
+        "context": "class StripePaymentProcessor implements PaymentProcessor",
+        "line": 19,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "class StripePaymentProcessor implements PaymentProcessor",
+        "line": 19,
+        "name": "PaymentProcessor"
+      },
+      {
+        "context": "use Retryable;",
+        "line": 21,
+        "name": "Retryable"
+      },
+      {
+        "context": "private string $apiKey;",
+        "line": 23,
+        "name": "apiKey"
+      },
+      {
+        "context": "public function __construct(string $apiKey)",
+        "line": 25,
+        "name": "__construct"
+      },
+      {
+        "context": "public function __construct(string $apiKey)",
+        "line": 25,
+        "name": "apiKey"
+      },
+      {
+        "context": "$this->apiKey = $apiKey;",
+        "line": 27,
+        "name": "apiKey"
+      },
+      {
+        "context": "$this->apiKey = $apiKey;",
+        "line": 27,
+        "name": "apiKey"
+      },
+      {
+        "context": "public function process(int $amount): TransactionId",
+        "line": 30,
+        "name": "TransactionId"
+      },
+      {
+        "context": "return $this->withRetry(fn() => $this->charge($amount));",
+        "line": 32,
+        "name": "withRetry"
+      },
+      {
+        "context": "private function charge(int $amount): TransactionId",
+        "line": 35,
+        "name": "TransactionId"
+      },
+      {
+        "context": "return TransactionId::of($amount);",
+        "line": 37,
+        "name": "TransactionId"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 2,
+        "has_block": false,
+        "ident": "App\\Billing",
+        "kind": "namespace_definition",
+        "parent_kind": null,
+        "start_row": 2
+      },
+      {
+        "end_row": 7,
+        "has_block": true,
+        "ident": "PaymentProcessor",
+        "kind": "interface_declaration",
+        "parent_kind": null,
+        "start_row": 4
+      },
+      {
+        "end_row": 6,
+        "has_block": false,
+        "ident": "process",
+        "kind": "method_declaration",
+        "parent_kind": "declaration_list",
+        "start_row": 6
+      },
+      {
+        "end_row": 15,
+        "has_block": true,
+        "ident": "Retryable",
+        "kind": "trait_declaration",
+        "parent_kind": null,
+        "start_row": 9
+      },
+      {
+        "end_row": 14,
+        "has_block": true,
+        "ident": "withRetry",
+        "kind": "method_declaration",
+        "parent_kind": "declaration_list",
+        "start_row": 11
+      },
+      {
+        "end_row": 38,
+        "has_block": true,
+        "ident": "StripePaymentProcessor",
+        "kind": "class_declaration",
+        "parent_kind": null,
+        "start_row": 18
+      },
+      {
+        "end_row": 22,
+        "has_block": false,
+        "ident": "apiKey",
+        "kind": "property_element",
+        "parent_kind": "property_declaration",
+        "start_row": 22
+      },
+      {
+        "end_row": 27,
+        "has_block": true,
+        "ident": "__construct",
+        "kind": "method_declaration",
+        "parent_kind": "declaration_list",
+        "start_row": 24
+      },
+      {
+        "end_row": 32,
+        "has_block": true,
+        "ident": "process",
+        "kind": "method_declaration",
+        "parent_kind": "declaration_list",
+        "start_row": 29
+      },
+      {
+        "end_row": 31,
+        "has_block": false,
+        "ident": null,
+        "kind": "arrow_function",
+        "parent_kind": "argument",
+        "start_row": 31
+      },
+      {
+        "end_row": 37,
+        "has_block": true,
+        "ident": "charge",
+        "kind": "method_declaration",
+        "parent_kind": "declaration_list",
+        "start_row": 34
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": null,
+        "kind": "Interface",
+        "line": 5,
+        "name": "PaymentProcessor",
+        "signature": "interface PaymentProcessor"
+      },
+      {
+        "body_tokens": null,
+        "kind": "Function",
+        "line": 7,
+        "name": "process",
+        "signature": "public function process(int $amount): TransactionId;"
+      },
+      {
+        "body_tokens": null,
+        "kind": "Trait",
+        "line": 10,
+        "name": "Retryable",
+        "signature": "trait Retryable"
+      },
+      {
+        "body_tokens": null,
+        "kind": "Function",
+        "line": 12,
+        "name": "withRetry",
+        "signature": "public function withRetry(callable $operation, int $attempts = 3)"
+      },
+      {
+        "body_tokens": null,
+        "kind": "Class",
+        "line": 19,
+        "name": "StripePaymentProcessor",
+        "signature": "class StripePaymentProcessor implements PaymentProcessor"
+      },
+      {
+        "body_tokens": null,
+        "kind": "Function",
+        "line": 25,
+        "name": "__construct",
+        "signature": "public function __construct(string $apiKey)"
+      },
+      {
+        "body_tokens": null,
+        "kind": "Function",
+        "line": 30,
+        "name": "process",
+        "signature": "public function process(int $amount): TransactionId"
+      },
+      {
+        "body_tokens": null,
+        "kind": "Function",
+        "line": 35,
+        "name": "charge",
+        "signature": "private function charge(int $amount): TransactionId"
+      }
+    ]
+  }
+}

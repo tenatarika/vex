@@ -1,0 +1,24 @@
+<!-- Invoice list rendered by the InvoiceList component. -->
+<section class="invoice-table" id="invoices">
+  <h2>Pending invoices</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Invoice</th>
+        <th class="invoice-table__amount">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="invoice-table__row--paid">
+        <td>INV-1001</td>
+        <td class="invoice-table__amount">120.00</td>
+      </tr>
+    </tbody>
+  </table>
+  <script>
+    // Charges the selected invoice via StripeClient.
+    function chargeSelected(invoiceId) {
+      return window.StripeClient.charge(invoiceId);
+    }
+  </script>
+</section>

@@ -1,0 +1,21 @@
+# Billing service configuration read by StripePaymentProcessor.
+[service]
+name = "billing"
+port = 8080
+
+[payments]
+processor = "StripePaymentProcessor"
+retry_attempts = 3
+timeout_ms = 5000
+
+[payments.stripe]
+api_base = "https://api.stripe.com/v1"
+webhook_path = "/hooks/stripe"
+
+[database]
+url = "postgres://localhost/billing"
+pool_size = 16
+
+[[migrations]]
+version = "0001"
+name = "create_invoices"

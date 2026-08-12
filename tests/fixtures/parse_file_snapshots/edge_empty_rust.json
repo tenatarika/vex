@@ -1,0 +1,13 @@
+{
+  "docs": [],
+  "parsed": {
+    "bound_refs": [],
+    "call_edges": [],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "empty.rs",
+    "refs": [],
+    "skeletons": [],
+    "symbols": []
+  }
+}

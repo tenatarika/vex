@@ -1,0 +1,157 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 2,
+      "name": "invoices"
+    },
+    {
+      "doc": null,
+      "line": 10,
+      "name": "idx_invoices_customer"
+    },
+    {
+      "doc": null,
+      "line": 12,
+      "name": "pending_invoices"
+    },
+    {
+      "doc": null,
+      "line": 17,
+      "name": "total_outstanding"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [],
+    "call_edges": [],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "tests/fixtures/sample.sql",
+    "refs": [
+      {
+        "context": "-- Billing schema consumed by the InvoiceRepository.",
+        "line": 1,
+        "name": "Billing"
+      },
+      {
+        "context": "-- Billing schema consumed by the InvoiceRepository.",
+        "line": 1,
+        "name": "InvoiceRepository"
+      },
+      {
+        "context": "customer_id BIGINT      NOT NULL,",
+        "line": 4,
+        "name": "customer_id"
+      },
+      {
+        "context": "created_at  TIMESTAMPTZ NOT NULL DEFAULT now()",
+        "line": 7,
+        "name": "created_at"
+      },
+      {
+        "context": "CREATE INDEX idx_invoices_customer ON invoices (customer_id);",
+        "line": 10,
+        "name": "idx_invoices_customer"
+      },
+      {
+        "context": "CREATE INDEX idx_invoices_customer ON invoices (customer_id);",
+        "line": 10,
+        "name": "customer_id"
+      },
+      {
+        "context": "CREATE VIEW pending_invoices AS",
+        "line": 12,
+        "name": "pending_invoices"
+      },
+      {
+        "context": "SELECT id, customer_id, amount",
+        "line": 13,
+        "name": "customer_id"
+      },
+      {
+        "context": "CREATE FUNCTION total_outstanding(target_customer BIGINT)",
+        "line": 17,
+        "name": "total_outstanding"
+      },
+      {
+        "context": "CREATE FUNCTION total_outstanding(target_customer BIGINT)",
+        "line": 17,
+        "name": "target_customer"
+      },
+      {
+        "context": "WHERE customer_id = target_customer",
+        "line": 21,
+        "name": "customer_id"
+      },
+      {
+        "context": "WHERE customer_id = target_customer",
+        "line": 21,
+        "name": "target_customer"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 7,
+        "has_block": true,
+        "ident": "invoices",
+        "kind": "create_table",
+        "parent_kind": "statement",
+        "start_row": 1
+      },
+      {
+        "end_row": 9,
+        "has_block": false,
+        "ident": "idx_invoices_customer",
+        "kind": "create_index",
+        "parent_kind": "statement",
+        "start_row": 9
+      },
+      {
+        "end_row": 14,
+        "has_block": false,
+        "ident": "pending_invoices",
+        "kind": "create_view",
+        "parent_kind": "statement",
+        "start_row": 11
+      },
+      {
+        "end_row": 22,
+        "has_block": true,
+        "ident": "total_outstanding",
+        "kind": "create_function",
+        "parent_kind": "statement",
+        "start_row": 16
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": "invoices",
+        "kind": "Class",
+        "line": 2,
+        "name": "invoices",
+        "signature": "invoices ("
+      },
+      {
+        "body_tokens": "customer_id invoices idx_invoices_customer",
+        "kind": "Property",
+        "line": 10,
+        "name": "idx_invoices_customer",
+        "signature": "CREATE INDEX idx_invoices_customer ON invoices (customer_id);"
+      },
+      {
+        "body_tokens": "pending_invoices",
+        "kind": "Class",
+        "line": 12,
+        "name": "pending_invoices",
+        "signature": "pending_invoices AS"
+      },
+      {
+        "body_tokens": "total_outstanding",
+        "kind": "Function",
+        "line": 17,
+        "name": "total_outstanding",
+        "signature": "total_outstanding(target_customer BIGINT)"
+      }
+    ]
+  }
+}

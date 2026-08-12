@@ -1,0 +1,338 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 1,
+      "name": "PaymentService"
+    },
+    {
+      "doc": null,
+      "line": 5,
+      "name": "PaymentGateway"
+    },
+    {
+      "doc": null,
+      "line": 9,
+      "name": "PaymentService"
+    },
+    {
+      "doc": null,
+      "line": 10,
+      "name": "new"
+    },
+    {
+      "doc": null,
+      "line": 10,
+      "name": "new"
+    },
+    {
+      "doc": null,
+      "line": 14,
+      "name": "process_payment"
+    },
+    {
+      "doc": null,
+      "line": 14,
+      "name": "process_payment"
+    },
+    {
+      "doc": null,
+      "line": 19,
+      "name": "TransactionStatus"
+    },
+    {
+      "doc": null,
+      "line": 25,
+      "name": "UserId"
+    },
+    {
+      "doc": null,
+      "line": 27,
+      "name": "MAX_RETRIES"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [
+      {
+        "col": 6,
+        "kind": "Type",
+        "line": 9,
+        "name": "PaymentService",
+        "target": {
+          "ModuleSymbol": 0
+        }
+      },
+      {
+        "col": 25,
+        "kind": "Type",
+        "line": 10,
+        "name": "Box",
+        "target": "Unresolved"
+      },
+      {
+        "col": 33,
+        "kind": "Type",
+        "line": 10,
+        "name": "PaymentGateway",
+        "target": {
+          "ModuleSymbol": 1
+        }
+      },
+      {
+        "col": 51,
+        "kind": "Type",
+        "line": 14,
+        "name": "Result",
+        "target": "Unresolved"
+      },
+      {
+        "col": 62,
+        "kind": "Type",
+        "line": 14,
+        "name": "String",
+        "target": "Unresolved"
+      }
+    ],
+    "call_edges": [
+      {
+        "callee_name": "charge",
+        "caller_fn_line": 14,
+        "caller_fn_name": "process_payment",
+        "line": 15
+      }
+    ],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "tests/fixtures/sample.rs",
+    "refs": [
+      {
+        "context": "pub struct PaymentService {",
+        "line": 1,
+        "name": "PaymentService"
+      },
+      {
+        "context": "gateway: Box<dyn PaymentGateway>,",
+        "line": 2,
+        "name": "Box"
+      },
+      {
+        "context": "gateway: Box<dyn PaymentGateway>,",
+        "line": 2,
+        "name": "PaymentGateway"
+      },
+      {
+        "context": "pub trait PaymentGateway {",
+        "line": 5,
+        "name": "PaymentGateway"
+      },
+      {
+        "context": "fn charge(&self, amount: u64) -> Result<(), String>;",
+        "line": 6,
+        "name": "Result"
+      },
+      {
+        "context": "fn charge(&self, amount: u64) -> Result<(), String>;",
+        "line": 6,
+        "name": "String"
+      },
+      {
+        "context": "impl PaymentService {",
+        "line": 9,
+        "name": "PaymentService"
+      },
+      {
+        "context": "pub fn new(gateway: Box<dyn PaymentGateway>) -> Self {",
+        "line": 10,
+        "name": "Box"
+      },
+      {
+        "context": "pub fn new(gateway: Box<dyn PaymentGateway>) -> Self {",
+        "line": 10,
+        "name": "PaymentGateway"
+      },
+      {
+        "context": "pub fn process_payment(&self, amount: u64) -> Result<(), String> {",
+        "line": 14,
+        "name": "process_payment"
+      },
+      {
+        "context": "pub fn process_payment(&self, amount: u64) -> Result<(), String> {",
+        "line": 14,
+        "name": "Result"
+      },
+      {
+        "context": "pub fn process_payment(&self, amount: u64) -> Result<(), String> {",
+        "line": 14,
+        "name": "String"
+      },
+      {
+        "context": "pub enum TransactionStatus {",
+        "line": 19,
+        "name": "TransactionStatus"
+      },
+      {
+        "context": "Pending,",
+        "line": 20,
+        "name": "Pending"
+      },
+      {
+        "context": "Completed,",
+        "line": 21,
+        "name": "Completed"
+      },
+      {
+        "context": "Failed,",
+        "line": 22,
+        "name": "Failed"
+      },
+      {
+        "context": "pub type UserId = u64;",
+        "line": 25,
+        "name": "UserId"
+      },
+      {
+        "context": "pub const MAX_RETRIES: u32 = 3;",
+        "line": 27,
+        "name": "MAX_RETRIES"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 2,
+        "has_block": true,
+        "ident": "PaymentService",
+        "kind": "struct_item",
+        "parent_kind": null,
+        "start_row": 0
+      },
+      {
+        "end_row": 6,
+        "has_block": true,
+        "ident": "PaymentGateway",
+        "kind": "trait_item",
+        "parent_kind": null,
+        "start_row": 4
+      },
+      {
+        "end_row": 16,
+        "has_block": true,
+        "ident": "PaymentService",
+        "kind": "impl_item",
+        "parent_kind": null,
+        "start_row": 8
+      },
+      {
+        "end_row": 11,
+        "has_block": true,
+        "ident": "new",
+        "kind": "function_item",
+        "parent_kind": "declaration_list",
+        "start_row": 9
+      },
+      {
+        "end_row": 15,
+        "has_block": true,
+        "ident": "process_payment",
+        "kind": "function_item",
+        "parent_kind": "declaration_list",
+        "start_row": 13
+      },
+      {
+        "end_row": 22,
+        "has_block": true,
+        "ident": "TransactionStatus",
+        "kind": "enum_item",
+        "parent_kind": null,
+        "start_row": 18
+      },
+      {
+        "end_row": 24,
+        "has_block": false,
+        "ident": "UserId",
+        "kind": "type_item",
+        "parent_kind": null,
+        "start_row": 24
+      },
+      {
+        "end_row": 26,
+        "has_block": false,
+        "ident": "MAX_RETRIES",
+        "kind": "const_item",
+        "parent_kind": null,
+        "start_row": 26
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": "PaymentGateway Box gateway PaymentService",
+        "kind": "Struct",
+        "line": 1,
+        "name": "PaymentService",
+        "signature": "pub struct PaymentService {"
+      },
+      {
+        "body_tokens": "String Result amount charge PaymentGateway",
+        "kind": "Trait",
+        "line": 5,
+        "name": "PaymentGateway",
+        "signature": "pub trait PaymentGateway {"
+      },
+      {
+        "body_tokens": "amount charge gateway String Result process_payment PaymentGateway Box PaymentService",
+        "kind": "Impl",
+        "line": 9,
+        "name": "PaymentService",
+        "signature": "impl PaymentService {"
+      },
+      {
+        "body_tokens": "gateway PaymentGateway Box",
+        "kind": "Method",
+        "line": 10,
+        "name": "new",
+        "signature": "pub fn new(gateway: Box<dyn PaymentGateway>) -> Self {"
+      },
+      {
+        "body_tokens": "gateway PaymentGateway Box",
+        "kind": "Function",
+        "line": 10,
+        "name": "new",
+        "signature": "pub fn new(gateway: Box<dyn PaymentGateway>) -> Self {"
+      },
+      {
+        "body_tokens": "amount charge gateway String Result process_payment",
+        "kind": "Method",
+        "line": 14,
+        "name": "process_payment",
+        "signature": "pub fn process_payment(&self, amount: u64) -> Result<(), String> {"
+      },
+      {
+        "body_tokens": "amount charge gateway String Result process_payment",
+        "kind": "Function",
+        "line": 14,
+        "name": "process_payment",
+        "signature": "pub fn process_payment(&self, amount: u64) -> Result<(), String> {"
+      },
+      {
+        "body_tokens": "Failed Completed Pending TransactionStatus",
+        "kind": "Enum",
+        "line": 19,
+        "name": "TransactionStatus",
+        "signature": "pub enum TransactionStatus {"
+      },
+      {
+        "body_tokens": "UserId",
+        "kind": "TypeAlias",
+        "line": 25,
+        "name": "UserId",
+        "signature": "pub type UserId = u64;"
+      },
+      {
+        "body_tokens": "MAX_RETRIES",
+        "kind": "Constant",
+        "line": 27,
+        "name": "MAX_RETRIES",
+        "signature": "pub const MAX_RETRIES: u32 = 3;"
+      }
+    ]
+  }
+}

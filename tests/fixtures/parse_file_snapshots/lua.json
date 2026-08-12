@@ -1,0 +1,179 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 7,
+      "name": "new"
+    },
+    {
+      "doc": null,
+      "line": 13,
+      "name": "charge"
+    },
+    {
+      "doc": null,
+      "line": 17,
+      "name": "process"
+    },
+    {
+      "doc": null,
+      "line": 22,
+      "name": "process_batch"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [],
+    "call_edges": [],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "tests/fixtures/sample.lua",
+    "refs": [
+      {
+        "context": "-- Payment processing on top of the StripeClient binding.",
+        "line": 1,
+        "name": "Payment"
+      },
+      {
+        "context": "-- Payment processing on top of the StripeClient binding.",
+        "line": 1,
+        "name": "StripeClient"
+      },
+      {
+        "context": "local TransactionId = require(\"billing.transaction_id\")",
+        "line": 2,
+        "name": "TransactionId"
+      },
+      {
+        "context": "local TransactionId = require(\"billing.transaction_id\")",
+        "line": 2,
+        "name": "transaction_id"
+      },
+      {
+        "context": "local StripePaymentProcessor = {}",
+        "line": 4,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "StripePaymentProcessor.__index = StripePaymentProcessor",
+        "line": 5,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "StripePaymentProcessor.__index = StripePaymentProcessor",
+        "line": 5,
+        "name": "__index"
+      },
+      {
+        "context": "StripePaymentProcessor.__index = StripePaymentProcessor",
+        "line": 5,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "function StripePaymentProcessor.new(api_key)",
+        "line": 7,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "function StripePaymentProcessor.new(api_key)",
+        "line": 7,
+        "name": "api_key"
+      },
+      {
+        "context": "local self = setmetatable({}, StripePaymentProcessor)",
+        "line": 8,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "self.api_key = api_key",
+        "line": 9,
+        "name": "api_key"
+      },
+      {
+        "context": "self.api_key = api_key",
+        "line": 9,
+        "name": "api_key"
+      },
+      {
+        "context": "function StripePaymentProcessor:charge(amount)",
+        "line": 13,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "return TransactionId.of(amount)",
+        "line": 14,
+        "name": "TransactionId"
+      },
+      {
+        "context": "function StripePaymentProcessor:process(amount)",
+        "line": 17,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "print(\"charging via StripeClient\")",
+        "line": 18,
+        "name": "StripeClient"
+      },
+      {
+        "context": "local function process_batch(processor, invoices)",
+        "line": 22,
+        "name": "process_batch"
+      },
+      {
+        "context": "StripePaymentProcessor = StripePaymentProcessor,",
+        "line": 29,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "StripePaymentProcessor = StripePaymentProcessor,",
+        "line": 29,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "process_batch = process_batch,",
+        "line": 30,
+        "name": "process_batch"
+      },
+      {
+        "context": "process_batch = process_batch,",
+        "line": 30,
+        "name": "process_batch"
+      },
+      {
+        "context": "local TransactionId = require(\"billing.transaction_id\")",
+        "line": 2,
+        "name": "billing.transaction_id"
+      }
+    ],
+    "skeletons": [],
+    "symbols": [
+      {
+        "body_tokens": "StripePaymentProcessor",
+        "kind": "Function",
+        "line": 7,
+        "name": "new",
+        "signature": "StripePaymentProcessor.new(api_key)"
+      },
+      {
+        "body_tokens": "charge StripePaymentProcessor",
+        "kind": "Function",
+        "line": 13,
+        "name": "charge",
+        "signature": "StripePaymentProcessor:charge(amount)"
+      },
+      {
+        "body_tokens": "process StripePaymentProcessor",
+        "kind": "Function",
+        "line": 17,
+        "name": "process",
+        "signature": "StripePaymentProcessor:process(amount)"
+      },
+      {
+        "body_tokens": "amount invoice process processor invoices ipairs process_batch",
+        "kind": "Function",
+        "line": 22,
+        "name": "process_batch",
+        "signature": "local function process_batch(processor, invoices)"
+      }
+    ]
+  }
+}

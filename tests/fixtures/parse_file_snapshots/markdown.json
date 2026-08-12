@@ -1,0 +1,187 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 1,
+      "name": "Billing Architecture"
+    },
+    {
+      "doc": null,
+      "line": 6,
+      "name": "Payment flow"
+    },
+    {
+      "doc": null,
+      "line": 12,
+      "name": "Retries"
+    },
+    {
+      "doc": null,
+      "line": 17,
+      "name": "Storage"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [],
+    "call_edges": [],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "tests/fixtures/sample.md",
+    "refs": [
+      {
+        "context": "# Billing Architecture",
+        "line": 1,
+        "name": "Billing"
+      },
+      {
+        "context": "# Billing Architecture",
+        "line": 1,
+        "name": "Architecture"
+      },
+      {
+        "context": "The billing subsystem charges invoices through a `PaymentProcessor`",
+        "line": 3,
+        "name": "The"
+      },
+      {
+        "context": "The billing subsystem charges invoices through a `PaymentProcessor`",
+        "line": 3,
+        "name": "PaymentProcessor"
+      },
+      {
+        "context": "implementation. Production uses `StripePaymentProcessor`.",
+        "line": 4,
+        "name": "Production"
+      },
+      {
+        "context": "implementation. Production uses `StripePaymentProcessor`.",
+        "line": 4,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "## Payment flow",
+        "line": 6,
+        "name": "Payment"
+      },
+      {
+        "context": "1. `InvoiceService` loads the pending invoice.",
+        "line": 8,
+        "name": "InvoiceService"
+      },
+      {
+        "context": "2. `StripePaymentProcessor` charges the customer via StripeClient.",
+        "line": 9,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "2. `StripePaymentProcessor` charges the customer via StripeClient.",
+        "line": 9,
+        "name": "StripeClient"
+      },
+      {
+        "context": "3. `TransactionId` is persisted back onto the invoice row.",
+        "line": 10,
+        "name": "TransactionId"
+      },
+      {
+        "context": "### Retries",
+        "line": 12,
+        "name": "Retries"
+      },
+      {
+        "context": "Failed charges are retried up to three times by `Retryable`. A permanent",
+        "line": 14,
+        "name": "Failed"
+      },
+      {
+        "context": "Failed charges are retried up to three times by `Retryable`. A permanent",
+        "line": 14,
+        "name": "Retryable"
+      },
+      {
+        "context": "failure marks the invoice `failed` and emits a `PaymentFailed` event.",
+        "line": 15,
+        "name": "PaymentFailed"
+      },
+      {
+        "context": "## Storage",
+        "line": 17,
+        "name": "Storage"
+      },
+      {
+        "context": "Invoices live in the `invoices` table; see `InvoiceRepository` for the",
+        "line": 19,
+        "name": "Invoices"
+      },
+      {
+        "context": "Invoices live in the `invoices` table; see `InvoiceRepository` for the",
+        "line": 19,
+        "name": "InvoiceRepository"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 1,
+        "has_block": false,
+        "ident": "Billing Architecture",
+        "kind": "atx_heading",
+        "parent_kind": "section",
+        "start_row": 0
+      },
+      {
+        "end_row": 6,
+        "has_block": false,
+        "ident": "Payment flow",
+        "kind": "atx_heading",
+        "parent_kind": "section",
+        "start_row": 5
+      },
+      {
+        "end_row": 12,
+        "has_block": false,
+        "ident": "Retries",
+        "kind": "atx_heading",
+        "parent_kind": "section",
+        "start_row": 11
+      },
+      {
+        "end_row": 17,
+        "has_block": false,
+        "ident": "Storage",
+        "kind": "atx_heading",
+        "parent_kind": "section",
+        "start_row": 16
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": null,
+        "kind": "Heading",
+        "line": 1,
+        "name": "Billing Architecture",
+        "signature": "# Billing Architecture"
+      },
+      {
+        "body_tokens": null,
+        "kind": "Heading",
+        "line": 6,
+        "name": "Payment flow",
+        "signature": "## Payment flow"
+      },
+      {
+        "body_tokens": null,
+        "kind": "Heading",
+        "line": 12,
+        "name": "Retries",
+        "signature": "### Retries"
+      },
+      {
+        "body_tokens": null,
+        "kind": "Heading",
+        "line": 17,
+        "name": "Storage",
+        "signature": "## Storage"
+      }
+    ]
+  }
+}

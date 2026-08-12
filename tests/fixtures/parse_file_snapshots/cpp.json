@@ -1,0 +1,284 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 1,
+      "name": "<module:tests/fixtures/sample.cpp>"
+    },
+    {
+      "doc": "Implements PaymentGateway over the StripeClient SDK.",
+      "line": 8,
+      "name": "StripePaymentGateway"
+    },
+    {
+      "doc": null,
+      "line": 10,
+      "name": "StripePaymentGateway"
+    },
+    {
+      "doc": null,
+      "line": 13,
+      "name": "process"
+    },
+    {
+      "doc": null,
+      "line": 19,
+      "name": "charge"
+    },
+    {
+      "doc": null,
+      "line": 23,
+      "name": "log_attempt"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [
+      {
+        "col": 37,
+        "kind": "Type",
+        "line": 8,
+        "name": "PaymentGateway",
+        "target": "Unresolved"
+      },
+      {
+        "col": 5,
+        "kind": "Type",
+        "line": 13,
+        "name": "TransactionId",
+        "target": "Unresolved"
+      },
+      {
+        "col": 9,
+        "kind": "Value",
+        "line": 14,
+        "name": "log_attempt",
+        "target": "Unresolved"
+      },
+      {
+        "col": 5,
+        "kind": "Type",
+        "line": 19,
+        "name": "TransactionId",
+        "target": "Unresolved"
+      },
+      {
+        "col": 16,
+        "kind": "Value",
+        "line": 20,
+        "name": "TransactionId",
+        "target": "Unresolved"
+      },
+      {
+        "col": 10,
+        "kind": "Value",
+        "line": 23,
+        "name": "log_attempt",
+        "target": "Unresolved"
+      },
+      {
+        "col": 17,
+        "kind": "Value",
+        "line": 25,
+        "name": "api_key_",
+        "target": "Unresolved"
+      }
+    ],
+    "call_edges": [
+      {
+        "callee_name": "move",
+        "caller_fn_line": 10,
+        "caller_fn_name": "StripePaymentGateway",
+        "line": 11
+      },
+      {
+        "callee_name": "log_attempt",
+        "caller_fn_line": 0,
+        "caller_fn_name": "",
+        "line": 14
+      },
+      {
+        "callee_name": "charge",
+        "caller_fn_line": 0,
+        "caller_fn_name": "",
+        "line": 15
+      },
+      {
+        "callee_name": "of",
+        "caller_fn_line": 0,
+        "caller_fn_name": "",
+        "line": 20
+      }
+    ],
+    "cpp_includes": [
+      "payment_gateway.h",
+      "logger.h"
+    ],
+    "hierarchy_captures": [
+      {
+        "child_name": "StripePaymentGateway",
+        "kind": 0,
+        "line": 8,
+        "parent_name": "PaymentGateway"
+      }
+    ],
+    "path": "tests/fixtures/sample.cpp",
+    "refs": [
+      {
+        "context": "class StripePaymentGateway : public PaymentGateway {",
+        "line": 8,
+        "name": "StripePaymentGateway"
+      },
+      {
+        "context": "class StripePaymentGateway : public PaymentGateway {",
+        "line": 8,
+        "name": "PaymentGateway"
+      },
+      {
+        "context": "explicit StripePaymentGateway(std::string api_key)",
+        "line": 10,
+        "name": "StripePaymentGateway"
+      },
+      {
+        "context": "explicit StripePaymentGateway(std::string api_key)",
+        "line": 10,
+        "name": "api_key"
+      },
+      {
+        "context": ": api_key_(std::move(api_key)) {}",
+        "line": 11,
+        "name": "api_key_"
+      },
+      {
+        "context": ": api_key_(std::move(api_key)) {}",
+        "line": 11,
+        "name": "api_key"
+      },
+      {
+        "context": "TransactionId process(long amount) override {",
+        "line": 13,
+        "name": "TransactionId"
+      },
+      {
+        "context": "log_attempt(\"charging via StripeClient\");",
+        "line": 14,
+        "name": "log_attempt"
+      },
+      {
+        "context": "TransactionId charge(long amount) {",
+        "line": 19,
+        "name": "TransactionId"
+      },
+      {
+        "context": "void log_attempt(const std::string& message);",
+        "line": 23,
+        "name": "log_attempt"
+      },
+      {
+        "context": "std::string api_key_;",
+        "line": 25,
+        "name": "api_key_"
+      },
+      {
+        "context": "#include \"payment_gateway.h\"",
+        "line": 1,
+        "name": "payment_gateway.h"
+      },
+      {
+        "context": "#include \"logger.h\"",
+        "line": 2,
+        "name": "logger.h"
+      },
+      {
+        "context": "#include <string>",
+        "line": 3,
+        "name": "string"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 27,
+        "has_block": true,
+        "ident": "billing",
+        "kind": "namespace_definition",
+        "parent_kind": null,
+        "start_row": 4
+      },
+      {
+        "end_row": 25,
+        "has_block": true,
+        "ident": "StripePaymentGateway",
+        "kind": "class_specifier",
+        "parent_kind": "declaration_list",
+        "start_row": 7
+      },
+      {
+        "end_row": 10,
+        "has_block": true,
+        "ident": "StripePaymentGateway",
+        "kind": "function_definition",
+        "parent_kind": "field_declaration_list",
+        "start_row": 9
+      },
+      {
+        "end_row": 15,
+        "has_block": true,
+        "ident": "process",
+        "kind": "function_definition",
+        "parent_kind": "field_declaration_list",
+        "start_row": 12
+      },
+      {
+        "end_row": 20,
+        "has_block": true,
+        "ident": "charge",
+        "kind": "function_definition",
+        "parent_kind": "field_declaration_list",
+        "start_row": 18
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": null,
+        "kind": "Module",
+        "line": 1,
+        "name": "<module:tests/fixtures/sample.cpp>",
+        "signature": null
+      },
+      {
+        "body_tokens": "api_key_ string message log_attempt amount of charge TransactionId charging via stripeclient process api_key move StripePaymentGateway PaymentGateway",
+        "kind": "Class",
+        "line": 8,
+        "name": "StripePaymentGateway",
+        "signature": "class StripePaymentGateway : public PaymentGateway {"
+      },
+      {
+        "body_tokens": "api_key string StripePaymentGateway",
+        "kind": "Function",
+        "line": 10,
+        "name": "StripePaymentGateway",
+        "signature": "StripePaymentGateway(std::string api_key)"
+      },
+      {
+        "body_tokens": "amount process",
+        "kind": "Method",
+        "line": 13,
+        "name": "process",
+        "signature": "process(long amount) override {"
+      },
+      {
+        "body_tokens": "amount charge",
+        "kind": "Method",
+        "line": 19,
+        "name": "charge",
+        "signature": "charge(long amount) {"
+      },
+      {
+        "body_tokens": "message string log_attempt",
+        "kind": "Method",
+        "line": 23,
+        "name": "log_attempt",
+        "signature": "log_attempt(const std::string& message);"
+      }
+    ]
+  }
+}

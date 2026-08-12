@@ -1,0 +1,27 @@
+/* Invoice table styling used by the InvoiceList component. */
+:root {
+    --invoice-border: #d0d7de;
+    --invoice-paid: #1a7f37;
+}
+
+.invoice-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: 1px solid var(--invoice-border);
+}
+
+.invoice-table__row--paid {
+    color: var(--invoice-paid);
+    font-weight: 600;
+}
+
+.invoice-table__amount {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+    .invoice-table__amount {
+        text-align: left;
+    }
+}

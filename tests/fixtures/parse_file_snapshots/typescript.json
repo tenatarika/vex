@@ -1,0 +1,431 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 1,
+      "name": "UserService"
+    },
+    {
+      "doc": null,
+      "line": 2,
+      "name": "findById"
+    },
+    {
+      "doc": null,
+      "line": 3,
+      "name": "create"
+    },
+    {
+      "doc": null,
+      "line": 6,
+      "name": "UserServiceImpl"
+    },
+    {
+      "doc": null,
+      "line": 7,
+      "name": "constructor"
+    },
+    {
+      "doc": null,
+      "line": 9,
+      "name": "findById"
+    },
+    {
+      "doc": null,
+      "line": 13,
+      "name": "create"
+    },
+    {
+      "doc": null,
+      "line": 19,
+      "name": "UserId"
+    },
+    {
+      "doc": null,
+      "line": 23,
+      "name": "formatUser"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [
+      {
+        "col": 25,
+        "kind": "Type",
+        "line": 2,
+        "name": "Promise",
+        "target": "Unresolved"
+      },
+      {
+        "col": 33,
+        "kind": "Type",
+        "line": 2,
+        "name": "User",
+        "target": "Unresolved"
+      },
+      {
+        "col": 16,
+        "kind": "Type",
+        "line": 3,
+        "name": "CreateUserDto",
+        "target": "Unresolved"
+      },
+      {
+        "col": 32,
+        "kind": "Type",
+        "line": 3,
+        "name": "Promise",
+        "target": "Unresolved"
+      },
+      {
+        "col": 40,
+        "kind": "Type",
+        "line": 3,
+        "name": "User",
+        "target": "Unresolved"
+      },
+      {
+        "col": 41,
+        "kind": "Type",
+        "line": 6,
+        "name": "UserService",
+        "target": {
+          "ModuleSymbol": 0
+        }
+      },
+      {
+        "col": 38,
+        "kind": "Type",
+        "line": 7,
+        "name": "UserRepository",
+        "target": "Unresolved"
+      },
+      {
+        "col": 31,
+        "kind": "Type",
+        "line": 9,
+        "name": "Promise",
+        "target": "Unresolved"
+      },
+      {
+        "col": 39,
+        "kind": "Type",
+        "line": 9,
+        "name": "User",
+        "target": "Unresolved"
+      },
+      {
+        "col": 22,
+        "kind": "Value",
+        "line": 10,
+        "name": "findOne",
+        "target": "Unresolved"
+      },
+      {
+        "col": 22,
+        "kind": "Type",
+        "line": 13,
+        "name": "CreateUserDto",
+        "target": "Unresolved"
+      },
+      {
+        "col": 38,
+        "kind": "Type",
+        "line": 13,
+        "name": "Promise",
+        "target": "Unresolved"
+      },
+      {
+        "col": 46,
+        "kind": "Type",
+        "line": 13,
+        "name": "User",
+        "target": "Unresolved"
+      },
+      {
+        "col": 22,
+        "kind": "Value",
+        "line": 14,
+        "name": "User",
+        "target": "Unresolved"
+      },
+      {
+        "col": 27,
+        "kind": "Type",
+        "line": 23,
+        "name": "User",
+        "target": "Unresolved"
+      },
+      {
+        "col": 34,
+        "kind": "Type",
+        "line": 23,
+        "name": "UserDto",
+        "target": "Unresolved"
+      }
+    ],
+    "call_edges": [
+      {
+        "callee_name": "findOne",
+        "caller_fn_line": 9,
+        "caller_fn_name": "findById",
+        "line": 10
+      },
+      {
+        "callee_name": "save",
+        "caller_fn_line": 13,
+        "caller_fn_name": "create",
+        "line": 15
+      }
+    ],
+    "cpp_includes": [],
+    "hierarchy_captures": [
+      {
+        "child_name": "UserServiceImpl",
+        "kind": 0,
+        "line": 6,
+        "parent_name": "UserService"
+      }
+    ],
+    "path": "tests/fixtures/sample.ts",
+    "refs": [
+      {
+        "context": "export interface UserService {",
+        "line": 1,
+        "name": "UserService"
+      },
+      {
+        "context": "findById(id: string): Promise<User | null>;",
+        "line": 2,
+        "name": "findById"
+      },
+      {
+        "context": "findById(id: string): Promise<User | null>;",
+        "line": 2,
+        "name": "Promise"
+      },
+      {
+        "context": "findById(id: string): Promise<User | null>;",
+        "line": 2,
+        "name": "User"
+      },
+      {
+        "context": "create(data: CreateUserDto): Promise<User>;",
+        "line": 3,
+        "name": "CreateUserDto"
+      },
+      {
+        "context": "create(data: CreateUserDto): Promise<User>;",
+        "line": 3,
+        "name": "Promise"
+      },
+      {
+        "context": "create(data: CreateUserDto): Promise<User>;",
+        "line": 3,
+        "name": "User"
+      },
+      {
+        "context": "export class UserServiceImpl implements UserService {",
+        "line": 6,
+        "name": "UserServiceImpl"
+      },
+      {
+        "context": "export class UserServiceImpl implements UserService {",
+        "line": 6,
+        "name": "UserService"
+      },
+      {
+        "context": "constructor(private readonly repo: UserRepository) {}",
+        "line": 7,
+        "name": "UserRepository"
+      },
+      {
+        "context": "async findById(id: string): Promise<User | null> {",
+        "line": 9,
+        "name": "findById"
+      },
+      {
+        "context": "async findById(id: string): Promise<User | null> {",
+        "line": 9,
+        "name": "Promise"
+      },
+      {
+        "context": "async findById(id: string): Promise<User | null> {",
+        "line": 9,
+        "name": "User"
+      },
+      {
+        "context": "return this.repo.findOne(id);",
+        "line": 10,
+        "name": "findOne"
+      },
+      {
+        "context": "async create(data: CreateUserDto): Promise<User> {",
+        "line": 13,
+        "name": "CreateUserDto"
+      },
+      {
+        "context": "async create(data: CreateUserDto): Promise<User> {",
+        "line": 13,
+        "name": "Promise"
+      },
+      {
+        "context": "async create(data: CreateUserDto): Promise<User> {",
+        "line": 13,
+        "name": "User"
+      },
+      {
+        "context": "const user = new User(data);",
+        "line": 14,
+        "name": "User"
+      },
+      {
+        "context": "export type UserId = string;",
+        "line": 19,
+        "name": "UserId"
+      },
+      {
+        "context": "export const MAX_PAGE_SIZE = 100;",
+        "line": 21,
+        "name": "MAX_PAGE_SIZE"
+      },
+      {
+        "context": "const formatUser = (user: User): UserDto => ({",
+        "line": 23,
+        "name": "formatUser"
+      },
+      {
+        "context": "const formatUser = (user: User): UserDto => ({",
+        "line": 23,
+        "name": "User"
+      },
+      {
+        "context": "const formatUser = (user: User): UserDto => ({",
+        "line": 23,
+        "name": "UserDto"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 3,
+        "has_block": true,
+        "ident": "UserService",
+        "kind": "interface_declaration",
+        "parent_kind": "export_statement",
+        "start_row": 0
+      },
+      {
+        "end_row": 16,
+        "has_block": true,
+        "ident": "UserServiceImpl",
+        "kind": "class_declaration",
+        "parent_kind": "export_statement",
+        "start_row": 5
+      },
+      {
+        "end_row": 6,
+        "has_block": true,
+        "ident": "constructor",
+        "kind": "method_definition",
+        "parent_kind": "class_body",
+        "start_row": 6
+      },
+      {
+        "end_row": 10,
+        "has_block": true,
+        "ident": "findById",
+        "kind": "method_definition",
+        "parent_kind": "class_body",
+        "start_row": 8
+      },
+      {
+        "end_row": 15,
+        "has_block": true,
+        "ident": "create",
+        "kind": "method_definition",
+        "parent_kind": "class_body",
+        "start_row": 12
+      },
+      {
+        "end_row": 18,
+        "has_block": false,
+        "ident": "UserId",
+        "kind": "type_alias_declaration",
+        "parent_kind": "export_statement",
+        "start_row": 18
+      },
+      {
+        "end_row": 26,
+        "has_block": false,
+        "ident": null,
+        "kind": "arrow_function",
+        "parent_kind": "variable_declarator",
+        "start_row": 22
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": "User Promise CreateUserDto data create id findById UserService",
+        "kind": "Interface",
+        "line": 1,
+        "name": "UserService",
+        "signature": "interface UserService {"
+      },
+      {
+        "body_tokens": "User Promise id findById",
+        "kind": "Method",
+        "line": 2,
+        "name": "findById",
+        "signature": "findById(id: string): Promise<User | null>;"
+      },
+      {
+        "body_tokens": "User Promise CreateUserDto data create",
+        "kind": "Method",
+        "line": 3,
+        "name": "create",
+        "signature": "create(data: CreateUserDto): Promise<User>;"
+      },
+      {
+        "body_tokens": "user save repo data User Promise CreateUserDto create id findOne findById UserRepository constructor UserService UserServiceImpl",
+        "kind": "Class",
+        "line": 6,
+        "name": "UserServiceImpl",
+        "signature": "class UserServiceImpl implements UserService {"
+      },
+      {
+        "body_tokens": "UserRepository repo constructor",
+        "kind": "Method",
+        "line": 7,
+        "name": "constructor",
+        "signature": "constructor(private readonly repo: UserRepository) {}"
+      },
+      {
+        "body_tokens": "id findOne repo User Promise findById",
+        "kind": "Method",
+        "line": 9,
+        "name": "findById",
+        "signature": "async findById(id: string): Promise<User | null> {"
+      },
+      {
+        "body_tokens": "user save repo data User Promise CreateUserDto create",
+        "kind": "Method",
+        "line": 13,
+        "name": "create",
+        "signature": "async create(data: CreateUserDto): Promise<User> {"
+      },
+      {
+        "body_tokens": "UserId",
+        "kind": "TypeAlias",
+        "line": 19,
+        "name": "UserId",
+        "signature": "type UserId = string;"
+      },
+      {
+        "body_tokens": "email user name id UserDto User formatUser",
+        "kind": "Function",
+        "line": 23,
+        "name": "formatUser",
+        "signature": "formatUser = (user: User): UserDto => ({"
+      }
+    ]
+  }
+}

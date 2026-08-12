@@ -1,0 +1,36 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 1,
+      "name": "hello"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [],
+    "call_edges": [],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "bom.py",
+    "refs": [],
+    "skeletons": [
+      {
+        "end_row": 0,
+        "has_block": true,
+        "ident": "hello",
+        "kind": "function_definition",
+        "parent_kind": null,
+        "start_row": 0
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": "hello",
+        "kind": "Function",
+        "line": 1,
+        "name": "hello",
+        "signature": "def hello(): pass"
+      }
+    ]
+  }
+}

@@ -1,0 +1,334 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 5,
+      "name": "IPaymentProcessor"
+    },
+    {
+      "doc": null,
+      "line": 7,
+      "name": "Process"
+    },
+    {
+      "doc": "Implements IPaymentProcessor against the StripeClient SDK.",
+      "line": 11,
+      "name": "StripePaymentProcessor"
+    },
+    {
+      "doc": null,
+      "line": 20,
+      "name": "Process"
+    },
+    {
+      "doc": null,
+      "line": 26,
+      "name": "Charge"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [
+      {
+        "col": 11,
+        "kind": "Value",
+        "line": 3,
+        "name": "App",
+        "target": "Unresolved"
+      },
+      {
+        "col": 15,
+        "kind": "Value",
+        "line": 3,
+        "name": "Billing",
+        "target": "Unresolved"
+      },
+      {
+        "col": 43,
+        "kind": "Value",
+        "line": 11,
+        "name": "IPaymentProcessor",
+        "target": {
+          "ModuleSymbol": 0
+        }
+      },
+      {
+        "col": 13,
+        "kind": "Value",
+        "line": 17,
+        "name": "_apiKey",
+        "target": {
+          "Local": 3
+        }
+      },
+      {
+        "col": 23,
+        "kind": "Value",
+        "line": 17,
+        "name": "apiKey",
+        "target": {
+          "Local": 4
+        }
+      },
+      {
+        "col": 13,
+        "kind": "Value",
+        "line": 22,
+        "name": "Console",
+        "target": "Unresolved"
+      },
+      {
+        "col": 21,
+        "kind": "Value",
+        "line": 22,
+        "name": "WriteLine",
+        "target": "Unresolved"
+      },
+      {
+        "col": 20,
+        "kind": "Value",
+        "line": 23,
+        "name": "Charge",
+        "target": "Unresolved"
+      },
+      {
+        "col": 54,
+        "kind": "Value",
+        "line": 26,
+        "name": "TransactionId",
+        "target": "Unresolved"
+      }
+    ],
+    "call_edges": [
+      {
+        "callee_name": "WriteLine",
+        "caller_fn_line": 20,
+        "caller_fn_name": "Process",
+        "line": 22
+      },
+      {
+        "callee_name": "Charge",
+        "caller_fn_line": 20,
+        "caller_fn_name": "Process",
+        "line": 23
+      },
+      {
+        "callee_name": "Of",
+        "caller_fn_line": 26,
+        "caller_fn_name": "Charge",
+        "line": 26
+      }
+    ],
+    "cpp_includes": [],
+    "hierarchy_captures": [
+      {
+        "child_name": "StripePaymentProcessor",
+        "kind": 0,
+        "line": 11,
+        "parent_name": "IPaymentProcessor"
+      }
+    ],
+    "path": "tests/fixtures/sample.cs",
+    "refs": [
+      {
+        "context": "using System;",
+        "line": 1,
+        "name": "System"
+      },
+      {
+        "context": "namespace App.Billing",
+        "line": 3,
+        "name": "App"
+      },
+      {
+        "context": "namespace App.Billing",
+        "line": 3,
+        "name": "Billing"
+      },
+      {
+        "context": "public interface IPaymentProcessor",
+        "line": 5,
+        "name": "IPaymentProcessor"
+      },
+      {
+        "context": "TransactionId Process(long amount);",
+        "line": 7,
+        "name": "TransactionId"
+      },
+      {
+        "context": "TransactionId Process(long amount);",
+        "line": 7,
+        "name": "Process"
+      },
+      {
+        "context": "public class StripePaymentProcessor : IPaymentProcessor",
+        "line": 11,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "public class StripePaymentProcessor : IPaymentProcessor",
+        "line": 11,
+        "name": "IPaymentProcessor"
+      },
+      {
+        "context": "private readonly string _apiKey;",
+        "line": 13,
+        "name": "_apiKey"
+      },
+      {
+        "context": "public StripePaymentProcessor(string apiKey)",
+        "line": 15,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "public StripePaymentProcessor(string apiKey)",
+        "line": 15,
+        "name": "apiKey"
+      },
+      {
+        "context": "_apiKey = apiKey;",
+        "line": 17,
+        "name": "_apiKey"
+      },
+      {
+        "context": "_apiKey = apiKey;",
+        "line": 17,
+        "name": "apiKey"
+      },
+      {
+        "context": "public TransactionId Process(long amount)",
+        "line": 20,
+        "name": "TransactionId"
+      },
+      {
+        "context": "public TransactionId Process(long amount)",
+        "line": 20,
+        "name": "Process"
+      },
+      {
+        "context": "Console.WriteLine(\"charging via StripeClient\");",
+        "line": 22,
+        "name": "Console"
+      },
+      {
+        "context": "Console.WriteLine(\"charging via StripeClient\");",
+        "line": 22,
+        "name": "WriteLine"
+      },
+      {
+        "context": "return Charge(amount);",
+        "line": 23,
+        "name": "Charge"
+      },
+      {
+        "context": "private TransactionId Charge(long amount) => TransactionId.Of(amount);",
+        "line": 26,
+        "name": "TransactionId"
+      },
+      {
+        "context": "private TransactionId Charge(long amount) => TransactionId.Of(amount);",
+        "line": 26,
+        "name": "Charge"
+      },
+      {
+        "context": "private TransactionId Charge(long amount) => TransactionId.Of(amount);",
+        "line": 26,
+        "name": "TransactionId"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 27,
+        "has_block": true,
+        "ident": "App.Billing",
+        "kind": "namespace_declaration",
+        "parent_kind": null,
+        "start_row": 2
+      },
+      {
+        "end_row": 7,
+        "has_block": true,
+        "ident": "IPaymentProcessor",
+        "kind": "interface_declaration",
+        "parent_kind": "declaration_list",
+        "start_row": 4
+      },
+      {
+        "end_row": 6,
+        "has_block": false,
+        "ident": "Process",
+        "kind": "method_declaration",
+        "parent_kind": "declaration_list",
+        "start_row": 6
+      },
+      {
+        "end_row": 26,
+        "has_block": true,
+        "ident": "StripePaymentProcessor",
+        "kind": "class_declaration",
+        "parent_kind": "declaration_list",
+        "start_row": 10
+      },
+      {
+        "end_row": 17,
+        "has_block": true,
+        "ident": "StripePaymentProcessor",
+        "kind": "constructor_declaration",
+        "parent_kind": "declaration_list",
+        "start_row": 14
+      },
+      {
+        "end_row": 23,
+        "has_block": true,
+        "ident": "Process",
+        "kind": "method_declaration",
+        "parent_kind": "declaration_list",
+        "start_row": 19
+      },
+      {
+        "end_row": 25,
+        "has_block": false,
+        "ident": "Charge",
+        "kind": "method_declaration",
+        "parent_kind": "declaration_list",
+        "start_row": 25
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": "amount Process TransactionId IPaymentProcessor",
+        "kind": "Interface",
+        "line": 5,
+        "name": "IPaymentProcessor",
+        "signature": "public interface IPaymentProcessor"
+      },
+      {
+        "body_tokens": "amount Process TransactionId",
+        "kind": "Function",
+        "line": 7,
+        "name": "Process",
+        "signature": "TransactionId Process(long amount);"
+      },
+      {
+        "body_tokens": "amount Of TransactionId Charge WriteLine Console Process apiKey _apiKey StripePaymentProcessor IPaymentProcessor",
+        "kind": "Class",
+        "line": 11,
+        "name": "StripePaymentProcessor",
+        "signature": "public class StripePaymentProcessor : IPaymentProcessor"
+      },
+      {
+        "body_tokens": "amount Charge WriteLine Console Process TransactionId",
+        "kind": "Function",
+        "line": 20,
+        "name": "Process",
+        "signature": "public TransactionId Process(long amount)"
+      },
+      {
+        "body_tokens": "amount Of TransactionId Charge",
+        "kind": "Function",
+        "line": 26,
+        "name": "Charge",
+        "signature": "private TransactionId Charge(long amount) => TransactionId.Of(amount);"
+      }
+    ]
+  }
+}

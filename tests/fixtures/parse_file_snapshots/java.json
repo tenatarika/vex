@@ -1,0 +1,366 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 5,
+      "name": "PaymentProcessor"
+    },
+    {
+      "doc": null,
+      "line": 6,
+      "name": "process"
+    },
+    {
+      "doc": "Implements PaymentProcessor over the StripeClient SDK.",
+      "line": 10,
+      "name": "StripePaymentProcessor"
+    },
+    {
+      "doc": null,
+      "line": 14,
+      "name": "StripePaymentProcessor"
+    },
+    {
+      "doc": null,
+      "line": 20,
+      "name": "process"
+    },
+    {
+      "doc": null,
+      "line": 25,
+      "name": "charge"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [
+      {
+        "col": 5,
+        "kind": "Type",
+        "line": 6,
+        "name": "TransactionId",
+        "target": "Unresolved"
+      },
+      {
+        "col": 48,
+        "kind": "Type",
+        "line": 10,
+        "name": "PaymentProcessor",
+        "target": {
+          "ModuleSymbol": 0
+        }
+      },
+      {
+        "col": 19,
+        "kind": "Type",
+        "line": 11,
+        "name": "String",
+        "target": "Unresolved"
+      },
+      {
+        "col": 19,
+        "kind": "Type",
+        "line": 12,
+        "name": "Logger",
+        "target": {
+          "Imported": {
+            "segments": [
+              "com",
+              "app",
+              "core",
+              "Logger"
+            ]
+          }
+        }
+      },
+      {
+        "col": 35,
+        "kind": "Type",
+        "line": 14,
+        "name": "String",
+        "target": "Unresolved"
+      },
+      {
+        "col": 50,
+        "kind": "Type",
+        "line": 14,
+        "name": "Logger",
+        "target": {
+          "Imported": {
+            "segments": [
+              "com",
+              "app",
+              "core",
+              "Logger"
+            ]
+          }
+        }
+      },
+      {
+        "col": 14,
+        "kind": "Value",
+        "line": 15,
+        "name": "apiKey",
+        "target": {
+          "Local": 4
+        }
+      },
+      {
+        "col": 23,
+        "kind": "Value",
+        "line": 15,
+        "name": "apiKey",
+        "target": {
+          "Local": 4
+        }
+      },
+      {
+        "col": 12,
+        "kind": "Type",
+        "line": 20,
+        "name": "TransactionId",
+        "target": "Unresolved"
+      },
+      {
+        "col": 13,
+        "kind": "Type",
+        "line": 25,
+        "name": "TransactionId",
+        "target": "Unresolved"
+      },
+      {
+        "col": 16,
+        "kind": "Value",
+        "line": 26,
+        "name": "TransactionId",
+        "target": "Unresolved"
+      }
+    ],
+    "call_edges": [
+      {
+        "callee_name": "Override",
+        "caller_fn_line": 20,
+        "caller_fn_name": "process",
+        "line": 19
+      },
+      {
+        "callee_name": "info",
+        "caller_fn_line": 20,
+        "caller_fn_name": "process",
+        "line": 21
+      },
+      {
+        "callee_name": "charge",
+        "caller_fn_line": 20,
+        "caller_fn_name": "process",
+        "line": 22
+      },
+      {
+        "callee_name": "of",
+        "caller_fn_line": 25,
+        "caller_fn_name": "charge",
+        "line": 26
+      }
+    ],
+    "cpp_includes": [],
+    "hierarchy_captures": [
+      {
+        "child_name": "StripePaymentProcessor",
+        "kind": 0,
+        "line": 10,
+        "parent_name": "PaymentProcessor"
+      }
+    ],
+    "path": "tests/fixtures/sample.java",
+    "refs": [
+      {
+        "context": "import com.app.core.Logger;",
+        "line": 3,
+        "name": "Logger"
+      },
+      {
+        "context": "public interface PaymentProcessor {",
+        "line": 5,
+        "name": "PaymentProcessor"
+      },
+      {
+        "context": "TransactionId process(long amount);",
+        "line": 6,
+        "name": "TransactionId"
+      },
+      {
+        "context": "public class StripePaymentProcessor implements PaymentProcessor {",
+        "line": 10,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "public class StripePaymentProcessor implements PaymentProcessor {",
+        "line": 10,
+        "name": "PaymentProcessor"
+      },
+      {
+        "context": "private final String apiKey;",
+        "line": 11,
+        "name": "String"
+      },
+      {
+        "context": "private final String apiKey;",
+        "line": 11,
+        "name": "apiKey"
+      },
+      {
+        "context": "private final Logger logger;",
+        "line": 12,
+        "name": "Logger"
+      },
+      {
+        "context": "public StripePaymentProcessor(String apiKey, Logger logger) {",
+        "line": 14,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "public StripePaymentProcessor(String apiKey, Logger logger) {",
+        "line": 14,
+        "name": "String"
+      },
+      {
+        "context": "public StripePaymentProcessor(String apiKey, Logger logger) {",
+        "line": 14,
+        "name": "apiKey"
+      },
+      {
+        "context": "public StripePaymentProcessor(String apiKey, Logger logger) {",
+        "line": 14,
+        "name": "Logger"
+      },
+      {
+        "context": "this.apiKey = apiKey;",
+        "line": 15,
+        "name": "apiKey"
+      },
+      {
+        "context": "this.apiKey = apiKey;",
+        "line": 15,
+        "name": "apiKey"
+      },
+      {
+        "context": "@Override",
+        "line": 19,
+        "name": "Override"
+      },
+      {
+        "context": "public TransactionId process(long amount) {",
+        "line": 20,
+        "name": "TransactionId"
+      },
+      {
+        "context": "private TransactionId charge(long amount) {",
+        "line": 25,
+        "name": "TransactionId"
+      },
+      {
+        "context": "return TransactionId.of(amount);",
+        "line": 26,
+        "name": "TransactionId"
+      },
+      {
+        "context": "import com.app.core.Logger;",
+        "line": 3,
+        "name": "Logger"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 6,
+        "has_block": true,
+        "ident": "PaymentProcessor",
+        "kind": "interface_declaration",
+        "parent_kind": null,
+        "start_row": 4
+      },
+      {
+        "end_row": 5,
+        "has_block": false,
+        "ident": "process",
+        "kind": "method_declaration",
+        "parent_kind": "interface_body",
+        "start_row": 5
+      },
+      {
+        "end_row": 27,
+        "has_block": true,
+        "ident": "StripePaymentProcessor",
+        "kind": "class_declaration",
+        "parent_kind": null,
+        "start_row": 9
+      },
+      {
+        "end_row": 16,
+        "has_block": true,
+        "ident": "StripePaymentProcessor",
+        "kind": "constructor_declaration",
+        "parent_kind": "class_body",
+        "start_row": 13
+      },
+      {
+        "end_row": 22,
+        "has_block": true,
+        "ident": "process",
+        "kind": "method_declaration",
+        "parent_kind": "class_body",
+        "start_row": 18
+      },
+      {
+        "end_row": 26,
+        "has_block": true,
+        "ident": "charge",
+        "kind": "method_declaration",
+        "parent_kind": "class_body",
+        "start_row": 24
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": "amount process TransactionId PaymentProcessor",
+        "kind": "Interface",
+        "line": 5,
+        "name": "PaymentProcessor",
+        "signature": "public interface PaymentProcessor {"
+      },
+      {
+        "body_tokens": "amount process TransactionId",
+        "kind": "Function",
+        "line": 6,
+        "name": "process",
+        "signature": "TransactionId process(long amount);"
+      },
+      {
+        "body_tokens": "amount of TransactionId charge charging via stripeclient info logger process Override apiKey Logger String StripePaymentProcessor PaymentProcessor",
+        "kind": "Class",
+        "line": 10,
+        "name": "StripePaymentProcessor",
+        "signature": "public class StripePaymentProcessor implements PaymentProcessor {"
+      },
+      {
+        "body_tokens": "logger apiKey Logger String StripePaymentProcessor",
+        "kind": "Function",
+        "line": 14,
+        "name": "StripePaymentProcessor",
+        "signature": "public StripePaymentProcessor(String apiKey, Logger logger) {"
+      },
+      {
+        "body_tokens": "amount charge charging via stripeclient info logger process TransactionId Override",
+        "kind": "Function",
+        "line": 20,
+        "name": "process",
+        "signature": "@Override"
+      },
+      {
+        "body_tokens": "amount of TransactionId charge",
+        "kind": "Function",
+        "line": 25,
+        "name": "charge",
+        "signature": "private TransactionId charge(long amount) {"
+      }
+    ]
+  }
+}

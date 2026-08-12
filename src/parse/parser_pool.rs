@@ -65,6 +65,39 @@ thread_local! {
     static PARSERS: RefCell<HashMap<Language, Parser>> = RefCell::new(HashMap::new());
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only tripwire counter for [`parse_text`] invocations
+    /// (`.claude/Task/PERF-parse-once-shared-tree.md`, commit 0).
+    ///
+    /// `parse_file` runs one full parse per extractor today; the shared-tree
+    /// refactor drives that to exactly one. This counter pins the current
+    /// number at every step so a future extractor cannot silently reintroduce
+    /// a parse.
+    ///
+    /// Thread-local rather than a global `AtomicU64` because `cargo test` runs
+    /// tests in-process on parallel threads, where a global counter would leak
+    /// across concurrently running tests. (Under `cargo nextest`'s
+    /// process-per-test model a global would be fine — `cargo test` is the
+    /// constraint, and `cargo test --doc` still runs.) Parses inside rayon
+    /// workers count against their own worker's counter, so only read this
+    /// from the same thread that did the parsing.
+    static PARSE_CALLS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Number of [`parse_text`] calls made on the current thread since the last
+/// [`reset_parse_call_count`].
+#[cfg(test)]
+pub(crate) fn parse_call_count() -> u64 {
+    PARSE_CALLS.with(Cell::get)
+}
+
+/// Zero the current thread's [`parse_text`] counter.
+#[cfg(test)]
+pub(crate) fn reset_parse_call_count() {
+    PARSE_CALLS.with(|c| c.set(0));
+}
+
 /// Borrow a `tree_sitter::Parser` already configured for `lang` and invoke
 /// `f` with it. The parser is owned by the calling thread; the same
 /// thread always sees the same `Parser` instance for a given `Language`.
@@ -110,6 +143,9 @@ where
 /// timeout or a genuine parse failure; callers already treat a parse error
 /// as "skip this file / fall back", so a timed-out file is simply skipped.
 pub(crate) fn parse_text(lang: Language, content: &str) -> Result<Tree> {
+    #[cfg(test)]
+    PARSE_CALLS.with(|c| c.set(c.get().saturating_add(1)));
+
     with_parser(lang, |parser| {
         let bytes = content.as_bytes();
         let len = bytes.len();

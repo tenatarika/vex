@@ -1,0 +1,388 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 3,
+      "name": "PaymentProcessor"
+    },
+    {
+      "doc": null,
+      "line": 4,
+      "name": "process"
+    },
+    {
+      "doc": null,
+      "line": 7,
+      "name": "StripePaymentProcessor"
+    },
+    {
+      "doc": null,
+      "line": 12,
+      "name": "process"
+    },
+    {
+      "doc": null,
+      "line": 18,
+      "name": "PaymentDefaults"
+    },
+    {
+      "doc": null,
+      "line": 19,
+      "name": "CURRENCY"
+    },
+    {
+      "doc": null,
+      "line": 20,
+      "name": "MAX_AMOUNT"
+    },
+    {
+      "doc": null,
+      "line": 23,
+      "name": "TransactionId"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [
+      {
+        "col": 25,
+        "kind": "Type",
+        "line": 4,
+        "name": "Long",
+        "target": "Unresolved"
+      },
+      {
+        "col": 32,
+        "kind": "Type",
+        "line": 4,
+        "name": "Result",
+        "target": "Unresolved"
+      },
+      {
+        "col": 39,
+        "kind": "Type",
+        "line": 4,
+        "name": "TransactionId",
+        "target": "Unresolved"
+      },
+      {
+        "col": 25,
+        "kind": "Type",
+        "line": 8,
+        "name": "String",
+        "target": "Unresolved"
+      },
+      {
+        "col": 25,
+        "kind": "Type",
+        "line": 9,
+        "name": "Logger",
+        "target": "Unresolved"
+      },
+      {
+        "col": 5,
+        "kind": "Type",
+        "line": 10,
+        "name": "PaymentProcessor",
+        "target": {
+          "ModuleSymbol": 0
+        }
+      },
+      {
+        "col": 34,
+        "kind": "Type",
+        "line": 12,
+        "name": "Long",
+        "target": "Unresolved"
+      },
+      {
+        "col": 41,
+        "kind": "Type",
+        "line": 12,
+        "name": "Result",
+        "target": "Unresolved"
+      },
+      {
+        "col": 48,
+        "kind": "Type",
+        "line": 12,
+        "name": "TransactionId",
+        "target": "Unresolved"
+      },
+      {
+        "col": 16,
+        "kind": "Value",
+        "line": 14,
+        "name": "runCatching",
+        "target": "Unresolved"
+      },
+      {
+        "col": 30,
+        "kind": "Value",
+        "line": 14,
+        "name": "stripeApi",
+        "target": "Unresolved"
+      },
+      {
+        "col": 37,
+        "kind": "Type",
+        "line": 23,
+        "name": "String",
+        "target": "Unresolved"
+      }
+    ],
+    "call_edges": [
+      {
+        "callee_name": "info",
+        "caller_fn_line": 12,
+        "caller_fn_name": "process",
+        "line": 13
+      },
+      {
+        "callee_name": "runCatching",
+        "caller_fn_line": 12,
+        "caller_fn_name": "process",
+        "line": 14
+      },
+      {
+        "callee_name": "charge",
+        "caller_fn_line": 12,
+        "caller_fn_name": "process",
+        "line": 14
+      }
+    ],
+    "cpp_includes": [],
+    "hierarchy_captures": [
+      {
+        "child_name": "StripePaymentProcessor",
+        "kind": 0,
+        "line": 7,
+        "parent_name": "PaymentProcessor"
+      }
+    ],
+    "path": "tests/fixtures/sample.kt",
+    "refs": [
+      {
+        "context": "interface PaymentProcessor {",
+        "line": 3,
+        "name": "PaymentProcessor"
+      },
+      {
+        "context": "fun process(amount: Long): Result<TransactionId>",
+        "line": 4,
+        "name": "Long"
+      },
+      {
+        "context": "fun process(amount: Long): Result<TransactionId>",
+        "line": 4,
+        "name": "Result"
+      },
+      {
+        "context": "fun process(amount: Long): Result<TransactionId>",
+        "line": 4,
+        "name": "TransactionId"
+      },
+      {
+        "context": "class StripePaymentProcessor(",
+        "line": 7,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "private val apiKey: String,",
+        "line": 8,
+        "name": "apiKey"
+      },
+      {
+        "context": "private val apiKey: String,",
+        "line": 8,
+        "name": "String"
+      },
+      {
+        "context": "private val logger: Logger,",
+        "line": 9,
+        "name": "Logger"
+      },
+      {
+        "context": ") : PaymentProcessor {",
+        "line": 10,
+        "name": "PaymentProcessor"
+      },
+      {
+        "context": "override fun process(amount: Long): Result<TransactionId> {",
+        "line": 12,
+        "name": "Long"
+      },
+      {
+        "context": "override fun process(amount: Long): Result<TransactionId> {",
+        "line": 12,
+        "name": "Result"
+      },
+      {
+        "context": "override fun process(amount: Long): Result<TransactionId> {",
+        "line": 12,
+        "name": "TransactionId"
+      },
+      {
+        "context": "return runCatching { stripeApi.charge(amount) }",
+        "line": 14,
+        "name": "runCatching"
+      },
+      {
+        "context": "return runCatching { stripeApi.charge(amount) }",
+        "line": 14,
+        "name": "stripeApi"
+      },
+      {
+        "context": "object PaymentDefaults {",
+        "line": 18,
+        "name": "PaymentDefaults"
+      },
+      {
+        "context": "val MAX_AMOUNT = 1_000_000L",
+        "line": 20,
+        "name": "MAX_AMOUNT"
+      },
+      {
+        "context": "data class TransactionId(val value: String)",
+        "line": 23,
+        "name": "TransactionId"
+      },
+      {
+        "context": "data class TransactionId(val value: String)",
+        "line": 23,
+        "name": "String"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 4,
+        "has_block": true,
+        "ident": "PaymentProcessor",
+        "kind": "class_declaration",
+        "parent_kind": null,
+        "start_row": 2
+      },
+      {
+        "end_row": 3,
+        "has_block": false,
+        "ident": "process",
+        "kind": "function_declaration",
+        "parent_kind": "class_body",
+        "start_row": 3
+      },
+      {
+        "end_row": 15,
+        "has_block": true,
+        "ident": "StripePaymentProcessor",
+        "kind": "class_declaration",
+        "parent_kind": null,
+        "start_row": 6
+      },
+      {
+        "end_row": 14,
+        "has_block": true,
+        "ident": "process",
+        "kind": "function_declaration",
+        "parent_kind": "class_body",
+        "start_row": 11
+      },
+      {
+        "end_row": 13,
+        "has_block": false,
+        "ident": null,
+        "kind": "lambda_literal",
+        "parent_kind": "annotated_lambda",
+        "start_row": 13
+      },
+      {
+        "end_row": 20,
+        "has_block": true,
+        "ident": "PaymentDefaults",
+        "kind": "object_declaration",
+        "parent_kind": null,
+        "start_row": 17
+      },
+      {
+        "end_row": 18,
+        "has_block": false,
+        "ident": "CURRENCY",
+        "kind": "property_declaration",
+        "parent_kind": "class_body",
+        "start_row": 18
+      },
+      {
+        "end_row": 19,
+        "has_block": false,
+        "ident": "MAX_AMOUNT",
+        "kind": "property_declaration",
+        "parent_kind": "class_body",
+        "start_row": 19
+      },
+      {
+        "end_row": 22,
+        "has_block": false,
+        "ident": "TransactionId",
+        "kind": "class_declaration",
+        "parent_kind": null,
+        "start_row": 22
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": "TransactionId Result Long amount process PaymentProcessor",
+        "kind": "Interface",
+        "line": 3,
+        "name": "PaymentProcessor",
+        "signature": "interface PaymentProcessor {"
+      },
+      {
+        "body_tokens": "TransactionId Result Long amount process",
+        "kind": "Function",
+        "line": 4,
+        "name": "process",
+        "signature": "fun process(amount: Long): Result<TransactionId>"
+      },
+      {
+        "body_tokens": "amount charge stripeApi runCatching processing payment info logger TransactionId Result Long process PaymentProcessor Logger String apiKey StripePaymentProcessor",
+        "kind": "Class",
+        "line": 7,
+        "name": "StripePaymentProcessor",
+        "signature": "class StripePaymentProcessor("
+      },
+      {
+        "body_tokens": "amount charge stripeApi runCatching processing payment info logger TransactionId Result Long process",
+        "kind": "Function",
+        "line": 12,
+        "name": "process",
+        "signature": "override fun process(amount: Long): Result<TransactionId> {"
+      },
+      {
+        "body_tokens": "MAX_AMOUNT usd CURRENCY PaymentDefaults",
+        "kind": "Class",
+        "line": 18,
+        "name": "PaymentDefaults",
+        "signature": "object PaymentDefaults {"
+      },
+      {
+        "body_tokens": "CURRENCY",
+        "kind": "Property",
+        "line": 19,
+        "name": "CURRENCY",
+        "signature": "CURRENCY = \"USD\""
+      },
+      {
+        "body_tokens": "MAX_AMOUNT",
+        "kind": "Property",
+        "line": 20,
+        "name": "MAX_AMOUNT",
+        "signature": "MAX_AMOUNT = 1_000_000L"
+      },
+      {
+        "body_tokens": "String value TransactionId",
+        "kind": "Class",
+        "line": 23,
+        "name": "TransactionId",
+        "signature": "data class TransactionId(val value: String)"
+      }
+    ]
+  }
+}

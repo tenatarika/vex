@@ -1,0 +1,330 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 3,
+      "name": "InvoiceService"
+    },
+    {
+      "doc": null,
+      "line": 7,
+      "name": "InvoiceRepository"
+    },
+    {
+      "doc": null,
+      "line": 12,
+      "name": "NewInvoiceService"
+    },
+    {
+      "doc": null,
+      "line": 16,
+      "name": "CreateInvoice"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [
+      {
+        "col": 7,
+        "kind": "Type",
+        "line": 4,
+        "name": "InvoiceRepository",
+        "target": "Unresolved"
+      },
+      {
+        "col": 24,
+        "kind": "Type",
+        "line": 8,
+        "name": "Invoice",
+        "target": "Unresolved"
+      },
+      {
+        "col": 16,
+        "kind": "Type",
+        "line": 9,
+        "name": "Invoice",
+        "target": "Unresolved"
+      },
+      {
+        "col": 29,
+        "kind": "Type",
+        "line": 12,
+        "name": "InvoiceRepository",
+        "target": {
+          "ModuleSymbol": 1
+        }
+      },
+      {
+        "col": 49,
+        "kind": "Type",
+        "line": 12,
+        "name": "InvoiceService",
+        "target": {
+          "ModuleSymbol": 0
+        }
+      },
+      {
+        "col": 10,
+        "kind": "Type",
+        "line": 13,
+        "name": "InvoiceService",
+        "target": {
+          "ModuleSymbol": 0
+        }
+      },
+      {
+        "col": 10,
+        "kind": "Type",
+        "line": 16,
+        "name": "InvoiceService",
+        "target": {
+          "ModuleSymbol": 0
+        }
+      },
+      {
+        "col": 77,
+        "kind": "Type",
+        "line": 16,
+        "name": "Invoice",
+        "target": "Unresolved"
+      },
+      {
+        "col": 14,
+        "kind": "Type",
+        "line": 17,
+        "name": "Invoice",
+        "target": "Unresolved"
+      },
+      {
+        "col": 3,
+        "kind": "Value",
+        "line": 18,
+        "name": "CustomerID",
+        "target": "Unresolved"
+      },
+      {
+        "col": 15,
+        "kind": "Value",
+        "line": 18,
+        "name": "customerID",
+        "target": {
+          "Local": 3
+        }
+      },
+      {
+        "col": 3,
+        "kind": "Value",
+        "line": 19,
+        "name": "Amount",
+        "target": "Unresolved"
+      },
+      {
+        "col": 3,
+        "kind": "Value",
+        "line": 20,
+        "name": "Status",
+        "target": "Unresolved"
+      },
+      {
+        "col": 15,
+        "kind": "Value",
+        "line": 20,
+        "name": "StatusDraft",
+        "target": "Unresolved"
+      },
+      {
+        "col": 25,
+        "kind": "Value",
+        "line": 22,
+        "name": "Save",
+        "target": "Unresolved"
+      }
+    ],
+    "call_edges": [
+      {
+        "callee_name": "Save",
+        "caller_fn_line": 16,
+        "caller_fn_name": "CreateInvoice",
+        "line": 22
+      }
+    ],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "tests/fixtures/sample.go",
+    "refs": [
+      {
+        "context": "type InvoiceService struct {",
+        "line": 3,
+        "name": "InvoiceService"
+      },
+      {
+        "context": "repo InvoiceRepository",
+        "line": 4,
+        "name": "InvoiceRepository"
+      },
+      {
+        "context": "type InvoiceRepository interface {",
+        "line": 7,
+        "name": "InvoiceRepository"
+      },
+      {
+        "context": "FindByID(id string) (*Invoice, error)",
+        "line": 8,
+        "name": "FindByID"
+      },
+      {
+        "context": "FindByID(id string) (*Invoice, error)",
+        "line": 8,
+        "name": "Invoice"
+      },
+      {
+        "context": "Save(invoice *Invoice) error",
+        "line": 9,
+        "name": "Save"
+      },
+      {
+        "context": "Save(invoice *Invoice) error",
+        "line": 9,
+        "name": "Invoice"
+      },
+      {
+        "context": "func NewInvoiceService(repo InvoiceRepository) *InvoiceService {",
+        "line": 12,
+        "name": "NewInvoiceService"
+      },
+      {
+        "context": "func NewInvoiceService(repo InvoiceRepository) *InvoiceService {",
+        "line": 12,
+        "name": "InvoiceRepository"
+      },
+      {
+        "context": "func NewInvoiceService(repo InvoiceRepository) *InvoiceService {",
+        "line": 12,
+        "name": "InvoiceService"
+      },
+      {
+        "context": "return &InvoiceService{repo: repo}",
+        "line": 13,
+        "name": "InvoiceService"
+      },
+      {
+        "context": "func (s *InvoiceService) CreateInvoice(customerID string, amount float64) (*Invoice, error) {",
+        "line": 16,
+        "name": "InvoiceService"
+      },
+      {
+        "context": "func (s *InvoiceService) CreateInvoice(customerID string, amount float64) (*Invoice, error) {",
+        "line": 16,
+        "name": "CreateInvoice"
+      },
+      {
+        "context": "func (s *InvoiceService) CreateInvoice(customerID string, amount float64) (*Invoice, error) {",
+        "line": 16,
+        "name": "customerID"
+      },
+      {
+        "context": "func (s *InvoiceService) CreateInvoice(customerID string, amount float64) (*Invoice, error) {",
+        "line": 16,
+        "name": "Invoice"
+      },
+      {
+        "context": "invoice := &Invoice{",
+        "line": 17,
+        "name": "Invoice"
+      },
+      {
+        "context": "CustomerID: customerID,",
+        "line": 18,
+        "name": "CustomerID"
+      },
+      {
+        "context": "CustomerID: customerID,",
+        "line": 18,
+        "name": "customerID"
+      },
+      {
+        "context": "Amount:     amount,",
+        "line": 19,
+        "name": "Amount"
+      },
+      {
+        "context": "Status:     StatusDraft,",
+        "line": 20,
+        "name": "Status"
+      },
+      {
+        "context": "Status:     StatusDraft,",
+        "line": 20,
+        "name": "StatusDraft"
+      },
+      {
+        "context": "return invoice, s.repo.Save(invoice)",
+        "line": 22,
+        "name": "Save"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 4,
+        "has_block": false,
+        "ident": "InvoiceService",
+        "kind": "type_spec",
+        "parent_kind": "type_declaration",
+        "start_row": 2
+      },
+      {
+        "end_row": 9,
+        "has_block": false,
+        "ident": "InvoiceRepository",
+        "kind": "type_spec",
+        "parent_kind": "type_declaration",
+        "start_row": 6
+      },
+      {
+        "end_row": 13,
+        "has_block": true,
+        "ident": "NewInvoiceService",
+        "kind": "function_declaration",
+        "parent_kind": null,
+        "start_row": 11
+      },
+      {
+        "end_row": 22,
+        "has_block": true,
+        "ident": "CreateInvoice",
+        "kind": "method_declaration",
+        "parent_kind": null,
+        "start_row": 15
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": "InvoiceRepository repo InvoiceService",
+        "kind": "Struct",
+        "line": 3,
+        "name": "InvoiceService",
+        "signature": "InvoiceService struct {"
+      },
+      {
+        "body_tokens": "error Invoice invoice Save string id FindByID InvoiceRepository",
+        "kind": "Interface",
+        "line": 7,
+        "name": "InvoiceRepository",
+        "signature": "InvoiceRepository interface {"
+      },
+      {
+        "body_tokens": "repo InvoiceService InvoiceRepository NewInvoiceService",
+        "kind": "Function",
+        "line": 12,
+        "name": "NewInvoiceService",
+        "signature": "func NewInvoiceService(repo InvoiceRepository) *InvoiceService {"
+      },
+      {
+        "body_tokens": "invoice Save repo StatusDraft Status amount Amount customerID CustomerID Invoice error float64 string CreateInvoice InvoiceService",
+        "kind": "Method",
+        "line": 16,
+        "name": "CreateInvoice",
+        "signature": "func (s *InvoiceService) CreateInvoice(customerID string, amount float64) (*Invoice, error) {"
+      }
+    ]
+  }
+}

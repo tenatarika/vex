@@ -1,0 +1,62 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 1,
+      "name": "first"
+    },
+    {
+      "doc": null,
+      "line": 2,
+      "name": "mixed_fn"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [],
+    "call_edges": [],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "crlf.rs",
+    "refs": [
+      {
+        "context": "fn mixed_fn() {}",
+        "line": 2,
+        "name": "mixed_fn"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 0,
+        "has_block": true,
+        "ident": "first",
+        "kind": "function_item",
+        "parent_kind": null,
+        "start_row": 0
+      },
+      {
+        "end_row": 1,
+        "has_block": true,
+        "ident": "mixed_fn",
+        "kind": "function_item",
+        "parent_kind": null,
+        "start_row": 1
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": "first",
+        "kind": "Function",
+        "line": 1,
+        "name": "first",
+        "signature": "fn first() {}"
+      },
+      {
+        "body_tokens": "mixed_fn",
+        "kind": "Function",
+        "line": 2,
+        "name": "mixed_fn",
+        "signature": "fn mixed_fn() {}"
+      }
+    ]
+  }
+}

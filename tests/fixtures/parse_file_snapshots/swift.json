@@ -1,0 +1,311 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 3,
+      "name": "PaymentProcessor"
+    },
+    {
+      "doc": "Implements PaymentProcessor on top of the StripeClient SDK.",
+      "line": 8,
+      "name": "StripePaymentProcessor"
+    },
+    {
+      "doc": null,
+      "line": 15,
+      "name": "process"
+    },
+    {
+      "doc": null,
+      "line": 20,
+      "name": "charge"
+    },
+    {
+      "doc": null,
+      "line": 25,
+      "name": "TransactionId"
+    },
+    {
+      "doc": null,
+      "line": 28,
+      "name": "of"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [],
+    "call_edges": [],
+    "cpp_includes": [],
+    "hierarchy_captures": [
+      {
+        "child_name": "StripePaymentProcessor",
+        "kind": 0,
+        "line": 8,
+        "parent_name": "PaymentProcessor"
+      }
+    ],
+    "path": "tests/fixtures/sample.swift",
+    "refs": [
+      {
+        "context": "import Foundation",
+        "line": 1,
+        "name": "Foundation"
+      },
+      {
+        "context": "protocol PaymentProcessor {",
+        "line": 3,
+        "name": "PaymentProcessor"
+      },
+      {
+        "context": "func process(amount: Int64) throws -> TransactionId",
+        "line": 4,
+        "name": "Int64"
+      },
+      {
+        "context": "func process(amount: Int64) throws -> TransactionId",
+        "line": 4,
+        "name": "TransactionId"
+      },
+      {
+        "context": "// Implements PaymentProcessor on top of the StripeClient SDK.",
+        "line": 7,
+        "name": "Implements"
+      },
+      {
+        "context": "// Implements PaymentProcessor on top of the StripeClient SDK.",
+        "line": 7,
+        "name": "PaymentProcessor"
+      },
+      {
+        "context": "// Implements PaymentProcessor on top of the StripeClient SDK.",
+        "line": 7,
+        "name": "StripeClient"
+      },
+      {
+        "context": "final class StripePaymentProcessor: PaymentProcessor {",
+        "line": 8,
+        "name": "StripePaymentProcessor"
+      },
+      {
+        "context": "final class StripePaymentProcessor: PaymentProcessor {",
+        "line": 8,
+        "name": "PaymentProcessor"
+      },
+      {
+        "context": "private let apiKey: String",
+        "line": 9,
+        "name": "apiKey"
+      },
+      {
+        "context": "private let apiKey: String",
+        "line": 9,
+        "name": "String"
+      },
+      {
+        "context": "init(apiKey: String) {",
+        "line": 11,
+        "name": "apiKey"
+      },
+      {
+        "context": "init(apiKey: String) {",
+        "line": 11,
+        "name": "String"
+      },
+      {
+        "context": "self.apiKey = apiKey",
+        "line": 12,
+        "name": "apiKey"
+      },
+      {
+        "context": "self.apiKey = apiKey",
+        "line": 12,
+        "name": "apiKey"
+      },
+      {
+        "context": "func process(amount: Int64) throws -> TransactionId {",
+        "line": 15,
+        "name": "Int64"
+      },
+      {
+        "context": "func process(amount: Int64) throws -> TransactionId {",
+        "line": 15,
+        "name": "TransactionId"
+      },
+      {
+        "context": "print(\"charging via StripeClient\")",
+        "line": 16,
+        "name": "StripeClient"
+      },
+      {
+        "context": "private func charge(amount: Int64) throws -> TransactionId {",
+        "line": 20,
+        "name": "Int64"
+      },
+      {
+        "context": "private func charge(amount: Int64) throws -> TransactionId {",
+        "line": 20,
+        "name": "TransactionId"
+      },
+      {
+        "context": "return TransactionId.of(amount)",
+        "line": 21,
+        "name": "TransactionId"
+      },
+      {
+        "context": "struct TransactionId {",
+        "line": 25,
+        "name": "TransactionId"
+      },
+      {
+        "context": "let raw: String",
+        "line": 26,
+        "name": "String"
+      },
+      {
+        "context": "static func of(_ amount: Int64) -> TransactionId {",
+        "line": 28,
+        "name": "Int64"
+      },
+      {
+        "context": "static func of(_ amount: Int64) -> TransactionId {",
+        "line": 28,
+        "name": "TransactionId"
+      },
+      {
+        "context": "return TransactionId(raw: \"tx-\\(amount)\")",
+        "line": 29,
+        "name": "TransactionId"
+      },
+      {
+        "context": "import Foundation",
+        "line": 1,
+        "name": "Foundation"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 4,
+        "has_block": true,
+        "ident": "PaymentProcessor",
+        "kind": "protocol_declaration",
+        "parent_kind": null,
+        "start_row": 2
+      },
+      {
+        "end_row": 3,
+        "has_block": false,
+        "ident": "process",
+        "kind": "protocol_function_declaration",
+        "parent_kind": "protocol_body",
+        "start_row": 3
+      },
+      {
+        "end_row": 22,
+        "has_block": true,
+        "ident": "StripePaymentProcessor",
+        "kind": "class_declaration",
+        "parent_kind": null,
+        "start_row": 7
+      },
+      {
+        "end_row": 8,
+        "has_block": false,
+        "ident": "apiKey",
+        "kind": "property_declaration",
+        "parent_kind": "class_body",
+        "start_row": 8
+      },
+      {
+        "end_row": 12,
+        "has_block": true,
+        "ident": null,
+        "kind": "init_declaration",
+        "parent_kind": "class_body",
+        "start_row": 10
+      },
+      {
+        "end_row": 17,
+        "has_block": true,
+        "ident": "process",
+        "kind": "function_declaration",
+        "parent_kind": "class_body",
+        "start_row": 14
+      },
+      {
+        "end_row": 21,
+        "has_block": true,
+        "ident": "charge",
+        "kind": "function_declaration",
+        "parent_kind": "class_body",
+        "start_row": 19
+      },
+      {
+        "end_row": 30,
+        "has_block": true,
+        "ident": "TransactionId",
+        "kind": "class_declaration",
+        "parent_kind": null,
+        "start_row": 24
+      },
+      {
+        "end_row": 25,
+        "has_block": false,
+        "ident": "raw",
+        "kind": "property_declaration",
+        "parent_kind": "class_body",
+        "start_row": 25
+      },
+      {
+        "end_row": 29,
+        "has_block": true,
+        "ident": "of",
+        "kind": "function_declaration",
+        "parent_kind": "class_body",
+        "start_row": 27
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": "TransactionId Int64 PaymentProcessor",
+        "kind": "Interface",
+        "line": 3,
+        "name": "PaymentProcessor",
+        "signature": "protocol PaymentProcessor {"
+      },
+      {
+        "body_tokens": "TransactionId Int64 String PaymentProcessor StripePaymentProcessor",
+        "kind": "Class",
+        "line": 8,
+        "name": "StripePaymentProcessor",
+        "signature": "final class StripePaymentProcessor: PaymentProcessor {"
+      },
+      {
+        "body_tokens": "TransactionId Int64",
+        "kind": "Function",
+        "line": 15,
+        "name": "process",
+        "signature": "func process(amount: Int64) throws -> TransactionId {"
+      },
+      {
+        "body_tokens": "TransactionId Int64",
+        "kind": "Function",
+        "line": 20,
+        "name": "charge",
+        "signature": "private func charge(amount: Int64) throws -> TransactionId {"
+      },
+      {
+        "body_tokens": "TransactionId Int64 String",
+        "kind": "Struct",
+        "line": 25,
+        "name": "TransactionId",
+        "signature": "struct TransactionId {"
+      },
+      {
+        "body_tokens": "TransactionId Int64",
+        "kind": "Function",
+        "line": 28,
+        "name": "of",
+        "signature": "static func of(_ amount: Int64) -> TransactionId {"
+      }
+    ]
+  }
+}

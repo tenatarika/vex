@@ -1,0 +1,400 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 1,
+      "name": "UserRepository"
+    },
+    {
+      "doc": null,
+      "line": 2,
+      "name": "__init__"
+    },
+    {
+      "doc": null,
+      "line": 5,
+      "name": "find_by_id"
+    },
+    {
+      "doc": null,
+      "line": 8,
+      "name": "find_all"
+    },
+    {
+      "doc": null,
+      "line": 12,
+      "name": "NotificationService"
+    },
+    {
+      "doc": null,
+      "line": 13,
+      "name": "__init__"
+    },
+    {
+      "doc": null,
+      "line": 17,
+      "name": "send_welcome"
+    },
+    {
+      "doc": null,
+      "line": 21,
+      "name": "calculate_discount"
+    },
+    {
+      "doc": null,
+      "line": 26,
+      "name": "is_active"
+    },
+    {
+      "doc": null,
+      "line": 26,
+      "name": "is_active"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [
+      {
+        "col": 19,
+        "kind": "Value",
+        "line": 3,
+        "name": "db_session",
+        "target": {
+          "Local": 2
+        }
+      },
+      {
+        "col": 30,
+        "kind": "Value",
+        "line": 6,
+        "name": "User",
+        "target": "Unresolved"
+      },
+      {
+        "col": 40,
+        "kind": "Value",
+        "line": 6,
+        "name": "user_id",
+        "target": {
+          "Local": 3
+        }
+      },
+      {
+        "col": 30,
+        "kind": "Value",
+        "line": 9,
+        "name": "User",
+        "target": "Unresolved"
+      },
+      {
+        "col": 22,
+        "kind": "Value",
+        "line": 14,
+        "name": "email_client",
+        "target": {
+          "Local": 6
+        }
+      },
+      {
+        "col": 20,
+        "kind": "Value",
+        "line": 15,
+        "name": "sms_client",
+        "target": {
+          "Local": 6
+        }
+      }
+    ],
+    "call_edges": [
+      {
+        "callee_name": "query",
+        "caller_fn_line": 5,
+        "caller_fn_name": "find_by_id",
+        "line": 6
+      },
+      {
+        "callee_name": "get",
+        "caller_fn_line": 5,
+        "caller_fn_name": "find_by_id",
+        "line": 6
+      },
+      {
+        "callee_name": "query",
+        "caller_fn_line": 8,
+        "caller_fn_name": "find_all",
+        "line": 9
+      },
+      {
+        "callee_name": "all",
+        "caller_fn_line": 8,
+        "caller_fn_name": "find_all",
+        "line": 9
+      },
+      {
+        "callee_name": "send",
+        "caller_fn_line": 17,
+        "caller_fn_name": "send_welcome",
+        "line": 18
+      },
+      {
+        "callee_name": "property",
+        "caller_fn_line": 26,
+        "caller_fn_name": "is_active",
+        "line": 25
+      }
+    ],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "tests/fixtures/sample.py",
+    "refs": [
+      {
+        "context": "class UserRepository:",
+        "line": 1,
+        "name": "UserRepository"
+      },
+      {
+        "context": "def __init__(self, db_session):",
+        "line": 2,
+        "name": "__init__"
+      },
+      {
+        "context": "def __init__(self, db_session):",
+        "line": 2,
+        "name": "db_session"
+      },
+      {
+        "context": "self.db = db_session",
+        "line": 3,
+        "name": "db_session"
+      },
+      {
+        "context": "def find_by_id(self, user_id: int):",
+        "line": 5,
+        "name": "find_by_id"
+      },
+      {
+        "context": "def find_by_id(self, user_id: int):",
+        "line": 5,
+        "name": "user_id"
+      },
+      {
+        "context": "return self.db.query(User).get(user_id)",
+        "line": 6,
+        "name": "User"
+      },
+      {
+        "context": "return self.db.query(User).get(user_id)",
+        "line": 6,
+        "name": "user_id"
+      },
+      {
+        "context": "def find_all(self):",
+        "line": 8,
+        "name": "find_all"
+      },
+      {
+        "context": "return self.db.query(User).all()",
+        "line": 9,
+        "name": "User"
+      },
+      {
+        "context": "class NotificationService:",
+        "line": 12,
+        "name": "NotificationService"
+      },
+      {
+        "context": "def __init__(self, email_client, sms_client):",
+        "line": 13,
+        "name": "__init__"
+      },
+      {
+        "context": "def __init__(self, email_client, sms_client):",
+        "line": 13,
+        "name": "email_client"
+      },
+      {
+        "context": "def __init__(self, email_client, sms_client):",
+        "line": 13,
+        "name": "sms_client"
+      },
+      {
+        "context": "self.email = email_client",
+        "line": 14,
+        "name": "email_client"
+      },
+      {
+        "context": "self.sms = sms_client",
+        "line": 15,
+        "name": "sms_client"
+      },
+      {
+        "context": "def send_welcome(self, user):",
+        "line": 17,
+        "name": "send_welcome"
+      },
+      {
+        "context": "def calculate_discount(price: float, percentage: float) -> float:",
+        "line": 21,
+        "name": "calculate_discount"
+      },
+      {
+        "context": "def is_active(self):",
+        "line": 26,
+        "name": "is_active"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 8,
+        "has_block": true,
+        "ident": "UserRepository",
+        "kind": "class_definition",
+        "parent_kind": null,
+        "start_row": 0
+      },
+      {
+        "end_row": 2,
+        "has_block": true,
+        "ident": "__init__",
+        "kind": "function_definition",
+        "parent_kind": "block",
+        "start_row": 1
+      },
+      {
+        "end_row": 5,
+        "has_block": true,
+        "ident": "find_by_id",
+        "kind": "function_definition",
+        "parent_kind": "block",
+        "start_row": 4
+      },
+      {
+        "end_row": 8,
+        "has_block": true,
+        "ident": "find_all",
+        "kind": "function_definition",
+        "parent_kind": "block",
+        "start_row": 7
+      },
+      {
+        "end_row": 17,
+        "has_block": true,
+        "ident": "NotificationService",
+        "kind": "class_definition",
+        "parent_kind": null,
+        "start_row": 11
+      },
+      {
+        "end_row": 14,
+        "has_block": true,
+        "ident": "__init__",
+        "kind": "function_definition",
+        "parent_kind": "block",
+        "start_row": 12
+      },
+      {
+        "end_row": 17,
+        "has_block": true,
+        "ident": "send_welcome",
+        "kind": "function_definition",
+        "parent_kind": "block",
+        "start_row": 16
+      },
+      {
+        "end_row": 21,
+        "has_block": true,
+        "ident": "calculate_discount",
+        "kind": "function_definition",
+        "parent_kind": null,
+        "start_row": 20
+      },
+      {
+        "end_row": 26,
+        "has_block": false,
+        "ident": null,
+        "kind": "decorated_definition",
+        "parent_kind": null,
+        "start_row": 24
+      },
+      {
+        "end_row": 26,
+        "has_block": true,
+        "ident": "is_active",
+        "kind": "function_definition",
+        "parent_kind": "decorated_definition",
+        "start_row": 25
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": "self.db.query(User).all all User self.db.query query self.db db find_all user_id self.db.query(User).get get int find_by_id db_session __init__ UserRepository",
+        "kind": "Class",
+        "line": 1,
+        "name": "UserRepository",
+        "signature": "class UserRepository:"
+      },
+      {
+        "body_tokens": "db_session self.db db __init__",
+        "kind": "Function",
+        "line": 2,
+        "name": "__init__",
+        "signature": "def __init__(self, db_session):"
+      },
+      {
+        "body_tokens": "user_id self.db.query(User).get get User self.db.query query self.db db int find_by_id",
+        "kind": "Function",
+        "line": 5,
+        "name": "find_by_id",
+        "signature": "def find_by_id(self, user_id: int):"
+      },
+      {
+        "body_tokens": "self.db.query(User).all all User self.db.query query self.db db find_all",
+        "kind": "Function",
+        "line": 8,
+        "name": "find_all",
+        "signature": "def find_all(self):"
+      },
+      {
+        "body_tokens": "welcome user.email email user self.email.send send self.email send_welcome sms_client self.sms sms email_client __init__ NotificationService",
+        "kind": "Class",
+        "line": 12,
+        "name": "NotificationService",
+        "signature": "class NotificationService:"
+      },
+      {
+        "body_tokens": "sms_client self.sms sms email_client self.email email __init__",
+        "kind": "Function",
+        "line": 13,
+        "name": "__init__",
+        "signature": "def __init__(self, email_client, sms_client):"
+      },
+      {
+        "body_tokens": "welcome user.email email user self.email.send send self.email send_welcome",
+        "kind": "Function",
+        "line": 17,
+        "name": "send_welcome",
+        "signature": "def send_welcome(self, user):"
+      },
+      {
+        "body_tokens": "percentage price float calculate_discount",
+        "kind": "Function",
+        "line": 21,
+        "name": "calculate_discount",
+        "signature": "def calculate_discount(price: float, percentage: float) -> float:"
+      },
+      {
+        "body_tokens": "active self.status status is_active",
+        "kind": "Function",
+        "line": 26,
+        "name": "is_active",
+        "signature": "def is_active(self):"
+      },
+      {
+        "body_tokens": "active self.status status is_active",
+        "kind": "Function",
+        "line": 26,
+        "name": "is_active",
+        "signature": "def is_active(self):"
+      }
+    ]
+  }
+}

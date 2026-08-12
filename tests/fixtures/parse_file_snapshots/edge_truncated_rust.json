@@ -1,0 +1,39 @@
+{
+  "docs": [],
+  "parsed": {
+    "bound_refs": [
+      {
+        "col": 31,
+        "kind": "Type",
+        "line": 1,
+        "name": "Result",
+        "target": "Unresolved"
+      },
+      {
+        "col": 42,
+        "kind": "Type",
+        "line": 1,
+        "name": "Error",
+        "target": "Unresolved"
+      }
+    ],
+    "call_edges": [],
+    "cpp_includes": [],
+    "hierarchy_captures": [],
+    "path": "truncated.rs",
+    "refs": [
+      {
+        "context": "pub fn charge(amount: u64) -> Result<(), Error> {",
+        "line": 1,
+        "name": "Result"
+      },
+      {
+        "context": "pub fn charge(amount: u64) -> Result<(), Error> {",
+        "line": 1,
+        "name": "Error"
+      }
+    ],
+    "skeletons": [],
+    "symbols": []
+  }
+}

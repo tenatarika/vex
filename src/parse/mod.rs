@@ -129,6 +129,74 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
     })
 }
 
+/// Tripwire for the shared-tree refactor
+/// (`.claude/Task/PERF-parse-once-shared-tree.md`, commit 0).
+///
+/// [`parse_file`] runs a full tree-sitter parse of the same content once per
+/// extractor. These tests pin that count per language so the migration's
+/// progress is asserted rather than assumed, and so a future extractor cannot
+/// silently add a seventh parse. **The expected constants move with every
+/// migration commit** (6/7 → 5/6 → 4/5 → 3/4 → 2/2 → 1/1 for Rust/C++); a
+/// stale constant fails RED, which is the intended behaviour.
+#[cfg(test)]
+mod parse_count_tests {
+    use super::*;
+    use crate::parse::parser_pool::{parse_call_count, reset_parse_call_count};
+
+    fn parse_count_for(rel: &str, lang: Language) -> u64 {
+        let abs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+        let content = std::fs::read_to_string(&abs)
+            .unwrap_or_else(|e| panic!("read fixture {}: {e}", abs.display()));
+
+        // Same thread throughout: the counter is thread-local.
+        reset_parse_call_count();
+        parse_file(rel, &content, lang).expect("parse fixture");
+        parse_call_count()
+    }
+
+    #[test]
+    fn rust_pays_one_parse_per_extractor() {
+        // symbols + refs + call_edges + bind_refs + skeletons + hierarchy.
+        assert_eq!(
+            parse_count_for("tests/fixtures/sample.rs", Language::Rust),
+            6,
+            "expected the pre-refactor per-extractor parse count for Rust"
+        );
+    }
+
+    #[test]
+    fn cpp_pays_a_seventh_parse_for_includes() {
+        // The six above plus `scope::cpp::extract_cpp_includes` — C++ is the
+        // only language that parses seven times.
+        assert_eq!(
+            parse_count_for("tests/fixtures/sample.cpp", Language::Cpp),
+            7,
+            "expected the pre-refactor per-extractor parse count for C++"
+        );
+    }
+
+    #[test]
+    fn gated_languages_pay_fewer_parses() {
+        // Every extractor except symbols is gated on a per-language query or
+        // allowlist, so the multiplier is language-dependent. Ruby has a
+        // skeleton allowlist AND an inheritance query, but no callgraph query,
+        // ref filter or binder. Bash has the skeleton allowlist only — no
+        // inheritance query (`hierarchy::queries` gates it out), which is what
+        // separates the 2-parse bucket (Bash/Lua/YAML/TOML/SQL/Markdown/CSS/
+        // HTML) from the 3-parse one (Ruby/Swift/PHP).
+        assert_eq!(
+            parse_count_for("tests/fixtures/sample.rb", Language::Ruby),
+            3,
+            "Ruby: symbols + skeletons + hierarchy"
+        );
+        assert_eq!(
+            parse_count_for("tests/fixtures/sample.sh", Language::Bash),
+            2,
+            "Bash: symbols + skeletons"
+        );
+    }
+}
+
 #[cfg(test)]
 mod node_text_tests {
     use super::*;
