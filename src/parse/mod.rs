@@ -46,7 +46,36 @@ impl NodeTextExt for tree_sitter::Node<'_> {
 }
 
 /// Parse a single file and extract symbols + references + call edges.
+///
+/// # The shared tree
+///
+/// `content` is parsed **once**, here, and the resulting tree is threaded into
+/// every extractor that has been migrated to accept one
+/// (`.claude/Task/PERF-parse-once-shared-tree.md`). Extractors still on the
+/// `(content, lang)` shape parse again internally; each migration commit moves
+/// one of them over. `parse_count_tests` below pins the current number of full
+/// parses per language, so the remaining duplication is asserted rather than
+/// guessed.
 pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFile> {
+    // Probe the symbol query BEFORE parsing. `extract_symbols_and_imports`
+    // does the same (`extractor/symbols.rs`: `try_get_query` precedes its
+    // parse), which is what makes a grammar/query-load failure surface as
+    // `GrammarLoadError` — the pipeline downcasts on that type and aggregates
+    // it per language instead of logging a per-file "parse failed"
+    // (`index/pipeline/parse_files.rs`). Parsing first would invert that
+    // priority for any language where both would fail. `try_get_query` is a
+    // `LazyLock` deref, not a compile, so this costs nothing.
+    if let Err(reason) = queries::try_get_query(lang) {
+        return Err(extractor::GrammarLoadError {
+            lang,
+            reason: reason.to_string(),
+        }
+        .into());
+    }
+    // THE parse. A failure here is identical in effect to the pre-shared-tree
+    // behaviour: `extract_symbols_and_imports` ran first and propagated its
+    // parse error with `?`, so the file was dropped from the index entirely.
+    let tree = parser_pool::parse_text(lang, content)?;
     let (mut symbols, imports) = extractor::extract_symbols_and_imports(content, lang)?;
     let mut refs = extractor::extract_references_ast(content, lang)?;
     refs.extend(imports);
@@ -82,16 +111,17 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
     let skeletons = crate::pattern::skeleton::extract_skeletons(content, lang);
     // P2 (`docs/HIERARCHY-EDGES.md` §4) — raw extends/implements/uses
     // captures, reusing the same `hierarchy::queries` SCM the live
-    // `vex implementations` walk uses. Uses the pooled per-thread parser
-    // like every other extraction phase above/below (this file has no
-    // single shared `Tree` threaded through parse_file — see
-    // callgraph::extract_call_edges / scope::bind_refs /
-    // pattern::skeleton::extract_skeletons for the same pattern), so this
-    // is not a second cold parse, just another pass over the pooled tree.
-    let hierarchy_captures = match crate::parse::parser_pool::parse_text(lang, content) {
-        Ok(tree) => crate::hierarchy::capture_hierarchy_edges(&tree, content, lang),
-        Err(_) => Vec::new(),
-    };
+    // `vex implementations` walk uses. First consumer of the shared tree.
+    //
+    // This used to parse for itself and swallow a parse failure as an empty
+    // vec. That arm was dead: `extract_symbols_and_imports` above parses the
+    // same bytes with the same grammar and propagates failure with `?`, so
+    // `parse_file` never reached this line on an input that fails to parse.
+    // (An earlier comment here claimed the repeated `parse_text` calls were
+    // "not a second cold parse, just another pass over the pooled tree" —
+    // that was wrong. The pool caches a `Parser`, not a `Tree`; every call was
+    // a full re-parse. Hence this refactor.)
+    let hierarchy_captures = crate::hierarchy::capture_hierarchy_edges(&tree, content, lang);
     // Phase 14.1: inject a synthetic per-file `<module:path>` symbol when the
     // file produces any sentinel edge (module-scope call site). The sentinel
     // is `caller_fn_name.is_empty() && caller_fn_line == 0`; pipeline
@@ -133,15 +163,59 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
 /// (`.claude/Task/PERF-parse-once-shared-tree.md`, commit 0).
 ///
 /// [`parse_file`] runs a full tree-sitter parse of the same content once per
-/// extractor. These tests pin that count per language so the migration's
+/// extractor. This pins the count for **every** language so the migration's
 /// progress is asserted rather than assumed, and so a future extractor cannot
-/// silently add a seventh parse. **The expected constants move with every
-/// migration commit** (6/7 → 5/6 → 4/5 → 3/4 → 2/2 → 1/1 for Rust/C++); a
-/// stale constant fails RED, which is the intended behaviour.
+/// silently reintroduce a parse.
+///
+/// **The expected counts move with every migration commit** — a stale
+/// expectation fails RED, which is the intended behaviour. Commit 1 (shared
+/// parse hoisted into `parse_file`, hierarchy reading it) leaves every count
+/// unchanged: the shared parse replaces the hierarchy parse rather than adding
+/// to it.
+///
+/// The per-language spread is what makes the composition legible:
+///
+/// | Count | Languages | Sites that parse |
+/// |---|---|---|
+/// | 7 | C++ | the six below + `scope::cpp::extract_cpp_includes` |
+/// | 6 | Rust, Kotlin, TypeScript, Python, Go, Java, C# | symbols + refs + call edges + binder + skeletons + hierarchy |
+/// | 3 | Ruby, Swift, PHP, SQL, Markdown, CSS, HTML | symbols + skeletons + hierarchy |
+/// | 2 | Bash, Lua, YAML, TOML | symbols + hierarchy |
+///
+/// Note the hierarchy parse is in **every** row: today `parse_file` parses for
+/// it unconditionally and only then checks for an inheritance query, so the 12
+/// languages with no such query still pay the parse. That is the parse commit 1
+/// converts into the shared one.
 #[cfg(test)]
 mod parse_count_tests {
     use super::*;
     use crate::parse::parser_pool::{parse_call_count, reset_parse_call_count};
+
+    /// `(language, fixture extension, expected `parse_text` calls)`.
+    /// Exhaustive over `Language::ALL` — enforced by
+    /// `every_language_has_a_pinned_parse_count`, so adding a 20th language
+    /// fails until its count is pinned here.
+    const EXPECTED: &[(Language, &str, u64)] = &[
+        (Language::Rust, "rs", 6),
+        (Language::Kotlin, "kt", 6),
+        (Language::TypeScript, "ts", 6),
+        (Language::Python, "py", 6),
+        (Language::Go, "go", 6),
+        (Language::Java, "java", 6),
+        (Language::CSharp, "cs", 6),
+        (Language::Cpp, "cpp", 7),
+        (Language::Ruby, "rb", 3),
+        (Language::Swift, "swift", 3),
+        (Language::Php, "php", 3),
+        (Language::Sql, "sql", 3),
+        (Language::Markdown, "md", 3),
+        (Language::Css, "css", 3),
+        (Language::Html, "html", 3),
+        (Language::Bash, "sh", 2),
+        (Language::Lua, "lua", 2),
+        (Language::Yaml, "yaml", 2),
+        (Language::Toml, "toml", 2),
+    ];
 
     fn parse_count_for(rel: &str, lang: Language) -> u64 {
         let abs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
@@ -155,45 +229,27 @@ mod parse_count_tests {
     }
 
     #[test]
-    fn rust_pays_one_parse_per_extractor() {
-        // symbols + refs + call_edges + bind_refs + skeletons + hierarchy.
-        assert_eq!(
-            parse_count_for("tests/fixtures/sample.rs", Language::Rust),
-            6,
-            "expected the pre-refactor per-extractor parse count for Rust"
-        );
+    fn parse_file_parses_each_file_once_per_extractor() {
+        for &(lang, ext, expected) in EXPECTED {
+            let rel = format!("tests/fixtures/sample.{ext}");
+            assert_eq!(
+                parse_count_for(&rel, lang),
+                expected,
+                "{lang:?}: unexpected number of full tree-sitter parses in parse_file"
+            );
+        }
     }
 
     #[test]
-    fn cpp_pays_a_seventh_parse_for_includes() {
-        // The six above plus `scope::cpp::extract_cpp_includes` — C++ is the
-        // only language that parses seven times.
-        assert_eq!(
-            parse_count_for("tests/fixtures/sample.cpp", Language::Cpp),
-            7,
-            "expected the pre-refactor per-extractor parse count for C++"
-        );
-    }
-
-    #[test]
-    fn gated_languages_pay_fewer_parses() {
-        // Every extractor except symbols is gated on a per-language query or
-        // allowlist, so the multiplier is language-dependent. Ruby has a
-        // skeleton allowlist AND an inheritance query, but no callgraph query,
-        // ref filter or binder. Bash has the skeleton allowlist only — no
-        // inheritance query (`hierarchy::queries` gates it out), which is what
-        // separates the 2-parse bucket (Bash/Lua/YAML/TOML/SQL/Markdown/CSS/
-        // HTML) from the 3-parse one (Ruby/Swift/PHP).
-        assert_eq!(
-            parse_count_for("tests/fixtures/sample.rb", Language::Ruby),
-            3,
-            "Ruby: symbols + skeletons + hierarchy"
-        );
-        assert_eq!(
-            parse_count_for("tests/fixtures/sample.sh", Language::Bash),
-            2,
-            "Bash: symbols + skeletons"
-        );
+    fn every_language_has_a_pinned_parse_count() {
+        for &lang in Language::ALL {
+            assert!(
+                EXPECTED.iter().any(|&(l, _, _)| l == lang),
+                "{lang:?} has no pinned parse count — add it to EXPECTED \
+                 (and a tests/fixtures/sample.* fixture) so the shared-tree \
+                 migration cannot regress it silently"
+            );
+        }
     }
 }
 
