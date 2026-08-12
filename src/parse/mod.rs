@@ -108,9 +108,9 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
     } else {
         Vec::new()
     };
-    // 11.4 Inc 4 — extract pattern skeletons while source is hot. T2/T3
-    // langs return an empty Vec via the allowlist short-circuit.
-    let skeletons = crate::pattern::skeleton::extract_skeletons(content, lang);
+    // 11.4 Inc 4 — pattern skeletons off the shared tree. T2/T3 langs return an
+    // empty Vec via the allowlist short-circuit, which the core keeps.
+    let skeletons = crate::pattern::skeleton::extract_skeletons_with_tree(&tree, content, lang);
     // P2 (`docs/HIERARCHY-EDGES.md` §4) — raw extends/implements/uses
     // captures, reusing the same `hierarchy::queries` SCM the live
     // `vex implementations` walk uses. First consumer of the shared tree.
@@ -162,32 +162,30 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
 }
 
 /// Tripwire for the shared-tree refactor
-/// (`.claude/Task/PERF-parse-once-shared-tree.md`, commit 0).
+/// (`.claude/Task/PERF-parse-once-shared-tree.md`).
 ///
-/// [`parse_file`] runs a full tree-sitter parse of the same content once per
-/// extractor. This pins the count for **every** language so the migration's
-/// progress is asserted rather than assumed, and so a future extractor cannot
-/// silently reintroduce a parse.
+/// [`parse_file`] used to run a full tree-sitter parse of the same content once
+/// per extractor. This pins the remaining count for **every** language so the
+/// migration's progress is asserted rather than assumed, and so a future
+/// extractor cannot silently reintroduce a parse.
 ///
 /// **The expected counts move with every migration commit** — a stale
-/// expectation fails RED, which is the intended behaviour. Commit 1 (shared
-/// parse hoisted into `parse_file`, hierarchy reading it) leaves every count
-/// unchanged: the shared parse replaces the hierarchy parse rather than adding
-/// to it.
+/// expectation fails RED, which is the intended behaviour. The target is 1 for
+/// every language.
 ///
-/// The per-language spread is what makes the composition legible:
+/// State after commit 3 (hierarchy, refs and skeletons migrated):
 ///
-/// | Count | Languages | Sites that parse |
+/// | Count | Languages | Sites that still parse for themselves |
 /// |---|---|---|
-/// | 7 | C++ | the six below + `scope::cpp::extract_cpp_includes` |
-/// | 6 | Rust, Kotlin, TypeScript, Python, Go, Java, C# | symbols + refs + call edges + binder + skeletons + hierarchy |
-/// | 3 | Ruby, Swift, PHP, SQL, Markdown, CSS, HTML | symbols + skeletons + hierarchy |
-/// | 2 | Bash, Lua, YAML, TOML | symbols + hierarchy |
+/// | 5 | C++ | the four below + `scope::cpp::extract_cpp_includes` |
+/// | 4 | Rust, Kotlin, TypeScript, Python, Go, Java, C# | the shared parse + symbols + call edges + binder |
+/// | 2 | Ruby, Swift, PHP, SQL, Markdown, CSS, HTML | the shared parse + symbols |
+/// | 2 | Bash, Lua, YAML, TOML | the shared parse + symbols |
 ///
-/// Note the hierarchy parse is in **every** row: today `parse_file` parses for
-/// it unconditionally and only then checks for an inheritance query, so the 12
-/// languages with no such query still pay the parse. That is the parse commit 1
-/// converts into the shared one.
+/// The two 2-rows have different *compositions* even though the totals match:
+/// the first group runs the skeleton walker over the shared tree, the second
+/// short-circuits on an empty allowlist. Both then read hierarchy off the shared
+/// tree. Only `symbols` still re-parses for them, which commit 6 removes.
 #[cfg(test)]
 mod parse_count_tests {
     use super::*;
@@ -198,21 +196,21 @@ mod parse_count_tests {
     /// `every_language_has_a_pinned_parse_count`, so adding a 20th language
     /// fails until its count is pinned here.
     const EXPECTED: &[(Language, &str, u64)] = &[
-        (Language::Rust, "rs", 5),
-        (Language::Kotlin, "kt", 5),
-        (Language::TypeScript, "ts", 5),
-        (Language::Python, "py", 5),
-        (Language::Go, "go", 5),
-        (Language::Java, "java", 5),
-        (Language::CSharp, "cs", 5),
-        (Language::Cpp, "cpp", 6),
-        (Language::Ruby, "rb", 3),
-        (Language::Swift, "swift", 3),
-        (Language::Php, "php", 3),
-        (Language::Sql, "sql", 3),
-        (Language::Markdown, "md", 3),
-        (Language::Css, "css", 3),
-        (Language::Html, "html", 3),
+        (Language::Rust, "rs", 4),
+        (Language::Kotlin, "kt", 4),
+        (Language::TypeScript, "ts", 4),
+        (Language::Python, "py", 4),
+        (Language::Go, "go", 4),
+        (Language::Java, "java", 4),
+        (Language::CSharp, "cs", 4),
+        (Language::Cpp, "cpp", 5),
+        (Language::Ruby, "rb", 2),
+        (Language::Swift, "swift", 2),
+        (Language::Php, "php", 2),
+        (Language::Sql, "sql", 2),
+        (Language::Markdown, "md", 2),
+        (Language::Css, "css", 2),
+        (Language::Html, "html", 2),
         (Language::Bash, "sh", 2),
         (Language::Lua, "lua", 2),
         (Language::Yaml, "yaml", 2),

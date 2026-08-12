@@ -252,8 +252,10 @@ fn intern_static(s: String) -> &'static str {
 /// assert!(extract_skeletons("[package]\nname = \"x\"", Language::Toml).is_empty());
 /// ```
 pub fn extract_skeletons(source: &str, lang: Language) -> Vec<Skeleton> {
-    let allowlist = pattern_targetable_kinds(lang);
-    if allowlist.is_empty() {
+    // The allowlist check stays HERE, before the parse, so a language with no
+    // allowlist never pays one. The core re-checks it for callers that already
+    // hold a tree.
+    if pattern_targetable_kinds(lang).is_empty() {
         return Vec::new();
     }
     // v1.12.0 P3 — pooled per-thread parser. with_parser may return Err
@@ -263,6 +265,25 @@ pub fn extract_skeletons(source: &str, lang: Language) -> Vec<Skeleton> {
     let Ok(tree) = crate::parse::parser_pool::parse_text(lang, source) else {
         return Vec::new();
     };
+    extract_skeletons_with_tree(&tree, source, lang)
+}
+
+/// [`extract_skeletons`] over a tree the caller already parsed.
+///
+/// The allowlist short-circuit is repeated here on purpose: `parse_file` hands
+/// this a tree for every language, and the T2/T3 languages must keep returning
+/// an empty `Vec` rather than emitting skeletons off the supplied tree (the
+/// doctest on [`extract_skeletons`] pins TOML as empty). Same contract as the
+/// refs core — the tree is an optimisation, never a behaviour switch.
+pub(crate) fn extract_skeletons_with_tree(
+    tree: &tree_sitter::Tree,
+    source: &str,
+    lang: Language,
+) -> Vec<Skeleton> {
+    let allowlist = pattern_targetable_kinds(lang);
+    if allowlist.is_empty() {
+        return Vec::new();
+    }
     let mut skeletons = Vec::new();
     walk(tree.root_node(), source, lang, allowlist, &mut skeletons);
     skeletons

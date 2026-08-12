@@ -6,6 +6,59 @@ fn extract(lang: Language, src: &str) -> Vec<Skeleton> {
     extract_skeletons(src, lang)
 }
 
+/// Shared-tree equivalence for the skeleton extractor
+/// (`.claude/Task/PERF-parse-once-shared-tree.md`, commit 3).
+///
+/// `parse_file` calls `extract_skeletons_with_tree` with a tree it parsed for
+/// every language, including the T2/T3 ones whose empty allowlist must still
+/// yield an empty `Vec`. Diffing the core against the self-parsing entry point
+/// across all 19 languages pins that short-circuit inside the core.
+#[test]
+fn with_tree_matches_the_self_parsing_entry_point_for_every_language() {
+    let fixtures: &[(Language, &str)] = &[
+        (Language::Rust, "rs"),
+        (Language::Kotlin, "kt"),
+        (Language::TypeScript, "ts"),
+        (Language::Python, "py"),
+        (Language::Go, "go"),
+        (Language::Java, "java"),
+        (Language::CSharp, "cs"),
+        (Language::Cpp, "cpp"),
+        (Language::Ruby, "rb"),
+        (Language::Swift, "swift"),
+        (Language::Php, "php"),
+        (Language::Sql, "sql"),
+        (Language::Markdown, "md"),
+        (Language::Css, "css"),
+        (Language::Html, "html"),
+        (Language::Bash, "sh"),
+        (Language::Lua, "lua"),
+        (Language::Yaml, "yaml"),
+        (Language::Toml, "toml"),
+    ];
+    assert_eq!(
+        fixtures.len(),
+        Language::ALL.len(),
+        "every language must be covered"
+    );
+
+    for &(lang, ext) in fixtures {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("tests/fixtures/sample.{ext}"));
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
+
+        let want = extract_skeletons(&source, lang);
+        let tree = crate::parse::parser_pool::parse_text(lang, &source).expect("parse fixture");
+        let got = extract_skeletons_with_tree(&tree, &source, lang);
+
+        assert_eq!(
+            got, want,
+            "{lang:?}: shared-tree core disagrees with extract_skeletons"
+        );
+    }
+}
+
 #[test]
 fn rust_function_emits_single_skeleton() {
     let sk = extract(Language::Rust, "fn foo() {}\n");
