@@ -192,7 +192,7 @@ vex callers InvoiceHandler
 
 Same shape for the other cross-boundary keys: `vex grep 'invoice.created'` for a queue topic, `vex grep 'INVOICE_API_URL'` for an env var, `vex grep 'CreateInvoiceRequest'` for a protobuf message whose generated stubs live in several languages.
 
-**Why grep and not a smarter command**: vex deliberately does not synthesise cross-language edges. Published static extractors for exactly this problem top out around 0.68 recall on REST endpoints, and the tools that do it well (JetBrains, Glean) require an OpenAPI/proto spec as the join key rather than matching strings across languages. An edge that is wrong a third of the time is worse than no edge for an agent, because it cannot tell which third. The string match is honest: it returns evidence with `path:line`, and the agent judges it.
+**Why grep and not a smarter command**: vex deliberately does not synthesise cross-language edges. Published static extractors for exactly this problem top out around 0.68 recall on REST endpoints ([arXiv:2412.08352](https://arxiv.org/abs/2412.08352)), and the tools that do it well (JetBrains, Glean) require an OpenAPI/proto spec as the join key rather than matching strings across languages — see [`LIMITATIONS.md` §10](LIMITATIONS.md) for the full reasoning. An edge that is wrong a third of the time is worse than no edge for an agent, because it cannot tell which third. The string match is honest: it returns evidence with `path:line`, and the agent judges it.
 
 **Cut the noise**: generated stubs (`*.pb.go`, `*_pb2.py`) usually match the same strings as hand-written code and can bury it.
 

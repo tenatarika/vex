@@ -18,6 +18,11 @@ use crate::util::config::{self, VexConfig};
 use crate::util::ident::is_identifier_shaped;
 use crate::workspace;
 
+/// Over-fetch multiplier for `--exclude-generated`, whose post-filter reads
+/// file heads from disk. Bounds the number of probes to
+/// `limit * GENERATED_OVER_FETCH` rather than the whole symbol table.
+const GENERATED_OVER_FETCH: usize = 20;
+
 /// The resolved per-invocation search request, shared by the single-repo
 /// path and every member of a workspace fanout.
 struct SearchReq<'a> {
@@ -303,9 +308,21 @@ fn produce_results(
         || !path_scope.is_empty()
         || changed_paths.is_some()
         || code_only
-        || exclude_generated
     {
         reader.symbol_count()
+    } else if exclude_generated {
+        // `exclude_generated` also needs over-fetch — it drops rows after the
+        // search — but unlike the filters above its predicate reads from disk
+        // instead of answering from the index. Escalating to `symbol_count()`
+        // would, on the very repo profile this flag exists for (generated code
+        // outnumbering hand-written), mean opening a file head for nearly every
+        // candidate. Bound it instead: over-fetch enough to absorb a heavily
+        // generated result set, and accept returning fewer than `limit` on a
+        // corpus that is almost entirely generated. When one of the index-only
+        // filters above is also active it wins, since its over-fetch is free.
+        limit
+            .saturating_mul(GENERATED_OVER_FETCH)
+            .min(reader.symbol_count())
     } else {
         limit
     };
@@ -454,22 +471,36 @@ fn produce_results(
     // many rows.
     let mut generated_memo: std::collections::HashMap<String, bool> =
         std::collections::HashMap::new();
+    let mut generated_dropped = 0usize;
     let results: Vec<_> = post_diff_results
         .into_iter()
         .filter(|r| metadata_filter.matches(r.signature.as_deref()))
         .filter(|r| !code_only || !crate::util::paths::is_doc_path(&r.path))
         .filter(|r| {
-            !exclude_generated || {
-                let verdict = generated_memo.get(&r.path).copied().unwrap_or_else(|| {
-                    let v = crate::util::generated::is_generated_file(&root.join(&r.path));
-                    generated_memo.insert(r.path.clone(), v);
-                    v
-                });
-                !verdict
+            if !exclude_generated {
+                return true;
             }
+            let is_generated = *generated_memo
+                .entry(r.path.clone())
+                .or_insert_with(|| crate::util::generated::is_generated_file(&root.join(&r.path)));
+            if is_generated {
+                generated_dropped += 1;
+            }
+            !is_generated
         })
         .take(limit)
         .collect();
+
+    // Without this, a query whose every hit lives in generated code is
+    // indistinguishable from a query that matched nothing — the caller has no
+    // way to tell that a flag they passed is the reason. Counted lazily, so it
+    // is a lower bound on what was suppressed.
+    if results.is_empty() && generated_dropped > 0 {
+        eprintln!(
+            "note: {generated_dropped} result(s) suppressed by --exclude-generated; \
+             re-run without it to see them"
+        );
+    }
 
     Ok(SearchOutcome {
         results,

@@ -60,8 +60,10 @@ Apply to most search-shaped commands:
 - `--async-only` / `--no-async` / `--static-only` / `--sealed-only` — language-agnostic metadata gates
 - `--threshold 0.8` (a.k.a. `--min-score`) — score cutoff for `similar` / `duplicates`
 - `--exclude-generated` — drop machine-generated files (protoc / sqlc / bindgen / Diesel /
-  OpenAPI Generator banners) from `search` results. Header heuristic: under-reports rather
-  than hiding hand-written code. Use when vendored `*.pb.go` / `*_pb2.py` bury real hits.
+  OpenAPI Generator banners) from `search` results. Use when vendored `*.pb.go` /
+  `*_pb2.py` bury real hits. Header heuristic: a generator that writes no banner is not
+  detected, and a generated file someone hand-edited still carries its banner and will be
+  hidden. If it suppresses everything, vex says so on stderr.
 - `--why` — JSON trace on stderr (currently on `search`, `pattern`; via MCP it surfaces as `_meta.why`)
 - `--format compact` / `--format json` — token-efficient output for automated workflows
 

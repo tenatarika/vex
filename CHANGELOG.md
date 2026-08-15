@@ -17,8 +17,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   It is a heuristic and deliberately conservative: a generator that writes no
   banner is invisible to it, and anything unreadable counts as not-generated, so
-  it can leave generated files in the output but will not hide hand-written
-  code. Off by default. See `docs/LIMITATIONS.md` §10.2.
+  it can leave generated files in the output but will not hide a file that never
+  carried a banner. Note the converse does not hold — a generated file someone
+  later hand-edited still carries its banner and will be filtered. When the flag
+  suppresses every hit, vex says so on stderr rather than reporting a bare "no
+  results". Off by default. See `docs/LIMITATIONS.md` §10.2.
 
 ### Documentation
 
