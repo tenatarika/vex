@@ -64,7 +64,7 @@
 
 use std::collections::HashMap;
 
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use crate::parse::language::Language;
 
@@ -257,15 +257,12 @@ fn captures_agree(c1: &[(String, String)], c2: &[(String, String)]) -> bool {
 
 /// Find all AST nodes in `source` whose text matches the pattern.
 pub fn find_matches(source: &str, pattern: &PatternTree, file_path: &str) -> Vec<PatternMatch> {
-    let mut parser = Parser::new();
-    let ts_lang = pattern.lang.ts_language();
-    if parser.set_language(&ts_lang).is_err() {
+    // Guarded parse entry point — see the note in `hierarchy::find_in_source`.
+    // `vex pattern` live-scans arbitrary repository files, so an unguarded
+    // parser here is exposed to the same runaway-grammar input the v1.23.0
+    // callback budget exists to bound.
+    let Ok(tree) = crate::parse::parser_pool::parse_text(pattern.lang, source) else {
         return Vec::new();
-    }
-
-    let tree = match parser.parse(source, None) {
-        Some(t) => t,
-        None => return Vec::new(),
     };
 
     let mut matches = Vec::new();

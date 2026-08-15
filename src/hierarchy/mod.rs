@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Parser, QueryCursor};
+use tree_sitter::QueryCursor;
 
 use crate::parse::language::Language;
 
@@ -68,15 +68,16 @@ fn find_in_source(content: &str, lang: Language, path: &str, base_name: &str) ->
         None => return Vec::new(),
     };
 
-    let ts_lang = lang.ts_language();
-    let mut parser = Parser::new();
-    if parser.set_language(&ts_lang).is_err() {
+    // Must go through `parser_pool::parse_text`, not a raw `Parser`: it is the
+    // single guarded parse entry point, and its progress-callback budget is what
+    // stops adversarial input from running away (a 451-byte malformed Kotlin
+    // file took 334 s and multi-GB before the guard existed — see
+    // `parse::parser_pool` and `fuzz/findings/kotlin-grammar-oom.bin`). This is
+    // a live-scan path over arbitrary repository files, so it is exposed to
+    // exactly that input. The pool also removes the per-file `set_language`
+    // cost this used to pay.
+    let Ok(tree) = crate::parse::parser_pool::parse_text(lang, content) else {
         return Vec::new();
-    }
-
-    let tree = match parser.parse(content, None) {
-        Some(t) => t,
-        None => return Vec::new(),
     };
 
     let base_idx = match query.capture_index_for_name("base") {

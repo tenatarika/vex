@@ -4,6 +4,31 @@ fn find(source: &str, lang: Language, base_name: &str) -> Vec<ImplMatch> {
     find_in_source(source, lang, "test", base_name)
 }
 
+/// `vex implementations` live-scans arbitrary repository files, so its parse
+/// must be the guarded one. This is the artifact that took tree-sitter-kotlin-ng
+/// 334 s and multi-GB before the v1.23.0 callback budget existed; the live-scan
+/// path used a raw `Parser` and bypassed that budget until this was fixed.
+#[test]
+fn live_scan_parse_is_bounded_on_pathological_input() {
+    const PATHOLOGICAL: &[u8] = include_bytes!("../../fuzz/findings/kotlin-grammar-oom.bin");
+    let src = std::str::from_utf8(PATHOLOGICAL).expect("fuzz finding is valid UTF-8");
+
+    let start = std::time::Instant::now();
+    let matches = find(src, Language::Kotlin, "Anything");
+    let elapsed = start.elapsed();
+
+    assert!(
+        matches.is_empty(),
+        "a parse rejected by the budget must yield no matches"
+    );
+    // Generous bound: the point is that it terminates in the budget rather than
+    // running for minutes, not that it hits a particular latency.
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "live-scan parse must be bounded by the callback budget, took {elapsed:?}"
+    );
+}
+
 #[test]
 fn rust_impl_trait_for_struct() {
     let src = r#"

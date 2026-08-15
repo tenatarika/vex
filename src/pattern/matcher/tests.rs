@@ -1,6 +1,28 @@
 use super::parse::{parse_composite_pattern, parse_pattern, split_top_level};
 use super::*;
 
+/// `vex pattern` live-scans arbitrary repository files, so its parse must go
+/// through the guarded entry point — see the sibling test in `hierarchy::tests`.
+#[test]
+fn live_scan_parse_is_bounded_on_pathological_input() {
+    const PATHOLOGICAL: &[u8] = include_bytes!("../../../fuzz/findings/kotlin-grammar-oom.bin");
+    let src = std::str::from_utf8(PATHOLOGICAL).expect("fuzz finding is valid UTF-8");
+    let pattern = parse_pattern("fun $NAME()", Language::Kotlin).expect("pattern");
+
+    let start = std::time::Instant::now();
+    let matches = find_matches(src, &pattern, "pathological.kt");
+    let elapsed = start.elapsed();
+
+    assert!(
+        matches.is_empty(),
+        "a parse rejected by the budget must yield no matches"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "live-scan parse must be bounded by the callback budget, took {elapsed:?}"
+    );
+}
+
 /// v1.11 hotfix — `$_NAME` (invalid metavar — `$_` must stand alone)
 /// must be parsed as a literal `$_NAME` so the typo doesn't silently
 /// degrade to matching `_NAME` with the `$` swallowed. The wildcard
