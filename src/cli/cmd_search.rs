@@ -60,6 +60,9 @@ struct SearchOutcome {
     drifted: bool,
     diff_retained: usize,
     diff_dropped: usize,
+    /// How many results `--exclude-generated` removed. Lower bound — the filter
+    /// is lazy, so counting stops once `limit` rows are collected.
+    generated_dropped: usize,
     changed_paths: Option<crate::util::git_diff::ChangedPaths>,
 }
 
@@ -158,6 +161,7 @@ pub(crate) fn search(
         drifted,
         diff_retained,
         diff_dropped,
+        generated_dropped,
         changed_paths,
     } = outcome;
 
@@ -167,6 +171,9 @@ pub(crate) fn search(
             include: scope.include.clone(),
             exclude: scope.exclude.clone(),
             kind: kind.clone(),
+            code_only,
+            exclude_generated,
+            generated_dropped: (generated_dropped > 0).then_some(generated_dropped),
         };
         let trace = crate::search::trace::SearchTrace::from_channels(
             &query,
@@ -504,6 +511,7 @@ fn produce_results(
 
     Ok(SearchOutcome {
         results,
+        generated_dropped,
         trace_structural,
         trace_bm25,
         trace_semantic,

@@ -48,6 +48,18 @@ pub struct FilterSnapshot {
     pub exclude: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub kind: Vec<String>,
+    /// `--code-only` — prose-extension results dropped. Omitted when off, so
+    /// the trace stays quiet for the common case.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub code_only: bool,
+    /// `--exclude-generated` — machine-generated files dropped.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub exclude_generated: bool,
+    /// How many results `--exclude-generated` actually removed. A lower bound:
+    /// the filter is evaluated lazily, so it stops counting once the limit is
+    /// filled. Omitted when nothing was dropped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_dropped: Option<usize>,
 }
 
 impl SearchTrace {
@@ -173,11 +185,47 @@ mod tests {
             include: vec!["src/**".into()],
             exclude: vec!["**/*.gen.rs".into()],
             kind: vec!["fn".into()],
+            code_only: false,
+            exclude_generated: false,
+            generated_dropped: None,
         };
         let trace = SearchTrace::from_channels("q", &[], &[], &[], &[], filter.clone());
         assert_eq!(trace.filter_applied.filter.as_deref(), Some("tests/"));
         assert_eq!(trace.filter_applied.include, filter.include);
         assert_eq!(trace.filter_applied.exclude, filter.exclude);
         assert_eq!(trace.filter_applied.kind, filter.kind);
+    }
+
+    /// The boolean post-filters were invisible in `--why` — an agent whose
+    /// result list was emptied by a flag it passed had no way to see that from
+    /// the trace. They serialize only when active, so the common case is
+    /// unchanged.
+    #[test]
+    fn post_filters_appear_in_the_trace_only_when_active() {
+        let off = FilterSnapshot {
+            filter: None,
+            include: vec![],
+            exclude: vec![],
+            kind: vec![],
+            code_only: false,
+            exclude_generated: false,
+            generated_dropped: None,
+        };
+        let json = serde_json::to_string(&off).expect("serialize");
+        assert_eq!(
+            json, "{}",
+            "an inactive filter set must stay silent: {json}"
+        );
+
+        let on = FilterSnapshot {
+            code_only: true,
+            exclude_generated: true,
+            generated_dropped: Some(7),
+            ..off
+        };
+        let json = serde_json::to_string(&on).expect("serialize");
+        assert!(json.contains("\"code_only\":true"), "{json}");
+        assert!(json.contains("\"exclude_generated\":true"), "{json}");
+        assert!(json.contains("\"generated_dropped\":7"), "{json}");
     }
 }

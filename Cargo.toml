@@ -1,9 +1,17 @@
 [workspace]
 members = [".", "crates/vex-mcp"]
 
+# Single source of truth for the version across the workspace. `vex-mcp` used to
+# carry its own `0.1.0` and drifted several releases behind `vex`, which is
+# user-visible: it is what the MCP `initialize` handshake reports as
+# `serverInfo.version`, so an agent could not tell which vex it was paired with.
+# Bump this one key at release time (see docs/RELEASING.md).
+[workspace.package]
+version = "1.25.5"
+
 [package]
 name = "vex"
-version = "1.25.5"
+version.workspace = true
 edition = "2021"
 description = "Fast hybrid structural + semantic code search (vector + index)"
 license = "MIT"

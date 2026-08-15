@@ -23,6 +23,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   suppresses every hit, vex says so on stderr rather than reporting a bare "no
   results". Off by default. See `docs/LIMITATIONS.md` §10.2.
 
+- `vex search --why` now reports the boolean post-filters in `filter_applied`:
+  `code_only`, `exclude_generated`, and `generated_dropped` (how many results
+  the latter removed). Previously a run emptied by a flag the caller passed was
+  indistinguishable in the trace from a query that matched nothing. All three
+  are omitted when inactive, so existing traces are unchanged.
+
+### Changed
+
+- `vex-mcp` now inherits its version from the workspace instead of carrying its
+  own. It had been pinned at `0.1.0` since it was created while `vex` moved to
+  1.25.x — and that number is what the MCP `initialize` handshake reports as
+  `serverInfo.version`, so a connected agent could not tell which vex it was
+  paired with. Both crates now read `[workspace.package] version`, the single
+  key to bump at release time.
+
+### Fixed
+
+- `vex implementations` and `vex pattern` built raw tree-sitter parsers for
+  their live-scan paths, bypassing the shared guarded entry point and with it
+  the progress-callback budget added in v1.23.0. That budget is what bounds
+  runaway grammars on adversarial input — a 451-byte malformed Kotlin file
+  previously took 334 s and multiple GB. Both commands scan arbitrary
+  repository files, so both were exposed; they now parse through the guarded
+  path and are covered by regression tests driving the known artifact.
+
 ### Documentation
 
 - `docs/COOKBOOK.md` gains Recipe 6 — following a request across a **language

@@ -91,7 +91,10 @@ private key is suspected compromised.
 $EDITOR CHANGELOG.md
 git commit -am "docs: prepare vX.Y.Z release notes"
 
-# 2. Bump the version in Cargo.toml.
+# 2. Bump the version. It lives in ONE place: `[workspace.package] version`
+#    in the root Cargo.toml. Both `vex` and `vex-mcp` inherit it via
+#    `version.workspace = true`, so they can no longer drift apart (vex-mcp
+#    sat at 0.1.0 for several releases before this).
 $EDITOR Cargo.toml
 cargo build --release  # updates the `vex` entry in Cargo.lock to match
 # The ROOT Cargo.lock IS tracked (only fuzz/Cargo.lock is gitignored).
