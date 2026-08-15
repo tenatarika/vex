@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
 [![Commands](https://img.shields.io/badge/commands-30-blue.svg)]()
 [![Languages](https://img.shields.io/badge/languages-19-blueviolet.svg)]()
-[![Tests](https://img.shields.io/badge/tests-3245-green.svg)]()
+[![Tests](https://img.shields.io/badge/tests-3449-green.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
@@ -557,16 +557,16 @@ vex pattern 'fn $N($$$)' --lang rust --why 2>trace.json
 
 Compared against [ast-index](https://github.com/defendend/Claude-ast-index-search) v3.31.0 (SQLite + FTS5) and [ripgrep](https://github.com/BurntSushi/ripgrep) 15.1.0.
 
-**Methodology:** measured 2026-07-11 on Apple Silicon (macOS), vex v1.25.1, release build, cold cache, non-semantic index. Search is the average of 10 runs. Reproduce with `./benches/bench.sh` (point `VEX_BENCH_LARGE_PROJECTS` at your own repos for larger corpora). Numbers are machine-specific — treat the ratios, not the absolutes, as the signal.
+**Methodology:** indexing re-measured 2026-08-12 on Apple Silicon (macOS), vex v1.25.5, release build, cold cache, non-semantic index. Search figures are unchanged from the 2026-07-11 / v1.25.1 run (nothing in v1.25.2-v1.25.5 touches the search path) and are the average of 10 runs. Reproduce with `./benches/bench.sh` (point `VEX_BENCH_LARGE_PROJECTS` at your own repos for larger corpora). Numbers are machine-specific — treat the ratios, not the absolutes, as the signal.
 
 ### Indexing
 
 | Project | vex | ast-index | vex size | ast-index size |
 |---------|-----|-----------|----------|----------------|
-| Small (vex itself, 6.5K symbols) | 651 ms | **248 ms** | **4.4 MB** | 6.5 MB |
-| Medium (ast-index repo, 2.3K symbols) | 315 ms | **111 ms** | **1.6 MB** | 3.4 MB |
+| Small (vex itself, 6.8K symbols) | 442 ms | **254 ms** | **4.6 MB** | 6.7 MB |
+| Medium (ast-index repo, 2.3K symbols) | 204 ms | **109 ms** | **1.6 MB** | 3.4 MB |
 
-**Honest read:** vex indexing is ~2.5-3x *slower* than ast-index — it builds far more at index time (FST + BM25 + persistent call graph + resolved reference edges + a v8 type-hierarchy section + a trigram skip-index + pattern skeletons), where ast-index builds a SQLite + FTS5 store. That one-time cost buys the constant-time queries below; the resulting index is still **~1.5-2x smaller** on disk (mmap + FST vs SQLite). Projects indexed with `--semantic` are slower again (ONNX embedding generation) and produce a larger index.
+**Honest read:** vex indexing is ~1.7-1.9x *slower* than ast-index — it builds far more at index time (FST + BM25 + persistent call graph + resolved reference edges + a v8 type-hierarchy section + a trigram skip-index + pattern skeletons), where ast-index builds a SQLite + FTS5 store. That one-time cost buys the constant-time queries below; the resulting index is still **~1.4-2x smaller** on disk (mmap + FST vs SQLite). The gap was ~2.5-3x when last measured at v1.25.1; v1.25.5 is the main reason it has narrowed — a single-variable A/B against v1.25.4 put its cold-index gain at −34% and −31% on two corpora, from parsing each file once and sharing the tree across all extractors instead of re-parsing it per extractor. Projects indexed with `--semantic` are slower again (ONNX embedding generation) and produce a larger index.
 
 ### Search: vex vs ast-index vs ripgrep
 

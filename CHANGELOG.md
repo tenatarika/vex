@@ -6,6 +6,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.25.5] - 2026-08-12
+
+### Performance
+
+- `vex index` is **~1.5x faster** on a cold cache. Single-variable A/B against
+  v1.25.4 (release builds, isolated cache dir wiped per run, median of 5): −34%
+  on this repo (554 → 367 ms) and −31% on a 31K-line Rust project
+  (264 → 182 ms). `parse_file` used to run a full tree-sitter
+  parse of every file **once per extractor** — six times, seven for C++ — because
+  the parser pool caches a `Parser`, not a `Tree`. Each file is now parsed once
+  and the single tree is shared across symbol, reference, call-edge, binder,
+  skeleton, hierarchy and C++-include extraction. Indexing is still slower than a
+  plain FTS store because it builds more (FST + BM25 + call graph + resolved
+  reference edges + type hierarchy + trigram skip-index + pattern skeletons), but
+  the gap against ast-index narrows from ~2.5-3x to ~1.7-1.9x.
+- `vex update` gets a smaller share of this (~9% on a single-file edit): its cost
+  is dominated by rebuilding the output sections over all symbols, not by parsing.
+
+Output is unchanged: no index-format change, no re-index required, and the parsed
+result is byte-identical per file. Each extractor keeps its self-parsing entry
+point for the live-scan paths (`vex callers`, `vex pattern`,
+`vex implementations`) that have no tree to share, along with its own
+language/allowlist gate — notably the reference extractor, which must keep
+routing the 11 languages without an AST reference filter through the line-based
+scanner.
+
+Hardening picked up along the way: adversarial input that parses expensively but
+successfully is now parsed once rather than six times, so the per-file exposure
+to the v1.23.0 parse budget drops accordingly. The rejection threshold itself is
+unchanged.
+
 ## [1.25.4] - 2026-08-05
 
 ### Added
