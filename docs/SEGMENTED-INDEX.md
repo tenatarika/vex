@@ -6,8 +6,8 @@
 
 ## The problem, measured
 
-`vex update` after editing **one file** in a 3.6 GB repository (6083 tracked
-files, 33379 symbols) takes ~485 ms. Where it goes:
+`vex update` after editing **one file** in a large private Python codebase
+(~6k indexed files, ~33k symbols) takes ~485 ms. Where it goes:
 
 | Phase | ms | Scales with |
 |---|---|---|

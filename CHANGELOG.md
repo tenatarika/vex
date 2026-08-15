@@ -34,8 +34,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `vex update` no longer re-reads every tracked file to hash it. Files whose
   `(length, mtime)` is unchanged since the last run reuse their recorded content
   hash, so change detection costs a `stat` per file instead of a full read.
-  Measured on a 33k-symbol / 6083-file repository: update 511 ms → 485 ms
-  (−5 %); the saving grows with file count and file size.
+  Measured on a private ~33k-symbol codebase of roughly 6k indexed files:
+  update 511 ms → 485 ms (−5 %); the saving grows with file count and file
+  size.
 
   Reuse requires length **and** nanosecond mtime to match **and** that mtime to
   predate the manifest's own write time — git's "racily clean" guard, which

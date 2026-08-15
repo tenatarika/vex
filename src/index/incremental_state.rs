@@ -74,8 +74,8 @@ pub struct IncrementalState {
     /// Lets `hash_files` skip **reading** a file whose stat is byte-identical
     /// to last time and reuse the recorded content hash instead. On a
     /// one-file edit that turns "read and hash every tracked file" into "stat
-    /// every tracked file", which on a 3.6 GB / 6083-file repo was 38 ms of
-    /// the 511 ms `vex update`.
+    /// every tracked file", which on a ~6k-file codebase was 38 ms of the
+    /// 511 ms `vex update`.
     ///
     /// Empty on any index written before this field existed, which simply
     /// means the next run hashes everything and repopulates it.
