@@ -75,11 +75,21 @@ pub struct IncrementalState {
     /// to last time and reuse the recorded content hash instead. On a
     /// one-file edit that turns "read and hash every tracked file" into "stat
     /// every tracked file", which on a 3.6 GB / 6083-file repo was 38 ms of
-    /// the 551 ms `vex update`.
+    /// the 511 ms `vex update`.
     ///
     /// Empty on any index written before this field existed, which simply
     /// means the next run hashes everything and repopulates it.
     pub file_stats: BTreeMap<String, FileStat>,
+    /// Unix seconds stamped immediately **before** the hashing pass that
+    /// produced [`Self::file_stats`].
+    ///
+    /// This — not the manifest's `indexed_at` — is the cutoff the racily-clean
+    /// guard compares against. `indexed_at` is stamped at the *end* of the run,
+    /// after parse and embed, so using it would declare every mtime in that
+    /// whole window trustworthy. Stamping before the pass means a file touched
+    /// at any point during the run has an mtime at or after the cutoff and is
+    /// re-hashed next time.
+    pub hashed_at: Option<u64>,
     pub imported_by_built: Option<bool>,
     pub cpp_includes_processed: Option<bool>,
     pub body_tokens_persisted: Option<bool>,
@@ -212,6 +222,7 @@ mod tests {
 
         IncrementalState {
             imported_by,
+            hashed_at: Some(1_700_000_000),
             file_stats: BTreeMap::from([(
                 "src/a.rs".to_string(),
                 FileStat {

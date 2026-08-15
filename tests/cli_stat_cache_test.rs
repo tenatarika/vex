@@ -149,6 +149,66 @@ fn a_deleted_file_is_dropped() {
     );
 }
 
+/// Proves the optimisation is actually *active*, independent of timing.
+///
+/// Every other test here exercises the safe path: subprocess overhead between
+/// `index` and `update` pushes each edited file's mtime past the cutoff, so
+/// they would all still pass if reuse were hard-disabled. This one revokes read
+/// permission on an unchanged file — a stat-only reuse succeeds without ever
+/// opening it, while a fallback to reading the bytes cannot.
+#[cfg(unix)]
+#[test]
+fn an_unchanged_file_is_not_reopened() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    setup(tmp.path());
+
+    // The racily-clean cutoff is stamped just before the indexing run hashes,
+    // at second granularity. A file written in that same second is deliberately
+    // NOT reuse-eligible, so age the fixtures past it before indexing —
+    // otherwise this test proves nothing about reuse, only about the guard.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    vex_in(tmp.path())
+        .args(["index", "--path", "."])
+        .assert()
+        .success();
+
+    // Touch an unrelated file so the update has work to do at all.
+    std::fs::write(
+        tmp.path().join("b.rs"),
+        "fn beta_two() {}\nfn zeta_six() {}\n",
+    )
+    .unwrap();
+
+    let locked = tmp.path().join("a.rs");
+    let original = std::fs::metadata(&locked).unwrap().permissions();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let result = vex_in(tmp.path())
+        .args(["update", "--path", "."])
+        .output()
+        .unwrap();
+
+    // Restore before asserting so a failure cannot leave an unreadable tempdir.
+    std::fs::set_permissions(&locked, original).unwrap();
+
+    assert!(
+        result.status.success(),
+        "update must succeed without reading the unchanged file; stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        indexed(tmp.path(), "alpha_one"),
+        "the unreadable-but-unchanged file's symbols must survive via the stat cache"
+    );
+    assert!(
+        indexed(tmp.path(), "zeta_six"),
+        "the file that did change must still be picked up"
+    );
+}
+
 /// Two consecutive updates with no changes in between must be stable — the
 /// second one runs entirely off the stat cache and must not resurrect or drop
 /// anything.

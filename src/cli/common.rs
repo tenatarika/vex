@@ -269,14 +269,26 @@ pub(crate) fn build_index_options(
     no_history: bool,
     cfg: &config::VexConfig,
     manifest: Option<&Manifest>,
+    // Whether `<index_dir>/index.git_history` is on disk. Computed by the
+    // caller so this function stays a pure decision over its inputs.
+    history_sidecar_present: bool,
 ) -> pipeline::IndexOptions {
     // Phase 14.8 Step 5b sticky-via-sentinel: `vex update` without an
     // explicit flag inherits the prior manifest's history decision.
     // `--history` always wins; `--no-history` always wins.
     // Otherwise: prior `history_indexed_at = Some(_)` → with_history=true.
+    // The manifest field is the primary signal, but it lives in the
+    // `index.state` sidecar, which is reset wholesale whenever that sidecar's
+    // format version changes. Falling back to the presence of the history
+    // sidecar itself keeps a format bump from silently and permanently
+    // switching history off for a user who had it on: without this, the reset
+    // manifest is persisted with `history_indexed_at: None` and every later
+    // update inherits that, while `index.git_history` sits on disk frozen at
+    // the tip it was built for.
     let history_was_indexed = manifest
         .and_then(|m| m.state.history_indexed_at.as_ref())
-        .is_some();
+        .is_some()
+        || history_sidecar_present;
     let resolved_with_history = if no_history {
         false
     } else if with_history {

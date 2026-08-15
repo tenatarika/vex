@@ -64,6 +64,7 @@ pub(crate) fn watch(
         false, // --no-history not surfaced on watch
         ctx.cfg,
         Some(&prior_manifest),
+        config::git_history_path(&root).exists(),
     );
     crate::watch::handler::watch(&root, opts, &embedder_id, ctx.excludes)?;
     Ok(())
@@ -108,6 +109,7 @@ fn watch_workspace(
             false,
             &member_cfg,
             Some(&prior_manifest),
+            config::git_history_path(&m.root).exists(),
         );
         members.push(MemberWatch {
             root: m.root.clone(),

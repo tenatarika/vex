@@ -508,10 +508,15 @@ pub(super) fn build_blob_cache() -> crate::index::parse_cache::BlobCache {
 pub(super) struct StatCache<'a> {
     stats: &'a BTreeMap<String, crate::index::incremental_state::FileStat>,
     hashes: &'a HashMap<String, u64>,
-    /// Manifest `indexed_at` (Unix seconds) of the run that produced `stats`.
-    /// A file whose mtime is not strictly older than this is re-hashed — see
-    /// the racily-clean note below.
-    indexed_at: u64,
+    /// `hashed_at` (Unix seconds) of the run that produced `stats` — stamped
+    /// immediately before that run's hashing pass.
+    ///
+    /// A file whose mtime is not strictly older than this is re-hashed. It is
+    /// deliberately NOT the manifest's `indexed_at`: that is stamped after
+    /// parse and embed, which would declare the whole run's duration
+    /// trustworthy and leave every edit landing inside it guarded only by
+    /// exact `(len, mtime_ns)` equality.
+    hashed_at: u64,
     enabled: bool,
 }
 
@@ -527,7 +532,7 @@ impl StatCache<'_> {
         Self {
             stats: &EMPTY_STATS,
             hashes: &EMPTY_HASHES,
-            indexed_at: 0,
+            hashed_at: 0,
             enabled: false,
         }
     }
@@ -537,23 +542,37 @@ impl<'a> StatCache<'a> {
     pub(super) fn new(
         stats: &'a BTreeMap<String, crate::index::incremental_state::FileStat>,
         hashes: &'a HashMap<String, u64>,
-        indexed_at: Option<u64>,
+        hashed_at: Option<u64>,
     ) -> Self {
-        let indexed_at = indexed_at.unwrap_or(0);
+        let hashed_at = hashed_at.unwrap_or(0);
         Self {
             stats,
             hashes,
-            indexed_at,
-            // Without a recorded write time there is no racily-clean guard, so
-            // reuse would be unsound. Fall back to hashing everything.
-            enabled: indexed_at > 0,
+            hashed_at,
+            // An index written before `hashed_at` existed has no cutoff, so the
+            // racily-clean guard cannot be applied and reuse would be unsound.
+            // Fall back to hashing everything; the next run records one.
+            enabled: hashed_at > 0,
         }
     }
 }
 
+/// One hashing pass's output: the per-file content hashes, the stat
+/// fingerprints to persist alongside them, and the cutoff those fingerprints
+/// are valid against.
+///
+/// The three travel together because they are only meaningful together — a
+/// fingerprint set paired with the wrong cutoff, or with hashes from a
+/// different pass, is exactly the mistake that would make reuse unsound.
+pub(super) struct HashedFiles {
+    pub(super) hashes: Vec<(String, u64)>,
+    pub(super) stats: BTreeMap<String, crate::index::incremental_state::FileStat>,
+    /// Unix seconds, stamped immediately before the pass began.
+    pub(super) hashed_at: u64,
+}
+
 /// Hash every file, reusing the previous run's hash for files whose `(len,
-/// mtime)` is unchanged. Returns the hashes and the fresh fingerprints to
-/// persist for next time.
+/// mtime)` is unchanged.
 ///
 /// ## Why this is safe, and where it stops being safe
 ///
@@ -561,13 +580,26 @@ impl<'a> StatCache<'a> {
 ///
 /// 1. `len` identical to the recorded fingerprint,
 /// 2. `mtime` identical to the nanosecond,
-/// 3. that mtime **strictly older** than the manifest's `indexed_at`.
+/// 3. that mtime **strictly older** than the previous run's `hashed_at` — the
+///    instant stamped just before that run started hashing.
 ///
 /// (3) is git's "racily clean" guard. Without it, a file written in the same
-/// clock second as the index itself could be modified again, keep a `(len,
+/// clock second as the hashing pass could be modified again, keep a `(len,
 /// mtime)` pair the index already recorded, and be skipped forever. With it,
-/// anything touched at or after the moment we recorded state is re-hashed, so
-/// the window closes.
+/// anything touched at or after the instant hashing began is re-hashed, so the
+/// window closes.
+///
+/// The cutoff must be the hashing pass's own timestamp, not the manifest's
+/// `indexed_at`: the latter is stamped after parse and embed complete, which on
+/// a large index is seconds to minutes later, and would silently trust every
+/// mtime in that whole interval.
+///
+/// A second, narrower window is inherent and accepted: `metadata()` and
+/// `read()` are separate syscalls, so an edit landing exactly between them
+/// records a stat and a hash from different instants. The next run's live
+/// `metadata()` will disagree with the recorded stat and re-hash, unless the
+/// edit reproduced the same `(len, mtime_ns)` — the same collision the
+/// paragraph below covers.
 ///
 /// What remains, and is a deliberate trade every build system makes: a writer
 /// that changes a file's bytes while **preserving both its length and its
@@ -578,10 +610,14 @@ pub(super) fn hash_files_with_stat_cache(
     root: &Path,
     files: &[std::path::PathBuf],
     cache: &StatCache<'_>,
-) -> (
-    Vec<(String, u64)>,
-    BTreeMap<String, crate::index::incremental_state::FileStat>,
-) {
+) -> HashedFiles {
+    // Stamp BEFORE the pass, so anything modified while it runs lands at or
+    // after the cutoff and is re-hashed next time.
+    let hashed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
     let pairs: Vec<(String, u64, crate::index::incremental_state::FileStat)> = files
         .par_iter()
         .filter_map(|path| {
@@ -600,7 +636,7 @@ pub(super) fn hash_files_with_stat_cache(
 
             if cache.enabled && mtime_ns > 0 {
                 let mtime_secs = mtime_ns / 1_000_000_000;
-                if mtime_secs < cache.indexed_at {
+                if mtime_secs < cache.hashed_at {
                     if let (Some(prev), Some(hash)) =
                         (cache.stats.get(&rel), cache.hashes.get(&rel))
                     {
@@ -623,7 +659,11 @@ pub(super) fn hash_files_with_stat_cache(
         stats.insert(rel.clone(), stat);
         hashes.push((rel, hash));
     }
-    (hashes, stats)
+    HashedFiles {
+        hashes,
+        stats,
+        hashed_at,
+    }
 }
 
 pub(super) fn parse_files(

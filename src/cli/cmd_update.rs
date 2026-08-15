@@ -157,6 +157,7 @@ fn update_one(
         flags.no_history,
         cfg,
         Some(&prior_manifest),
+        config::git_history_path(root).exists(),
     );
     let cli_gpu = flags.gpu.then_some(true).or(flags.no_gpu.then_some(false));
     opts.device = crate::embed::Device::resolve(

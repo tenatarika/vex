@@ -1306,6 +1306,11 @@ This is the same trade `make`, `cargo` and `git status` make, and for the same
 reason: on a large repository, reading every file to detect a one-file edit
 costs more than the edit itself.
 
+The cutoff is the timestamp of the previous run's hashing pass, recorded as
+`hashed_at` in the `index.state` sidecar — **not** the manifest's `indexed_at`,
+which is stamped after parsing and embedding finish and would therefore vouch
+for every mtime in that whole interval.
+
 ---
 
 ## Coverage matrix (one-line summary)

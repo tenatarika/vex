@@ -179,6 +179,9 @@ fn run_for_root(
         false, // `vex index` is a clean rebuild — no `--no-history` semantics
         cfg,
         None,
+        // A fresh `vex index` rebuilds from scratch; there is no sticky state to
+        // inherit, so the sidecar's presence is irrelevant here.
+        false,
     );
     // v1.15.1: `--drop-semantic` requires `--no-semantic` (clap-enforced),
     // so `with_semantic` is guaranteed false here when `drop_semantic` is

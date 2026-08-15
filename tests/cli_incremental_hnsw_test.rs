@@ -194,6 +194,7 @@ fn bake_v115_index(dir: &Path) -> PathBuf {
             imported_by: Default::default(),
             imported_by_built: None,
             file_stats: Default::default(),
+            hashed_at: None,
         },
     };
     manifest

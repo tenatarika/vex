@@ -45,9 +45,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and its mtime is invisible until the next full `vex index`.
 
   The stat fingerprints live in the `index.state` sidecar, whose format version
-  is bumped as a result. Existing indexes log one warning and re-derive their
-  incremental state on the next update, as they do for any sidecar format
-  change.
+  is bumped as a result. Existing indexes discard their incremental state once
+  and re-derive it on the next update, as they do for any sidecar format
+  change. That reset is silent unless you run with `RUST_LOG=vex=warn`; it costs
+  one update cycle of cascade freshness and nothing else — in particular
+  `--history` stickiness now survives it, because the sticky check falls back to
+  the presence of the history sidecar rather than trusting manifest state alone.
 
 
 - `vex-mcp` now inherits its version from the workspace instead of carrying its
@@ -59,6 +62,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `vex update --history` stickiness no longer depends solely on incremental
+  state that a sidecar format change can reset. The flag is inherited when the
+  manifest records a prior history build **or** when `index.git_history` is on
+  disk, so a format bump can no longer switch history off permanently while
+  leaving the sidecar in place.
 - `vex implementations` and `vex pattern` built raw tree-sitter parsers for
   their live-scan paths, bypassing the shared guarded entry point and with it
   the progress-callback budget added in v1.23.0. That budget is what bounds
