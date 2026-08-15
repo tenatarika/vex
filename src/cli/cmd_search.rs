@@ -31,6 +31,7 @@ struct SearchReq<'a> {
     context_path: Option<&'a str>,
     no_bm25: bool,
     code_only: bool,
+    exclude_generated: bool,
     meta: &'a MetadataArgs,
     scope: &'a ScopeArgs,
     diff: &'a DiffFilterArgs,
@@ -104,6 +105,7 @@ pub(crate) fn search(
     no_stale_check: bool,
     no_bm25: bool,
     code_only: bool,
+    exclude_generated: bool,
     meta: MetadataArgs,
     why: bool,
     scope: ScopeArgs,
@@ -120,6 +122,7 @@ pub(crate) fn search(
         context_path: context_path.as_deref(),
         no_bm25,
         code_only,
+        exclude_generated,
         meta: &meta,
         scope: &scope,
         diff: &diff,
@@ -278,6 +281,7 @@ fn produce_results(
     let limit = req.limit;
     let no_bm25 = req.no_bm25;
     let code_only = req.code_only;
+    let exclude_generated = req.exclude_generated;
     let filter_path = req.filter_path;
     let kind = req.kind;
     let context_path = req.context_path;
@@ -299,6 +303,7 @@ fn produce_results(
         || !path_scope.is_empty()
         || changed_paths.is_some()
         || code_only
+        || exclude_generated
     {
         reader.symbol_count()
     } else {
@@ -440,10 +445,29 @@ fn produce_results(
     // search for "README" still finds it; agents pass this for
     // code-intent queries where CHANGELOG / README headings would
     // otherwise pollute the top of the result list.
+    // `exclude_generated` reads each candidate file's header, unlike every
+    // other filter here, which answers from the index alone. Two things keep
+    // that affordable: the predicate sits before `take(limit)` in a lazy
+    // iterator chain, so it stops being evaluated once `limit` rows have
+    // passed (not once `fetch_limit` rows have been scanned), and the
+    // per-path verdict is memoised because a symbol-dense file contributes
+    // many rows.
+    let mut generated_memo: std::collections::HashMap<String, bool> =
+        std::collections::HashMap::new();
     let results: Vec<_> = post_diff_results
         .into_iter()
         .filter(|r| metadata_filter.matches(r.signature.as_deref()))
         .filter(|r| !code_only || !crate::util::paths::is_doc_path(&r.path))
+        .filter(|r| {
+            !exclude_generated || {
+                let verdict = generated_memo.get(&r.path).copied().unwrap_or_else(|| {
+                    let v = crate::util::generated::is_generated_file(&root.join(&r.path));
+                    generated_memo.insert(r.path.clone(), v);
+                    v
+                });
+                !verdict
+            }
+        })
         .take(limit)
         .collect();
 

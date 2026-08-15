@@ -51,6 +51,10 @@ pub(crate) fn build_search(
     if opt_bool(args, "code_only", false)? {
         extra.push("--code-only".into());
     }
+    // Drops machine-generated files (protoc / sqlc / bindgen / … banners).
+    if opt_bool(args, "exclude_generated", false)? {
+        extra.push("--exclude-generated".into());
+    }
     push_auto_update(&mut extra, args)?;
     push_no_stale_check(&mut extra, args)?;
     push_scope(&mut extra, args)?;

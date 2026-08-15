@@ -956,6 +956,24 @@ fn search_code_only_pushes_flag() {
 }
 
 #[test]
+fn search_exclude_generated_pushes_flag() {
+    let extra = args_for("search", json!({"query": "foo", "exclude_generated": true}));
+    assert!(
+        extra.contains(&"--exclude-generated".to_string()),
+        "search exclude_generated=true must add --exclude-generated; got: {extra:?}"
+    );
+}
+
+#[test]
+fn search_exclude_generated_default_omits_flag() {
+    let extra = args_for("search", json!({"query": "foo"}));
+    assert!(
+        !extra.contains(&"--exclude-generated".to_string()),
+        "search without exclude_generated must NOT add --exclude-generated; got: {extra:?}"
+    );
+}
+
+#[test]
 fn search_code_only_default_omits_flag() {
     let extra = args_for("search", json!({"query": "foo"}));
     assert!(

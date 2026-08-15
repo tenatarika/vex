@@ -38,6 +38,11 @@ expression: descriptors
           },
           "type": "array"
         },
+        "exclude_generated": {
+          "default": false,
+          "description": "Drop machine-generated files (protobuf stubs, sqlc output, bindgen bindings, ORM schemas) from the results, recognised from the generator's header banner. Pass on repos that check in generated code, where the stubs outnumber and outrank hand-written symbols. Heuristic: a generator that writes no banner is not detected, so it under-reports rather than hiding hand-written code.",
+          "type": "boolean"
+        },
         "filter_path": {
           "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns). Legacy alias: `filter`.",
           "type": "string"

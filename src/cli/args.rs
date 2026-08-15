@@ -350,6 +350,13 @@ pub enum Commands {
         #[arg(long)]
         code_only: bool,
 
+        /// Drop machine-generated files (protobuf stubs, sqlc output,
+        /// bindgen bindings, ORM schemas) from the results. Recognised
+        /// from the generator's header banner, so it only sees files that
+        /// carry one — see `vex`'s LIMITATIONS for what that misses.
+        #[arg(long)]
+        exclude_generated: bool,
+
         #[command(flatten)]
         meta: MetadataArgs,
 
