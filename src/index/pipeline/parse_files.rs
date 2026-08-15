@@ -11,7 +11,7 @@
 //! Isolated from `mod.rs` so the orchestration (lock handling, manifest
 //! diff, skip-path decisions) stays separable from the parse pipeline.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -501,16 +501,129 @@ pub(super) fn build_blob_cache() -> crate::index::parse_cache::BlobCache {
     cache
 }
 
-pub(super) fn hash_files(root: &Path, files: &[std::path::PathBuf]) -> Vec<(String, u64)> {
-    files
+/// The previous run's stat fingerprints plus the hashes they correspond to.
+///
+/// Reuse is only sound when both halves agree, so they travel together rather
+/// than as two loose maps a caller could pair up wrongly.
+pub(super) struct StatCache<'a> {
+    stats: &'a BTreeMap<String, crate::index::incremental_state::FileStat>,
+    hashes: &'a HashMap<String, u64>,
+    /// Manifest `indexed_at` (Unix seconds) of the run that produced `stats`.
+    /// A file whose mtime is not strictly older than this is re-hashed — see
+    /// the racily-clean note below.
+    indexed_at: u64,
+    enabled: bool,
+}
+
+impl StatCache<'_> {
+    /// A cache that never hits — used by the full-index path, which has no
+    /// prior run to trust, and by the plain [`hash_files`] entry point.
+    pub(super) fn disabled() -> Self {
+        static EMPTY_STATS: std::sync::LazyLock<
+            BTreeMap<String, crate::index::incremental_state::FileStat>,
+        > = std::sync::LazyLock::new(BTreeMap::new);
+        static EMPTY_HASHES: std::sync::LazyLock<HashMap<String, u64>> =
+            std::sync::LazyLock::new(HashMap::new);
+        Self {
+            stats: &EMPTY_STATS,
+            hashes: &EMPTY_HASHES,
+            indexed_at: 0,
+            enabled: false,
+        }
+    }
+}
+
+impl<'a> StatCache<'a> {
+    pub(super) fn new(
+        stats: &'a BTreeMap<String, crate::index::incremental_state::FileStat>,
+        hashes: &'a HashMap<String, u64>,
+        indexed_at: Option<u64>,
+    ) -> Self {
+        let indexed_at = indexed_at.unwrap_or(0);
+        Self {
+            stats,
+            hashes,
+            indexed_at,
+            // Without a recorded write time there is no racily-clean guard, so
+            // reuse would be unsound. Fall back to hashing everything.
+            enabled: indexed_at > 0,
+        }
+    }
+}
+
+/// Hash every file, reusing the previous run's hash for files whose `(len,
+/// mtime)` is unchanged. Returns the hashes and the fresh fingerprints to
+/// persist for next time.
+///
+/// ## Why this is safe, and where it stops being safe
+///
+/// Reuse requires three things to hold, not two:
+///
+/// 1. `len` identical to the recorded fingerprint,
+/// 2. `mtime` identical to the nanosecond,
+/// 3. that mtime **strictly older** than the manifest's `indexed_at`.
+///
+/// (3) is git's "racily clean" guard. Without it, a file written in the same
+/// clock second as the index itself could be modified again, keep a `(len,
+/// mtime)` pair the index already recorded, and be skipped forever. With it,
+/// anything touched at or after the moment we recorded state is re-hashed, so
+/// the window closes.
+///
+/// What remains, and is a deliberate trade every build system makes: a writer
+/// that changes a file's bytes while **preserving both its length and its
+/// mtime** (`touch -r`, some archive extractors, a filesystem with coarse
+/// timestamps) is invisible. `vex index` always hashes everything, so a full
+/// rebuild is the escape hatch.
+pub(super) fn hash_files_with_stat_cache(
+    root: &Path,
+    files: &[std::path::PathBuf],
+    cache: &StatCache<'_>,
+) -> (
+    Vec<(String, u64)>,
+    BTreeMap<String, crate::index::incremental_state::FileStat>,
+) {
+    let pairs: Vec<(String, u64, crate::index::incremental_state::FileStat)> = files
         .par_iter()
         .filter_map(|path| {
-            let content = std::fs::read(path).ok()?;
             let rel = crate::util::paths::to_rel_posix(path, root)?;
+            let meta = std::fs::metadata(path).ok()?;
+            let mtime_ns = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            let stat = crate::index::incremental_state::FileStat {
+                len: meta.len(),
+                mtime_ns,
+            };
+
+            if cache.enabled && mtime_ns > 0 {
+                let mtime_secs = mtime_ns / 1_000_000_000;
+                if mtime_secs < cache.indexed_at {
+                    if let (Some(prev), Some(hash)) =
+                        (cache.stats.get(&rel), cache.hashes.get(&rel))
+                    {
+                        if *prev == stat {
+                            return Some((rel, *hash, stat));
+                        }
+                    }
+                }
+            }
+
+            let content = std::fs::read(path).ok()?;
             let hash = hasher::content_hash(&content);
-            Some((rel, hash))
+            Some((rel, hash, stat))
         })
-        .collect()
+        .collect();
+
+    let mut hashes = Vec::with_capacity(pairs.len());
+    let mut stats = BTreeMap::new();
+    for (rel, hash, stat) in pairs {
+        stats.insert(rel.clone(), stat);
+        hashes.push((rel, hash));
+    }
+    (hashes, stats)
 }
 
 pub(super) fn parse_files(

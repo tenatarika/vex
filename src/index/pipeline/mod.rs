@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -35,7 +35,8 @@ use output::{
 #[allow(unused_imports)]
 pub use output::{__fuzz_incremental_hnsw_bytes, build_hnsw_at, build_hnsw_incremental_at};
 use parse_files::{
-    build_blob_cache, discover_files, hash_files, parse_files, reconstruct_unchanged,
+    build_blob_cache, discover_files, hash_files_with_stat_cache, parse_files,
+    reconstruct_unchanged, StatCache,
 };
 
 const CHUNK_SIZE: usize = 500;
@@ -198,12 +199,20 @@ pub fn run(
     embedder_id: &str,
     excludes: &[String],
 ) -> Result<(usize, bool)> {
-    let (root, files, file_hashes) = run_setup(root, excludes)?;
+    let (root, files, file_hashes, file_stats) = run_setup(root, excludes)?;
     // Blocking acquire — original behaviour. Concurrent vex index calls
     // serialize here; the manifest re-check inside `run_with_lock` lets
     // peers that observe an equivalent build skip the redundant rebuild.
     let lock = IndexLock::acquire(&root)?;
-    run_with_lock(&root, opts, embedder_id, files, file_hashes, lock)
+    run_with_lock(
+        &root,
+        opts,
+        embedder_id,
+        files,
+        file_hashes,
+        file_stats,
+        lock,
+    )
 }
 
 /// v1.12.0 — non-blocking sibling of [`run`]. Returns `Ok(None)` when another
@@ -217,12 +226,21 @@ pub fn run_or_busy(
     embedder_id: &str,
     excludes: &[String],
 ) -> Result<Option<(usize, bool)>> {
-    let (root, files, file_hashes) = run_setup(root, excludes)?;
+    let (root, files, file_hashes, file_stats) = run_setup(root, excludes)?;
     let Some(lock) = IndexLock::try_acquire(&root)? else {
         tracing::info!("index lock held by another vex instance; --no-wait skipping rebuild");
         return Ok(None);
     };
-    run_with_lock(&root, opts, embedder_id, files, file_hashes, lock).map(Some)
+    run_with_lock(
+        &root,
+        opts,
+        embedder_id,
+        files,
+        file_hashes,
+        file_stats,
+        lock,
+    )
+    .map(Some)
 }
 
 /// Pre-lock fixture: the canonical root, the discovered file set, and the
@@ -233,6 +251,7 @@ type RunSetup = (
     std::path::PathBuf,
     Vec<std::path::PathBuf>,
     Vec<(String, u64)>,
+    std::collections::BTreeMap<String, crate::index::incremental_state::FileStat>,
 );
 
 /// Pre-lock work shared by [`run`] and [`run_or_busy`]: canonicalize the
@@ -243,8 +262,12 @@ fn run_setup(root: &Path, excludes: &[String]) -> Result<RunSetup> {
     let root = root.canonicalize().context("canonicalize root")?;
     let files = discover_files(&root, excludes)?;
     tracing::info!(count = files.len(), "discovered files");
-    let file_hashes = hash_files(&root, &files);
-    Ok((root, files, file_hashes))
+    // A full index always re-hashes: there is no prior run whose stat cache we
+    // could trust, and rebuilding from scratch is exactly the escape hatch for
+    // a stat-cache miss.
+    let (file_hashes, file_stats) =
+        hash_files_with_stat_cache(&root, &files, &StatCache::disabled());
+    Ok((root, files, file_hashes, file_stats))
 }
 
 /// Heavy section of `vex index`: manifest re-check skip path, then parse +
@@ -257,6 +280,7 @@ fn run_with_lock(
     embedder_id: &str,
     files: Vec<std::path::PathBuf>,
     file_hashes: Vec<(String, u64)>,
+    file_stats: std::collections::BTreeMap<String, crate::index::incremental_state::FileStat>,
     _lock: IndexLock,
 ) -> Result<(usize, bool)> {
     // Double-check under the lock: if a peer just completed a rebuild with an
@@ -327,6 +351,7 @@ fn run_with_lock(
         &vectors,
         vector_dim,
         &file_hashes,
+        &file_stats,
         manifest_embedder,
         opts,
         true, // is_full_rebuild — `vex index` always replaces everything
@@ -448,7 +473,19 @@ fn update_inner(
     let old_manifest = Manifest::load(&manifest_path)?;
 
     let files = discover_files(&root, excludes)?;
-    let file_hashes = hash_files(&root, &files);
+    // Reuse the previous run's hashes for files whose `(len, mtime)` is
+    // untouched — on a one-file edit this replaces "read every tracked file"
+    // with "stat every tracked file".
+    let prior_hashes: HashMap<String, u64> = old_manifest.files.clone().into_iter().collect();
+    let (file_hashes, file_stats) = hash_files_with_stat_cache(
+        &root,
+        &files,
+        &StatCache::new(
+            &old_manifest.state.file_stats,
+            &prior_hashes,
+            old_manifest.indexed_at,
+        ),
+    );
 
     // Phase 14.7 — same blob cache as `run`. `vex update` benefits when
     // the user reverts changes or jumps between branches whose blobs were
@@ -831,6 +868,7 @@ fn update_inner(
         &all_vectors,
         vector_dim,
         &file_hashes,
+        &file_stats,
         manifest_embedder,
         opts,
         false, // is_full_rebuild — incremental update, skeletons partial

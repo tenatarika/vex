@@ -1283,6 +1283,31 @@ index alone.
 
 ---
 
+## 11. `vex update` change detection is stat-based
+
+`vex update` decides what to re-index by comparing each file's content hash to
+the manifest. Since v1.25.6 it does not re-read a file whose `(length, mtime)`
+is byte-identical to the previous run — it reuses the recorded hash instead.
+
+Reuse requires three conditions, not two: identical length, identical mtime to
+the nanosecond, and that mtime strictly predating the manifest's own
+`indexed_at`. The third is git's "racily clean" guard: without it a file written
+in the same clock second as the index could be modified again, keep a
+`(length, mtime)` pair already recorded, and be skipped on every subsequent
+update.
+
+**What it cannot see:** a writer that changes a file's bytes while preserving
+both its length and its mtime — `touch -r`, some archive extractors, a
+filesystem with coarse timestamp resolution, or a deliberate mtime rollback.
+Such a file stays stale in the index until a full `vex index`, which always
+re-hashes everything and is the escape hatch.
+
+This is the same trade `make`, `cargo` and `git status` make, and for the same
+reason: on a large repository, reading every file to detect a one-file edit
+costs more than the edit itself.
+
+---
+
 ## Coverage matrix (one-line summary)
 
 | Query | T1 strict | T1 default | T2 (line-scan) | Module-level | Decorator | String-resolved |

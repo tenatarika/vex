@@ -31,6 +31,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `vex update` no longer re-reads every tracked file to hash it. Files whose
+  `(length, mtime)` is unchanged since the last run reuse their recorded content
+  hash, so change detection costs a `stat` per file instead of a full read.
+  Measured on a 33k-symbol / 6083-file repository: update 511 ms → 485 ms
+  (−5 %); the saving grows with file count and file size.
+
+  Reuse requires length **and** nanosecond mtime to match **and** that mtime to
+  predate the manifest's own write time — git's "racily clean" guard, which
+  closes the window where a file modified in the same clock tick as the index
+  could be skipped forever. What remains, and is the trade every build system
+  makes: a writer that changes a file's bytes while preserving both its length
+  and its mtime is invisible until the next full `vex index`.
+
+  The stat fingerprints live in the `index.state` sidecar, whose format version
+  is bumped as a result. Existing indexes log one warning and re-derive their
+  incremental state on the next update, as they do for any sidecar format
+  change.
+
+
 - `vex-mcp` now inherits its version from the workspace instead of carrying its
   own. It had been pinned at `0.1.0` since it was created while `vex` moved to
   1.25.x — and that number is what the MCP `initialize` handshake reports as

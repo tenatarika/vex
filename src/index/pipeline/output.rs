@@ -223,6 +223,9 @@ pub(super) fn write_output_locked(
     vectors: &[Vec<f32>],
     vector_dim: u32,
     file_hashes: &[(String, u64)],
+    // Per-file `(len, mtime)` fingerprints matching `file_hashes`, persisted
+    // so the next run can skip re-reading unchanged files.
+    file_stats: &std::collections::BTreeMap<String, crate::index::incremental_state::FileStat>,
     embedder_id: Option<String>,
     opts: IndexOptions,
     is_full_rebuild: bool,
@@ -736,6 +739,7 @@ pub(super) fn write_output_locked(
             // Empty for full-rebuild + binder-less projects; populated
             // whenever the writer's resolution loop or Q4-A reconstruction
             // observed at least one cross-file edge.
+            file_stats: file_stats.clone(),
             imported_by: writer_meta.imported_by,
             // Sentinel: this writer ran the Q4-B path. Distinguishes
             // pre-11.1.10 indexes (`None`) from a Q4-B-aware writer that

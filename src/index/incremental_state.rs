@@ -53,7 +53,7 @@ use serde::{Deserialize, Serialize};
 use crate::index::manifest::HistoryStats;
 
 const MAGIC: &[u8; 4] = b"VEXS";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 /// Hard ceiling on payload size. 256 MiB covers a dense `imported_by`
 /// map across hundreds of thousands of files plus every other state
@@ -68,6 +68,18 @@ const MAX_PAYLOAD_BYTES: u32 = 256 * 1024 * 1024;
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct IncrementalState {
     pub imported_by: BTreeMap<String, BTreeSet<String>>,
+    /// v1.25.6 — per-file `(len, mtime)` fingerprints from the last run,
+    /// keyed by the same POSIX-relative path as `Manifest::files`.
+    ///
+    /// Lets `hash_files` skip **reading** a file whose stat is byte-identical
+    /// to last time and reuse the recorded content hash instead. On a
+    /// one-file edit that turns "read and hash every tracked file" into "stat
+    /// every tracked file", which on a 3.6 GB / 6083-file repo was 38 ms of
+    /// the 551 ms `vex update`.
+    ///
+    /// Empty on any index written before this field existed, which simply
+    /// means the next run hashes everything and repopulates it.
+    pub file_stats: BTreeMap<String, FileStat>,
     pub imported_by_built: Option<bool>,
     pub cpp_includes_processed: Option<bool>,
     pub body_tokens_persisted: Option<bool>,
@@ -77,6 +89,18 @@ pub struct IncrementalState {
     /// `depth_capped` travels inside this nested struct — no separate
     /// top-level field on `IncrementalState`.
     pub history: Option<HistoryStats>,
+}
+
+/// Stat fingerprint of a file as of the last index write.
+///
+/// `mtime_ns` is nanoseconds since the Unix epoch. Both fields must match for
+/// the cached content hash to be reused — see
+/// `pipeline::parse_files::hash_files` for the third condition (the
+/// racily-clean guard) that makes the reuse safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileStat {
+    pub len: u64,
+    pub mtime_ns: u64,
 }
 
 /// Atomic save: write to `.tmp`, then rename. Same convention as the
@@ -188,6 +212,13 @@ mod tests {
 
         IncrementalState {
             imported_by,
+            file_stats: BTreeMap::from([(
+                "src/a.rs".to_string(),
+                FileStat {
+                    len: 1234,
+                    mtime_ns: 1_700_000_000_000_000_000,
+                },
+            )]),
             imported_by_built: Some(true),
             cpp_includes_processed: Some(true),
             body_tokens_persisted: Some(true),
