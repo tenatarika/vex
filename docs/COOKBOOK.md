@@ -22,6 +22,7 @@ All snippets use the MCP tool surface (`usages(...)`, `bundle(mode=..., ...)`) a
 | Near-duplicate code                          | `duplicates(explain=true)`                         | Manual review                      |
 | One-shot LLM context for a symbol            | `bundle(mode="symbol", symbol="X")`                | 4 separate tool calls              |
 | One-shot PR-impact context                   | `bundle(mode="pr-impact", base="origin/main")`     | Reading every changed file         |
+| Follow a call across a **language boundary** | `grep(pattern="<shared route/topic/key>")` — see Recipe 6 | `usages` / `callers` (no cross-language edges exist) |
 
 **Guideline**: prefer one tool with the right args over many tool calls. `bundle` exists specifically to collapse 4-round-trip "show + callers + callees + similar" chains into one call.
 
@@ -167,6 +168,41 @@ The agent then sees `vex-api.search(...)` and `vex-client.search(...)` as distin
 **When to use**: when one repo references another by symbol name (e.g., the SDK has a `Client.send_request` and the API has `handle_request`; you want the agent to navigate both during a "trace this end-to-end" prompt).
 
 **When *not* to use**: if the two codebases are in the same monorepo, one `VEX_ROOT` pointing at the workspace root with `--include` filters at query time is cheaper than two server processes.
+
+## Recipe 6 — Cross-language: follow a request across a service boundary
+
+**Goal**: a TypeScript client calls an endpoint; the handler is in Go (or Python, or Java). The agent needs the handler, and `usages` cannot help — the call crosses a language boundary, so there is no symbol edge to follow.
+
+**Approach**: search for the *shared string*, not the symbol. The route path, queue topic, env-var key or feature-flag name is the only thing both sides actually share, and `vex grep` is backed by a per-file trigram skip-index, so scanning the whole repo for one is fast even on large corpora.
+
+```bash
+# The literal both sides carry
+vex grep 'v1/invoices' --format compact
+
+# Route params differ per framework — match the stable prefix, not the whole path
+#   TS:     fetch(`/api/v1/invoices/${id}`)
+#   Go:     r.Get("/api/v1/invoices/{id}", h.Get)
+#   Python: @app.get("/api/v1/invoices/{invoice_id}")
+vex grep 'api/v1/invoices' --format compact
+
+# Then pivot to structure once you know the handler's name
+vex show InvoiceHandler
+vex callers InvoiceHandler
+```
+
+Same shape for the other cross-boundary keys: `vex grep 'invoice.created'` for a queue topic, `vex grep 'INVOICE_API_URL'` for an env var, `vex grep 'CreateInvoiceRequest'` for a protobuf message whose generated stubs live in several languages.
+
+**Why grep and not a smarter command**: vex deliberately does not synthesise cross-language edges. Published static extractors for exactly this problem top out around 0.68 recall on REST endpoints, and the tools that do it well (JetBrains, Glean) require an OpenAPI/proto spec as the join key rather than matching strings across languages. An edge that is wrong a third of the time is worse than no edge for an agent, because it cannot tell which third. The string match is honest: it returns evidence with `path:line`, and the agent judges it.
+
+**Cut the noise**: generated stubs (`*.pb.go`, `*_pb2.py`) usually match the same strings as hand-written code and can bury it.
+
+```bash
+vex search CreateInvoice --exclude-generated
+```
+
+`--exclude-generated` recognises generator banners (`// Code generated … DO NOT EDIT.`, protoc, sqlc, bindgen, Diesel, OpenAPI Generator). It is a header heuristic, so a generator that writes no banner is invisible to it — it under-reports rather than hiding hand-written code.
+
+**When *not* to use**: if you want "which services call this in production", use distributed tracing instead. Source search sees cold paths and un-exercised routes that tracing misses, but tracing sees dynamic dispatch, gateway rewrites and config-driven routing that no static tool can.
 
 ## See also
 

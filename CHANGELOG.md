@@ -6,6 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `vex search --exclude-generated` drops machine-generated files from the
+  results. Recognised from the generator's header banner — the
+  `// Code generated … DO NOT EDIT.` convention plus explicit checks for protoc,
+  sqlc, rust-bindgen, Diesel CLI, OpenAPI Generator, Thrift, javah and the
+  `@generated` annotation. Useful on repos that check in protobuf or ORM stubs,
+  where the generated symbols outnumber and outrank the hand-written ones.
+
+  It is a heuristic and deliberately conservative: a generator that writes no
+  banner is invisible to it, and anything unreadable counts as not-generated, so
+  it can leave generated files in the output but will not hide hand-written
+  code. Off by default. See `docs/LIMITATIONS.md` §10.2.
+
+### Documentation
+
+- `docs/COOKBOOK.md` gains Recipe 6 — following a request across a **language
+  boundary** (TS client → Go/Python handler) by grepping the shared route,
+  topic or schema string, and why vex does not synthesise cross-language edges
+  instead. `docs/LIMITATIONS.md` §10.1 records that scope decision and the
+  evidence behind it.
+
 ## [1.25.5] - 2026-08-12
 
 ### Performance

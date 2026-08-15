@@ -59,8 +59,33 @@ Apply to most search-shaped commands:
 - `--visibility public|private|crate` — symbol metadata post-filter
 - `--async-only` / `--no-async` / `--static-only` / `--sealed-only` — language-agnostic metadata gates
 - `--threshold 0.8` (a.k.a. `--min-score`) — score cutoff for `similar` / `duplicates`
+- `--exclude-generated` — drop machine-generated files (protoc / sqlc / bindgen / Diesel /
+  OpenAPI Generator banners) from `search` results. Header heuristic: under-reports rather
+  than hiding hand-written code. Use when vendored `*.pb.go` / `*_pb2.py` bury real hits.
 - `--why` — JSON trace on stderr (currently on `search`, `pattern`; via MCP it surfaces as `_meta.why`)
 - `--format compact` / `--format json` — token-efficient output for automated workflows
+
+## Cross-Language (polyglot repos, microservices)
+
+**vex has no cross-language symbol edges, by design.** `usages` / `callers` stop at the
+language boundary — a TS `fetch` call and the Go handler that serves it share no symbol.
+
+To cross the boundary, search for the **shared string**, then pivot back to structure:
+
+```bash
+vex grep 'api/v1/invoices'        # route path — matches the TS call site AND the Go route
+vex grep 'invoice.created'        # queue topic
+vex grep 'CreateInvoiceRequest'   # proto message → its generated stubs in every language
+vex show InvoiceHandler           # then pivot to structure once you know the name
+```
+
+Match the **stable prefix**, not the full path: route params differ per framework
+(`/invoices/{id}` vs `/invoices/:id` vs an interpolated template literal). `vex grep` is
+backed by a trigram skip-index, so a full-repo string scan is cheap.
+
+Add `--exclude-generated` to `search` when vendored stubs bury the hand-written code.
+
+Full walkthrough: `docs/COOKBOOK.md` → Recipe 6.
 
 ## Rules of Thumb
 
