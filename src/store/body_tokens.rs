@@ -32,7 +32,7 @@
 //! `hash_index::MAX_COUNT` so a crafted sidecar can't trigger a huge
 //! allocation before the body-read fails.
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -56,6 +56,14 @@ const MAX_BYTE_LEN: u32 = 1024;
 /// Sentinel for `None`. `u32::MAX` is well past `MAX_BYTE_LEN` so it
 /// can never collide with a legitimate byte length.
 const NONE_SENTINEL: u32 = u32::MAX;
+
+/// Magic + version + count.
+const HEADER_BYTES: u64 = 12;
+
+/// Largest a single record can be: its length prefix plus a payload at the cap.
+/// `count × MAX_RECORD_BYTES` is what bounds the body read once the header has
+/// been validated.
+const MAX_RECORD_BYTES: u64 = 4 + MAX_BYTE_LEN as u64;
 
 /// Atomic save: write to `.tmp`, then rename. Same convention as
 /// `hash_index::save` and `embed::cache::EmbedCache::save`.
@@ -82,30 +90,25 @@ pub fn save(path: &Path, records: &[Option<String>]) -> Result<()> {
             );
         }
     }
-    let tmp = path.with_extension("tmp");
-    {
-        let mut file =
-            std::fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
-        file.write_all(MAGIC).context("write magic")?;
-        file.write_all(&VERSION.to_le_bytes())
-            .context("write version")?;
-        file.write_all(&(records.len() as u32).to_le_bytes())
-            .context("write count")?;
-        for r in records {
-            match r {
-                None => {
-                    file.write_all(&NONE_SENTINEL.to_le_bytes())
-                        .context("write none sentinel")?;
-                }
-                Some(s) => {
-                    let bytes = s.as_bytes();
-                    file.write_all(&(bytes.len() as u32).to_le_bytes())
-                        .context("write byte_len")?;
-                    file.write_all(bytes).context("write body_tokens bytes")?;
-                }
+    // Serialize into one buffer and write it once. Writing directly to the file
+    // issued two `write_all` syscalls per record — two per indexed symbol, for
+    // a payload that is a few hundred bytes each. Byte-for-byte the same file.
+    let mut out: Vec<u8> = Vec::with_capacity(12 + records.len() * 24);
+    out.extend_from_slice(MAGIC);
+    out.extend_from_slice(&VERSION.to_le_bytes());
+    out.extend_from_slice(&(records.len() as u32).to_le_bytes());
+    for r in records {
+        match r {
+            None => out.extend_from_slice(&NONE_SENTINEL.to_le_bytes()),
+            Some(s) => {
+                let bytes = s.as_bytes();
+                out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+                out.extend_from_slice(bytes);
             }
         }
     }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &out).with_context(|| format!("write {}", tmp.display()))?;
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e).with_context(|| format!("rename {} → {}", tmp.display(), path.display()));
@@ -118,25 +121,34 @@ pub fn save(path: &Path, records: &[Option<String>]) -> Result<()> {
 /// Callers that want "absence ≡ legacy index" semantics should check
 /// `path.exists()` first.
 pub fn load(path: &Path) -> Result<Vec<Option<String>>> {
-    let mut file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-
-    let mut magic = [0u8; 4];
-    file.read_exact(&mut magic).context("read magic")?;
-    if &magic != MAGIC {
-        anyhow::bail!("body_tokens magic mismatch (got {:?})", magic);
-    }
-
-    let version = read_u32(&mut file).context("read version")?;
+    // Header first: magic, version, count — validated before a single record
+    // byte is read. The body read is then bounded by what `count` claims, so a
+    // corrupt file costs what it says it is, not what it weighs. Records are
+    // parsed from that buffer through a `Cursor`, which is why the loop below
+    // is the original streaming reader with its `read_exact` calls intact —
+    // they are memory copies now, not syscalls.
+    let mut reader = crate::util::sidecar::SidecarReader::open(path, MAGIC)
+        .with_context(|| format!("body_tokens sidecar at {}", path.display()))?;
+    let header = reader.take_header(8).context("read header")?;
+    let version = u32::from_le_bytes(header[0..4].try_into().expect("4 bytes"));
     if version != VERSION {
         anyhow::bail!("body_tokens version mismatch: {} != {}", version, VERSION);
     }
-
-    let count = read_u32(&mut file).context("read count")?;
+    let count = u32::from_le_bytes(header[4..8].try_into().expect("4 bytes"));
     if count > MAX_COUNT {
         anyhow::bail!("body_tokens count absurd: {} > {}", count, MAX_COUNT);
     }
 
-    let mut records: Vec<Option<String>> = Vec::with_capacity(count as usize);
+    let bytes = reader.finish(count as u64 * MAX_RECORD_BYTES)?;
+    let mut file = std::io::Cursor::new(bytes.as_slice());
+    file.set_position(HEADER_BYTES);
+
+    // `count` is only bounded by MAX_COUNT, far above what any real file holds.
+    // Size the allocation against the bytes actually present — a record cannot
+    // be shorter than its length prefix.
+    let remaining = bytes.len().saturating_sub(HEADER_BYTES as usize);
+    let mut records: Vec<Option<String>> =
+        Vec::with_capacity((count as usize).min(remaining / 4 + 1));
     for i in 0..count {
         let byte_len =
             read_u32(&mut file).with_context(|| format!("read byte_len at record {i}"))?;
@@ -169,6 +181,88 @@ fn read_u32<R: Read>(r: &mut R) -> Result<u32> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Pins the on-disk layout against hand-written bytes rather than against
+    /// this module's own reader. A round-trip test cannot catch a change that
+    /// alters `save` and `load` symmetrically — which would leave every sidecar
+    /// already on disk silently misparsed, with no version bump to warn anyone.
+    #[test]
+    fn save_emits_the_documented_byte_layout() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("bt.bin");
+        save(&p, &[Some("ab".to_string()), None, Some(String::new())]).unwrap();
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"VEXT"); // magic
+        expected.extend_from_slice(&1u32.to_le_bytes()); // version
+        expected.extend_from_slice(&3u32.to_le_bytes()); // count
+        expected.extend_from_slice(&2u32.to_le_bytes()); // record 0: byte_len
+        expected.extend_from_slice(b"ab"); //            record 0: payload
+        expected.extend_from_slice(&u32::MAX.to_le_bytes()); // record 1: None
+        expected.extend_from_slice(&0u32.to_le_bytes()); // record 2: empty string
+
+        assert_eq!(std::fs::read(&p).unwrap(), expected);
+    }
+
+    /// The header is where the reader changed, and a file truncated inside it
+    /// is the case the record-level tests never reach.
+    #[test]
+    fn rejects_header_truncated_mid_field() {
+        let tmp = TempDir::new().unwrap();
+        for cut in [0usize, 2, 5, 9] {
+            let p = tmp.path().join(format!("cut{cut}.bin"));
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"VEXT");
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.truncate(cut);
+            std::fs::write(&p, &bytes).unwrap();
+            assert!(
+                load(&p).is_err(),
+                "a {cut}-byte sidecar must not load as valid"
+            );
+        }
+    }
+
+    /// An absurd `count` is rejected from the header alone — the body it
+    /// claims is never read, which is the whole point of validating before
+    /// sizing the read.
+    #[test]
+    fn absurd_count_is_rejected_from_the_header() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("absurd.bin");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&VERSION.to_le_bytes());
+        bytes.extend_from_slice(&(MAX_COUNT + 1).to_le_bytes());
+        std::fs::write(&p, &bytes).unwrap();
+
+        let err = match load(&p) {
+            Ok(_) => panic!("an absurd count must not load"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("count absurd"), "{err}");
+    }
+
+    /// Trailing bytes past what the header claims are ignored, not read into
+    /// memory. A sidecar that was truncated and regrown — or simply corrupt —
+    /// costs what its header says it is.
+    #[test]
+    fn trailing_junk_past_the_headers_claim_is_ignored() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("junk.bin");
+        save(&p, &[Some("ab".to_string())]).unwrap();
+
+        let mut bytes = std::fs::read(&p).unwrap();
+        let honest_len = bytes.len();
+        bytes.extend(std::iter::repeat_n(0xFFu8, 200_000));
+        std::fs::write(&p, &bytes).unwrap();
+
+        // One record of at most MAX_RECORD_BYTES is all the reader may take
+        // beyond the header, so the junk cannot be paid for.
+        assert!(honest_len < HEADER_BYTES as usize + MAX_RECORD_BYTES as usize);
+        assert_eq!(load(&p).unwrap(), vec![Some("ab".to_string())]);
+    }
 
     #[test]
     fn round_trip_empty() {
