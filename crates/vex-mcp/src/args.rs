@@ -20,9 +20,21 @@ fn auto_update(args: &Value) -> Result<bool> {
     opt_bool(args, "auto_update", true)
 }
 
+/// Whether the caller would rather have the answer now than have it fresh:
+/// refresh a stale index behind the query instead of in front of it. Defaults
+/// to `false`, matching the CLI — a caller that asks for auto-update gets the
+/// freshness guarantee unless it opts out of waiting. Only meaningful together
+/// with `auto_update`, so it is pushed inside that branch.
+fn async_update(args: &Value) -> Result<bool> {
+    opt_bool(args, "async_update", false)
+}
+
 pub(crate) fn push_auto_update(extra: &mut Vec<String>, args: &Value) -> Result<()> {
     if auto_update(args)? {
         extra.push("--auto-update".into());
+        if async_update(args)? {
+            extra.push("--async-update".into());
+        }
     }
     Ok(())
 }

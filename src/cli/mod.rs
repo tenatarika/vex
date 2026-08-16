@@ -1,4 +1,5 @@
 pub mod args;
+pub(crate) mod async_update;
 pub mod cmd_bundle;
 pub(crate) mod cmd_callgraph;
 pub(crate) mod cmd_check;
@@ -134,6 +135,9 @@ fn dispatch_inner(mut cli: Cli) -> Result<()> {
     // the cache-resolver install below so diff-scoping picks the backend
     // without threading a flag through every command.
     crate::vcs::install_override(cli.vcs.and_then(|v| v.to_forced_kind()));
+    // Same shape for `--async-update`: install once here so the staleness
+    // check can consult it without every command threading a flag through.
+    async_update::install(cli.async_update);
 
     // Install the cache resolver (CLI > env > config > platform default).
     // Done once here so every config::index_path/index_dir call downstream

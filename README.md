@@ -320,6 +320,11 @@ semantic = true
 # Automatically update index before search if stale
 # auto_update = false
 
+# With auto_update, refresh in the background rather than blocking the query:
+# answers come from the index on disk, the response is flagged stale, and the
+# rebuild lands for the next query. Trades freshness for latency.
+# async_update = false
+
 # GPU device for semantic indexing (GPU-enabled builds only). "auto" uses the
 # compiled-in GPU EP when it initializes, else CPU; or "cpu"/"cuda"/"directml"/
 # "coreml". `gpu = true/false` is shorthand for auto/cpu. See GPU Acceleration.

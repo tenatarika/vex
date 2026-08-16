@@ -80,6 +80,32 @@ pub(crate) fn handle_staleness(
                     }
                 }
 
+                // Non-blocking refresh, when asked for and when there is
+                // something to answer from. Readers are not blocked by a
+                // rebuild (no lock, and a live mmap survives the atomic rename),
+                // so waiting in front of the query buys nothing the background
+                // does not give — see `cli::async_update`. The existing index
+                // serves this query and the envelope says it is stale.
+                //
+                // Deliberately placed AFTER the embedder-mismatch guard above:
+                // an earlier version returned before it and would have let a
+                // background child re-embed with a different model, mixing
+                // embedding spaces on disk with the warning discarded down the
+                // child's nulled stderr. The guard's "refuse and serve stale"
+                // outcome must win over any refresh, background or not.
+                if super::async_update::enabled(cfg) && config::index_path(root).exists() {
+                    let attempt = super::async_update::spawn(root, cfg, changed_count);
+                    // Say what actually happened: announcing a background
+                    // refresh that never started is worse than saying nothing.
+                    if attempt.started {
+                        eprintln!("Index stale, refreshing in the background...");
+                    } else {
+                        eprintln!("Warning: {}", attempt.reason);
+                    }
+                    super::stale_signal::set(attempt.reason);
+                    return Ok(());
+                }
+
                 eprintln!("Index stale, auto-updating...");
                 // Inherit prior section composition from the manifest;
                 // auto-update never silently grows new sections.

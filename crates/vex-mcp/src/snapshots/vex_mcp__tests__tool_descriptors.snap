@@ -12,6 +12,11 @@ expression: descriptors
           "description": "Keep only async/suspend functions",
           "type": "boolean"
         },
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
@@ -145,6 +150,11 @@ expression: descriptors
     "description": "Resolve a symbol by exact name (with prefix fallback) against the FST inverted index (~4ms). Prefer over search when the symbol name is known and you want exactly that record back, not a fused-rank list. Prefer over grep for `git grep 'class Foo'`-style definition lookup — grep scans every byte; this is a constant-time index probe.",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
@@ -193,6 +203,11 @@ expression: descriptors
     "description": "Semantic-only search by natural-language description (e.g. 'payment processing' → ChargeUseCase, BillingService). Uses the HNSW vector index built by `vex index --semantic` (~7-15ms). Prefer over search when you do not know any concrete identifier and want concept-level matching; prefer search when you have a partial name (search fuses semantic + lexical channels for better recall on identifier-shaped queries).",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
@@ -369,6 +384,11 @@ expression: descriptors
     "description": "Extract the full source body of one or more symbols by name (function, class, struct, etc.) using cached symbol byte-offsets (~4ms per symbol). Prefer over Read when you need a specific definition — show returns just that body, while Read pulls the entire file (often 10-100x more tokens). Accepts an array, so a single call replaces several Read calls. Phase 13.3 truncation: `signature_only` (signature line only), `head` (first N body lines), `no_body` (signature + leading doc only), `collapsed` (collapse nested methods — v1.9 NO-OP). Also supports `filter` (substring path filter), `kind` (kind-restrict), `context_path` (proximity hint), and `no_stale_check`.",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
@@ -460,6 +480,11 @@ expression: descriptors
     "description": "Find every reference to a symbol across the codebase. Prefer over grep for refactor-style `find all callers` queries — grep on a common identifier returns string-literal and comment noise; usages with strict=true uses the scope-binder to resolve real cross-file refs (Rust/TypeScript/Python/C#/C++). Without strict, runs the legacy refs FST (~4ms) — v1.20.0 also strips the row at the symbol's own definition line and prose mentions in `*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc` (override with `include_self` / `include_docs`).",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
@@ -556,6 +581,11 @@ expression: descriptors
     "description": "Delete-safety blast-radius report. Composes four independent reference channels — strict refs (binder-resolved v5 edges), the legacy FST refs, `grep \\b<Name>\\b` against the project, and direct call-graph callers — into a single verdict (`safe` / `unsafe` / `uncertain`). Use this BEFORE proposing to delete or rename a symbol; one call collapses what CLAUDE.md previously documented as a manual dance across usages → grep → callers. Verdict rule: `unsafe` if strict_refs > 0 OR call_graph_callers > 0 (binder/graph confirmed real usage); `uncertain` if only text channels (FST / grep) hit (likely string-dispatch / decorator / comment mentions); `safe` only when every channel reports zero hits. `results` shape: { symbol, verdict, verdict_explanation, channels: { strict_refs, fst_refs, grep_word_boundary, call_graph_callers } } where each channel block has { available, count, sample[], truncated }.",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
@@ -620,6 +650,11 @@ expression: descriptors
     "description": "Find test functions that transitively cover a target symbol (Phase 13.10). Walks the call graph backwards from `<target>`, keeps rows under recognized test-path globs (Rust / Python / TS-JS / Go / Java / Kotlin / C# / C++), stamps each row with a `framework` label (`pytest`, `jest`, `go-test`, …) so an agent can pick the right runner without parsing paths. Prefer over grep `test.*Foo` — that misses transitively-covered helpers and produces lots of false positives. v1.20.0 (D5) surface — the CLI subcommand exists since v1.19.0 but was MCP-invisible.",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
@@ -810,6 +845,11 @@ expression: descriptors
     "description": "Find every concrete type that extends a base class / implements a trait / interface. Walks the indexed inheritance edges (covers generic-parameterised bases). Prefer over grep for `find all subclasses of Foo` — grep misses `: Foo<T>`, indirect inheritance, and trait impls; this resolves the real hierarchy. Supports diff scoping: `since` / `since_branched` / `changed_only` (mutually exclusive) to restrict to recently-touched code.",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
@@ -877,6 +917,11 @@ expression: descriptors
     "description": "Find every TRANSITIVE subtype of a base class / interface — the full descendant tree via extends/implements edges (not just direct implementations; use `implementations` for direct-only). Requires a v8+ index with hierarchy edges (no live-walk fallback) — if the index predates this feature or has no hierarchy section, this returns an empty result with a hint to re-run `vex index`. Supports diff scoping: `since` / `since_branched` / `changed_only` (mutually exclusive) to restrict to recently-touched code.",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
@@ -951,6 +996,11 @@ expression: descriptors
     "description": "Direct callers of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over grep for `who calls Foo?` — grep on the function name hits doc comments and string literals; the call-graph edges are resolved at parse time. Phase 14.2 + 14.2.2 + 14.2.1: Python/Java function/method decorators, Kotlin annotations / C# method+constructor attributes, and TypeScript method decorators / Rust outer attributes on fns/methods emit forward edges, so `callers GetMapping` lists every Spring handler, `callers get` lists every FastAPI route, `callers HttpGet` every ASP.NET action, `callers JvmStatic` every Kotlin function annotated `@JvmStatic`, `callers Get` every Nest.js `@Get(...)`, `callers test` every Rust `#[tokio::test]` (the rightmost identifier of the decorator/attribute path becomes the callee; arguments are ignored — `#[serde(rename = \"x\")]` → `serde`, not `rename`). Rust `#[derive(...)]` is filtered (compile-time codegen, not call edges). Note the rightmost-identifier convention means `callers get` mixes decorator handlers with any regular `.get()` call — narrow with `include`/`exclude` if needed. Pair with `paths` for multi-hop chains. Supports diff scoping: `since` / `since_branched` / `changed_only` (mutually exclusive) to restrict callers to recently-touched code.",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)",
@@ -1023,6 +1073,11 @@ expression: descriptors
     "description": "Direct callees of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over Read+manual scanning when you want to know what a function calls without reading the whole body — callees gives the resolved outgoing edges as records. Phase 14.2 + 14.2.2 + 14.2.1: Python/Java decorators, Kotlin annotations, C# method/constructor attributes, TypeScript method decorators, and Rust outer attributes on fns/methods are surfaced as callees of the decorated function (decorator factories like `@lru_cache(maxsize=128)`, `@Inject`, `@Get(\"/x\")`, or `#[tokio::test]` appear as the path-rightmost identifier `lru_cache` / `Inject` / `Get` / `test` alongside regular body calls). Rust `#[derive(...)]` is intentionally filtered. Supports diff scoping: `since` / `since_branched` / `changed_only` (mutually exclusive) to restrict callees to recently-touched code.",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)",
@@ -1196,6 +1251,11 @@ expression: descriptors
     "description": "Enumerate every caller chain from `from` to `to` in the persistent call graph (multi-hop, max 6 by default). Prefer over repeated `callers` calls when you need to know how a function gets reached from a known entry point — paths walks the edges itself in a single response. Requires a v4 index with call graph (built without `--no-call-graph`).",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
@@ -1255,6 +1315,11 @@ expression: descriptors
     "description": "Every symbol that transitively calls `target` (the full upstream blast radius). Prefer over repeated `callers` walks when assessing the impact of changing a function — reachable does the closure in one call. Requires a v4 index with call graph.",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
@@ -1314,6 +1379,11 @@ expression: descriptors
     "description": "Batch existence probe: confirm whether one or more symbol names exist in the index without paying for body extraction or ranked search (~4ms total). Use before show / usages / callers when working from an unverified list — skip the symbols that don't exist instead of letting downstream tools error.",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
@@ -1359,6 +1429,11 @@ expression: descriptors
     "description": "Nearest neighbours of an EXISTING symbol by its stored embedding (HNSW lookup, ~7-15ms). Distinct from find_similar (which embeds a free-text query). Use this when you have a function in hand and want `what else in this repo looks like it?` — useful for dedup, refactor planning, and finding parallel implementations. Requires `vex index --semantic`. Supports diff scoping: `since` (rev), `since_branched`, `changed_only` (mutually exclusive) and `no_stale_check`.",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
@@ -1453,6 +1528,11 @@ expression: descriptors
     "description": "Multi-source bundle — replaces 4 round-trips (show → callers → callees → similar) with 1. Three modes: `symbol` (body + callers + callees + similar for a named symbol; ~10ms), `pr-impact` (changed symbols + transitive callers + tests for a git base ref; ~50ms), `project` (top-N symbols by reverse call-graph indegree; ~5ms). Prefer over chaining find_symbol/show/callers/callees when you need cross-section context on one symbol or a PR. Mode-specific args are validated server-side; only `mode` is universally required. Response shape is uniform — `{ protocol_version, capabilities, _meta, results: { mode, items[], mode_hints } }`. Each `items[i]` carries 13.11 signals plus a `role` discriminator (`body | caller | callee | similar | changed | transitive_caller | test | top`).",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap if missing, before running (default: true)",
@@ -1544,6 +1624,11 @@ expression: descriptors
     "description": "Repo-wide near-duplicate scan: pairs of symbols whose embeddings exceed `threshold`. Use for refactor planning (`where else does this logic live?`) and dedup. Prefer over manual similar-walks — duplicates evaluates all pairs once with `min_body_lines` filtering out trivial bodies. Requires `vex index --semantic`. Supports diff scoping: `since` (rev), `since_branched`, `changed_only` (mutually exclusive) and `no_stale_check`.",
     "inputSchema": {
       "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
         "auto_update": {
           "default": true,
           "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",

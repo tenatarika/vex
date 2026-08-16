@@ -34,6 +34,11 @@ pub struct Capabilities {
     pub scope_filters: bool,
     pub metadata_filters: bool,
     pub auto_update: bool,
+    /// This build accepts `--async-update` (and `async_update` in `.vex.toml`):
+    /// a stale index is refreshed *behind* the query rather than in front of it,
+    /// and the response carries `vex.dev/stale` + `stale_reason` to say so.
+    /// Lets an agent choose latency over freshness per call instead of guessing.
+    pub async_update: bool,
     /// Phase 14.9 Tier A.1: `vex history --diff` is available, and the
     /// JSON envelope's `results[*]` carry `body_diff: { from, to,
     /// hunks }` for non-head entries within each `(symbol, kind)`

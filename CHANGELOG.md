@@ -8,6 +8,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`--async-update`: a stale index no longer makes the query wait.** With
+  auto-update enabled, `--async-update` (or `async_update` in `.vex.toml`)
+  answers from the index already on disk, starts the rebuild in the background,
+  and marks the response `_meta.vex.dev/stale` with a reason saying so. On a
+  78k-symbol corpus a query against a stale index goes from **~1.9 s to ~20 ms**.
+
+  The rebuild was never load-bearing for the query: readers take no lock and a
+  live mmap survives the index's atomic rename, so twelve queries issued *while*
+  a rebuild ran measured 8-15 ms each. Waiting in front of the query bought
+  nothing that running behind it does not.
+
+  Off by default — a caller that needs guaranteed freshness in the same
+  invocation keeps today's behaviour by not passing the flag. MCP clients can ask
+  per call via the new `async_update` tool argument, and `vex capabilities`
+  advertises support so it can be feature-detected.
+
+  A missing index is still built synchronously, since there is nothing to answer
+  from, and an index whose embedder no longer matches the config still refuses to
+  refresh rather than mixing embedding spaces behind the caller's back. Several
+  queries noticing the same stale index at once cost one rebuild's work — the
+  build lock serialises it — and a 30-second attempt marker keeps them from each
+  forking a child that would only lose that lock. The child's stderr goes to
+  `async_update.log` beside the index, and a refresh that failed is reported in
+  the next query's `stale_reason` instead of being retried in silence.
+
 - `vex search --exclude-generated` drops machine-generated files from the
   results. Recognised from the generator's header banner — the
   `// Code generated … DO NOT EDIT.` convention plus explicit checks for protoc,

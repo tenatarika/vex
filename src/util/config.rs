@@ -23,6 +23,13 @@ pub struct VexConfig {
     /// Automatically update the index before search if stale
     pub auto_update: Option<bool>,
 
+    /// With `auto_update`, refresh a stale index in the background instead of
+    /// making the query wait for it. The query answers from the index already
+    /// on disk and the response carries `_meta.vex.dev/stale`. Ignored when
+    /// there is no index yet — that build has to finish before anything can be
+    /// answered. Overridden by `--async-update`.
+    pub async_update: Option<bool>,
+
     /// Embedder identifier for semantic indexing. Defaults to `"minilm-l6-v2"`
     /// when omitted. Use `vex --help` or the docs to list known IDs.
     pub embedder: Option<String>,
@@ -250,6 +257,7 @@ fn merge_local(base: VexConfig, local: VexConfig) -> VexConfig {
         format: local.format.or(base.format),
         semantic: local.semantic.or(base.semantic),
         auto_update: local.auto_update.or(base.auto_update),
+        async_update: local.async_update.or(base.async_update),
         embedder: local.embedder.or(base.embedder),
         gpu: local.gpu.or(base.gpu),
         device: local.device.or(base.device),
@@ -294,6 +302,11 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 
 # Automatically run `vex update` before search if the index is stale.
 # auto_update = false
+
+# With auto_update, refresh in the background instead of making the query wait.
+# The query answers from the index already on disk and the response says it is
+# stale; the refresh lands for the next query. Same as `--async-update`.
+# async_update = false
 
 # Embedder used for semantic indexing. IDs: minilm-l6-v2 (default, CPU-fast),
 # jina-code (code-specialized, GPU-worthy), bge-base-en-v1.5, bge-large-en-v1.5,

@@ -154,6 +154,19 @@ pub struct Cli {
     /// merge-base). `none` disables diff-scoping. See docs/VCS-BACKENDS.md.
     #[arg(long, global = true, value_enum)]
     pub vcs: Option<VcsArg>,
+
+    /// Never block a query to refresh a stale index: answer from the index that
+    /// is on disk, start the refresh in the background, and say so.
+    ///
+    /// Only has an effect together with auto-update (`--auto-update` or
+    /// `auto_update` in `.vex.toml`) and only when an index already exists — a
+    /// missing index still has to be built before anything can be answered.
+    /// The response reports `_meta.vex.dev/stale` with a reason, so a caller
+    /// that needs freshness can tell it did not get it. Costs a query about what
+    /// a plain search costs, instead of the whole rebuild. Also settable as
+    /// `async_update` in `.vex.toml`.
+    #[arg(long, global = true)]
+    pub async_update: bool,
 }
 
 /// `--vcs` value. `Auto` maps to "no explicit override" (detect).

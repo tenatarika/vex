@@ -75,6 +75,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "no_bm25": { "type": "boolean", "description": "Disable the BM25 channel for this query (auto-on when the index has BM25 data otherwise).", "default": false },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true (which already refreshes).", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (e.g. 'tests/**'); repeat for multiple globs" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include); repeat for multiple globs" },
@@ -102,6 +103,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "name": { "type": "string", "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta." },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
@@ -118,6 +120,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "query": { "type": "string", "description": "Natural-language description of the concept (not an identifier; use find_symbol for those)." },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
@@ -207,6 +210,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "collapsed": { "type": "boolean", "description": "Phase 13.3: collapse nested methods inside a class/impl/module. v1.9 NO-OP (flag-shape stable; emits a stderr warning). Mutually exclusive with `signature_only`, `head`, `no_body`.", "default": false },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
@@ -230,6 +234,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "filter_path": { "type": "string", "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns). Legacy alias: `filter`." },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
@@ -250,6 +255,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "name": { "type": "string", "description": "DEPRECATED — use `symbol`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta." },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable). Applied to every channel — useful for scoping to e.g. `src/**` when assessing a library symbol." },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)." },
@@ -273,6 +279,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "include_fixtures": { "type": "boolean", "description": "Admit non-test-named helpers (fixtures) under test paths via a one-hop forward callee walk. Default off — only `test_*` / `*Test` names surface.", "default": false },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
@@ -331,6 +338,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
@@ -353,6 +361,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "depth": { "type": "integer", "description": "Max BFS hops (transitive descent) from the queried type. Bounds how many inheritance levels deep the search goes; independent of the mandatory cycle-detection guard. Must be in `[1, 4096]` (64 is a generous default real hierarchies never approach).", "default": 64, "minimum": 1, "maximum": 4096 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
@@ -374,6 +383,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
@@ -395,6 +405,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 50 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running — enables the call-graph fast path (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
@@ -452,6 +463,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "max_paths": { "type": "integer", "description": "Maximum paths to enumerate (caps output, aborts traversal early)", "default": 50 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist intermediate steps by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist intermediate steps by path glob; wins over include (repeatable)" }
@@ -470,6 +482,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max results", "default": 200 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
@@ -487,6 +500,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "names": { "type": "array", "items": { "type": "string" }, "description": "DEPRECATED — use `symbols`. Pre-v1.7 alias, still accepted; emits a deprecated_args notice in _meta." },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false }
                 },
                 "required": ["symbols"]
@@ -510,6 +524,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
@@ -543,6 +558,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "tests_max": { "type": "integer", "description": "(mode: pr-impact) Max test-classified items", "default": 20 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
@@ -567,6 +583,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "changed_only": { "type": "boolean", "description": "Restrict pairs to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist pairs by path glob — a pair is kept when at least one side matches (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist pairs by path glob — a pair is dropped when either side matches (repeatable)" }

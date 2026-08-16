@@ -12,6 +12,7 @@ pub fn current() -> Capabilities {
         scope_filters: true,
         metadata_filters: true,
         auto_update: true,
+        async_update: true,
         history_diff: true,
         structured_result_kind: true,
         result_completeness: true,
