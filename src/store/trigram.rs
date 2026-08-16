@@ -45,7 +45,7 @@
 //! corrupt sidecar from triggering a huge allocation before the read
 //! fails.
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -66,6 +66,13 @@ const MAX_COUNT: u32 = 10_000_000;
 /// legitimate rel path never trips it, while bounding the allocation a
 /// crafted `path_len` can request before the body read fails.
 const MAX_PATH_LEN: u16 = 8192;
+
+/// Magic + version + bloom width + count.
+const HEADER_BYTES: u64 = 16;
+
+/// Largest a single record can be: a path at its cap plus the fixed fields.
+/// `count × MAX_RECORD_BYTES` bounds the body read once the header is valid.
+const MAX_RECORD_BYTES: u64 = 2 + MAX_PATH_LEN as u64 + BLOOM_BYTES as u64 + 8 + 8 + 4;
 
 /// One persisted file's trigram record. `bloom` is the raw bloom bytes
 /// (`grep::trigram::TrigramBloom::as_bytes`); the grep path wraps it back
@@ -126,30 +133,25 @@ pub fn save(path: &Path, records: &[TrigramRecord]) -> Result<()> {
             MAX_PATH_LEN,
         );
     }
-    let tmp = path.with_extension("tmp");
-    {
-        let mut file =
-            std::fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
-        file.write_all(MAGIC).context("write magic")?;
-        file.write_all(&VERSION.to_le_bytes())
-            .context("write version")?;
-        file.write_all(&(BLOOM_BYTES as u32).to_le_bytes())
-            .context("write bloom_bytes")?;
-        file.write_all(&(records.len() as u32).to_le_bytes())
-            .context("write count")?;
-        for r in records {
-            let path_bytes = r.rel_path.as_bytes();
-            file.write_all(&(path_bytes.len() as u16).to_le_bytes())
-                .context("write path_len")?;
-            file.write_all(path_bytes).context("write path")?;
-            file.write_all(&r.bloom).context("write bloom")?;
-            file.write_all(&r.len.to_le_bytes()).context("write len")?;
-            file.write_all(&r.mtime_secs.to_le_bytes())
-                .context("write mtime_secs")?;
-            file.write_all(&r.mtime_nanos.to_le_bytes())
-                .context("write mtime_nanos")?;
-        }
+    // One buffer, one write. Writing straight to the file issued six
+    // `write_all` syscalls per record; the payload is small but the syscall
+    // count is not. Same bytes as before.
+    let mut out: Vec<u8> = Vec::with_capacity(16 + records.len() * (BLOOM_BYTES + 48));
+    out.extend_from_slice(MAGIC);
+    out.extend_from_slice(&VERSION.to_le_bytes());
+    out.extend_from_slice(&(BLOOM_BYTES as u32).to_le_bytes());
+    out.extend_from_slice(&(records.len() as u32).to_le_bytes());
+    for r in records {
+        let path_bytes = r.rel_path.as_bytes();
+        out.extend_from_slice(&(path_bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(path_bytes);
+        out.extend_from_slice(&r.bloom);
+        out.extend_from_slice(&r.len.to_le_bytes());
+        out.extend_from_slice(&r.mtime_secs.to_le_bytes());
+        out.extend_from_slice(&r.mtime_nanos.to_le_bytes());
     }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &out).with_context(|| format!("write {}", tmp.display()))?;
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e).with_context(|| format!("rename {} → {}", tmp.display(), path.display()));
@@ -162,20 +164,19 @@ pub fn save(path: &Path, records: &[TrigramRecord]) -> Result<()> {
 /// Callers that want "absence ≡ no sidecar" semantics should check
 /// `path.exists()` first (or just treat the error as "walk everything").
 pub fn load(path: &Path) -> Result<Vec<TrigramRecord>> {
-    let mut file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-
-    let mut magic = [0u8; 4];
-    file.read_exact(&mut magic).context("read magic")?;
-    if &magic != MAGIC {
-        anyhow::bail!("trigram magic mismatch (got {:?})", magic);
-    }
-
-    let version = read_u32(&mut file).context("read version")?;
+    // Header first: magic, version, bloom width, count — all validated before a
+    // single record byte is read, and the body read is then bounded by what
+    // `count` claims. Records are parsed from that buffer through a `Cursor`,
+    // so the loop below is the original streaming reader with its `read_exact`
+    // calls intact; they are memory copies now, not syscalls.
+    let mut reader = crate::util::sidecar::SidecarReader::open(path, MAGIC)
+        .with_context(|| format!("trigram sidecar at {}", path.display()))?;
+    let header = reader.take_header(12).context("read header")?;
+    let version = u32::from_le_bytes(header[0..4].try_into().expect("4 bytes"));
     if version != VERSION {
         anyhow::bail!("trigram version mismatch: {} != {}", version, VERSION);
     }
-
-    let bloom_bytes = read_u32(&mut file).context("read bloom_bytes")?;
+    let bloom_bytes = u32::from_le_bytes(header[4..8].try_into().expect("4 bytes"));
     if bloom_bytes as usize != BLOOM_BYTES {
         anyhow::bail!(
             "trigram bloom width mismatch: {} != {} (bloom size changed since this sidecar was written)",
@@ -183,13 +184,21 @@ pub fn load(path: &Path) -> Result<Vec<TrigramRecord>> {
             BLOOM_BYTES
         );
     }
-
-    let count = read_u32(&mut file).context("read count")?;
+    let count = u32::from_le_bytes(header[8..12].try_into().expect("4 bytes"));
     if count > MAX_COUNT {
         anyhow::bail!("trigram count absurd: {} > {}", count, MAX_COUNT);
     }
 
-    let mut records = Vec::with_capacity(count as usize);
+    let bytes = reader.finish(count as u64 * MAX_RECORD_BYTES)?;
+    let mut file = std::io::Cursor::new(bytes.as_slice());
+    file.set_position(HEADER_BYTES);
+
+    // `count` is only bounded by MAX_COUNT, which is far above what any real
+    // file holds. Size the allocation against the bytes actually present — a
+    // record cannot be smaller than its fixed fields.
+    const MIN_RECORD_BYTES: usize = 2 + BLOOM_BYTES + 8 + 8 + 4;
+    let remaining = bytes.len().saturating_sub(HEADER_BYTES as usize);
+    let mut records = Vec::with_capacity((count as usize).min(remaining / MIN_RECORD_BYTES + 1));
     for i in 0..count {
         let path_len =
             read_u16(&mut file).with_context(|| format!("read path_len at record {i}"))?;
@@ -252,6 +261,81 @@ fn read_i64<R: Read>(r: &mut R) -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An absurd `count` is rejected from the header alone, before the body it
+    /// claims is read.
+    #[test]
+    fn absurd_count_is_rejected_from_the_header() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("absurd.bin");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&VERSION.to_le_bytes());
+        bytes.extend_from_slice(&(BLOOM_BYTES as u32).to_le_bytes());
+        bytes.extend_from_slice(&(MAX_COUNT + 1).to_le_bytes());
+        std::fs::write(&p, &bytes).unwrap();
+
+        let err = match load(&p) {
+            Ok(_) => panic!("an absurd count must not load"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("count absurd"), "{err}");
+    }
+
+    /// A header truncated mid-field fails on the header read, not by
+    /// misinterpreting whatever bytes happen to follow.
+    #[test]
+    fn rejects_header_truncated_mid_field() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for cut in [0usize, 3, 6, 13] {
+            let p = tmp.path().join(format!("cut{cut}.bin"));
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(MAGIC);
+            bytes.extend_from_slice(&VERSION.to_le_bytes());
+            bytes.extend_from_slice(&(BLOOM_BYTES as u32).to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.truncate(cut);
+            std::fs::write(&p, &bytes).unwrap();
+            assert!(
+                load(&p).is_err(),
+                "a {cut}-byte sidecar must not load as valid"
+            );
+        }
+    }
+
+    /// Pins the on-disk layout against hand-written bytes rather than against
+    /// this module's own reader — a symmetric change to `save` and `load` would
+    /// pass every round-trip test while misparsing sidecars already on disk.
+    #[test]
+    fn save_emits_the_documented_byte_layout() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("tg.bin");
+        let mut bloom = [0u8; BLOOM_BYTES];
+        bloom[0] = 0xAB;
+        bloom[BLOOM_BYTES - 1] = 0xCD;
+        let rec = TrigramRecord {
+            rel_path: "a.rs".to_string(),
+            bloom,
+            len: 7,
+            mtime_secs: -5,
+            mtime_nanos: 9,
+        };
+        save(&p, std::slice::from_ref(&rec)).unwrap();
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"VXTG"); // magic
+        expected.extend_from_slice(&1u32.to_le_bytes()); // version
+        expected.extend_from_slice(&(BLOOM_BYTES as u32).to_le_bytes()); // bloom width
+        expected.extend_from_slice(&1u32.to_le_bytes()); // count
+        expected.extend_from_slice(&4u16.to_le_bytes()); // path_len
+        expected.extend_from_slice(b"a.rs"); //             path
+        expected.extend_from_slice(&bloom); //              bloom
+        expected.extend_from_slice(&7u64.to_le_bytes()); // len
+        expected.extend_from_slice(&(-5i64).to_le_bytes()); // mtime_secs (pre-epoch)
+        expected.extend_from_slice(&9u32.to_le_bytes()); // mtime_nanos
+
+        assert_eq!(std::fs::read(&p).unwrap(), expected);
+    }
     use tempfile::TempDir;
 
     fn rec(path: &str, fill: u8, len: u64, secs: i64, nanos: u32) -> TrigramRecord {
