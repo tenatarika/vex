@@ -13,13 +13,33 @@
 > stale copy (§"Resolved — and it is not hard"). The `bodytokens` re-keying
 > question dissolves once documents are never renumbered (§"Reconsidered").
 >
-> **But `ref_edges` and `hierarchy_edges` address symbols by tier-local index**,
-> so a pair silently loses scope-accurate results across tiers, in proportion to
-> the size of the base (§"The edges are the real problem"). That, the cost of
-> the *second* update (§"The second update"), and the absence of any binding
-> between a delta and its base (§"Nothing binds a delta") are the open blockers.
-> Requirements and the recommended next step are in §"Where this leaves the
-> decision" — which is **not** step 4.
+> Review then found that `ref_edges` and `hierarchy_edges` address symbols by
+> tier-local index, so a pair loses scope-accurate results across tiers. Step 3.5
+> measured that loss (~18 % of strict reference edges at a 20 % delta), mapped
+> the reader rules onto a recall/precision frontier, and established that the
+> **writer**-side fix is the autonomous half. It also established the thing that
+> caps the whole design: **exact binder parity with a rebuild is unattainable at
+> any implementation cost**, because a reference in a file no tier re-extracts
+> can change its binding when the corpus-wide candidate count changes — only
+> compaction restores it. Acceptance criterion 4 is weakened accordingly
+> (§"The finding that caps all of it"). Write-cost growth is measured and mild —
+> ~95–550 ms at realistic delta sizes against ~1 850 ms today — but a compaction
+> that lands on a `git pull` costs ~2.8 s, worse than today.
+>
+> **Both reviewers recommended descoping rather than proceeding**, and the two
+> experiments they asked for have since run. The first one moves the ground: the
+> 1.85 s only reaches a user through a **synchronous** auto-update, readers are
+> never blocked by a rebuild, and making auto-update non-blocking — with
+> primitives vex already has — takes the user-visible cost to **~20 ms**, an
+> order of magnitude better than a segmented index could. The second says that
+> if a pair is built anyway, a **tight compaction threshold beats any reader
+> rule** (≥ 96 % of binder edges at a 5 % delta, ≥ 98.6 % at one file), which
+> makes the writer refactor deferrable. See §"Both experiments ran".
+>
+> Pair identity — nothing tying a delta to the base it was written against — is
+> now designed and needs no format change (§"Designed (B3)"). **One blocker
+> remains open: the cross-tier edges.** Requirements and what is still unmeasured
+> are in §"Where this leaves the decision".
 
 ## The problem, measured
 
@@ -141,12 +161,13 @@ file that refers to definitions in files that did not change:
   `cross_repo_hits` in `cmd_usages.rs`, gated on a workspace member owning the
   name. The refs are written and never surfaced.
 - **base → delta.** A base edge pointing into a file the delta re-indexed has a
-  `to_sym_idx` the dead bitmap now kills. Edit one file and `vex usages
-  --strict` on any symbol in it loses **every caller elsewhere in the repo**
-  until compaction.
+  `to_sym_idx` the dead bitmap now kills, so callers of an edited symbol
+  disappear until compaction.
 
-The damage is proportional to the size of the base, not to the size of the
-change — the exact inversion this design exists to remove. It hits
+Written first as "loses every caller elsewhere in the repo", which the
+measurement below refutes — 82 % survive with no fix at all. The damage is still
+proportional to the size of the base rather than to the size of the change,
+which is the inversion this design exists to remove. It hits
 `usages --strict`, `impact` (the Binder tier), `implementations` and `subtypes`:
 the commands whose whole value is that they are scope-accurate rather than
 textual.
@@ -168,6 +189,305 @@ Three ways out, none free, and one of them has to be chosen before any code:
 
 This is harder than BM25 turned out to be, and unlike BM25 it was never on the
 sequencing list. That is the finding, not the answer.
+
+#### Measured, and it splits cleanly into two directions
+
+Step 3.5 measured the loss instead of arguing about it. CPython, 20 % of files
+edited (whole-line comments stripped, no identifier renamed, so the reference
+graph stays consistent), base = the corpus before the edit, delta = an index
+over the edited files, control = a full rebuild after it. 343 symbol names
+probed, 4 516 strict reference hits expected.
+
+| what the pair can produce | recall (343 names) | recall (17 166 names) |
+|---|---|---|
+| edge sections only (drop edges whose target is dead) | 87.7 % | 81.7 % |
+| + name resolution via the unresolved section — route (a) | 88.5 % | — |
+| **+ shadow by referencing file — route (d), below** | **92.2 %** | **86.3 %** |
+| + both (a) and (d) | 93.8 % | 92.9 % |
+
+The second column exists because review swept the sample size and found the
+recall **degrades monotonically** with it — 100 names gives 97.3 % for route
+(d), 400 gives 92.2 %, a near-exhaustive 17 166 gives 86.3 %. The small sample
+is optimistic, not noisy, so the headline is the right-hand column: route (d)
+recovers about **half** of the loss, not three quarters, and a pair without any
+fix loses ~18 % of strict hits rather than ~12 %.
+
+Per symbol at the 343-name sample: 84 intact, 26 partly lost, **3 lost
+entirely** — a user hitting one of those three sees a confident, silent, total
+miss, which matters more for trust than the aggregate does.
+
+The loss decomposes into two directions that need different answers, and the
+proportions are the opposite of what an early draft of this section claimed. Of
+the 557 hits lost at the 343-name sample, route (d) recovers **203 — 36 %**.
+The remaining **354 (64 %)** is the other direction, and that is the half that
+needs a writer change.
+
+**base → delta: references from unchanged files into edited ones.** The smaller
+half (36 %), and route (a) cannot recover any of it: these references *resolved*
+when the base was built, so they sit in its resolved edge section and appear in
+nobody's unresolved section. But a base edge's target is still readable — the
+symbol record is superseded, not deleted — so a reference to "the symbol that
+was `name` in the base" is still a reference to `name`, at a line in a file that
+did not change.
+
+That gives a fourth route the design never listed: **shadow by the referencing
+file, not by the target symbol.** Drop a base edge when the delta re-extracted
+the file the reference lives in; keep it otherwise, whatever happened to its
+target. Guard the one case that needs it — a symbol the edit deleted outright —
+by checking the name still resolves somewhere in the pair.
+
+Measured, route (d) leaves **zero** misses in untouched base files, and that
+holds from 100 probed names to a near-exhaustive 17 166. It also *improves*
+precision over the naive pair (934 → 607 false hits), because dropping base
+edges from re-extracted files removes stale references at pre-edit line numbers.
+It needs no format change, no new section and no tier demotion — it is a
+different rule about which edges to ignore.
+
+**But "zero misses" is not the completeness result it looks like.** The fixture
+strips comments and nothing else: no definition is added, deleted, renamed or
+moved. Under that edit every base edge out of an untouched file is a true hit
+*by construction*, so the measurement has little power to falsify the rule it is
+quoted for. Three edit shapes it cannot produce do break route (d):
+
+- **A deleted symbol with a surviving namesake.** `Foo` is deleted from an
+  edited file while another `Foo` exists elsewhere. The guard — "the name still
+  resolves in the pair" — passes, so every base edge that pointed at the deleted
+  `Foo` is reported as a usage of the survivor: confident false hits at real,
+  unchanged `path:line`. A rename with a surviving namesake is the same
+  mechanism.
+- **An ambiguity flip, in both directions.** A reference in an *unchanged* file
+  binds through the single-candidate fallback when a name has exactly one
+  definition. An edit that adds a second definition makes the rebuild decline
+  while route (d) still reports; an edit that removes one makes the rebuild
+  resolve a reference the pair cannot produce at all, because no base edge
+  exists to keep. No edge-shadowing rule can see either: the referencing file
+  never changed.
+- **A weaker guard than described.** `SymbolFstReader::find` keys on the
+  lowercased name *and its CamelCase sub-tokens*, so `defines(delta, "Reader")`
+  is true when the delta merely holds `BufferedReader`. The guard as measured
+  asks "is this a sub-token of something in the pair", not "does this name still
+  resolve".
+
+Two corrections to the rule itself follow. Its shadow set must be requirement
+3's dead-file set — `(base file table − currently discovered files) ∪ the
+delta's paths` — not the delta's file table, which cannot see a deleted file and
+would keep base edges pointing into paths that no longer exist. And its guard
+must test that the *target record* still resolves, not that the name does.
+
+**delta → base: references from edited files into unchanged definitions.** All
+354 remaining misses are here. The delta's Pass-2 resolver builds its name map
+from the symbols it is writing, so a reference out of an edited file into an
+unchanged definition cannot bind. Route (a) recovers only 72 of the 354, because
+a reference lands in the unresolved section only when the delta defines *no*
+symbol of that name — and in an 883-file delta it usually defines one, so the
+reference binds locally instead, to whatever the small tier happens to contain.
+
+Which is also where the remaining false hits come from: in this sample **all 607
+live in delta-owned files** — though at 50× the sample size four counterexamples
+appear in untouched files, so that is an observation, not an invariant. A small
+tier binds more aggressively than the corpus does: the single-candidate fallback
+that makes `usages --strict` work sees one candidate for an ambiguous name where
+the full index sees many and declines.
+
+**The false-hit integers are one identifier, not a rate.** 595 of the 607 come
+from the name `test`, and all 607 from just three names; every other probed name
+contributes zero. Drop `test` and false hits fall 607 → 12 while recall barely
+moves. CPython's test suite defines the bare identifier `test` in hundreds of
+scopes, which is exactly the pathology the single-candidate fallback has on a
+small tier. So the mechanism is real and worth fixing, but "607 false hits"
+should not be read as a general precision figure for a pair.
+
+#### One fix for both, and it is in the writer
+
+Both residues have the same cause — the delta resolves references against
+itself — and therefore the same direction of fix: **the delta's Pass-2 must see
+the base's symbol table.** The base is already open, its symbol FST is already
+mmap'd, and building a name map from its 78 535 symbols measures at 8–9 ms.
+
+An early draft of this section called that "seed the name map" and concluded it
+needed no format change. Review took the claim apart, and it does not survive
+contact with `writer.rs`.
+
+`name_to_global`'s values are **`SymbolRecord` positions in the tier being
+written** — a comment at `writer.rs:504` says so, having been written to fix a
+previous bug of exactly this kind. Five sites consume that space assuming the
+local tier, and one of them, `writer.rs:664`, puts the value straight into
+`RefEdgeBuilder { to_sym_idx }`, which is what lands on disk. A base-sourced
+index written there is resolved by the reader against the *delta's* symbol
+table: not a miss, an arbitrary wrong answer. The others —
+`resolve_by_name_and_path`, `resolve_hierarchy_captures`, the include-BFS
+resolver, and the `imported_by` pair builder — all index `sym_to_file_id`, a
+`Vec` over the new tier.
+
+So the honest scope of requirement 9 is: **a tier-tagged symbol reference
+threaded through Pass-2**, with a writer branch that routes base-resolved hits
+somewhere other than the local edge section. That is route (b) moved from the
+format into memory, not route (b) eliminated. It is still the right call —
+in-memory tagging is far cheaper than widening every on-disk edge record — but
+it must be planned as a refactor, not a seeding.
+
+Three further costs the early draft missed:
+
+- **The tier demotion comes back.** An `UnresolvedRef` record carries
+  `(from_file_id, line, col, kind)` and no target identity, so a cross-tier hit
+  is name-resolved at read time however carefully the writer bound it. That is
+  the same demotion route (a) was charged for, and `vex impact`'s verdict logic
+  would have to reflect it.
+- **It breaks an invariant a shipped path documents.** `cmd_usages.rs:410`
+  states that a member defining `name` cannot have `name` in its unresolved
+  section, because the writer's capture gate excludes any name with a local
+  definition — and the workspace fan-out skips owners on that basis. Reusing the
+  section for "resolved against the base" makes both true at once, and the skip
+  would drop exactly the hits this fix recovers.
+- **The spill path is filtered.** That capture gate also runs
+  `is_meaningful_identifier`, which rejects pure-lowercase names without an
+  underscore — `main`, `read`, `close`, `parse` never reach the section. Any
+  projection of "closes the 354" silently inherits that filter.
+
+One thing the review confirmed rather than demolished: the **placement** is
+right. The Pass-2 loop is sequential and runs after parsing, so seeding it does
+not disturb the rayon parallelism that a per-language binder hook would break —
+which is the constraint this project has already locked once.
+
+So the routes collapse only partly. Route (c) (scope the binder-backed commands
+out) stays unnecessary; route (a) alone is insufficient *and* imprecise; route
+(b) is not eliminated but relocated into memory. What remains is route (d) in
+the reader — cheap, and sound only for edits that do not change the definition
+set — plus a tier-aware Pass-2 in the delta writer, whose recall is **projected
+from where the misses are, not observed**.
+
+**What this measurement does not cover:** one corpus, one edit shape, one delta
+size, `usages --strict` only. `implementations` / `subtypes` read the hierarchy
+section, which has the same tier-local shape and should be assumed to have the
+same two directions until measured. And route (d) is measured as a *reader*
+rule; the tier-tagged Pass-2 is designed, not built, so its recall is projected
+from where the misses are, not observed.
+
+#### Measured at target level: a recall/precision frontier, and a rule that dominates
+
+The site-level projection was the review's main objection, so the comparison was
+redone over **edges** — `(target path, target name, reference path, reference
+line)` — so that reporting the right site for the wrong symbol scores as wrong.
+Four candidate reader rules, written as drop-predicates over base edges:
+
+- **naive** — drop ⟺ the target was superseded. (What a pair does with no work.)
+- **route (d)** — drop ⟺ the referencing file was re-extracted.
+- **route (d′)** — route (d) plus a per-target guard.
+- **route (e)** — drop ⟺ **both**. Keep a base edge unless the delta is capable
+  of producing its replacement. Its drop set is a subset of both others', so its
+  recall cannot be lower than either — by construction, in any fixture.
+
+Three edit shapes on CPython at a 20 % delta, 17 321 names, and — the control
+this section was missing — one fixture with **no edit at all**, where the delta
+re-indexes 402 byte-identical files:
+
+| rule | comments stripped (lines shift) | definitions renamed away | no edit at all |
+|---|---|---|---|
+| naive | 81.2 % / 13 277 extra | 93.2 % / 2 741 | 93.2 % / 2 741 |
+| route (d) | 86.0 % / **2 747** | 85.9 % / 2 741 | 85.9 % / 2 741 |
+| route (d′) | 86.0 % / 2 747 | 85.9 % / 2 741 | 85.9 % / 2 741 |
+| **route (e)** | **87.7 %** / 13 277 | **100.0 %** / 2 741 | **100.0 %** / 2 741 |
+
+Read the second column of numbers in each cell: this is a frontier, not a
+ranking. An earlier draft of this section reported recall only, which is the one
+axis route (d) was designed to trade away — its whole original justification was
+precision.
+
+**The no-edit control settles what an earlier draft got wrong.** It claimed route
+(d) "is 7 points worse than doing nothing" because of the renaming, and concluded
+that B1's halves "do not separate". But the same 5-point gap appears with *no
+edit whatsoever*, and review's decomposition shows **99.96 % of route (d)'s
+losses are base edges from re-extracted files pointing at targets nothing
+touched** — discarded because the reference sits in a re-extracted file, and
+unrecoverable because the delta's Pass-2 sees only its own files. That is exactly
+the delta→base defect §"One fix for both" already attributes to the **writer**
+half. So the corrected conclusion is narrower and more useful:
+
+> The **writer** half is the autonomous one: it fixes 64 % of the loss, it is
+> the sole cause of the delta's over-binding, and it composes with the naive
+> rule, which costs nothing. The **reader** rule cannot be evaluated before it,
+> because every reader rule that drops base edges is trading them for delta
+> edges the delta cannot yet produce.
+
+**Route (e) is the rule to ship in the meantime.** It is perfect on both
+line-stable shapes and best on the line-shifting one, and its precision is never
+worse than naive's. The precision it does not fix — 13 277 extras on a
+line-shifting edit — is *stale line numbers* from base edges whose file was
+re-extracted, and route (d) is the only arm that removes them. Which says the
+final rule is probably neither: keep a base edge from a re-extracted file only
+where the delta produced no edge of its own for that target. That fallback shape
+is unmeasured.
+
+Two limits rather than results. The per-target guard (route (d′)) measures
+**identical to route (d)** everywhere, so it is still untested — and for the same
+reason the renaming fixture is weak overall: the names chosen (`setUp`,
+`tearDown`, `close`, `write`, `read`, `run`) have hundreds of definitions each in
+CPython, so the single-candidate fallback declines and few binder edges point at
+them at all (766 candidates, 132 resolved edges for `setUp`). That one property
+neuters the guard test *and* the recall comparison on that fixture. Testing
+either needs an edit that deletes a **uniquely named** definition with real
+incoming callers.
+
+And `hierarchy_edges` behave the same way, with both shapes measured this time:
+5.4 % loss naive / 4.3 % with route (d) on the comment-stripping edit, but
+naive 97.5 % / route (d) 95.7 % on the renaming one — the same flip, from the
+same cause. An earlier draft quoted only the first shape.
+
+**The oracle's own blind spot,** for completeness: the compared tuple carries no
+target line, so two same-named definitions in one file — Python's
+platform-conditional `def` is the common case — are indistinguishable. A
+reference bound to the wrong one of those scores as correct. Column collapsing
+has the same shape and was already disclosed.
+
+#### The finding that caps all of it: binder parity is unattainable
+
+This document has been arguing about how large the cross-tier error can be made.
+Review pointed out that it cannot be made zero, and the proof is already in the
+code:
+
+```rust
+// writer.rs — the single-candidate fallback
+name_to_global.get(r.name.as_str()).filter(|hits| hits.len() == 1)
+```
+
+A reference resolves only when its name has **exactly one** definition in the
+corpus; with two or more the writer declines and records no edge. And an
+unresolved reference is only spilled into the name-keyed section when the name is
+defined *nowhere* locally and passes `is_meaningful_identifier`.
+
+Now take a reference in a file **no tier re-extracts**. At base-build time its
+name had two definitions, so there is no edge and no spill — nothing recorded at
+all. An edit deletes one of those definitions: a full rebuild now resolves that
+reference, and the pair cannot, because nothing in either tier knows the
+reference exists. Symmetrically, an edit that adds a second definition makes an
+edge the base recorded silently wrong, and no tier can tell.
+
+No reader rule sees this — the referencing file did not change. The tier-tagged
+Pass-2 of requirement 9 does not see it either — it re-resolves the *delta's*
+files. **Only re-running Pass-2 over the whole corpus restores parity, which is
+compaction.**
+
+So **acceptance criterion 4 is false as written** for the binder sections.
+"Compaction is never required for correctness" must become "compaction is
+required for exact binder parity; between compactions the pair is approximate,
+and says so." That is a `docs/LIMITATIONS.md` entry and an envelope signal — i.e.
+partially route (c), which this document twice called unnecessary. The magnitude
+is unmeasured and the mechanism is not exotic: the single-candidate fallback is
+why `--strict` works at all in languages without an include graph, and creating or
+destroying a namesake is an ordinary edit.
+
+Everything else in B1 is haggling over how far above zero the error sits.
+
+**The site-level measurement is also blind to the error route (d) most plausibly
+introduces.** A hit
+here is `(path, line)` — *where the reference occurs*, never *what it points
+at*. Every case in the deleted-namesake and rename shapes above produces a
+set-identical `(path, line)`: the reference site is unchanged and only its target
+is wrong. Recall and false-hit counts are therefore **site-level**. That is
+adequate for `vex usages <name>`, which unions all symbols of a name anyway, and
+inadequate for anything that consumes the target — `impact`'s binder tier,
+`subtypes`' traversal, `imported_by`. Column and duplicate references on one
+line collapse in the same projection.
 
 ### BM25 is the first hard one
 
@@ -389,6 +709,79 @@ creates the rewrite-vs-append problem above; N segments is the option where
 update *N* genuinely costs O(change). The choice should be re-argued against
 the measurement rather than inherited from the sketch.
 
+### Measured: what rewriting the delta actually costs
+
+Step 3.5 measured the rewrite curve on CPython by building indexes over
+uniformly-sampled subsets, which is what "rewrite the delta over the cumulative
+changed set" costs. Two arms, because the answer turns on a cache that already
+exists — the content-addressed blob-SHA parse cache only works in a git
+checkout, so a fixture without one measures the pessimistic case:
+
+| delta size | cold (no parse cache) | rewrite after a one-file edit (cache warm) |
+|---|---|---|
+| 400 files / 5.8k symbols | 401 ms | **119 ms** |
+| 1 600 files / 25.8k symbols | 861 ms | **310 ms** |
+| full corpus (compaction) | 2 240 ms | — |
+
+**Which column applies is decided by git, not by cache warmth.** The blob cache
+is keyed on committed blob SHAs and the git backend deliberately drops dirty
+paths (`vcs/git.rs:288`) so a working-tree AST can never be filed under an index
+blob. A delta is, by construction, the files that changed since the base — and
+in the `vex watch` / `--auto-update` story that motivates this design, those are
+uncommitted edits. They miss the cache in both directions. The warm column above
+was produced by editing **one** file of 400, so it is the optimistic bound; a
+delta of dirty files sits near the cold column.
+
+The honest statement is therefore a **band**, and a line fitted to the two warm
+points is 0.159 ms/file with a 55 ms intercept — not the 0.2/50 an earlier draft
+published, which over-predicts its own upper point by 19 %. That intercept is
+already the subset's own discover-and-write floor, so adding a separate
+corpus-wide floor on top double-counts it. With that corrected, and adding the
+8–9 ms the base-name-map seed costs (§"One fix for both" requires it, and the
+subset builds never paid it):
+
+| delta | all files committed | all files dirty |
+|---|---|---|
+| 5 % (220 files) | ~95 ms | ~250 ms |
+| 20 % (884 files) | ~205 ms | ~550 ms |
+| 36 % (1600 files) | ~320 ms | ~870 ms |
+
+against **~1 850 ms** for today's full update. The growth C2 warned about is
+real; even at its pessimistic end a pair is 2–7× cheaper, and 5–19× at the
+optimistic end. That qualitative conclusion is the robust part; the milliseconds
+are single runs on an unpinned laptop and should be read as indicative.
+
+Two things the model does *not* cover: it is fitted over a 4× range and cannot
+distinguish linear from `n log n`, which matters because BM25's dominant phase
+is a sort plus an FST build; and extrapolated to the full corpus it predicts
+~950 ms against a measured 2 240 ms, so it is wrong at its own compaction
+threshold.
+
+**Amortisation depends entirely on the edit pattern, and the flattering pattern
+is the wrong one.** One file per edit gives ~880 updates between compactions at
+a 20 % threshold, so the 2.24 s rebuild costs ~2.5 ms per update. But the events
+that actually cross a 20 % threshold are `git pull`, a branch switch, a rebase,
+a formatter run — each of which changes hundreds of files in **one** update.
+Then a single user-facing operation pays the delta rewrite *and* the compaction:
+≈ 550 ms + 2 240 ms ≈ **2.8 s, against 1 850 ms for the same operation today** —
+a regression, at the moment a user is most likely to search next.
+
+**Criterion 2 restated.** "Under 150 ms on a one-file edit" describes only the
+first update after a compaction. The budget should be: *median update under
+300 ms; update at the compaction threshold under 600 ms; and the
+threshold-crossing update — rewrite plus compaction — under 2 s, i.e. no worse
+than today's flat cost.* That last line is the one this design currently fails,
+and it is a policy problem (when to compact, and whether compaction can be
+deferred or done off the critical path), not a measurement problem.
+
+**On two tiers versus N: B2 does not settle it, and an earlier draft claimed it
+did.** What B2 shows is that write growth is mild. The choice between two tiers
+and N turns on things B2 never measured — that both need a compaction policy
+anyway (§"Compaction needs a policy"), that criterion 1 extrapolates to eight
+tiers inside its budget, and that the real differential is bounded versus
+unbounded readers per query. That argument is the sketch's, not the
+measurement's, and it should be labelled as such.
+
 ## Nothing binds a delta to the base it was written against
 
 The dead bitmap is indexed by base `sym_idx`. Nothing in the format ties it to a
@@ -400,12 +793,67 @@ unrelated symbol: live symbols vanish, stale ones surface, no error, no stale
 signal. A v3 base and a v8 delta likewise open cleanly and get merged
 section-by-section.
 
-The delta must therefore record `(base_build_id, base_symbol_count,
-base_format_version)`, and the reader must validate the triple on open and, on
-mismatch, refuse the pair — serve base-only and raise the existing stale signal.
-`base_symbol_count` alone is a cheap guard that catches almost all of it. This
-is two fields, and it is the difference between a bug and silently wrong
-answers.
+### Designed (B3)
+
+**There is nothing in the current index to identify a build with.** `Header`
+carries magic, version, symbol count, a vector dimension and section
+offsets — no build id, no nonce, no content digest. The manifest is closer but
+not sufficient: `indexed_at` has one-second granularity, so two rebuilds in the
+same second are indistinguishable, and `git_head` does not move for a
+working-tree edit, which is the case that matters most. So identity has to be
+constructed.
+
+**The triple.** A delta records, about the base it was written against:
+
+| field | source | catches |
+|---|---|---|
+| `base_format_version` | the base's header | a v3 base merged with a v8 delta, which today both open cleanly and get merged section by section although their section sets differ |
+| `base_symbol_count` | the base's header | any rebuild that adds or removes a symbol — the overwhelming majority of accidental replacements |
+| `base_layout_digest` | xxh3 of the base's fixed-size header **and** its section sub-headers | any rebuild that changes a section's offset or length, i.e. essentially any content change that keeps the symbol count |
+
+Validation is three comparisons over a few hundred bytes that the reader has
+mapped anyway, plus one hash of those bytes — nanoseconds, against a read-path
+budget of ~0.1 ms. It is affordable on every invocation, which matters because a
+guard that is only checked sometimes is not a guard.
+
+**Where it lives: the pointer, not the delta's header.** Roadmap #4 has to
+introduce a pointer to the current pair regardless, and the pointer already has
+to name both members. Recording the base's triple there means the pair is
+validated in the *same* read that resolves it, and no index format changes — a
+field in the delta's `Header` would be a format bump, and a field in a manifest
+can be rewritten independently of the pair it describes.
+
+**What the reader does on mismatch:** refuse the pair, serve the base alone, and
+set the envelope's existing `vex.dev/stale` with a `vex.dev/stale_reason` naming
+the mismatch. Silently ignoring the delta would mean answering from a stale index
+with no signal at all, which is the failure this whole section exists to prevent.
+A format-version mismatch is refused even when the other two fields agree,
+because section presence differs across the accepted range.
+
+**The residual, and why it is benign.** A rebuild that produces an identical
+symbol count *and* an identical section layout is undetectable by this scheme.
+That is precisely the case where the base's content is unchanged, and an
+unchanged base yields the same `sym_idx` for every symbol — so a dead bitmap
+indexed against the old build is still correct against the new one. The scheme
+fails exactly where failure does not matter.
+
+That argument rests on the writer being reproducible, so it was checked rather
+than assumed: two independent builds of the same 883-file corpus, in different
+directories and therefore different cache dirs, produced **byte-identical**
+`index.vex` files (9 003 676 bytes, same SHA-256). That is stronger than the
+symbol-order determinism the argument needs. It is one platform and one binary,
+so the property should be pinned by a test before a correctness guard leans on
+it — but it holds today.
+
+**Upgrade path.** The next format bump — the callgraph CSR retrofit is already
+waiting for one — should stamp an explicit random `build_id` into the header.
+That removes the reliance on determinism and reduces the triple to one
+comparison. Until then the derived digest is the honest substitute, not a
+placeholder to be forgotten.
+
+**What B3 does not solve:** the window between resolving the pointer and mapping
+both members, which is #4's reclamation protocol; and the sidecars, each of which
+keeps its own downstream guard.
 
 ## Crash safety does not come along for free
 
@@ -471,7 +919,14 @@ Proposed acceptance criteria, to be fixed **before** implementation:
 3. **Ranking is unchanged** — the `vex eval` golden set must produce identical
    nDCG@10 / recall@10 / MRR before and after. This is what pins the BM25
    statistics work.
-4. Compaction is never required for correctness, only for performance.
+4. ~~Compaction is never required for correctness, only for performance.~~
+   **False as written, and not fixable** — see §"The finding that caps all of
+   it". For `ref_edges` and `hierarchy_edges`, compaction is required for exact
+   parity with a rebuild, because a reference in a file no tier re-extracted can
+   change its binding when the corpus-wide candidate count changes. Restated:
+   *compaction is never required for correctness of the sections that do not
+   resolve names across files; for the binder sections the pair is approximate
+   between compactions and must say so.*
 
 ## Criterion 1, measured
 
@@ -595,8 +1050,11 @@ look; not part of #10.
    sidecar across a pair.
 3.5. **New, and it should have been first.** Cross-tier `ref_edges` /
    `hierarchy_edges` resolution (B1), and the write-cost function for update *N*
-   since compaction (B2). Both are paper exercises, both are cheaper than a
-   write path, and either can reshape the design.
+   since compaction (B2). **B2 done.** **B1 measured and scoped, not closed** —
+   one free reader rule that covers a third of the loss and holds only for edits
+   that leave the definition set alone, plus a writer refactor that is still
+   unbuilt, plus four sections nobody has looked at. B3 (pair identity) is two
+   fields and still open.
 4. Only then write the write path, the deletion records, and the pointer commit.
 
 The order was deliberate — the steps most likely to kill the design first,
@@ -614,15 +1072,36 @@ can, and that a pile of open questions are now requirements.
 
 ### Blocking, before any implementation
 
-- **B1. Cross-tier `ref_edges` / `hierarchy_edges`.** Pick one of the three
-  routes in §"The edges are the real problem" and design it. Until then the pair
-  silently degrades exactly the commands that justify vex over grep.
-- **B2. A write-cost function for update *N* since compaction**, with criterion
-  2 restated as amortised or worst-case-before-compaction, and the two-vs-N
-  tier choice re-argued against the measurement (§"The second update").
-- **B3. Pair identity.** The delta records `(base_build_id, base_symbol_count,
-  base_format_version)`; the reader refuses a mismatched pair and serves
-  base-only with the stale signal (§"Nothing binds a delta").
+- **B1. Cross-tier `ref_edges` / `hierarchy_edges` — blocking, and now bounded
+  from below as well as above.** A pair loses ~18 % of strict reference edges at
+  a 20 % delta; the best reader rule measured (route (e)) reaches 100 % on
+  line-stable edits and 87.7 % when the edit shifts lines, at a precision cost
+  only route (d) removes — a frontier, not a fix. The autonomous half is the
+  **writer** (requirement 9): a tier-tagged Pass-2, which fixes 64 % of the loss
+  and composes with the zero-work naive rule. And **exact parity is
+  unattainable at any cost** (§"The finding that caps all of it"), so criterion 4
+  is weakened and this design ships an approximate binder tier between
+  compactions whatever else is built. Unpriced still: the call graph's caller
+  side (probably free — both endpoints of any lookup are same-tier), the
+  `subtypes` traversal across tiers (error compounds per hop), `imported_by`
+  (a delta's manifest under-populates the cascade and recovery costs O(corpus)),
+  and `pattern_index_full` (no worse than today's post-update state).
+- ~~**B2. A write-cost function for update *N* since compaction.**~~
+  **Measured, with one policy problem left.** ≈ 55 ms + 0.16 ms per file
+  changed, as a band from ~95 ms (committed files, 5 % delta) to ~550 ms (dirty
+  files, 20 %), against ~1 850 ms today. Criterion 2 restated. What is not
+  settled is compaction scheduling: a threshold-crossing update pays rewrite +
+  compaction ≈ 2.8 s, worse than today. See §"Measured: what rewriting the delta
+  actually costs".
+- ~~**B3. Pair identity.**~~ **Designed.** The pointer that roadmap #4 must
+  introduce anyway carries `(base_format_version, base_symbol_count,
+  base_layout_digest)`; the reader validates all three in the same read that
+  resolves the pointer — a few hundred already-mapped bytes and one hash — and on
+  mismatch refuses the pair, serves the base alone and sets the envelope's
+  existing `vex.dev/stale` + `stale_reason`. No index format change. The one
+  undetectable case is a rebuild with identical layout and symbol count, which is
+  exactly the case where the old bitmap stays valid, because builds are
+  reproducible — verified byte-for-byte, not assumed. See §"Designed (B3)".
 
 ### Requirements the measurements established
 
@@ -657,6 +1136,40 @@ can, and that a pile of open questions are now requirements.
    instead of producing a mixed pair.
 7. Aggregate-over-corpus reads consult the bitmap too. `top_n_by_indegree`
    counts distinct callers corpus-wide and would double-count across tiers.
+8. **Every merge point declares which liveness rule it is under.** Requirement 3
+   shadows a *symbol* by its defining file; edges are shadowed by their
+   *referencing* file and deliberately ignore target liveness. One query applies
+   both rules to the same posting list — dead-filter the `sym_idx` when listing
+   definitions, do not dead-filter it when following its edges. That is
+   implementable but it is a trap to leave implicit, so the design owes this
+   table rather than an inference:
+
+   | section | liveness key | status |
+   |---|---|---|
+   | symbol records / symbol FST | defining file (dead bitmap) | requirement 3 |
+   | `ref_edges` | referencing file; target liveness ignored | measured |
+   | `hierarchy_edges` | referencing file, **and** `from_sym_idx` must still resolve | unmeasured |
+   | call graph | **`caller_sym_idx` is tier-local too** — the difficulty table's "keyed by name" is true only of the callee side | unaddressed |
+   | `unresolved_hierarchy` | as hierarchy | unaddressed |
+   | trigram | path | table above |
+   | pattern skeletons | file id — **and** `pattern_index_full`, which a delta can never set, so a pair permanently degrades `vex pattern` to live scan | unaddressed |
+   | `imported_by` | project-level, lives in the manifest — a delta writer sees only its own edges, so writing the delta's manifest **erases the base's map** and breaks the cascade | unaddressed |
+   | corpus aggregates (`top_n_by_indegree`) | dead bitmap | requirement 7 |
+
+   Transitive traversals are a separate problem no shadow rule solves:
+   `subtypes` recurses `find_hierarchy_edges_by_symbol` in one reader at every
+   hop, so a chain that crosses the tier boundary simply stops there. That needs
+   name-keyed hopping or the tier-tagged identity of requirement 9.
+9. **The delta's Pass-2 carries a tier tag.** Resolving against base ∪ delta is
+   the goal — otherwise references out of edited files bind to whatever namesake
+   the small tier holds, costing recall one way and precision the other — but
+   `name_to_global`'s values are `SymbolRecord` positions in the tier being
+   written, and one consumer writes them straight into the on-disk edge section.
+   So this is a threaded `(tier, index)` through five Pass-2 consumers plus a
+   writer branch for base-resolved hits, plus a decision on the
+   `is_meaningful_identifier` gate that filters the spill path, plus a
+   re-statement of the owner-skip invariant `cross_repo_hits` documents, plus
+   the tier demotion it forces on `impact`'s verdict logic.
 
 ### Still unmeasured
 
@@ -789,6 +1302,132 @@ blast radius should say whose experience it improves.
 - The `avg_doc_len` clamp inconsistency described in §"Caveats" is present in
   today's single index, not introduced by segmentation.
 
+### The descope both reviewers recommend
+
+Not "shelve the idea" and not "proceed to step 4":
+
+> **The delta carries no reference or hierarchy edges.** `usages --strict`,
+> `impact`'s binder tier, `implementations` and `subtypes` read the base alone and
+> set the envelope's existing `vex.dev/stale` + `stale_reason`. `search`,
+> `grep`/trigram, `callers`/`callees`, `impact`'s call-graph tier and BM25 read
+> the pair.
+
+This is route (c) with a signal, and after step 3.5 it is stronger than it looked:
+
+- **B1 disappears.** No tier tagging, no reader-rule selection, no demotion, no
+  `is_meaningful_identifier` decision, no collision with the owner-skip invariant.
+- **The call graph is portable for free** — a call edge names its callee by
+  string and its caller lives in the same tier as the edge, so both endpoints of
+  any lookup are same-tier by construction. `impact` keeps its cheapest channel
+  fresh and loses only its binder channel.
+- **It is epistemically better than any B1 outcome.** Stale-but-internally-
+  consistent plus a `stale` flag beats fresh-but-7-to-19 %-wrong-silently, which
+  is this document's own stated error preference.
+- It is honest about the parity cap instead of discovering it in production.
+- It costs nothing to build.
+
+What remains to justify is then the *rest* of the design — requirements 1, 3–7
+plus #4's pointer and reclamation protocol plus a compaction policy that
+currently regresses the `git pull` case — for a background command with **no
+named user-facing symptom**. That question is still open, and it is the one worth
+answering next.
+
+### Both experiments ran. The first one undercuts the design's premise.
+
+**Is the 1.85 s visible where it is paid?** Measured on the 78.5k-symbol corpus:
+
+| | wall clock |
+|---|---|
+| `vex search` on a fresh index | 21–25 ms |
+| `vex search` on a **stale** index, no auto-update | 20 ms (stale results, `stale` flag) |
+| `vex search --auto-update` on a stale index | **1 891 ms** |
+| the same command once the index is fresh | 35 ms |
+| `vex search` × 12, **issued while a rebuild runs** | **8–15 ms each, all succeeding** |
+
+The last row is the important one. Readers take no lock and a live mmap survives
+the atomic rename, so a rebuild is completely invisible to concurrent queries. The
+1.85 s reaches a user through exactly one path: `handle_staleness` rebuilding
+**synchronously** before answering. And vex already owns the primitive to not do
+that — `pipeline::run_or_busy` / `update_or_busy`, exposed as `--no-wait` on
+`index` and `update`, plus the `vex.dev/stale` + `stale_reason` envelope fields
+that exist to say "these results are stale and here is why".
+
+So the scheduling fix — serve the current index, kick the update behind it — takes
+the user-visible cost from **1 891 ms to ~20 ms**. A segmented index, at its
+measured best, takes the same path to ~250 ms. **The cheap fix is an order of
+magnitude better than the expensive one at the only place a user feels this.**
+
+That does not make a segmented index worthless — `vex watch` still burns 1.85 s of
+CPU per edit, and a delta would cut that to ~100–250 ms — but it moves the
+justification from "latency users feel" to "background CPU", which is a much
+weaker case and one this document has never argued.
+
+### If it is built anyway: the matrix says use a tight threshold
+
+The full experiment review asked for — recall **and** false edges, five reader
+rules, three delta sizes, three edit shapes including one that **adds and deletes
+files**, which nothing had modelled:
+
+| fixture | edges | naive | route (d) | route (d′) | route (e) | fallback |
+|---|---|---|---|---|---|---|
+| shift / 1 file | 85 790 | 98.6 % / 654 | 99.1 % / 630 | 99.1 % / 630 | 99.1 % / 654 | 99.1 % / 654 |
+| shift / 5 % | 85 974 | 94.4 % / 2 812 | 96.2 % / **809** | 96.2 % / 809 | **96.7 %** / 2 951 | 96.7 % / 2 942 |
+| shift / 20 % | 85 130 | 80.6 % / 13 619 | 85.3 % / **3 297** | 85.3 % / 3 297 | **87.0 %** / 13 820 | 86.9 % / 13 531 |
+| stable / 1 file | 84 682 | 99.1 % / 625 | 99.1 % / 866 | 99.1 % / 625 | 99.1 % / 866 | 99.1 % / 866 |
+| stable / 5 % | 84 802 | 97.3 % / **525** | 95.4 % / 1 268 | 95.4 % / 648 | **98.4 %** / 1 283 | 98.4 % / 1 283 |
+| stable / 20 % | 80 447 | 92.5 % / **2 909** | 81.6 % / 4 898 | 81.6 % / 2 992 | **96.0 %** / 4 958 | 95.8 % / 4 943 |
+| adddel / 1 file | 83 502 | 99.2 % / 915 | 99.2 % / **802** | 99.2 % / 802 | 99.2 % / 915 | 99.2 % / 915 |
+| adddel / 5 % | 72 243 | 98.0 % / 8 755 | 98.0 % / **7 560** | 98.0 % / 7 560 | 98.0 % / 8 755 | 98.0 % / 8 755 |
+| adddel / 20 % | 61 673 | 92.8 % / 17 701 | 92.8 % / **12 706** | 92.8 % / 12 706 | 92.8 % / 17 701 | 92.8 % / 17 701 |
+
+Four conclusions, in order of how much they matter:
+
+1. **Delta size dominates the rule choice.** At a one-file delta every rule is
+   98.6–99.2 %; at 5 % the best is 96.7–98.4 %; only at 20 % does the spread open
+   up (81.6–96.0 %). So a **tight compaction threshold is worth more than any
+   reader rule**, and it makes requirement 9 — the tier-tagged Pass-2 — deferrable
+   rather than blocking. That is the single most useful thing this matrix says.
+2. **Route (e) is best or tied on recall in all nine cells**, as set inclusion
+   predicts, and it is the only rule that is never *worse* than doing nothing.
+   Route (d) is worse than naive on both line-stable rows — by 11 points at 20 % —
+   which is the finding an earlier draft mis-attributed to renaming.
+3. **Precision and recall pull in opposite directions and no rule wins both.**
+   Route (d) is the precision winner on line-shifting edits (809 vs 2 951 at 5 %)
+   because only it removes base edges at pre-edit line numbers; naive is the
+   precision winner on line-stable ones. The `fallback` refinement — keep a base
+   edge from a re-extracted file only where the delta produced none — tracks
+   route (e) almost exactly, so it is not worth its complexity.
+4. **The add/delete shape exposes a rule none of the five implements.** Its false
+   edges are high for every arm (7 560–17 701) because a base edge whose *target*
+   lives in a **deleted** file is dropped by nothing: naive tests "target's file is
+   in the delta", which a deleted file is not. The correct predicate has three
+   parts — drop if the target's file is dead and not re-added; keep a superseded
+   target only if the delta redefines it; drop a base edge from a re-extracted file
+   only where the delta produced its own. That composite is what should be
+   implemented, and it is unmeasured.
+
+### What is left to decide
+
+Both experiments are done, so the open questions are no longer measurement
+questions:
+
+1. **Is background CPU worth this?** The scheduling fix removes the latency case
+   entirely. What remains is 1.85 s of CPU per edit under `vex watch`, which a
+   delta would cut to ~100–250 ms. That is the whole remaining benefit, and it has
+   to pay for #4's pointer and reclamation protocol, a compaction policy, the
+   approximate binder tier, and requirements 4 and 5 (which change *today's*
+   single-tier rankings and need a `vex eval` gate).
+2. **If yes, the descope plus a tight threshold is the shape.** Binder sections
+   out of the pair with a `stale` signal, or in the pair with a one-file-to-5 %
+   threshold where every reader rule holds ≥ 96 %. Requirement 9 becomes an
+   optimisation.
+3. **The composite reader rule** in point 4 above is the thing to implement if the
+   binder sections stay in — not route (d), and not route (e) alone.
+
+The cheap fix should ship regardless of all of it: **make auto-update
+non-blocking**. It is the one change here with a measured, order-of-magnitude,
+user-visible win, and the primitives already exist.
+
 ### Verdicts
 
 Reviewed 2026-08-15 by architect (**REJECT** for proceeding to step 4 — not a
@@ -799,3 +1438,50 @@ and has been answered by the edited-content column in §"Resolved"). The
 recommended next step is a **step 3.5** — B1 and B2 on paper, both cheaper than
 a write path and either capable of reshaping the design — with B3 folded in
 regardless.
+
+Step 3.5 reviewed 2026-08-16, architect (**REJECT B1 as answered**,
+APPROVE-WITH-CHANGES on B2) and rust-reviewer (**APPROVE-WITH-CHANGES**; it
+swept the sample size, which this document had not). Both were substantially
+right and this section is the corrected version. What they caught, recorded
+because the pattern repeats:
+
+- **An arithmetic claim contradicted by the table three lines above it.** Route
+  (d) recovers 36 % of the loss; the text called it "the bulk". A reader who
+  trusted the prose would have mis-scoped the remaining work by a factor of two.
+- **A completeness result that was a property of the fixture.** "Zero misses in
+  untouched base files" is trivially true for an edit that changes no
+  definitions. It survived a 50× larger probe, and it still is not evidence for
+  the general rule it was quoted for.
+- **Point estimates that were a sample-size artefact.** Recall degrades
+  monotonically from 97 % at 100 names to 86 % at 17 166. The small sample was
+  optimistic, not noisy.
+- **Aggregates that were one identifier.** 595 of 607 false hits came from
+  `test`.
+- **A fix described as smaller than it is.** "Seed the name map" is a
+  tier-tagging refactor through five consumers, one of which writes to disk.
+- **A cost band reported as a point**, because the blob-SHA parse cache
+  deliberately refuses dirty files — which is exactly what a delta contains.
+
+One correction in the other direction: rust-reviewer stated `vex index` has no
+short-circuit. It does — `pipeline::run_with_lock` skips the rebuild when the
+manifest and file fingerprints match — which is what produced a suspicious
+6.9 ms "rewrite" earlier in this work. Its own B2 numbers are unaffected; it
+made real edits.
+
+B1's target-level work reviewed 2026-08-16 as well: architect **descope**,
+rust-reviewer **APPROVE-WITH-CHANGES**. Both corrections are folded in above, and
+the pattern of error is worth recording because it is the third instance:
+
+- **A conclusion reported on one axis of a two-axis trade.** The table had two
+  recall columns and no precision column, for a rule whose justification was
+  precision.
+- **A missing control.** The "flip" was attributed to renaming; a no-edit fixture
+  reproduces it, and 99.96 % of the losses have nothing to do with the edit.
+  One control would have caught it, and it took a reviewer to build one.
+- **A rule nobody enumerated.** Writing the candidates as drop-predicates makes
+  route (e) obvious and shows it dominates on recall by set inclusion. Two ad-hoc
+  single-condition rules were measured against each other for a week instead.
+- **A conclusion overshooting its evidence** — "the halves do not separate" from
+  data that only shows one half cannot be validated before the other.
+- **One fixture's numbers quoted where two shapes existed.** The hierarchy
+  paragraph cited only the shape that flattered the rule; the other reverses it.
