@@ -61,6 +61,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   paired with. Both crates now read `[workspace.package] version`, the single
   key to bump at release time.
 
+### Performance
+
+- The three binary sidecars next to `index.vex` — `index.bodytokens`,
+  `index.trigram` and the embedding cache — are written with one buffer and one
+  write instead of a syscall per field, and read with one read instead of a
+  syscall per record. They had been streaming straight to and from the file:
+  two `write_all` calls per record for body tokens, six for trigram, and — the
+  expensive one — **one per `f32`** for the embedding cache, so 385 syscalls per
+  cached vector.
+
+  Measured on a 78 535-symbol corpus: the body-tokens round trip an update pays
+  goes from 195.6 ms to 7.2 ms, the trigram write from 13.4 ms to 0.17 ms, and a
+  20 000-vector embedding cache from 7.2 s to 8 ms. A one-file-edit
+  `vex update` on that corpus drops from ~2.02 s to ~1.85 s; the cache figure is
+  paid on every semantic index or update and grows with corpus size, so it is
+  the larger win where semantic search is enabled.
+
+  The files themselves are byte-for-byte unchanged, so no format version moves
+  and no index needs rebuilding. Loading now validates the header before reading
+  the body it describes, and bounds that read by what the header claims, so a
+  corrupt sidecar costs what it says it is rather than what it weighs on disk.
+
 ### Fixed
 
 - `vex update --history` stickiness no longer depends solely on incremental
