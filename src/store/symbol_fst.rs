@@ -165,17 +165,22 @@ impl<'a> SymbolFstReader<'a> {
             return (exact.into_iter().take(limit).collect(), false);
         }
 
-        // Prefix match
+        // Prefix match.
+        //
+        // The cap is checked *before* the push, not after. Checking after only
+        // stops once the budget is already exceeded, which is how `limit == 0`
+        // — reachable, `--limit` takes any `usize` — returned one row instead
+        // of none.
         let prefix_results = self.find_by_prefix(query);
         let mut all: Vec<u32> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for (_name, indices) in prefix_results {
+        'prefix: for (_name, indices) in prefix_results {
             for idx in indices {
+                if all.len() >= limit {
+                    break 'prefix;
+                }
                 if seen.insert(idx) {
                     all.push(idx);
-                    if all.len() >= limit {
-                        return (all, false);
-                    }
                 }
             }
         }
@@ -206,15 +211,22 @@ impl<'a> SymbolFstReader<'a> {
                 break;
             }
         }
+        // Same before-the-push cap as the prefix rung. The inner `break` this
+        // replaces only ever left the *inner* loop, so it read as a full stop
+        // while the outer one kept going — harmless in practice only because
+        // `find_fuzzy` stops collecting names the moment its own running total
+        // reaches `limit`, which puts the crossing inside the last name it
+        // returns. Relying on that invariant across two functions is not worth
+        // the line it saves.
         let mut fuzzy_all: Vec<u32> = Vec::new();
         seen.clear();
-        for (_name, indices) in fuzzy_results {
+        'fuzzy: for (_name, indices) in fuzzy_results {
             for idx in indices {
+                if fuzzy_all.len() >= limit {
+                    break 'fuzzy;
+                }
                 if seen.insert(idx) {
                     fuzzy_all.push(idx);
-                    if fuzzy_all.len() >= limit {
-                        break;
-                    }
                 }
             }
         }
@@ -591,5 +603,45 @@ mod tests {
         let (indices, was_fuzzy) = reader.search_with_fallback("paymntservce", 10);
         assert_eq!(indices, vec![0], "distance-2 match must still be found");
         assert!(was_fuzzy);
+    }
+
+    /// Every rung must honour `limit` exactly, including zero. `--limit` takes
+    /// any `usize` with no floor, and the caps used to be checked *after* the
+    /// push — so a zero budget came back holding one row.
+    #[test]
+    fn every_rung_honours_limit_including_zero() {
+        let symbols: Vec<(String, u32)> = (0..40).map(|i| (format!("Alphabet{i:02}"), i)).collect();
+        let (fst, postings) = build_symbol_fst(&symbols).unwrap();
+        let reader = SymbolFstReader::new(&fst, &postings).unwrap();
+
+        for limit in [0usize, 1, 2, 3, 5, 10, 100] {
+            // Exact rung.
+            let (idx, fuzzy) = reader.search_with_fallback("alphabet00", limit);
+            assert!(idx.len() <= limit, "exact rung: {} > {limit}", idx.len());
+            assert!(!fuzzy);
+
+            // Prefix rung — "alphabet" is a sub-token of all 40 symbols.
+            let (idx, fuzzy) = reader.search_with_fallback("alphabet", limit);
+            assert!(idx.len() <= limit, "prefix rung: {} > {limit}", idx.len());
+            assert!(!fuzzy);
+
+            // Fuzzy rung.
+            let (idx, _) = reader.search_with_fallback("alphabxt00", limit);
+            assert!(idx.len() <= limit, "fuzzy rung: {} > {limit}", idx.len());
+        }
+    }
+
+    /// Capping before the push must not cost recall at the boundary: a budget
+    /// of N still comes back with N when N are available.
+    #[test]
+    fn limit_cap_still_fills_the_budget() {
+        let symbols: Vec<(String, u32)> = (0..40).map(|i| (format!("Alphabet{i:02}"), i)).collect();
+        let (fst, postings) = build_symbol_fst(&symbols).unwrap();
+        let reader = SymbolFstReader::new(&fst, &postings).unwrap();
+
+        for limit in [1usize, 5, 17, 40] {
+            let (idx, _) = reader.search_with_fallback("alphabet", limit);
+            assert_eq!(idx.len(), limit, "prefix rung short at limit={limit}");
+        }
     }
 }

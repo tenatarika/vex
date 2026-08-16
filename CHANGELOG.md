@@ -135,6 +135,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **BM25's average document length is now measured over the same numbers the
+  scorer divides by.** Per-document lengths are stored clamped to `u16::MAX`,
+  but `avg_doc_len` was averaged over the *unclamped* originals — so the length
+  normalisation divided a clamped numerator by a denominator that counted terms
+  no reader could see. One 500k-term document in a 10 000-symbol corpus lifts
+  that average ~43 terms, which makes **every** document in the index look
+  shorter than average and inflates the whole corpus's scores, not just the
+  pathological document's. Only indexes containing a symbol with more than
+  65 535 unique terms — generated or minified files — were affected; the layout
+  is unchanged, older indexes stay readable and pick up the corrected average
+  when next rebuilt.
+
+- `search`'s prefix and fuzzy rungs checked their result cap *after* pushing
+  rather than before, so a `limit` of zero came back holding one row (`--limit`
+  takes any `usize`, with no floor). For any limit of 1 or more the two rungs
+  were already correct, but only because `find_fuzzy` stops collecting the
+  moment its own running total reaches the limit — an invariant living in a
+  different function. Both rungs now test the cap before the push.
+
 - `vex update --history` stickiness no longer depends solely on incremental
   state that a sidecar format change can reset. The flag is inherited when the
   manifest records a prior history build **or** when `index.git_history` is on
