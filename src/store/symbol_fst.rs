@@ -4,6 +4,7 @@
 //! CamelCase sub-tokens are indexed: "PaymentService" → ["paymentservice", "payment", "service"].
 
 use anyhow::{Context, Result};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Build symbol FST + posting lists from symbol records.
 /// Each symbol name and its CamelCase sub-tokens are inserted.
@@ -116,22 +117,29 @@ impl<'a> SymbolFstReader<'a> {
 
     /// Fuzzy search: find keys within Levenshtein edit distance of the query.
     /// Uses the FST's built-in Levenshtein automaton for efficient traversal.
+    ///
+    /// The automaton comes from [`fuzzy_automaton`] rather than being built
+    /// here, so callers that run this rung more than once for one query — the
+    /// `--workspace` fanout, which loops over members in-process — pay for the
+    /// DFA once instead of once per index. See that function for why it
+    /// matters.
     pub fn find_fuzzy(
         &self,
         query: &str,
         max_distance: u32,
         limit: usize,
     ) -> Vec<(String, Vec<u32>)> {
-        use fst::automaton::Levenshtein;
         use fst::{IntoStreamer, Streamer};
 
         let key = query.to_lowercase();
-        let lev = match Levenshtein::new(&key, max_distance) {
-            Ok(l) => l,
-            Err(_) => return Vec::new(), // query too long for this distance
+        let lev = match fuzzy_automaton(&key, max_distance) {
+            Some(l) => l,
+            None => return Vec::new(), // query too long for this distance
         };
 
-        let mut stream = self.fst_map.search(lev).into_stream();
+        // `fst` implements `Automaton for &A`, so the shared DFA streams by
+        // reference and is never cloned.
+        let mut stream = self.fst_map.search(&*lev).into_stream();
         let mut results = Vec::new();
         let mut total = 0usize;
 
@@ -175,9 +183,29 @@ impl<'a> SymbolFstReader<'a> {
             return (all, false);
         }
 
-        // Fuzzy fallback (adaptive distance)
-        let distance = fuzzy_distance(query);
-        let fuzzy_results = self.find_fuzzy(query, distance, limit);
+        // Fuzzy fallback. The adaptive distance is a *ceiling*, not the first
+        // attempt: climb from 1 and stop at the first rung that matches.
+        //
+        // Two reasons, and the cheaper one is not the speed. Truncation here is
+        // lexicographic — `find_fuzzy` stops once it has `limit` postings, in
+        // FST key order — so a flat distance-2 sweep can spend the budget on
+        // alphabetically-earlier distance-2 keys and drop the single-edit
+        // match the user actually typo'd. Climbing returns the closest rung
+        // that has anything, which is what a typo correction should do.
+        //
+        // The speed is the second reason: on a 13-char query a distance-2 DFA
+        // costs ~10× a distance-1 one, so a single-edit typo — the common case
+        // — resolves in 0.11 ms instead of 1.68 ms (**14.8×**). A query that
+        // really is two edits out now pays both DFAs, measured at ~8 % slower,
+        // and a true miss is a wash.
+        let ceiling = fuzzy_distance(query);
+        let mut fuzzy_results = Vec::new();
+        for distance in 1..=ceiling {
+            fuzzy_results = self.find_fuzzy(query, distance, limit);
+            if !fuzzy_results.is_empty() {
+                break;
+            }
+        }
         let mut fuzzy_all: Vec<u32> = Vec::new();
         seen.clear();
         for (_name, indices) in fuzzy_results {
@@ -239,6 +267,52 @@ impl<'a> SymbolFstReader<'a> {
 
         indices
     }
+}
+
+/// Build — or reuse — the Levenshtein DFA for `(key, distance)`.
+///
+/// `fst::automaton::Levenshtein::new` materialises a **complete** DFA eagerly,
+/// and each state carries a 256-entry transition table (the crate's own comment
+/// puts its 10 000-state ceiling at "at least 20MB"). Measured on this index:
+/// construction is **95–100 % of a fuzzy query's cost and is independent of
+/// corpus size** — 1.18 ms at 1 000 symbols, 1.18 ms at 40 000, 1.6 ms at
+/// 80 000, against 0.006–0.084 ms of actual traversal. A distance-2 DFA costs
+/// ~10× a distance-1 one on the same query (1.18 ms vs 0.13 ms at 13 chars).
+///
+/// So the automaton, not the index, is what a fuzzy query pays for, and
+/// building it twice for one query doubles that query. The `--workspace` fanout
+/// does exactly that: `search_workspace` loops over members in-process and each
+/// one runs the full ladder. Measured at four members, one distance-2 miss:
+/// **6.21 ms rebuilding per member vs 1.60 ms sharing — 74 % saved.**
+///
+/// A single slot is deliberate. Every caller that repeats within one process
+/// repeats the *same* query, so a one-entry memo hits every time, cannot grow,
+/// and needs no eviction policy. Failures are memoised too: `Levenshtein::new`
+/// only reports `TooManyStates` after building up to the limit, so a retry of a
+/// hopeless query is as expensive as the first attempt.
+fn fuzzy_automaton(key: &str, distance: u32) -> Option<Arc<fst::automaton::Levenshtein>> {
+    use fst::automaton::Levenshtein;
+
+    type Memo = Mutex<Option<(String, u32, Option<Arc<Levenshtein>>)>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+
+    let mut slot = MEMO
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        // A panic while holding this lock leaves only a cached automaton
+        // behind — there is no invariant to protect, so recover rather than
+        // propagate someone else's panic into an unrelated query.
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if let Some((cached_key, cached_distance, cached)) = slot.as_ref() {
+        if cached_key == key && *cached_distance == distance {
+            return cached.clone();
+        }
+    }
+
+    let built = Levenshtein::new(key, distance).ok().map(Arc::new);
+    *slot = Some((key.to_owned(), distance, built.clone()));
+    built
 }
 
 /// Adaptive Levenshtein distance: short queries get distance 1, longer get 2.
@@ -430,5 +504,92 @@ mod tests {
         assert!(results.contains(&0));
         assert!(results.contains(&1));
         assert!(!was_fuzzy);
+    }
+
+    /// The memo is a single process-wide slot, so the risk it introduces is
+    /// serving one query's automaton to the next query. Alternate two queries
+    /// that must not share results and check each still answers for itself.
+    #[test]
+    fn fuzzy_memo_does_not_bleed_between_queries() {
+        let symbols = vec![
+            ("PaymentService".to_string(), 0),
+            ("InvoiceGateway".to_string(), 1),
+        ];
+        let (fst, postings) = build_symbol_fst(&symbols).unwrap();
+        let reader = SymbolFstReader::new(&fst, &postings).unwrap();
+
+        for _ in 0..3 {
+            let payment = reader.find_fuzzy("paymentservce", 1, 10);
+            let names: Vec<&str> = payment.iter().map(|(n, _)| n.as_str()).collect();
+            assert!(names.contains(&"paymentservice"), "got {names:?}");
+            assert!(!names.contains(&"invoicegateway"), "got {names:?}");
+
+            let invoice = reader.find_fuzzy("invoicegatewy", 1, 10);
+            let names: Vec<&str> = invoice.iter().map(|(n, _)| n.as_str()).collect();
+            assert!(names.contains(&"invoicegateway"), "got {names:?}");
+            assert!(!names.contains(&"paymentservice"), "got {names:?}");
+        }
+    }
+
+    /// Same key, different distance, is a different automaton — the memo keys
+    /// on the pair, so a distance-1 hit must not be replayed for distance 2.
+    #[test]
+    fn fuzzy_memo_keys_on_distance_too() {
+        let symbols = vec![
+            ("Alpha".to_string(), 0),
+            ("Alpaca".to_string(), 1), // distance 2 from "alpha"
+        ];
+        let (fst, postings) = build_symbol_fst(&symbols).unwrap();
+        let reader = SymbolFstReader::new(&fst, &postings).unwrap();
+
+        let near = reader.find_fuzzy("alpha", 1, 10);
+        let near: Vec<&str> = near.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(near.contains(&"alpha"));
+        assert!(!near.contains(&"alpaca"), "distance 2 at d=1: {near:?}");
+
+        let wide = reader.find_fuzzy("alpha", 2, 10);
+        let wide: Vec<&str> = wide.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            wide.contains(&"alpaca"),
+            "d=2 should reach alpaca: {wide:?}"
+        );
+    }
+
+    /// The fuzzy rung climbs from distance 1, so when a single-edit match
+    /// exists the two-edit neighbours must not come back with it. Guards the
+    /// truncation hazard too: a flat d=2 sweep orders by key, not by distance.
+    #[test]
+    fn fuzzy_rung_climbs_and_stops_at_the_nearest_distance() {
+        let symbols = vec![
+            // One edit from the query below (substitute 'x' -> 'e').
+            ("Alphabet".to_string(), 0),
+            // Two edits, and sorts BEFORE "alphabet" — the key a flat
+            // distance-2 sweep would reach first.
+            ("Alfabet".to_string(), 1),
+        ];
+        let (fst, postings) = build_symbol_fst(&symbols).unwrap();
+        let reader = SymbolFstReader::new(&fst, &postings).unwrap();
+
+        let (indices, was_fuzzy) = reader.search_with_fallback("alphabxt", 10);
+        assert!(was_fuzzy);
+        assert_eq!(
+            indices,
+            vec![0],
+            "should return only the single-edit match, not its two-edit sibling"
+        );
+    }
+
+    /// Climbing must not shrink recall: a query that is genuinely two edits
+    /// out still reaches the distance-2 rung.
+    #[test]
+    fn fuzzy_rung_still_reaches_distance_two() {
+        let symbols = vec![("PaymentService".to_string(), 0)];
+        let (fst, postings) = build_symbol_fst(&symbols).unwrap();
+        let reader = SymbolFstReader::new(&fst, &postings).unwrap();
+
+        // Two substitutions: paymentservice -> paymntservce is 2 deletes.
+        let (indices, was_fuzzy) = reader.search_with_fallback("paymntservce", 10);
+        assert_eq!(indices, vec![0], "distance-2 match must still be found");
+        assert!(was_fuzzy);
     }
 }

@@ -88,6 +88,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Performance
 
+- **The fuzzy rung of `search` builds far fewer Levenshtein automata.** The
+  automaton, not the index, is what a typo-corrected query pays for:
+  `fst`'s `Levenshtein::new` materialises a complete DFA up front — every state
+  a 256-entry transition table — and that construction measured **95–100 % of a
+  fuzzy query's cost, flat in corpus size** (1.18 ms at 1 000 symbols, 1.6 ms at
+  80 000, against 0.006–0.084 ms of actual traversal).
+
+  Two changes follow from it. The adaptive edit distance is now a *ceiling*
+  rather than the first attempt, so the rung climbs from distance 1 and stops at
+  the nearest distance that matches — a distance-2 DFA costs ~10× a distance-1
+  one, so a single-edit typo, the common case, resolves **14.8× faster** in the
+  FST rung (1.68 → 0.11 ms) and ~1 ms faster end to end. This also fixes a
+  precision hazard that had nothing to do with speed: the rung truncates in FST
+  key order, not by edit distance, so a flat distance-2 sweep could spend its
+  budget on alphabetically-earlier two-edit keys and drop the single-edit match
+  the user actually mistyped.
+
+  And the automaton is now memoised per `(query, distance)` instead of being
+  rebuilt by each index it is streamed against, which is what `--workspace` was
+  doing — one rebuild per member, in-process. Four members, one distance-2
+  miss: **6.21 ms → 1.60 ms, 74 % saved.**
+
+  A query that really is two edits out now pays for both DFAs and is ~0.5 ms
+  slower; exact and prefix hits are untouched. `vex eval` output is byte-identical.
+
 - The three binary sidecars next to `index.vex` — `index.bodytokens`,
   `index.trigram` and the embedding cache — are written with one buffer and one
   write instead of a syscall per field, and read with one read instead of a
