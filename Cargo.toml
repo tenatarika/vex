@@ -7,7 +7,7 @@ members = [".", "crates/vex-mcp"]
 # `serverInfo.version`, so an agent could not tell which vex it was paired with.
 # Bump this one key at release time (see docs/RELEASING.md).
 [workspace.package]
-version = "1.25.5"
+version = "1.26.0"
 
 [package]
 name = "vex"
