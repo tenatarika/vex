@@ -1,8 +1,31 @@
 # Base + delta index — design sketch
 
-> **Status: design only. Nothing here is implemented, and the decision to build
-> it has not been taken.** This document exists so the decision can be taken on
-> evidence rather than intuition. Roadmap item #10 in the storage research.
+> **Status: CLOSED 2026-08-16. Nothing here is implemented and nothing here
+> will be.** The decision this document was written to inform has been taken:
+> **do not build it.** Roadmap item #10 in the storage research is closed on two
+> grounds — the premise was superseded by a much cheaper fix that shipped, and
+> one acceptance criterion turned out to be false unfixably. Both are set out in
+> §"Where this leaves the decision"; the short version is in the next paragraph
+> but one. The rest of the document is kept because the measurements are sound
+> and the shape is worth having if the question ever reopens.
+>
+> **Closure in one paragraph.** The write cost this design existed to remove
+> reached a user through exactly one path — a *synchronous* rebuild inside
+> `--auto-update`. Readers take no lock and a live mmap survives the atomic
+> rename, so queries issued during a rebuild cost 8–15 ms. Making auto-update
+> non-blocking (`--async-update`, shipped, no format change) took the
+> user-visible number from **1891 ms to ~20 ms** — an order of magnitude better
+> than this design's ~250 ms. What remained as its whole benefit was background
+> CPU under `vex watch`, which cannot pay for a pointer protocol, a compaction
+> policy, an approximate binder tier, and two changes to *today's* ranking.
+> Independently: `writer.rs:658` binds a reference only when there is exactly one
+> candidate, so a reference in a file **no tier re-extracts** flips its binding
+> when the corpus-wide candidate count changes, with nothing recording it — only
+> compaction restores parity, so **"compaction is never required for
+> correctness" is false** and exact binder parity is unattainable at any cost.
+>
+> Everything below was written while the decision was still open, and is left in
+> the present tense. Read it as the record of how the closure was reached.
 >
 > **Steps 1–3 of the sequencing below have run and passed; review then found
 > that the step most likely to kill the design was never on the list.** The
@@ -37,9 +60,10 @@
 > makes the writer refactor deferrable. See §"Both experiments ran".
 >
 > Pair identity — nothing tying a delta to the base it was written against — is
-> now designed and needs no format change (§"Designed (B3)"). **One blocker
-> remains open: the cross-tier edges.** Requirements and what is still unmeasured
-> are in §"Where this leaves the decision".
+> now designed and needs no format change (§"Designed (B3)"). ~~**One blocker
+> remains open: the cross-tier edges.**~~ **That blocker was not resolved; it was
+> made moot by the closure above.** Requirements and what was still unmeasured
+> when the decision was taken are in §"Where this leaves the decision".
 
 ## The problem, measured
 
@@ -1406,10 +1430,23 @@ Four conclusions, in order of how much they matter:
    only where the delta produced its own. That composite is what should be
    implemented, and it is unmeasured.
 
-### What is left to decide
+### What is left to decide — ✅ **decided 2026-08-16: do not build it**
 
-Both experiments are done, so the open questions are no longer measurement
-questions:
+Answering the three questions below in order: **(1) no**, background CPU under
+`vex watch` does not pay for the protocol, the policy, the approximate binder
+tier and two changes to today's ranking; so (2) and (3) do not arise. The cheap
+fix at the bottom of this section shipped as `--async-update`. Roadmap #10 is
+closed in `docs/STORAGE-RESEARCH.md` §"#10 closed".
+
+Three things outlived the design and are worth taking on their own: the
+**sidecar I/O batching** found while hunting the cheap alternative (one
+`Vec<u8>` + `fs::write` per sidecar; bodytokens 195.55 → 7.18 ms, embed-cache
+save 7225 → 8.06 ms), the **stat cache** on `hash_files`, and the observation
+that **a no-match query is ~92 % `Levenshtein::new`** — 1.6 ms on a large repo,
+3.2 ms on a *small* one, index-independent, and the current tail of vex search
+latency. That last one is the open cheap win and never needed a segmented index.
+
+The questions as they stood, kept for the record:
 
 1. **Is background CPU worth this?** The scheduling fix removes the latency case
    entirely. What remains is 1.85 s of CPU per edit under `vex watch`, which a
@@ -1426,7 +1463,8 @@ questions:
 
 The cheap fix should ship regardless of all of it: **make auto-update
 non-blocking**. It is the one change here with a measured, order-of-magnitude,
-user-visible win, and the primitives already exist.
+user-visible win, and the primitives already exist. — **It did: `--async-update`
+/ `async_update`, plus an MCP argument and a `vex capabilities` flag.**
 
 ### Verdicts
 
