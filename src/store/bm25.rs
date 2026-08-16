@@ -121,7 +121,33 @@ impl Bm25IndexBuilder {
         let fst_bytes = fst_builder.into_inner().context("finalize bm25 fst")?;
 
         let doc_count = self.doc_lens.len();
-        let total_len: u64 = self.doc_lens.iter().map(|&n| n as u64).sum();
+
+        // Clamp first, then average over the clamped lengths — NOT the raw
+        // ones. `Bm25Reader::doc_len` can only ever read back the clamped u16,
+        // so the scorer's `dl / avg_doc_len` would otherwise divide a clamped
+        // numerator by an average that counted the unclamped originals. One
+        // 500k-term document in a 10k-symbol corpus lifts the raw average
+        // ~43 terms above the clamped one, which makes *every* document in the
+        // index look shorter than average and inflates the whole corpus's
+        // scores — not just the pathological document's, which is what the
+        // warning below used to claim.
+        //
+        // No format change: same layout, same section size, only a different
+        // f32. Indexes written before this land carry the old average until
+        // they are next rebuilt, and stay readable.
+        let mut clamped = 0usize;
+        let mut clamped_lens: Vec<u16> = Vec::with_capacity(doc_count);
+        for &dl in &self.doc_lens {
+            // Clamp to u16::MAX — symbols with 65k+ unique terms are
+            // pathological (10K-line generated files); we'd rather mis-score
+            // them slightly than blow up the stats section size.
+            if dl > u16::MAX as u32 {
+                clamped += 1;
+            }
+            clamped_lens.push(dl.min(u16::MAX as u32) as u16);
+        }
+
+        let total_len: u64 = clamped_lens.iter().map(|&n| n as u64).sum();
         let avg_doc_len = if doc_count == 0 {
             0.0
         } else {
@@ -131,23 +157,15 @@ impl Bm25IndexBuilder {
         let mut stats_bytes: Vec<u8> = Vec::with_capacity(8 + doc_count * 2);
         stats_bytes.extend_from_slice(&(doc_count as u32).to_le_bytes());
         stats_bytes.extend_from_slice(&avg_doc_len.to_le_bytes());
-        let mut clamped = 0usize;
-        for &dl in &self.doc_lens {
-            // Clamp to u16::MAX — symbols with 65k+ unique terms are
-            // pathological (10K-line generated files); we'd rather mis-score
-            // them slightly than blow up the stats section size.
-            if dl > u16::MAX as u32 {
-                clamped += 1;
-            }
-            let dl16 = dl.min(u16::MAX as u32) as u16;
+        for &dl16 in &clamped_lens {
             stats_bytes.extend_from_slice(&dl16.to_le_bytes());
         }
         if clamped > 0 {
             tracing::warn!(
                 clamped,
                 "bm25 stats clamped doc_len to u16::MAX for {clamped} symbol(s) \
-                 with > 65,535 unique terms — BM25 scores for those docs are \
-                 slightly inflated. Likely generated/minified files."
+                 with > 65,535 unique terms — BM25 length normalisation treats \
+                 them as 65,535-term documents. Likely generated/minified files."
             );
         }
 
@@ -492,5 +510,49 @@ mod tests {
         let (fst, posts, stats) = b.build().unwrap();
         let r = Bm25Reader::new(&fst, &posts, &stats).unwrap();
         assert!(r.search("anything", 10).is_empty());
+    }
+
+    /// `avg_doc_len` must describe the same numbers the scorer divides by.
+    /// A document over `u16::MAX` unique terms is stored clamped, so an
+    /// average taken over the raw lengths would be a denominator no document
+    /// in the index can ever match.
+    #[test]
+    fn avg_doc_len_is_computed_over_clamped_lengths() {
+        let over = u16::MAX as usize + 10_000;
+        let mut b = Bm25IndexBuilder::new(2);
+        b.add_document(0, &["alpha".to_string(), "beta".to_string()]);
+        let huge: Vec<String> = (0..over).map(|i| format!("t{i}")).collect();
+        b.add_document(1, &huge);
+        let (_fst, _posts, stats) = b.build().unwrap();
+
+        let avg = f32::from_le_bytes(stats[4..8].try_into().unwrap());
+        let expected = (2.0 + u16::MAX as f32) / 2.0;
+        assert!(
+            (avg - expected).abs() < 0.001,
+            "avg over clamped lengths should be {expected}, got {avg}"
+        );
+
+        // The raw average would have been ~5000 higher — assert we are not
+        // simply reproducing it by coincidence.
+        let raw = (2.0 + over as f32) / 2.0;
+        assert!(
+            (avg - raw).abs() > 1000.0,
+            "avg still tracks the unclamped lengths ({raw})"
+        );
+
+        // And it agrees with what the reader can actually read back.
+        let stored_max = u16::from_le_bytes(stats[8 + 2..8 + 4].try_into().unwrap());
+        assert_eq!(stored_max, u16::MAX);
+        assert!(avg <= u16::MAX as f32);
+    }
+
+    /// The ordinary case must be untouched: with no document over the clamp,
+    /// the average is exactly the arithmetic mean of the real lengths.
+    #[test]
+    fn avg_doc_len_unchanged_when_nothing_is_clamped() {
+        let (_fst, _posts, stats) = build_small_index();
+        let avg = f32::from_le_bytes(stats[4..8].try_into().unwrap());
+        // doc lens are 2, 2, 1
+        assert!((avg - 5.0 / 3.0).abs() < 0.001, "got {avg}");
     }
 }
