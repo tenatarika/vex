@@ -35,7 +35,7 @@
 //! at the ONNX SHA-256 check (P2).
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -43,6 +43,13 @@ use xxhash_rust::xxh3::xxh3_64;
 
 const MAGIC: &[u8; 4] = b"VEXE";
 const VERSION: u32 = 1;
+
+/// Largest entry count a well-formed cache can claim. Past this the header is
+/// rejected outright, before the body it describes is read.
+const MAX_ENTRIES: u32 = 10_000_000;
+
+/// Largest embedder_id a well-formed cache can carry.
+const MAX_ID_LEN: u32 = 256;
 
 /// In-memory cache state. Built via [`EmbedCache::load`] or
 /// [`EmbedCache::empty`]; [`EmbedCache::save`] persists.
@@ -84,47 +91,60 @@ impl EmbedCache {
     }
 
     fn try_load(path: &Path, embedder_id: &str, dim: u32) -> Result<Self> {
-        let mut file = std::fs::File::open(path).context("open cache file")?;
-        let mut header = [0u8; 4];
-        file.read_exact(&mut header).context("read magic")?;
-        if &header != MAGIC {
-            anyhow::bail!("magic mismatch");
-        }
+        // Header first — magic, version, embedder_id, dim, entry_count — every
+        // one validated before a single vector byte is read. The header is
+        // variable-length (the id), so it comes off in three steps. The body
+        // read is then bounded by `entry_count × vector size`, so a corrupt
+        // cache costs what it claims to be rather than what it weighs on disk.
+        let mut reader =
+            crate::util::sidecar::SidecarReader::open(path, MAGIC).context("open cache file")?;
 
-        let version = read_u32(&mut file).context("read version")?;
+        let head = reader.take_header(8).context("read header")?;
+        let version = u32::from_le_bytes(head[0..4].try_into().expect("4 bytes"));
         if version != VERSION {
             anyhow::bail!("version mismatch: {} != {}", version, VERSION);
         }
-
-        let id_len = read_u32(&mut file).context("read embedder_id len")?;
+        let id_len = u32::from_le_bytes(head[4..8].try_into().expect("4 bytes"));
         // Sanity bound: any embedder_id longer than 256 chars is a
         // corrupt or attacker-supplied marker; bail rather than allocate
         // arbitrary memory.
-        if id_len > 256 {
+        if id_len > MAX_ID_LEN {
             anyhow::bail!("embedder_id len absurd: {}", id_len);
         }
-        let mut id_bytes = vec![0u8; id_len as usize];
-        file.read_exact(&mut id_bytes).context("read embedder_id")?;
+
+        let id_bytes = reader
+            .take_header(id_len as usize)
+            .context("read embedder_id")?
+            .to_vec();
         let stored_id = std::str::from_utf8(&id_bytes).context("embedder_id utf8")?;
         if stored_id != embedder_id {
             anyhow::bail!("embedder_id mismatch: {} != {}", stored_id, embedder_id);
         }
 
-        let stored_dim = read_u32(&mut file).context("read dim")?;
+        let tail = reader.take_header(8).context("read dim and entry count")?;
+        let stored_dim = u32::from_le_bytes(tail[0..4].try_into().expect("4 bytes"));
         if stored_dim != dim {
             anyhow::bail!("dim mismatch: {} != {}", stored_dim, dim);
         }
-
-        let entry_count = read_u32(&mut file).context("read entry count")?;
+        let entry_count = u32::from_le_bytes(tail[4..8].try_into().expect("4 bytes"));
         // Cap to a sensible upper bound — 10M entries × ~1.5 KiB each
         // = 15 GB, which is past anything legitimate. Reject so an
         // adversarial entry_count can't OOM us on read.
-        if entry_count > 10_000_000 {
+        if entry_count > MAX_ENTRIES {
             anyhow::bail!("entry_count absurd: {}", entry_count);
         }
 
-        let mut entries: HashMap<u64, Vec<f32>> = HashMap::with_capacity(entry_count as usize);
         let vector_bytes = (dim as usize) * std::mem::size_of::<f32>();
+        let header_bytes = 20 + id_len as u64;
+        let bytes = reader.finish(entry_count as u64 * (8 + vector_bytes as u64))?;
+        let mut file = std::io::Cursor::new(bytes.as_slice());
+        file.set_position(header_bytes);
+
+        // `entry_count` is only bounded by the absurdity check above; size the
+        // map against the bytes the file actually holds.
+        let remaining = bytes.len().saturating_sub(header_bytes as usize);
+        let capacity = (entry_count as usize).min(remaining / (8 + vector_bytes.max(1)) + 1);
+        let mut entries: HashMap<u64, Vec<f32>> = HashMap::with_capacity(capacity);
         let mut buf = vec![0u8; vector_bytes];
         for _ in 0..entry_count {
             let hash = read_u64(&mut file).context("read entry hash")?;
@@ -193,40 +213,35 @@ impl EmbedCache {
     /// `index.vex` write convention so a crash mid-save can't corrupt
     /// the cache. `path`'s parent must exist (caller's job).
     pub fn save(&self, path: &Path) -> Result<()> {
-        let tmp = path.with_extension("bin.tmp");
-        {
-            let mut file =
-                std::fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
-            file.write_all(MAGIC).context("write magic")?;
-            file.write_all(&VERSION.to_le_bytes())
-                .context("write version")?;
+        // Serialize into one buffer and write it once. Writing straight to the
+        // file cost one `write_all` syscall **per `f32`** — with a 384-dim
+        // embedder that is 385 syscalls per cached vector. Same bytes as before.
+        let id_bytes = self.embedder_id.as_bytes();
+        let vector_bytes = (self.dim as usize) * std::mem::size_of::<f32>();
+        let mut out: Vec<u8> =
+            Vec::with_capacity(20 + id_bytes.len() + self.entries.len() * (8 + vector_bytes));
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&VERSION.to_le_bytes());
+        out.extend_from_slice(&(id_bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(id_bytes);
+        out.extend_from_slice(&self.dim.to_le_bytes());
+        out.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
 
-            let id_bytes = self.embedder_id.as_bytes();
-            file.write_all(&(id_bytes.len() as u32).to_le_bytes())
-                .context("write id len")?;
-            file.write_all(id_bytes).context("write embedder_id")?;
-
-            file.write_all(&self.dim.to_le_bytes())
-                .context("write dim")?;
-            file.write_all(&(self.entries.len() as u32).to_le_bytes())
-                .context("write entry count")?;
-
-            // Sort by hash so the file is byte-deterministic across
-            // saves with the same entry set — helps when comparing
-            // caches across machines and avoids HashMap iteration
-            // order leaking into on-disk bytes.
-            let mut sorted: Vec<(u64, &Vec<f32>)> =
-                self.entries.iter().map(|(k, v)| (*k, v)).collect();
-            sorted.sort_unstable_by_key(|(k, _)| *k);
-            for (hash, vec) in sorted {
-                file.write_all(&hash.to_le_bytes())
-                    .context("write entry hash")?;
-                for x in vec {
-                    file.write_all(&x.to_le_bytes())
-                        .context("write entry vector")?;
-                }
+        // Sort by hash so the file is byte-deterministic across
+        // saves with the same entry set — helps when comparing
+        // caches across machines and avoids HashMap iteration
+        // order leaking into on-disk bytes.
+        let mut sorted: Vec<(u64, &Vec<f32>)> = self.entries.iter().map(|(k, v)| (*k, v)).collect();
+        sorted.sort_unstable_by_key(|(k, _)| *k);
+        for (hash, vec) in sorted {
+            out.extend_from_slice(&hash.to_le_bytes());
+            for x in vec {
+                out.extend_from_slice(&x.to_le_bytes());
             }
         }
+
+        let tmp = path.with_extension("bin.tmp");
+        std::fs::write(&tmp, &out).with_context(|| format!("write {}", tmp.display()))?;
         if let Err(e) = std::fs::rename(&tmp, path) {
             let _ = std::fs::remove_file(&tmp);
             return Err(e)
@@ -248,12 +263,6 @@ pub fn context_hash(embedder_id: &str, context: &str) -> u64 {
     xxh3_64(&buf)
 }
 
-fn read_u32<R: Read>(r: &mut R) -> Result<u32> {
-    let mut buf = [0u8; 4];
-    r.read_exact(&mut buf)?;
-    Ok(u32::from_le_bytes(buf))
-}
-
 fn read_u64<R: Read>(r: &mut R) -> Result<u64> {
     let mut buf = [0u8; 8];
     r.read_exact(&mut buf)?;
@@ -267,6 +276,140 @@ mod tests {
 
     fn vec_of(n: usize, fill: f32) -> Vec<f32> {
         vec![fill; n]
+    }
+
+    /// Pins the on-disk layout against hand-written bytes rather than against
+    /// this module's own reader — a symmetric change to `save` and `load` would
+    /// pass every round-trip test while silently discarding every cache already
+    /// on a user's disk.
+    #[test]
+    fn save_emits_the_documented_byte_layout() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("c.bin");
+        let mut cache = EmbedCache::empty("e", 2);
+        cache.insert(1, vec![1.0, 2.0]);
+        cache.save(&p).unwrap();
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"VEXE"); // magic
+        expected.extend_from_slice(&1u32.to_le_bytes()); // version
+        expected.extend_from_slice(&1u32.to_le_bytes()); // embedder_id len
+        expected.extend_from_slice(b"e"); //                embedder_id
+        expected.extend_from_slice(&2u32.to_le_bytes()); // dim
+        expected.extend_from_slice(&1u32.to_le_bytes()); // entry count
+        expected.extend_from_slice(&1u64.to_le_bytes()); // entry hash
+        expected.extend_from_slice(&1.0f32.to_le_bytes()); // vector[0]
+        expected.extend_from_slice(&2.0f32.to_le_bytes()); // vector[1]
+
+        assert_eq!(std::fs::read(&p).unwrap(), expected);
+    }
+
+    /// Header fields whose bounds `try_load` checks. `load` swallows every
+    /// error into an empty cache, so these are asserted through `try_load` —
+    /// otherwise a lost check would look exactly like a cold start.
+    #[test]
+    fn rejects_absurd_header_fields() {
+        let tmp = TempDir::new().unwrap();
+
+        let mut over_id = Vec::new();
+        over_id.extend_from_slice(MAGIC);
+        over_id.extend_from_slice(&1u32.to_le_bytes());
+        over_id.extend_from_slice(&(MAX_ID_LEN + 1).to_le_bytes());
+        let p = tmp.path().join("id.bin");
+        std::fs::write(&p, &over_id).unwrap();
+        let err = match EmbedCache::try_load(&p, "e", 2) {
+            Ok(_) => panic!("an absurd embedder_id len must not load"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("embedder_id len absurd"), "{err}");
+
+        let mut over_entries = Vec::new();
+        over_entries.extend_from_slice(MAGIC);
+        over_entries.extend_from_slice(&1u32.to_le_bytes());
+        over_entries.extend_from_slice(&1u32.to_le_bytes());
+        over_entries.extend_from_slice(b"e");
+        over_entries.extend_from_slice(&2u32.to_le_bytes());
+        over_entries.extend_from_slice(&(MAX_ENTRIES + 1).to_le_bytes());
+        let p = tmp.path().join("entries.bin");
+        std::fs::write(&p, &over_entries).unwrap();
+        let err = match EmbedCache::try_load(&p, "e", 2) {
+            Ok(_) => panic!("an absurd entry_count must not load"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("entry_count absurd"), "{err}");
+
+        // And the same claim made by a file too small to back it: the capacity
+        // bound must not turn a 30-byte file into a huge pre-allocation.
+        let cache = EmbedCache::load(&p, "e", 2);
+        assert!(cache.is_empty());
+    }
+
+    /// The variable-length header comes off in three reads; a file that ends
+    /// inside any of them must fail there rather than misread what follows.
+    #[test]
+    fn rejects_header_truncated_at_each_stage() {
+        let tmp = TempDir::new().unwrap();
+        let mut full = Vec::new();
+        full.extend_from_slice(MAGIC);
+        full.extend_from_slice(&VERSION.to_le_bytes());
+        full.extend_from_slice(&1u32.to_le_bytes()); // id_len
+        full.extend_from_slice(b"e");
+        full.extend_from_slice(&2u32.to_le_bytes()); // dim
+        full.extend_from_slice(&0u32.to_le_bytes()); // entry_count
+
+        // 6: mid-version, 10: mid-id_len, 13: mid-dim, 17: mid-entry_count.
+        for cut in [6usize, 10, 13, 17] {
+            let p = tmp.path().join(format!("cut{cut}.bin"));
+            std::fs::write(&p, &full[..cut]).unwrap();
+            assert!(
+                EmbedCache::try_load(&p, "e", 2).is_err(),
+                "a {cut}-byte cache must not load as valid"
+            );
+        }
+        // The untruncated file is a valid, empty cache — proof the cuts above
+        // fail for the truncation and not for some other reason.
+        let p = tmp.path().join("whole.bin");
+        std::fs::write(&p, &full).unwrap();
+        assert!(EmbedCache::try_load(&p, "e", 2).unwrap().is_empty());
+    }
+
+    /// Vectors past what `entry_count` claims are never read.
+    #[test]
+    fn trailing_junk_past_the_headers_claim_is_ignored() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("junk.bin");
+        let mut cache = EmbedCache::empty("e", 2);
+        cache.insert(1, vec![1.0, 2.0]);
+        cache.save(&p).unwrap();
+
+        let mut bytes = std::fs::read(&p).unwrap();
+        bytes.extend(std::iter::repeat_n(0xFFu8, 100_000));
+        std::fs::write(&p, &bytes).unwrap();
+
+        let back = EmbedCache::try_load(&p, "e", 2).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back.get(1).unwrap(), &[1.0, 2.0]);
+    }
+
+    /// A cache whose last vector is cut short must be rejected, not
+    /// half-loaded.
+    #[test]
+    fn rejects_entry_truncated_mid_vector() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("cut.bin");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(b"e");
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // dim = 2 → 8 vector bytes
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // one entry
+        bytes.extend_from_slice(&7u64.to_le_bytes()); // hash
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // only half the vector
+        std::fs::write(&p, &bytes).unwrap();
+
+        assert!(EmbedCache::try_load(&p, "e", 2).is_err());
+        assert!(EmbedCache::load(&p, "e", 2).is_empty());
     }
 
     #[test]
