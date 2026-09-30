@@ -1,0 +1,37 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "vex — code search CLI",
+  "description": "Fast hybrid structural + semantic code search CLI and MCP server: tree-sitter symbol index, type-aware usages, call graph, AST patterns, regex grep and semantic search.",
+  "folders": ["docs", "integrations", ".claude/skills"],
+  "excludeFiles": [
+    "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "LICENSE",
+    "CONCURRENCY.md",
+    "SEMANTIC.md",
+    "HISTORY-INDEX.md",
+    "VCS-BACKENDS.md",
+    "GREP-TRIGRAM.md",
+    "HIERARCHY-EDGES.md",
+    "MULTIREPO.md",
+    "MULTIREPO-PHASE2.md",
+    "MULTIREPO-PHASE6.md",
+    "MULTIREPO-PHASE7.md",
+    "MULTIREPO-PHASE8-mcp.md",
+    "SEGMENTED-INDEX.md",
+    "PROTOCOL-EVOLUTION.md",
+    "RELEASING.md"
+  ],
+  "rules": [
+    "Use `vex check <Name>` for exact-name lookup; it reports hit/miss with path:line and bypasses the ranker.",
+    "Use `vex search \"keywords\"` only for fuzzy, multi-word exploration; when no symbol matches literally it returns ranked neighbors (callers, imports), not the definition.",
+    "Use `vex show <Name>` to read a symbol's body instead of reading the whole file.",
+    "Use `vex usages <Name> --strict` for refactors: binder-resolved references on Rust, TypeScript, Python, C#, C++, Go, Java and Kotlin; other languages fall back to a text scan.",
+    "Use `vex grep <regex>` for text such as string literals, comments and config values, not for symbols.",
+    "Exit code 1 means an empty result, not a failure; only exit code 2 is an error.",
+    "Run `vex index` once per project and `vex update` afterwards; after an upgrade that bumps the index format, run `vex index` again.",
+    "Pass `--format json` or `--format compact` for machine-readable, token-efficient output; connect agents with `vex mcp install --agent <name>`."
+  ]
+}
