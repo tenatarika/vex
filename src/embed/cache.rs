@@ -150,8 +150,8 @@ impl EmbedCache {
             let hash = read_u64(&mut file).context("read entry hash")?;
             file.read_exact(&mut buf).context("read entry vector")?;
             let mut vec = Vec::with_capacity(dim as usize);
-            for chunk in buf.chunks_exact(4) {
-                vec.push(f32::from_le_bytes(chunk.try_into().unwrap()));
+            for chunk in buf.as_chunks::<4>().0 {
+                vec.push(f32::from_le_bytes(*chunk));
             }
             entries.insert(hash, vec);
         }
