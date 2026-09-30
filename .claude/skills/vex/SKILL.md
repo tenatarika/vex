@@ -15,7 +15,7 @@ description: Reference for the `vex` code-search CLI — symbol search, usages (
 
 - `vex check "SymbolName"` — **does it exist?** Fast yes/no + locations, no ranker noise. Always reach here FIRST when you have a literal name to find. `vex check "A" "B" "C"` for batch.
 - `vex show "SymbolName"` — extract the symbol body (**use INSTEAD of `Read` for specific symbols**). `vex show "A" "B" "C"` for multiple in one call.
-- `vex usages "SymbolName" --strict` — **type-aware refs from the scope binder**; drops string-literal / comment / wrong-scope noise. Cross-file imports resolved for Rust, TypeScript, Python, C#, C++ (others fall back to text-scan).
+- `vex usages "SymbolName" --strict` — **type-aware refs from the scope binder**; drops string-literal / comment / wrong-scope noise. Cross-file imports resolved for Rust, TypeScript, Python, C#, C++, Go, Java, Kotlin (others fall back to text-scan).
 - `vex usages "SymbolName"` — same lookup without the binder; text-scan baseline.
 
 ### Fuzzy / keyword exploration (you don't know the exact name)
@@ -115,8 +115,11 @@ vex update            # incremental update — only changed files
 | Python     | `import foo`, `from foo import Bar` (incl. aliases)                     |
 | C#         | `using A.B.C;` (simple / `static` / `Alias = ...` / `global`)           |
 | C++        | `using std::vector;`, `using V = T;`, `namespace alias = ns;`           |
+| Go         | `import "math/rand"`, `import mr "math/rand"`                           |
+| Java       | `import a.b.C;`, `import static a.b.C.m;`                               |
+| Kotlin     | `import a.b.C`, `import a.b.C as D`                                     |
 
-Wildcard forms fall back to text-scan refs: C++ `#include`, C++ `using namespace`, Python `from x import *`, Rust `use foo::*`.
+Wildcard forms fall back to text-scan refs: C++ `#include`, C++ `using namespace`, Python `from x import *`, Rust `use foo::*`, Java `import a.b.*;`, Kotlin `import a.b.*`, Go dot / blank imports.
 
 ## Common Pitfalls
 
