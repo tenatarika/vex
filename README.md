@@ -681,11 +681,11 @@ For an agent making 10-20 code lookups per task, vex saves **5,000-20,000 tokens
 | Rust | `.rs` | functions, structs, enums, traits, impls, types, constants | `use` declarations | cross-file | indexed |
 | TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx` | classes, interfaces, enums, functions, arrows, type aliases | `import` | cross-file | indexed |
 | Python | `.py` | classes, functions (incl. async, decorated) | `import`, `from..import` | cross-file | indexed |
-| C# | `.cs` | classes, interfaces, structs, enums, methods, properties | — | in-file | indexed |
+| C# | `.cs` | classes, interfaces, structs, enums, methods, properties | `using` | cross-file | indexed |
 | C/C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | classes, structs, functions, methods, templates, enums | `#include` | cross-file (v1.14 BFS over quoted `#include "..."`; class methods still in-file) | indexed |
-| Go | `.go` | functions, methods, structs, interfaces | `import` | in-file | indexed |
-| Java | `.java` | classes, interfaces, enums, methods, constructors | `import` | in-file | indexed |
-| Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` | in-file | indexed |
+| Go | `.go` | functions, methods, structs, interfaces | `import` | cross-file | indexed |
+| Java | `.java` | classes, interfaces, enums, methods, constructors | `import` | cross-file | indexed |
+| Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` | cross-file | indexed |
 | Ruby | `.rb` | classes, modules, methods | — | — | indexed |
 | Swift | `.swift` | classes, structs, enums, actors, protocols, functions | `import` | — | indexed |
 | PHP | `.php`, `.phtml` | classes, interfaces, traits, methods, functions | `use`, `require` | — | indexed |
