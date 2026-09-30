@@ -24,7 +24,8 @@
     "MULTIREPO-PHASE8-mcp.md",
     "SEGMENTED-INDEX.md",
     "PROTOCOL-EVOLUTION.md",
-    "RELEASING.md"
+    "RELEASING.md",
+    "V9-FORMAT.md"
   ],
   "rules": [
     "Use `vex check <Name>` for exact-name lookup; it reports hit/miss with path:line and bypasses the ranker.",
