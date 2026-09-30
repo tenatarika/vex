@@ -6,6 +6,8 @@ pub mod git_history;
 pub mod hierarchy_edges;
 pub mod include_resolver;
 pub mod inverted;
+#[doc(hidden)]
+pub mod legacy_v8;
 pub mod pattern_skeletons;
 pub mod reader;
 pub mod ref_edges;
