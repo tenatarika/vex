@@ -1,6 +1,7 @@
 pub mod bm25;
 pub mod body_tokens;
 pub mod call_graph;
+pub mod csr;
 pub mod format;
 pub mod git_history;
 pub mod hierarchy_edges;

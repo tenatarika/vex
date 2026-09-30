@@ -666,10 +666,13 @@ by hand (`src/util/walk.rs:10-30` never sorts).
 - **R15 (rust M1, arch M6).** Δ' and connectivity use **i128** intermediates,
   always, not debug-only checked math. `VEX_CLUSTER_RESOLUTION` is validated at
   parse: `0 < num ≤ 1024`, `0 < den ≤ 1024`, otherwise warn and use the default.
-- **R16 (rust M2).** `CsrView::neighbors(s) -> &'a [u8]` (a 4-byte-stride
-  view) with an iterator decoding u32 LE, with no allocation. `find_callees_fast`
-  keeps its `Vec<CallMatch>` signature (it allocates anyway for the result);
-  the ≤ 10 ns bench gate measures the neighbour lookup, not `find_callees_fast`.
+- **R16 (rust M2; as built in P1).** `CsrView::neighbors(s)` returns
+  `CsrNeighbors<'a>`. This is a zero-allocation `Iterator<Item = u32>` enum
+  with the variants `Edges` (decodes the borrowed LE `edge_idx` window),
+  `Identity` (the implicit range of the elided ref_edges shape, which has no
+  bytes to slice) and `Empty`. A literal `&'a [u8]` cannot represent the identity
+  shape. `find_callees_fast` keeps its `Vec<CallMatch>` signature; the ≤ 10 ns
+  bench gate measures the neighbour lookup.
 - **R17 (arch M7).** Level termination follows Traag et al.: stop when local
   moving leaves every aggregate node a singleton community (`|P| = |V(G)|`).
   - If `MAX_LEVELS` is hit, run a final refinement before exit, so "every
@@ -678,6 +681,13 @@ by hand (`src/util/walk.rs:10-30` never sorts).
 - **R18 (arch M5).** `build_csr` filters a key `≥ n` with `warn!` in the writer
   and a `debug_assert!`, instead of bailing (`ModuleSymbol` uses an unchecked
   `wrapping_add`, `writer.rs:595`).
+  **This applies to `build_csr` only.** `build_csr_offsets_sorted` (the elided
+  ref_edges shape) **bails** on a key `≥ n`. It has no `edge_idx` to drop a
+  record from, so filtering would misalign offsets against the physical `RefEdge`
+  array: keys `[0, 5, 1]` with `n = 3` would make group 1 point at the dropped
+  record. The P2 writer therefore filters bad `to_sym_idx` records *before*
+  sorting and writing, so records and offsets stay in lockstep. Both builders
+  return `Result` and use checked prefix sums.
 
 ### Legacy read path
 
@@ -719,7 +729,9 @@ by hand (`src/util/walk.rs:10-30` never sorts).
 ### Revised phase table
 
 P0 legacy_v8 oracle + programmatic v8 builder + library-level goldens →
-P1 `csr.rs` → P2 v9 bump (CSR + 64 B zeroed ClusterHeader, R1/R4/R5-update/R19) →
+P1 `csr.rs` → P2 v9 bump (CSR + 64 B zeroed ClusterHeader, R1/R4/R5-update/R19; the same
+commit deletes `legacy_v8`'s production-parity tests, which import the removed
+FST functions, and keeps the CSR-vs-oracle proptests) →
 P3 Leiden + projection (R6–R8, R15, R17) → P4a compute on index →
 P4b carry + compute-once on update (R11–R14) → P5 `vex modules` → P6 MCP.
 **No tag between P2 and P4b.**

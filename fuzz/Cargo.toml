@@ -118,5 +118,15 @@ name = "fuzz_unresolved_hierarchy"
 path = "fuzz_targets/fuzz_unresolved_hierarchy.rs"
 doc = false
 
+# V9-FORMAT P1 — CSR adjacency reader (`store::csr::CsrView`), the
+# shared callees/ref_edges reader the v9 format bump will back with real
+# mmap bytes. Fuzzes both the callees shape (edge_idx present) and the
+# ref_edges identity shape (edge_idx absent) against arbitrary offsets,
+# n, m, and queries.
+[[bin]]
+name = "fuzz_csr"
+path = "fuzz_targets/fuzz_csr.rs"
+doc = false
+
 [workspace]
 members = ["."]
