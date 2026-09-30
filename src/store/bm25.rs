@@ -223,28 +223,43 @@ impl<'a> Bm25Reader<'a> {
         let Some(offset) = self.fst.get(term.as_bytes()) else {
             return Vec::new();
         };
-        let offset = offset as usize;
-        if offset + 4 > self.postings.len() {
+        let Some(data_start) = usize::try_from(offset)
+            .ok()
+            .and_then(|o| o.checked_add(4))
+            .filter(|&start| start <= self.postings.len())
+        else {
             return Vec::new();
-        }
+        };
         let count = u32::from_le_bytes(
-            self.postings[offset..offset + 4]
+            self.postings[data_start - 4..data_start]
                 .try_into()
                 .unwrap_or([0; 4]),
         ) as usize;
-        let mut out = Vec::with_capacity(count);
-        let mut pos = offset + 4;
-        for _ in 0..count {
-            if pos + 8 > self.postings.len() {
-                break;
-            }
-            let sym = u32::from_le_bytes(self.postings[pos..pos + 4].try_into().unwrap_or([0; 4]));
-            let tf =
-                u32::from_le_bytes(self.postings[pos + 4..pos + 8].try_into().unwrap_or([0; 4]));
-            out.push((sym, tf));
-            pos += 8;
-        }
-        out
+
+        // Overflow-safe bounds check: a crafted or truncated `count` must not
+        // drive a huge allocation or read the next term's postings as ours.
+        let entry_size = 8; // sym_idx(4) + tf(4)
+        let Some(data_end) = count
+            .checked_mul(entry_size)
+            .and_then(|n| data_start.checked_add(n))
+            .filter(|&end| end <= self.postings.len())
+        else {
+            tracing::warn!(term, count, "bm25 posting list truncated");
+            return Vec::new();
+        };
+
+        self.postings[data_start..data_end]
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|e| {
+                let (sym, tf) = e.split_at(4);
+                (
+                    u32::from_le_bytes(sym.try_into().unwrap_or([0; 4])),
+                    u32::from_le_bytes(tf.try_into().unwrap_or([0; 4])),
+                )
+            })
+            .collect()
     }
 
     /// BM25 search. Returns up to `top_k` `(sym_idx, score)` pairs sorted
@@ -364,6 +379,31 @@ mod tests {
         // doc 2: just "config" (most common term)
         b.add_document(2, &["config".to_string()]);
         b.build().unwrap()
+    }
+
+    /// Overwrite the posting `count` word of `term` in a built postings blob.
+    fn tamper_count(fst: &[u8], posts: &mut [u8], term: &str, count: u32) {
+        let map = fst::Map::new(fst).unwrap();
+        let off = map.get(term.as_bytes()).unwrap() as usize;
+        posts[off..off + 4].copy_from_slice(&count.to_le_bytes());
+    }
+
+    #[test]
+    fn crafted_huge_count_returns_empty() {
+        let (fst, mut posts, stats) = build_small_index();
+        tamper_count(&fst, &mut posts, "timeout", u32::MAX);
+        let r = Bm25Reader::new(&fst, &posts, &stats).unwrap();
+        assert!(r.posting("timeout").is_empty());
+        assert!(r.search("timeout", 10).is_empty());
+    }
+
+    #[test]
+    fn count_past_end_of_postings_returns_empty() {
+        let (fst, mut posts, stats) = build_small_index();
+        let entries_left = (posts.len() / 8) as u32 + 1;
+        tamper_count(&fst, &mut posts, "config", entries_left);
+        let r = Bm25Reader::new(&fst, &posts, &stats).unwrap();
+        assert!(r.posting("config").is_empty());
     }
 
     #[test]
