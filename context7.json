@@ -1,5 +1,7 @@
 {
   "$schema": "https://context7.com/schema/context7.json",
+  "url": "https://context7.com/tenatarika/vex",
+  "public_key": "pk_vQsx6JYrXsjheBRvGoTfP",
   "projectTitle": "vex — code search CLI",
   "description": "Fast hybrid structural + semantic code search CLI and MCP server: tree-sitter symbol index, type-aware usages, call graph, AST patterns, regex grep and semantic search.",
   "folders": ["docs", "integrations", ".claude/skills"],
