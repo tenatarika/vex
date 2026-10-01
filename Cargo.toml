@@ -271,3 +271,10 @@ harness = false
 [[bench]]
 name = "hierarchy"
 harness = false
+
+# V9-FORMAT P3 (docs/V9-FORMAT.md §3.3, §8) — CSR callees/ref_edges lookup
+# vs the legacy v8 FST oracle, build_csr vs the legacy FST builder, and
+# projection+Leiden on a synthetic 35k-node/200k-site graph from a fixed LCG.
+[[bench]]
+name = "graph_v9"
+harness = false
