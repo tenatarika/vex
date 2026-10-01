@@ -13,8 +13,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   deterministic Leiden-CPM over the call, reference and type-hierarchy edges,
   so the same tree gives the same clusters on every machine. `vex status`
   reports `clusters`, `clusters_stale` and `clusters_new_since_build`.
-  `vex index --no-clusters` skips the computation. The `vex modules` command
-  that lists clusters comes in a later change.
+  `vex index --no-clusters` skips the computation. `vex update` does not
+  recompute clusters. Symbols in unchanged files keep their cluster, edited
+  and new symbols are marked as new, and the section is flagged stale until
+  the next full `vex index`. The first `vex update` on an index without
+  clusters (for example one written in an older format) computes them once.
+  The `vex modules` command that lists clusters comes in a later change.
 
 ### Changed
 

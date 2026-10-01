@@ -968,7 +968,7 @@ All commands support `--filter-path "path/"` (alias `--filter`) to narrow result
 - `vex index --semantic` — with embeddings (slower, enables semantic search)
 - `vex update` — incremental update (only changed files)
 - `vex index --no-pattern-index` — skip the v6 pattern skeleton section if you don't use `vex pattern` (sticky across `vex update`)
-- `vex index --no-clusters` — skip computing symbol clusters (v9). Unlike the other opt-outs it is **not** sticky: the next plain `vex index` computes them again
+- `vex index --no-clusters` — skip computing symbol clusters (v9). `vex update` keeps the opt-out, but the next plain `vex index` computes clusters again
 ```
 
 ## Testing
