@@ -31,7 +31,7 @@ $ vex bundle --mode symbol --symbol Foo    # body + callers + callees + similar 
 
 - **~4-5ms search** after indexing — FST-based O(query_len) lookup, not O(symbols); constant regardless of project size. Requires a pre-built index. Indexing is a one-time cost (hundreds of ms on typical projects) and builds *more* than a plain text index — FST + BM25 + call graph + type-hierarchy + trigram skip-index — so it trades a slower build for far cheaper, richer queries (see [Benchmarks](#benchmarks))
 - **3-channel hybrid search** — structural FST (names) + BM25 (rare body terms) + semantic HNSW (meaning), fused via Reciprocal Rank Fusion. Find symbols when you don't know the exact name AND when generic semantic-only search would be too noisy
-- **Persistent call graph** — `vex callers`/`vex callees` reads from an FST built at index time (~4ms), not a live tree-sitter scan (seconds). Module-scope expressions are reported via synthetic `<module:path>` callers (Phase 14.1); Python + Java function/method decorators (Phase 14.2), Kotlin annotations + C# method/constructor attributes (Phase 14.2.2), and TypeScript method decorators + Rust outer attributes (Phase 14.2.1) emit forward edges to their targets. Class-level decorators remain invisible — see [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
+- **Persistent call graph** — `vex callers`/`vex callees` read from a persistent index built at index time (~4ms), not a live tree-sitter scan (seconds): `callers` is a name-keyed FST, `callees` is a dense CSR index (v9+). Module-scope expressions are reported via synthetic `<module:path>` callers (Phase 14.1); Python + Java function/method decorators (Phase 14.2), Kotlin annotations + C# method/constructor attributes (Phase 14.2.2), and TypeScript method decorators + Rust outer attributes (Phase 14.2.1) emit forward edges to their targets. Class-level decorators remain invisible — see [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
 - **Pluggable embedder** — `Embedder` trait + registry; swap MiniLM-L6-v2 for future code-specific models (BGE, CodeBERT) without touching call sites
 - **Token-efficient** — compact output saves typically 6-10x fewer tokens than grep on average lookups (up to 88x on minified JS/CSS); `vex show` extracts just the symbol body instead of the whole file
 - **19 languages** indexed via tree-sitter, with three coverage tiers: **type-aware `--strict usages`** on 8 binder languages (Rust / TypeScript / Python / C# / C++ / Go / Java / Kotlin); **indexed pattern prefilter** on 15 T1+T2a languages; baseline structural + semantic search on all 19 (see [Supported Languages](#supported-languages) for the matrix)
@@ -1097,7 +1097,7 @@ CLI (clap) → Pipeline (rayon, 500-file chunks) → Tree-sitter
        ┌──────────────────┬──────────────┬──────────────┬──────────────┐
        ↓                  ↓              ↓              ↓              ↓
   Symbol FST         Refs FST        BM25 doc       HNSW vectors  Call graph
-  (structural)    (cross-file refs) (body tokens)   (semantic)   (callers/callees FST)
+  (structural)    (cross-file refs) (body tokens)   (semantic)   (callers FST / callees CSR)
                                       ↓
                        Embedder trait → fastembed / MiniLM-L6 (default)
 
@@ -1124,7 +1124,7 @@ Search pipeline:
 - **No SQLite** — custom binary format v6, zero-copy mmap reads; readers accept v3+ for backwards compatibility
 - **Symbol FST** — persistent inverted index, O(query_len) lookup
 - **Refs FST + ref_edges** — symbol references as FST + cross-file edges resolved at write time (Pass-2 in `store::writer`); enables refactor-grade `usages --strict`
-- **Persistent call graph** — `CallEdge` records + callers/callees FSTs built at index time, ~4ms lookup vs seconds of live tree-sitter scan
+- **Persistent call graph** — `CallEdge` records + a name-keyed callers FST + a dense callees CSR index (v9+; FST on older indexes), built at index time, ~4ms lookup vs seconds of live tree-sitter scan
 - **BM25 channel** — Okapi BM25 over `body_tokens`, auto-on when section present
 - **HNSW** — approximate nearest neighbor via usearch, O(log N) semantic search; hash-keyed entries for content-stable IDs across re-indexing
 - **Pluggable embedder** — `Embedder` trait + registry, identity recorded in manifest with mismatch detection at search

@@ -1,14 +1,15 @@
 //! Binary index file format specification.
 //!
-//! Layout (v8 — current):
+//! Layout (v9 — current):
 //! ```text
-//! [Header]                  fixed (168 B) - magic, version, counts, section offsets
+//! [Header]                  fixed (144 B) - magic, version, counts, section offsets
 //! [CallGraphHeader]         fixed (128 B) - call graph section offsets (v4+)
 //! [V5SectionHeader]         fixed (48  B) - ref edges section offsets (v5+)
-//! [PatternSkeletonHeader]   fixed (168 B) - pattern skeleton section offsets + fingerprints (v6+)
+//! [PatternSkeletonHeader]   fixed (192 B) - pattern skeleton section offsets + fingerprints (v6+)
 //! [UnresolvedRefsHeader]    fixed (48  B) - unresolved-by-name ref section offsets (v7+)
 //! [HierarchyHeader]         fixed (48  B) - typed hierarchy edge section offsets (v8+)
 //! [UnresolvedHierarchyHeader] fixed (48 B) - unresolved-by-name hierarchy section offsets (v8+)
+//! [ClusterHeader]           fixed (64  B) - symbol-cluster section offsets, zeroed in P2 (v9+)
 //! [Symbols Section]         variable      - fixed-size symbol records
 //! [Vectors Section]         variable      - dense f32 arrays (vector_dim each)
 //! [Strings Section]         variable      - deduplicated string pool
@@ -20,11 +21,11 @@
 //! [Call Edges]              variable      - fixed-size CallEdge records (v4+)
 //! [Callers FST]             variable      - fst::Map (callee name → edge-idx posting offset)
 //! [Callers Postings]        variable      - posting lists (count, [edge_idx])
-//! [Callees FST]             variable      - fst::Map (caller_sym_idx_str → posting offset)
-//! [Callees Postings]        variable      - posting lists (count, [edge_idx])
-//! [Reference Edges]         variable      - fixed-size RefEdge records (v5+)
-//! [Reference Edges FST]     variable      - fst::Map (v5+)
-//! [Reference Edges Posts]   variable      - posting lists (v5+)
+//! [Callees Offsets]         variable      - dense CSR offsets[symbol_count+1] (v9+; FST on v4–v8)
+//! [Callees Edge Idx]        variable      - CSR edge_idx[m] (v9+; FST postings on v4–v8)
+//! [Reference Edges]         variable      - fixed-size RefEdge records, sorted by to_sym_idx (v5+)
+//! [Ref Edges Offsets]       variable      - dense CSR offsets[symbol_count+1] (v9+; FST on v5–v8)
+//! [Ref Edges Edge Idx]      variable      - always empty on v9+ (identity-elided, §2.3; FST postings on v5–v8)
 //! [Skeleton Records]        variable      - fixed-size SkeletonRecord array (v6+)
 //! [Kind Path Arena]         variable      - kind-name path entries (v6+)
 //! [Ident Pool]              variable      - length-prefixed UTF-8 identifier strings (v6+)
@@ -40,18 +41,37 @@
 //! [Unres. Hierarchy Posts]  variable      - posting lists (count, [edge_idx]) (v8+)
 //! ```
 //!
+//! See `docs/V9-FORMAT.md` for the full v9 CSR migration design (the
+//! callees and `ref_edges` shapes above, `Header::callees_layout()` /
+//! `ref_edges_layout()` version dispatch, and the `ClusterHeader` slot).
+//!
 //! Layout v3 (legacy, still readable): same as v4 minus `CallGraphHeader`
 //! (the `Symbols Section` starts directly at `Header::SIZE`) and minus all
 //! call-graph sections. The `Header` struct is byte-identical between v3
-//! and v4 — version dispatch happens at the reader.
+//! and v4 — version dispatch happens at the reader. v4–v8 readers (and
+//! the v9 reader opening a v4–v8 file) use the FST-based Callees/Ref
+//! Edges shapes noted above instead of CSR.
 
 pub const MAGIC: &[u8; 4] = b"VEXI";
-pub const VERSION: u32 = 8;
+pub const VERSION: u32 = 9;
 /// Oldest format version this build can still open for read.
 /// v3 and v4 indexes continue to read without the v5-only sections —
 /// `vex usages --strict` will refuse, everything else still works.
 pub const MIN_SUPPORTED_VERSION: u32 = 3;
 pub const VECTOR_DIM: u32 = 384;
+
+/// Which on-disk shape a CSR-eligible section uses, keyed off the file's
+/// format version (`docs/V9-FORMAT.md` §2.2/§2.3). `Legacy` means the
+/// section is a decimal-string-keyed `fst::Map` (v4–v8 callees, v5–v8
+/// `ref_edges`); `Csr` means dense `offsets[n+1]` (+ `edge_idx[m]` for
+/// callees only). One accessor per section keeps the version check in a
+/// single place instead of scattering `version >= 9` comparisons across
+/// `writer.rs` / `reader.rs` / `call_graph.rs` / `ref_edges.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SectionLayout {
+    Legacy,
+    Csr,
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -138,6 +158,38 @@ impl Header {
     pub fn has_unresolved_hierarchy_header(&self) -> bool {
         self.version >= 8
     }
+
+    /// Whether this index format carries a [`ClusterHeader`] immediately
+    /// after the [`UnresolvedHierarchyHeader`]. v3..v8 indexes do not —
+    /// `vex modules` is unavailable on those until `vex index` rebuilds at
+    /// v9 (`docs/V9-FORMAT.md` §2.1, §13 R9). P2 always writes this header
+    /// zeroed (the cluster section itself is populated in P4a); the
+    /// reader never inspects its content in P2 beyond the open-time bounds
+    /// check (R9: "the P2 reader ignores the cluster section's content
+    /// entirely").
+    pub fn has_cluster_header(&self) -> bool {
+        self.version >= 9
+    }
+
+    /// `docs/V9-FORMAT.md` §2.2: the callees section is a decimal-FST on
+    /// v4–v8, dense CSR on v9+.
+    pub fn callees_layout(&self) -> SectionLayout {
+        if self.version >= 9 {
+            SectionLayout::Csr
+        } else {
+            SectionLayout::Legacy
+        }
+    }
+
+    /// `docs/V9-FORMAT.md` §2.3: the `ref_edges` index is a decimal-FST on
+    /// v5–v8, offsets-only CSR (identity `edge_idx`, elided) on v9+.
+    pub fn ref_edges_layout(&self) -> SectionLayout {
+        if self.version >= 9 {
+            SectionLayout::Csr
+        } else {
+            SectionLayout::Legacy
+        }
+    }
 }
 
 /// Section offsets and lengths for the v4-only sections (call graph + BM25).
@@ -158,10 +210,19 @@ pub struct CallGraphHeader {
     pub callers_fst_len: u64,
     pub callers_postings_offset: u64,
     pub callers_postings_len: u64,
-    pub callees_fst_offset: u64,
-    pub callees_fst_len: u64,
-    pub callees_postings_offset: u64,
-    pub callees_postings_len: u64,
+    /// v4–v8: FST start. v9+: `offsets[n+1]` start, 4-aligned
+    /// (`docs/V9-FORMAT.md` §2.2). Byte offset unchanged across the bump —
+    /// only the field name and on-disk meaning changed; dispatch on
+    /// `Header::callees_layout()`.
+    pub callees_index_offset: u64,
+    /// v4–v8: FST len. v9+: `4 * (symbol_count + 1)`, or 0 with no call
+    /// edges.
+    pub callees_index_len: u64,
+    /// v4–v8: posting blob start. v9+: `edge_idx` start, immediately
+    /// after `offsets`.
+    pub callees_edge_idx_offset: u64,
+    /// v4–v8: posting len. v9+: `4 * call_edge_count`, or 0.
+    pub callees_edge_idx_len: u64,
 
     // Phase 9.4 — BM25 channel sections.
     pub bm25_fst_offset: u64,
@@ -189,17 +250,26 @@ impl CallGraphHeader {
 #[derive(Debug, Clone, Copy)]
 pub struct V5SectionHeader {
     /// Raw fixed-size `RefEdge` records (16 bytes each). The number of
-    /// records is `ref_edges_len / RefEdge::SIZE`.
+    /// records is `ref_edges_len / RefEdge::SIZE`. Byte-identical shape
+    /// and position on v5–v8 and v9+ — only the *index* sub-fields below
+    /// change meaning (`docs/V9-FORMAT.md` §2.3). Sortedness by
+    /// `to_sym_idx` is a v9+ format invariant (R1/R2), enforced by the
+    /// writer and relied on by the reader's CSR identity shape.
     pub ref_edges_offset: u64,
     pub ref_edges_len: u64,
-    /// FST keyed on the stringified `to_sym_idx` (decimal). Values are
-    /// u64 offsets into `ref_edges_postings`.
-    pub ref_edges_fst_offset: u64,
-    pub ref_edges_fst_len: u64,
-    /// Posting lists: for each `to_sym_idx` key, a `[u32 count][u32
-    /// edge_idx; count]` block that indexes into the `RefEdge` records.
-    pub ref_edges_postings_offset: u64,
-    pub ref_edges_postings_len: u64,
+    /// v5–v8: FST start, keyed on the stringified `to_sym_idx` (decimal).
+    /// v9+: `offsets[n+1]` start, 4-aligned.
+    pub ref_edges_index_offset: u64,
+    /// v5–v8: FST len. v9+: `4 * (symbol_count + 1)`, or 0 when
+    /// `ref_edges_len == 0`.
+    pub ref_edges_index_len: u64,
+    /// v5–v8: posting blob start (`[u32 count][u32 edge_idx; count]` per
+    /// key). v9+: `= index_offset + index_len` (no bytes of its own —
+    /// the identity range stands in for `edge_idx`).
+    pub ref_edges_edge_idx_offset: u64,
+    /// v5–v8: posting len. v9+: **must be 0** (identity-elided, §2.3) —
+    /// any other value is corrupt on a v9+ file.
+    pub ref_edges_edge_idx_len: u64,
 }
 
 impl V5SectionHeader {
@@ -349,7 +419,9 @@ impl HierarchyHeader {
 /// section is empty). Exactly 6 `u64` fields (SIZE == 48), same shape as
 /// [`V5SectionHeader`] / [`UnresolvedRefsHeader`] / [`HierarchyHeader`] —
 /// DO NOT add fields without updating the `symbols_offset` chain in
-/// `writer.rs`. This is currently the LAST header before `symbols_offset`.
+/// `writer.rs`. Since v9 a [`ClusterHeader`] sits immediately downstream
+/// of this one in the chain (`docs/V9-FORMAT.md` §2.1, §13 R9/R21) — this
+/// is no longer the last header before `symbols_offset`.
 ///
 /// Sub-sections (mirrors [`UnresolvedRefsHeader`], keyed on the verbatim
 /// parent name rather than a lowercased reference name):
@@ -374,6 +446,74 @@ pub struct UnresolvedHierarchyHeader {
 
 impl UnresolvedHierarchyHeader {
     pub const SIZE: usize = std::mem::size_of::<Self>();
+}
+
+/// Section offsets and lengths for the v9-only `clusters` section
+/// (Roadmap #11 Phase A — deterministic Leiden-CPM symbol clustering,
+/// `docs/V9-FORMAT.md` §2.4, §13 R9). Located in the file at exactly
+/// `Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE +
+/// PatternSkeletonHeader::SIZE + UnresolvedRefsHeader::SIZE +
+/// HierarchyHeader::SIZE + UnresolvedHierarchyHeader::SIZE` when
+/// `header.version >= 9`. Absent from v3..v8 files.
+///
+/// **P2 scope:** this header is always written, always **zeroed**
+/// (`flags` bit0 COMPUTED unset) — clustering itself (the `assign` /
+/// `table` sub-sections, labels, hubs) lands in P4a. The P2 reader
+/// ignores the cluster section's content entirely; `open()` only checks
+/// that the header's 64 bytes fit in the file (R9) — no semantic
+/// validation (`assign_len == 4 * symbol_count`, `table_len % 32 == 0`,
+/// etc.) happens until a lazy `ClusterSectionReader` lands in P4a (R3:
+/// semantic checks must never brick unrelated commands).
+///
+/// Field order is **load-bearing** — all `u64` fields first, then the
+/// `u32`/`u16` tail fields — pinned by `ClusterHeader::SIZE == 64` and
+/// per-field `offset_of!` tests (§13 R9). 64 bytes total: the §2.4
+/// 48-byte layout plus `build_symbol_count: u32` at byte 48 and 12
+/// reserved bytes (write 0, ignore on read).
+///
+/// Sub-sections (not populated until P4a):
+/// - **assign**: `[u32 LE; symbol_count]`, indexed by `sym_idx`. Sentinel
+///   values `0xFFFF_FFFD..=0xFFFF_FFFF` mean NEW / UNCLUSTERED /
+///   NOT_ELIGIBLE respectively; any other value `>= k` reads as
+///   NOT_ELIGIBLE.
+/// - **table**: `ClusterRecord[k]`, 32 bytes each.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ClusterHeader {
+    pub assign_offset: u64,
+    pub assign_len: u64,
+    pub table_offset: u64,
+    pub table_len: u64,
+    pub resolution_num: u32,
+    pub resolution_den: u32,
+    pub flags: u32,
+    pub algo_version: u16,
+    pub levels: u16,
+    /// `symbol_count` at the time clusters were last (re)computed. Lets a
+    /// reader detect how many symbols are NEW (added since) without
+    /// trusting the live `header.symbol_count`, which may have shrunk
+    /// (files deleted) or grown (files added) since the last full
+    /// `vex index` (§13 R3 — this is why `open()` must not derive `k`
+    /// bounds from the live `symbol_count`).
+    pub build_symbol_count: u32,
+    /// Reserved for future `ClusterHeader` growth without another format
+    /// bump. Always written as zero; readers ignore it.
+    pub _reserved: [u8; 12],
+}
+
+#[allow(dead_code)] // reserved for the P4a cluster-section reader; flags stay 0 until clusters are computed
+impl ClusterHeader {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+    /// Bit 0 of `flags`: clusters were actually computed by Leiden-CPM
+    /// (as opposed to this header being the all-zero P2 placeholder).
+    pub const FLAG_COMPUTED: u32 = 0x1;
+    /// Bit 1 of `flags`: the prior computed assignment was carried
+    /// forward by `vex update` rather than recomputed — stale relative
+    /// to the current working tree (§5).
+    pub const FLAG_STALE: u32 = 0x2;
+    /// Bit 2 of `flags`: the Leiden-CPM outer-iteration cap (§3.3 step 5)
+    /// was hit before convergence.
+    pub const FLAG_ITER_CAP_HIT: u32 = 0x4;
 }
 
 /// One on-disk skeleton record (24 bytes, `#[repr(C)]`).
@@ -703,5 +843,94 @@ mod tests {
     fn edge_kind_try_from_rejects_reserved_and_corrupt_values() {
         assert!(EdgeKind::try_from(3u8).is_err());
         assert!(EdgeKind::try_from(255u8).is_err());
+    }
+
+    // -----------------------------------------------------------------
+    // v9 ClusterHeader (§13 R9): SIZE == 64 and per-field byte offsets —
+    // field order is load-bearing (all u64 first), a drift here would
+    // silently corrupt the `symbols_offset` chain in writer.rs.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn cluster_header_is_sixty_four_bytes() {
+        assert_eq!(ClusterHeader::SIZE, 64);
+        assert_eq!(std::mem::align_of::<ClusterHeader>(), 8);
+    }
+
+    #[test]
+    fn cluster_header_field_offsets_are_pinned() {
+        assert_eq!(std::mem::offset_of!(ClusterHeader, assign_offset), 0);
+        assert_eq!(std::mem::offset_of!(ClusterHeader, assign_len), 8);
+        assert_eq!(std::mem::offset_of!(ClusterHeader, table_offset), 16);
+        assert_eq!(std::mem::offset_of!(ClusterHeader, table_len), 24);
+        assert_eq!(std::mem::offset_of!(ClusterHeader, resolution_num), 32);
+        assert_eq!(std::mem::offset_of!(ClusterHeader, resolution_den), 36);
+        assert_eq!(std::mem::offset_of!(ClusterHeader, flags), 40);
+        assert_eq!(std::mem::offset_of!(ClusterHeader, algo_version), 44);
+        assert_eq!(std::mem::offset_of!(ClusterHeader, levels), 46);
+        assert_eq!(std::mem::offset_of!(ClusterHeader, build_symbol_count), 48);
+        assert_eq!(std::mem::offset_of!(ClusterHeader, _reserved), 52);
+    }
+
+    #[test]
+    fn v9_symbols_offset_is_seven_hundred_twenty() {
+        // §13 R9: Header + CallGraphHeader + V5SectionHeader +
+        // PatternSkeletonHeader + UnresolvedRefsHeader + HierarchyHeader +
+        // UnresolvedHierarchyHeader + ClusterHeader == 720.
+        let chain = Header::SIZE
+            + CallGraphHeader::SIZE
+            + V5SectionHeader::SIZE
+            + PatternSkeletonHeader::SIZE
+            + UnresolvedRefsHeader::SIZE
+            + HierarchyHeader::SIZE
+            + UnresolvedHierarchyHeader::SIZE
+            + ClusterHeader::SIZE;
+        assert_eq!(chain, 720);
+    }
+
+    #[test]
+    fn has_cluster_header_gates_on_v9() {
+        let mut h = make_header_for_test();
+        h.version = 8;
+        assert!(!h.has_cluster_header());
+        h.version = 9;
+        assert!(h.has_cluster_header());
+    }
+
+    #[test]
+    fn callees_and_ref_edges_layout_gate_on_v9() {
+        let mut h = make_header_for_test();
+        h.version = 8;
+        assert_eq!(h.callees_layout(), SectionLayout::Legacy);
+        assert_eq!(h.ref_edges_layout(), SectionLayout::Legacy);
+        h.version = 9;
+        assert_eq!(h.callees_layout(), SectionLayout::Csr);
+        assert_eq!(h.ref_edges_layout(), SectionLayout::Csr);
+    }
+
+    fn make_header_for_test() -> Header {
+        Header {
+            magic: *MAGIC,
+            version: VERSION,
+            symbol_count: 0,
+            vector_dim: 0,
+            _padding: 0,
+            symbols_offset: 0,
+            vectors_offset: 0,
+            strings_offset: 0,
+            inverted_offset: 0,
+            hnsw_offset: 0,
+            fst_offset: 0,
+            fst_len: 0,
+            postings_offset: 0,
+            postings_len: 0,
+            file_table_offset: 0,
+            file_table_count: 0,
+            _padding2: 0,
+            sym_fst_offset: 0,
+            sym_fst_len: 0,
+            sym_postings_offset: 0,
+            sym_postings_len: 0,
+        }
     }
 }

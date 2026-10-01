@@ -197,9 +197,120 @@ fn update_skip_is_strictly_options_cover() {
         pattern_index_full: Some(false),
         ..manifest_with_embedder(Some("minilm-l6-v2"))
     };
-    assert!(update_can_skip(&m, opts, "minilm-l6-v2"));
+    // No index exists at this path — `try_skip_update` treats a missing
+    // index as "no version gate to apply, skip with a reported count of
+    // 0" (matches pre-R5 behaviour for this options-only check).
+    let no_index_root = std::path::Path::new("/nonexistent-vex-update-skip-test-root");
+    assert_eq!(
+        try_skip_update(&m, opts, "minilm-l6-v2", no_index_root).unwrap(),
+        Some(0)
+    );
 
     // But embedder mismatch still blocks skip.
     let wrong_embedder = manifest_with_embedder(Some("bge-small"));
-    assert!(!update_can_skip(&wrong_embedder, opts, "minilm-l6-v2"));
+    assert_eq!(
+        try_skip_update(&wrong_embedder, opts, "minilm-l6-v2", no_index_root).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn update_skip_surfaces_an_error_on_a_corrupt_index_rather_than_skipping() {
+    // Promise kept by `try_skip_update`: a corrupt on-disk index must
+    // never resolve to a silent skip, even when the manifest's options
+    // already cover the request and there are zero file changes.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let index_path = config::index_path(&root);
+    std::fs::create_dir_all(index_path.parent().unwrap()).unwrap();
+    std::fs::write(&index_path, b"not a valid vex index, just garbage bytes").unwrap();
+
+    let opts = IndexOptions::default();
+    let m = manifest_with_embedder(None);
+    let err = try_skip_update(&m, opts, "minilm-l6-v2", &root)
+        .expect_err("a corrupt index must surface an error, not Ok(Some(_)) or Ok(None)");
+    assert!(
+        err.to_string().contains("open existing index"),
+        "unexpected error: {err}"
+    );
+}
+
+/// End-to-end version of the same promise, through the public
+/// `pipeline::update` entry point: overwrite a real index with garbage
+/// and run `update` with zero file changes — it must return `Err`, not
+/// `Ok` with a skip.
+#[test]
+fn pipeline_update_errors_on_corrupt_index_with_zero_file_changes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    std::fs::write(root.join("a.rs"), "pub fn foo() {}\n").unwrap();
+
+    // First build a real manifest (so the diff sees "zero changes" on the
+    // next call) but then clobber the index file itself with garbage.
+    super::run(&root, IndexOptions::default(), "minilm-l6-v2", &[]).expect("initial run");
+    let index_path = config::index_path(&root);
+    std::fs::write(&index_path, b"not a valid vex index, just garbage bytes").unwrap();
+
+    let result = super::update(&root, IndexOptions::default(), "minilm-l6-v2", &[]);
+    assert!(
+        result.is_err(),
+        "update over a corrupt index with no file changes must error, not Ok-skip: {result:?}"
+    );
+}
+
+#[test]
+fn update_skip_refuses_when_on_disk_version_is_older_than_build() {
+    // §13 R5: an untouched v8 (or earlier) index must converge to v9 on
+    // the next `vex update`, not stay stale forever just because the
+    // manifest's own options already "cover" the request.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let parsed = vec![crate::index::symbols::ParsedFile {
+        path: "a.rs".to_string(),
+        symbols: vec![crate::index::symbols::ParsedSymbol {
+            name: "foo".to_string(),
+            kind: crate::index::symbols::SymbolKind::Function,
+            line: 1,
+            signature: None,
+            doc: None,
+            body_tokens: None,
+        }],
+        refs: Vec::new(),
+        call_edges: Vec::new(),
+        bound_refs: Vec::new(),
+        skeletons: Vec::new(),
+        cpp_includes: Vec::new(),
+        trigram_bloom: None,
+        hierarchy_captures: Vec::new(),
+    }];
+    let index_path = config::index_path(&root);
+    std::fs::create_dir_all(index_path.parent().unwrap()).unwrap();
+    crate::store::writer::write_index_full(
+        &parsed,
+        &[],
+        crate::store::format::VECTOR_DIM,
+        &index_path,
+    )
+    .unwrap();
+    // Today's writer already emits VERSION (9) — downgrade it in place so
+    // this test actually exercises the "older than build" branch rather
+    // than trivially matching the live constant.
+    vex_downgrade_for_test(&index_path);
+
+    let opts = IndexOptions::default();
+    let m = manifest_with_embedder(None);
+    assert_eq!(
+        try_skip_update(&m, opts, "minilm-l6-v2", &root).unwrap(),
+        None,
+        "a v8 on-disk index must never skip, regardless of manifest option coverage"
+    );
+}
+
+/// Corrupt only the version byte to simulate "older than build" without
+/// depending on `store::legacy_v8`'s full downgrade converter (this test
+/// only needs the version gate, not a byte-faithful v8 file).
+fn vex_downgrade_for_test(index_path: &std::path::Path) {
+    let mut bytes = std::fs::read(index_path).unwrap();
+    bytes[4..8].copy_from_slice(&8u32.to_le_bytes());
+    std::fs::write(index_path, &bytes).unwrap();
 }

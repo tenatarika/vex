@@ -1,17 +1,42 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 use anyhow::{bail, Context, Result};
 use memmap2::Mmap;
 
+use super::csr::CsrView;
 use super::format::{
-    CallEdge, CallGraphHeader, Header, HierarchyEdge, HierarchyHeader, HierarchyPostingEntry,
-    PatternSkeletonHeader, SymbolRecord, UnresolvedHierarchyEdge, UnresolvedHierarchyHeader,
-    UnresolvedRefsHeader, V5SectionHeader,
+    CallEdge, CallGraphHeader, ClusterHeader, Header, HierarchyEdge, HierarchyHeader,
+    HierarchyPostingEntry, PatternSkeletonHeader, SectionLayout, SymbolRecord,
+    UnresolvedHierarchyEdge, UnresolvedHierarchyHeader, UnresolvedRefsHeader, V5SectionHeader,
 };
+
+/// In-memory CSR for a legacy (v4–v8) file, built once per [`IndexReader`]
+/// (`docs/V9-FORMAT.md` §13 R19) from the raw record sections — gives
+/// `find_callees_fast` / `find_ref_edges_by_symbol` one query path for
+/// every format version instead of a separate FST-walk path for v4–v8.
+/// Stored as encoded LE bytes so [`CsrView`] can borrow from it exactly
+/// like it borrows from the mmap on a v9+ file.
+struct LegacyCsr {
+    offsets: Vec<u8>,
+    edge_idx: Vec<u8>,
+    n: u32,
+    m: u32,
+}
 
 /// Memory-mapped index reader. Zero-copy access to symbols and strings.
 pub struct IndexReader {
     mmap: Mmap,
+    /// Lazily built in-memory CSR for v4–v8 callees (`None` means "could
+    /// not build", e.g. a corrupt file — distinct from "not yet built").
+    legacy_callees_csr: OnceLock<Option<LegacyCsr>>,
+    /// Lazily built in-memory CSR for v5–v8 `ref_edges`.
+    legacy_ref_edges_csr: OnceLock<Option<LegacyCsr>>,
+    /// R1: "warn once per reader" when `find_ref_edges_by_symbol` finds a
+    /// record in a symbol's CSR group whose `to_sym_idx` doesn't actually
+    /// match (a mis-sorted v9 file, or legacy-CSR data skew).
+    ref_edges_mismatch_warned: AtomicBool,
 }
 
 impl IndexReader {
@@ -24,7 +49,12 @@ impl IndexReader {
         let mmap = unsafe { Mmap::map(&file) }
             .with_context(|| format!("mmap index file at {}", path.display()))?;
 
-        let reader = Self { mmap };
+        let reader = Self {
+            mmap,
+            legacy_callees_csr: OnceLock::new(),
+            legacy_ref_edges_csr: OnceLock::new(),
+            ref_edges_mismatch_warned: AtomicBool::new(false),
+        };
         // All validation failures point at the same file path so the user
         // can act on the message (delete the file, re-run `vex index`)
         // without having to dig through stderr for the cache location.
@@ -243,11 +273,13 @@ impl IndexReader {
             }
             if let Some(v5) = reader.v5_section_header() {
                 let edges_end = v5.ref_edges_offset.saturating_add(v5.ref_edges_len);
-                let fst_end = v5.ref_edges_fst_offset.saturating_add(v5.ref_edges_fst_len);
-                let post_end = v5
-                    .ref_edges_postings_offset
-                    .saturating_add(v5.ref_edges_postings_len);
-                if edges_end > mmap_len || fst_end > mmap_len || post_end > mmap_len {
+                let index_end = v5
+                    .ref_edges_index_offset
+                    .saturating_add(v5.ref_edges_index_len);
+                let edge_idx_end = v5
+                    .ref_edges_edge_idx_offset
+                    .saturating_add(v5.ref_edges_edge_idx_len);
+                if edges_end > mmap_len || index_end > mmap_len || edge_idx_end > mmap_len {
                     bail!("v5 index at {p} is corrupted (reference_edges section offsets exceed file size). Re-run `vex index` to rebuild.");
                 }
             }
@@ -273,10 +305,10 @@ impl IndexReader {
                 let cers_post_end = cg
                     .callers_postings_offset
                     .saturating_add(cg.callers_postings_len);
-                let cees_fst_end = cg.callees_fst_offset.saturating_add(cg.callees_fst_len);
+                let cees_fst_end = cg.callees_index_offset.saturating_add(cg.callees_index_len);
                 let cees_post_end = cg
-                    .callees_postings_offset
-                    .saturating_add(cg.callees_postings_len);
+                    .callees_edge_idx_offset
+                    .saturating_add(cg.callees_edge_idx_len);
                 let bm25_fst_end = cg.bm25_fst_offset.saturating_add(cg.bm25_fst_len);
                 let bm25_post_end = cg.bm25_postings_offset.saturating_add(cg.bm25_postings_len);
                 let bm25_stats_end = cg.bm25_stats_offset.saturating_add(cg.bm25_stats_len);
@@ -290,6 +322,102 @@ impl IndexReader {
                     || bm25_stats_end > mmap_len
                 {
                     bail!("v4 index at {p} is corrupted (call-graph or bm25 section offsets exceed file size). Re-run `vex index` to rebuild.");
+                }
+            }
+
+            // v9: ClusterHeader sits directly after UnresolvedHierarchyHeader
+            // (§2.1, §13 R9). The P2 reader checks only that it fits — no
+            // semantic validation of its (always-zeroed) content.
+            if header.has_cluster_header()
+                && (Header::SIZE
+                    + CallGraphHeader::SIZE
+                    + V5SectionHeader::SIZE
+                    + PatternSkeletonHeader::SIZE
+                    + UnresolvedRefsHeader::SIZE
+                    + HierarchyHeader::SIZE
+                    + UnresolvedHierarchyHeader::SIZE
+                    + ClusterHeader::SIZE)
+                    > reader.mmap.len()
+            {
+                bail!("v9 index at {p} is truncated (no room for ClusterHeader). Re-run `vex index` to rebuild.");
+            }
+
+            // v9: structural (O(1)) CSR validation for callees and
+            // ref_edges (§7, §13 R4/R7) — length shape plus
+            // `CsrView::new`'s own `offsets[0] == 0` / `offsets[n] == m`
+            // checks. Semantic/content validation never happens at open
+            // (R3): a bad CSR degrades query results to empty, it must
+            // not brick the file.
+            if header.callees_layout() == SectionLayout::Csr {
+                if let Some(cg) = reader.call_graph_header() {
+                    let n = header.symbol_count;
+                    let want_index_len = n.saturating_add(1).saturating_mul(4);
+                    if cg.callees_index_len != 0 && cg.callees_index_len != want_index_len {
+                        bail!("v9 index at {p} is corrupted (callees index length {} does not match symbol_count {n}). Re-run `vex index` to rebuild.", cg.callees_index_len);
+                    }
+                    let want_edge_idx_len =
+                        (cg.call_edges_len / CallEdge::SIZE as u64).saturating_mul(4);
+                    let edge_idx_len_ok = if cg.callees_index_len > 0 {
+                        cg.callees_edge_idx_len == want_edge_idx_len
+                    } else {
+                        cg.callees_edge_idx_len == 0
+                    };
+                    if !edge_idx_len_ok {
+                        bail!("v9 index at {p} is corrupted (callees edge_idx length {} does not match call_edges count). Re-run `vex index` to rebuild.", cg.callees_edge_idx_len);
+                    }
+                    if cg.callees_index_len > 0 {
+                        let offsets_bytes = slice_or_empty(
+                            &reader.mmap,
+                            cg.callees_index_offset as usize,
+                            cg.callees_index_len as usize,
+                        )
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("v9 index at {p} callees offsets out of bounds")
+                        })?;
+                        let edge_idx_bytes = slice_or_empty(
+                            &reader.mmap,
+                            cg.callees_edge_idx_offset as usize,
+                            cg.callees_edge_idx_len as usize,
+                        )
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("v9 index at {p} callees edge_idx out of bounds")
+                        })?;
+                        let n_u32 = u32::try_from(n).unwrap_or(u32::MAX);
+                        let m_u32 = u32::try_from(cg.callees_edge_idx_len / 4).unwrap_or(u32::MAX);
+                        if CsrView::new(offsets_bytes, Some(edge_idx_bytes), n_u32, m_u32).is_err()
+                        {
+                            bail!("v9 index at {p} is corrupted (callees CSR offsets invalid). Re-run `vex index` to rebuild.");
+                        }
+                    }
+                }
+            }
+            if header.ref_edges_layout() == SectionLayout::Csr {
+                if let Some(v5) = reader.v5_section_header() {
+                    let n = header.symbol_count;
+                    let want_index_len = n.saturating_add(1).saturating_mul(4);
+                    if v5.ref_edges_index_len != 0 && v5.ref_edges_index_len != want_index_len {
+                        bail!("v9 index at {p} is corrupted (ref_edges index length {} does not match symbol_count {n}). Re-run `vex index` to rebuild.", v5.ref_edges_index_len);
+                    }
+                    if v5.ref_edges_edge_idx_len != 0 {
+                        bail!("v9 index at {p} is corrupted (ref_edges edge_idx_len must be 0, found {}). Re-run `vex index` to rebuild.", v5.ref_edges_edge_idx_len);
+                    }
+                    if v5.ref_edges_index_len > 0 {
+                        let offsets_bytes = slice_or_empty(
+                            &reader.mmap,
+                            v5.ref_edges_index_offset as usize,
+                            v5.ref_edges_index_len as usize,
+                        )
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("v9 index at {p} ref_edges offsets out of bounds")
+                        })?;
+                        let n_u32 = u32::try_from(n).unwrap_or(u32::MAX);
+                        let m_u32 =
+                            u32::try_from(v5.ref_edges_len / super::format::RefEdge::SIZE as u64)
+                                .unwrap_or(u32::MAX);
+                        if CsrView::new(offsets_bytes, None, n_u32, m_u32).is_err() {
+                            bail!("v9 index at {p} is corrupted (ref_edges CSR offsets invalid). Re-run `vex index` to rebuild.");
+                        }
+                    }
                 }
             }
         }
@@ -622,59 +750,98 @@ impl IndexReader {
             .is_some_and(|h| h.ref_edges_len > 0)
     }
 
-    fn ref_edges_section_bytes(&self) -> Option<(&[u8], &[u8], &[u8])> {
-        let v5 = self.v5_section_header()?;
-        let mmap = &self.mmap[..];
-        let edges = slice_or_empty(
-            mmap,
-            v5.ref_edges_offset as usize,
-            v5.ref_edges_len as usize,
-        )?;
-        let fst = slice_or_empty(
-            mmap,
-            v5.ref_edges_fst_offset as usize,
-            v5.ref_edges_fst_len as usize,
-        )?;
-        let post = slice_or_empty(
-            mmap,
-            v5.ref_edges_postings_offset as usize,
-            v5.ref_edges_postings_len as usize,
-        )?;
-        Some((edges, fst, post))
+    /// CSR view over the `ref_edges` index (§2.3, §13 R19). v9+: the
+    /// on-disk offsets-only (identity `edge_idx`) shape, borrowed
+    /// directly from the mmap. v5–v8 (legacy): an in-memory CSR built
+    /// once per reader from the raw `RefEdge` records via
+    /// `store::csr::build_csr` — deliberately **not**
+    /// `build_csr_offsets_sorted`, since that shape requires sortedness
+    /// (an unverified assumption on v5–v7 record order) whereas the
+    /// counting sort behind `build_csr` does not (R19).
+    fn ref_edges_csr_view(&self) -> Option<CsrView<'_>> {
+        let n = u32::try_from(self.header().symbol_count).ok()?;
+        match self.header().ref_edges_layout() {
+            SectionLayout::Csr => {
+                let v5 = self.v5_section_header()?;
+                if v5.ref_edges_index_len == 0 {
+                    return None;
+                }
+                let offsets_bytes = slice_or_empty(
+                    &self.mmap,
+                    v5.ref_edges_index_offset as usize,
+                    v5.ref_edges_index_len as usize,
+                )?;
+                let m = u32::try_from(self.ref_edge_count()).ok()?;
+                CsrView::new(offsets_bytes, None, n, m).ok()
+            }
+            SectionLayout::Legacy => {
+                let cached = self
+                    .legacy_ref_edges_csr
+                    .get_or_init(|| self.build_legacy_ref_edges_csr(n));
+                let csr = cached.as_ref()?;
+                CsrView::new(&csr.offsets, Some(&csr.edge_idx), csr.n, csr.m).ok()
+            }
+        }
+    }
+
+    fn build_legacy_ref_edges_csr(&self, n: u32) -> Option<LegacyCsr> {
+        let count = self.ref_edge_count();
+        let mut keys = Vec::with_capacity(count);
+        for i in 0..count {
+            keys.push(self.ref_edge(i)?.to_sym_idx);
+        }
+        let (offsets, edge_idx) = super::csr::build_csr(&keys, n).ok()?;
+        let m = u32::try_from(edge_idx.len()).ok()?;
+        Some(LegacyCsr {
+            offsets: super::csr::encode_le_u32s(&offsets),
+            edge_idx: super::csr::encode_le_u32s(&edge_idx),
+            n,
+            m,
+        })
+    }
+
+    fn warn_ref_edges_mismatch_once(&self) {
+        if !self.ref_edges_mismatch_warned.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                "ref_edges records are out of order (a record's to_sym_idx did not match its CSR \
+                 group) — some references may be missing. Re-run `vex index` to rebuild."
+            );
+        }
     }
 
     /// Look up every persisted reference edge whose `to_sym_idx`
     /// matches `sym_idx`. Returns an empty `Vec` when the index has no
-    /// ref-edges section, when the FST is missing the key, or when the
-    /// section bytes don't validate.
+    /// ref-edges section or when the CSR view can't be constructed
+    /// (corrupt section — degrades to empty, never panics, §7).
     ///
-    /// The FST lookup is wrapped in `catch_unwind` because the upstream
-    /// `fst` crate's `Map::new` does only shallow header validation —
-    /// adversarially-corrupt FST bytes can pass construction but panic
-    /// during node traversal (fuzzer found one: `node.rs:302` index OOB).
-    /// vex's threat model says index bytes are user-owned, but
-    /// defense-in-depth: corrupt mmap (cosmic ray, half-truncated write,
-    /// hostile cache override) shouldn't crash the CLI.
+    /// R1: a record in `sym_idx`'s CSR group whose `to_sym_idx` doesn't
+    /// actually match is dropped (not returned), and the reader warns
+    /// once (not once per occurrence) — this is what lets a mis-sorted
+    /// v9 file degrade to *missing* refs rather than *another symbol's*
+    /// refs.
     pub fn find_ref_edges_by_symbol(&self, sym_idx: u32) -> Vec<super::format::RefEdge> {
         if !self.has_ref_edges() {
             return Vec::new();
         }
-        let Some((edges, fst, post)) = self.ref_edges_section_bytes() else {
+        let Some(view) = self.ref_edges_csr_view() else {
             return Vec::new();
         };
-        let Ok(reader) = super::ref_edges::RefEdgeReader::new(fst, post, edges) else {
-            return Vec::new();
-        };
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            reader.find_by_symbol_idx(sym_idx)
-        }))
-        .unwrap_or_else(|_| {
-            tracing::warn!(
-                sym_idx,
-                "ref_edges FST traversal panicked on corrupt bytes; returning empty result"
-            );
-            Vec::new()
-        })
+        let mut out = Vec::new();
+        let mut mismatch = false;
+        for idx in view.neighbors(sym_idx) {
+            let Some(rec) = self.ref_edge(idx as usize) else {
+                continue;
+            };
+            if rec.to_sym_idx != sym_idx {
+                mismatch = true;
+                continue;
+            }
+            out.push(rec);
+        }
+        if mismatch {
+            self.warn_ref_edges_mismatch_once();
+        }
+        out
     }
 
     /// Read the v7 [`UnresolvedRefsHeader`] when present. Returns `None`
@@ -1118,8 +1285,8 @@ impl IndexReader {
     /// Get a ref-edge record by section-index. Returns a **copy** rather
     /// than a `&RefEdge` reference so callers don't depend on the mmap
     /// alignment of `ref_edges_offset` (architect-H3a / rust-reviewer-#3
-    /// must-fix): `RefEdgeReader::find_by_symbol_idx` at `ref_edges.rs`
-    /// uses the same `MaybeUninit + copy_nonoverlapping` idiom.
+    /// must-fix): `find_ref_edges_by_symbol` (this file) uses the same
+    /// `MaybeUninit + copy_nonoverlapping` idiom via this method.
     pub fn ref_edge(&self, idx: usize) -> Option<super::format::RefEdge> {
         let h = self.v5_section_header()?;
         // Inline the count check using the already-fetched header — avoids
@@ -1180,30 +1347,56 @@ impl IndexReader {
         &self.mmap[start..end]
     }
 
-    /// Raw bytes of the callees FST section.
-    pub fn callees_fst_bytes(&self) -> &[u8] {
-        let Some(h) = self.call_graph_header() else {
-            return &[];
-        };
-        let start = h.callees_fst_offset as usize;
-        let end = start + h.callees_fst_len as usize;
-        if end > self.mmap.len() {
-            return &[];
+    /// CSR view over the callees index (§2.2, §13 R19). v9+: the
+    /// on-disk `offsets[n+1]` + `edge_idx[m]` shape, borrowed directly
+    /// from the mmap. v4–v8 (legacy): an in-memory CSR built once per
+    /// reader from the raw `CallEdge` records' `caller_sym_idx` field —
+    /// replaces the decimal-FST walk `find_callees_fast` used before P2.
+    pub(crate) fn callees_csr_view(&self) -> Option<CsrView<'_>> {
+        let n = u32::try_from(self.header().symbol_count).ok()?;
+        match self.header().callees_layout() {
+            SectionLayout::Csr => {
+                let cg = self.call_graph_header()?;
+                if cg.callees_index_len == 0 {
+                    return None;
+                }
+                let offsets_bytes = slice_or_empty(
+                    &self.mmap,
+                    cg.callees_index_offset as usize,
+                    cg.callees_index_len as usize,
+                )?;
+                let edge_idx_bytes = slice_or_empty(
+                    &self.mmap,
+                    cg.callees_edge_idx_offset as usize,
+                    cg.callees_edge_idx_len as usize,
+                )?;
+                let m = u32::try_from(cg.callees_edge_idx_len / 4).ok()?;
+                CsrView::new(offsets_bytes, Some(edge_idx_bytes), n, m).ok()
+            }
+            SectionLayout::Legacy => {
+                let cached = self
+                    .legacy_callees_csr
+                    .get_or_init(|| self.build_legacy_callees_csr(n));
+                let csr = cached.as_ref()?;
+                CsrView::new(&csr.offsets, Some(&csr.edge_idx), csr.n, csr.m).ok()
+            }
         }
-        &self.mmap[start..end]
     }
 
-    /// Raw bytes of the callees posting list section.
-    pub fn callees_posting_bytes(&self) -> &[u8] {
-        let Some(h) = self.call_graph_header() else {
-            return &[];
-        };
-        let start = h.callees_postings_offset as usize;
-        let end = start + h.callees_postings_len as usize;
-        if end > self.mmap.len() {
-            return &[];
+    fn build_legacy_callees_csr(&self, n: u32) -> Option<LegacyCsr> {
+        let count = self.call_edge_count();
+        let mut keys = Vec::with_capacity(count);
+        for i in 0..count {
+            keys.push(self.call_edge(i)?.caller_sym_idx);
         }
-        &self.mmap[start..end]
+        let (offsets, edge_idx) = super::csr::build_csr(&keys, n).ok()?;
+        let m = u32::try_from(edge_idx.len()).ok()?;
+        Some(LegacyCsr {
+            offsets: super::csr::encode_le_u32s(&offsets),
+            edge_idx: super::csr::encode_le_u32s(&edge_idx),
+            n,
+            m,
+        })
     }
 
     /// Whether the index carries BM25 channel data (Phase 9.4).
@@ -1276,8 +1469,9 @@ fn slice_or_empty(mmap: &[u8], offset: usize, len: usize) -> Option<&[u8]> {
 /// hierarchy_edges postings blob at `offset`. Bounds-checked on the count
 /// prefix and every subsequent entry — truncates (returns whatever was
 /// read so far) rather than panicking on a corrupt/truncated blob, same
-/// idiom as `RefEdgeReader::read_posting_list` /
-/// `UnresolvedRefReader::read_posting_list`.
+/// idiom as `UnresolvedRefReader::read_posting_list`. (The `ref_edges`
+/// section itself moved off this posting-list idiom entirely in v9 —
+/// see `find_ref_edges_by_symbol` / `CsrView`.)
 fn read_hierarchy_posting_list(postings: &[u8], offset: usize) -> Vec<u32> {
     if offset + 4 > postings.len() {
         return Vec::new();
@@ -1305,7 +1499,8 @@ fn read_hierarchy_posting_list(postings: &[u8], offset: usize) -> Vec<u32> {
 mod tests {
     use super::*;
     use crate::store::format::{
-        CallGraphHeader, Header, PatternSkeletonHeader, V5SectionHeader, MAGIC, VERSION,
+        CallGraphHeader, ClusterHeader, Header, PatternSkeletonHeader, V5SectionHeader, MAGIC,
+        VERSION,
     };
 
     /// OOM-cap regression: a posting list whose `count` prefix is
@@ -1362,7 +1557,8 @@ mod tests {
             + PatternSkeletonHeader::SIZE
             + UnresolvedRefsHeader::SIZE
             + HierarchyHeader::SIZE
-            + UnresolvedHierarchyHeader::SIZE;
+            + UnresolvedHierarchyHeader::SIZE
+            + ClusterHeader::SIZE;
 
         let (edges_bytes, index_bytes, postings_bytes) =
             hierarchy.unwrap_or((Vec::new(), Vec::new(), Vec::new()));
@@ -1382,6 +1578,13 @@ mod tests {
         let uh_pad = (uh_edges_offset - uh_unaligned) as usize;
         let uh_fst_offset = uh_edges_offset + uh_edges_bytes.len() as u64;
         let uh_postings_offset = uh_fst_offset + uh_fst_bytes.len() as u64;
+        // v9: the (always-zeroed in this fixture) ClusterHeader struct's
+        // bytes are already folded into `total_header` above (its 64
+        // bytes sit in the FIXED prefix, right after
+        // UnresolvedHierarchyHeader — `hier_unaligned` is computed from
+        // `total_header`, so every downstream variable-section offset
+        // already accounts for it). Symbols start immediately after the
+        // last variable section — no second addition here.
         let symbols_offset = uh_postings_offset + uh_postings_bytes.len() as u64;
 
         let mut header = Header {
@@ -1416,10 +1619,10 @@ mod tests {
             callers_fst_len: 0,
             callers_postings_offset: symbols_offset,
             callers_postings_len: 0,
-            callees_fst_offset: symbols_offset,
-            callees_fst_len: 0,
-            callees_postings_offset: symbols_offset,
-            callees_postings_len: 0,
+            callees_index_offset: symbols_offset,
+            callees_index_len: 0,
+            callees_edge_idx_offset: symbols_offset,
+            callees_edge_idx_len: 0,
             bm25_fst_offset: symbols_offset,
             bm25_fst_len: 0,
             bm25_postings_offset: symbols_offset,
@@ -1430,10 +1633,10 @@ mod tests {
         let v5 = V5SectionHeader {
             ref_edges_offset: symbols_offset,
             ref_edges_len: 0,
-            ref_edges_fst_offset: symbols_offset,
-            ref_edges_fst_len: 0,
-            ref_edges_postings_offset: symbols_offset,
-            ref_edges_postings_len: 0,
+            ref_edges_index_offset: symbols_offset,
+            ref_edges_index_len: 0,
+            ref_edges_edge_idx_offset: symbols_offset,
+            ref_edges_edge_idx_len: 0,
         };
         let pat = PatternSkeletonHeader {
             skeletons_offset: symbols_offset,
@@ -1469,6 +1672,19 @@ mod tests {
             fst_len: uh_fst_bytes.len() as u64,
             postings_offset: uh_postings_offset,
             postings_len: uh_postings_bytes.len() as u64,
+        };
+        let cluster = ClusterHeader {
+            assign_offset: 0,
+            assign_len: 0,
+            table_offset: 0,
+            table_len: 0,
+            resolution_num: 0,
+            resolution_den: 0,
+            flags: 0,
+            algo_version: 0,
+            levels: 0,
+            build_symbol_count: 0,
+            _reserved: [0; 12],
         };
 
         let mut bytes = Vec::with_capacity(total_header);
@@ -1511,6 +1727,12 @@ mod tests {
             std::slice::from_raw_parts(
                 &unres_hier as *const UnresolvedHierarchyHeader as *const u8,
                 UnresolvedHierarchyHeader::SIZE,
+            )
+        });
+        bytes.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &cluster as *const ClusterHeader as *const u8,
+                ClusterHeader::SIZE,
             )
         });
 
@@ -1911,6 +2133,24 @@ mod tests {
             !(hypothetical_min_supported..=hypothetical_pre_v8_max_version)
                 .contains(&v8_file_version),
             "a pre-v8 reader's version gate must reject a v8 file's version field"
+        );
+    }
+
+    #[test]
+    fn open_rejects_pre_v9_reading_v9_via_version_range_gate() {
+        // Same shape as `open_rejects_pre_v8_reading_v8_via_version_range_gate`
+        // (§13 R2/"downgrade" — `docs/V9-FORMAT.md` §1): a hypothetical
+        // pre-v9 reader (VERSION == 8, the build just before the CSR
+        // migration) must reject a v9 file's version field via the
+        // MIN_SUPPORTED_VERSION..=VERSION range gate — "found v9, this
+        // build supports v3..v8. Re-run `vex index`."
+        let hypothetical_pre_v9_max_version: u32 = 8;
+        let hypothetical_min_supported: u32 = super::super::format::MIN_SUPPORTED_VERSION;
+        let v9_file_version: u32 = 9;
+        assert!(
+            !(hypothetical_min_supported..=hypothetical_pre_v9_max_version)
+                .contains(&v9_file_version),
+            "a pre-v9 reader's version gate must reject a v9 file's version field"
         );
     }
 

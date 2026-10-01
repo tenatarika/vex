@@ -15,23 +15,17 @@
 //!   format invariant (R1/R2), checked here with a real error, not a
 //!   `debug_assert!`.
 //!
-//! Not wired into the writer/reader yet (P1 — this module is standalone
-//! and only exercised by its own tests, a proptest oracle against
-//! [`super::legacy_v8`], and `fuzz_csr`). The v9 format bump (P2) will
-//! call these builders from `writer.rs` and back `CsrView` with real
-//! mmap byte slices from `reader.rs`.
+//! Wired into the writer (`writer.rs`) and reader (`reader.rs`) as of the
+//! v9 format bump (P2): `build_csr` produces the callees `offsets` +
+//! `edge_idx` arrays, `build_csr_offsets_sorted` produces the `ref_edges`
+//! offsets-only shape, and `CsrView` backs both `find_callees_fast` and
+//! `IndexReader::find_ref_edges_by_symbol` — including the in-memory CSR
+//! built once per `IndexReader` for legacy (v4–v8) files (§13 R19).
 //!
 //! This module never casts byte slices to `&[u32]` — every value is
 //! decoded with `u32::from_le_bytes` on a bounds-checked 4-byte window
 //! (§2), so alignment of the underlying mmap is a courtesy, never a
 //! safety requirement.
-//!
-//! Every public item is exercised only by this module's own tests, the
-//! proptests below, and `fuzz_csr` — not yet by `main.rs`'s duplicated
-//! module tree (P2 wires it into `writer.rs`/`reader.rs`). The
-//! module-wide allow keeps that intentional from triggering
-//! `-D warnings`, mirroring `parse/scope/mod.rs`.
-#![allow(dead_code)]
 
 use anyhow::{ensure, Result};
 
@@ -268,15 +262,18 @@ impl<'a> CsrView<'a> {
     }
 
     /// Number of groups (e.g. `symbol_count`).
+    #[allow(dead_code)] // exercised by this module's tests; documented public API
     pub fn len(&self) -> u32 {
         self.n
     }
 
+    #[allow(dead_code)] // exercised by this module's tests; documented public API
     pub fn is_empty(&self) -> bool {
         self.n == 0
     }
 
     /// Total edge count (`m`).
+    #[allow(dead_code)] // exercised by this module's tests; documented public API
     pub fn edge_count(&self) -> u32 {
         self.m
     }

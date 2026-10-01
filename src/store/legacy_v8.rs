@@ -1,22 +1,37 @@
 //! Oracle module for the v8 on-disk encodings that the v9 CSR migration
-//! (`docs/V9-FORMAT.md`) deletes from production code.
+//! (`docs/V9-FORMAT.md`) deleted from production code in P2.
 //!
-//! P0 (`docs/V9-FORMAT.md` §9/§13 R20): before the callees FST and the
-//! `ref_edges` FST get replaced by [`super::csr`] in a later phase, this
-//! module preserves a **faithful copy** of the decimal-string-key
-//! encoding they used — `build_u32_keyed_fst` (`call_graph.rs`),
-//! `encode_caller_key` / `encode_caller_key_into` (`call_graph.rs`) and
-//! `encode_to_sym_key` (`ref_edges.rs`) — so it keeps working as an
-//! oracle after those production functions are gone. Production code is
-//! untouched by this module; on-disk output is unchanged.
+//! P0 (`docs/V9-FORMAT.md` §9/§13 R20) preserved a **faithful copy** of
+//! the decimal-string-key encoding the v8 writer used —
+//! `build_u32_keyed_fst`, `encode_caller_key` / `encode_caller_key_into`,
+//! and `build_ref_edges_fst` — so it keeps working as an oracle now that
+//! P2 has deleted those production functions (`call_graph.rs`'s callees
+//! FST path and `ref_edges.rs`'s FST path). Production code is untouched
+//! by this module; its own on-disk output is unchanged.
 //!
 //! Used by:
-//! - the P1 `csr` module's proptests, to assert that a CSR group equals
-//!   the v8 FST posting list element for element;
+//! - the `csr` module's proptests, to assert that a CSR group equals the
+//!   v8 FST posting list element for element;
 //! - the P0 golden tests in `tests/legacy_v8_golden_test.rs`, via
 //!   [`build_sample_v8_index`] — a programmatic v8-index builder (no
-//!   checked-in binary fixture, R20) that drives the real indexing
-//!   pipeline (today's writer IS v8) over a tiny hand-written project.
+//!   checked-in binary fixture, R20).
+//!
+//! **P2 deviation from the "drive the writer directly" plan (R20):**
+//! `write_index_with_call_graph_and_skeletons_and_fingerprints` now
+//! always emits v9 (it IS the production writer; `VERSION == 9`).
+//! Rather than thread a hidden `target_version` parameter through that
+//! ~1200-line function (and duplicate its offset-chain arithmetic a
+//! second time for a test-only code path), [`build_sample_v8_index`]
+//! drives the real v9 pipeline and then calls
+//! [`downgrade_v9_file_to_v8`], which rewrites the resulting file in
+//! place as a byte-for-byte-equivalent v8 file: every section except the
+//! two CSR-eligible ones (callees, `ref_edges`) is copied verbatim
+//! (their content and internal, pool-relative offsets never depend on
+//! the format version); the callees and `ref_edges` FSTs are rebuilt
+//! from the v9 file's own `CallEdge` / `RefEdge` records using this
+//! module's oracle builders. This is still "programmatic, no checked-in
+//! binary" (R20) and is a smaller, more isolated surface than widening
+//! the production writer's signature for a test-only shape.
 //!
 //! `#[doc(hidden)]`: test/bench-only surface, not part of the public API.
 //!
@@ -225,6 +240,16 @@ impl<'a> FstOracleReader<'a> {
 ///
 /// Returns the index path (`util::config::index_path(project_root)`).
 pub fn build_sample_v8_index(project_root: &Path) -> Result<PathBuf> {
+    let index_path = build_sample_v9_index(project_root)?;
+    downgrade_v9_file_to_v8(&index_path).context("downgrade freshly-built v9 index to v8")?;
+    Ok(index_path)
+}
+
+/// Same fixture project as [`build_sample_v8_index`], but returns the
+/// genuine v9 index the pipeline produces today — no downgrade. Used by
+/// the v9 side of the golden-answer parity tests (`tests/legacy_v8_golden_test.rs`):
+/// callees / callers / ref_edges must answer identically on both formats.
+pub fn build_sample_v9_index(project_root: &Path) -> Result<PathBuf> {
     let src_dir = project_root.join("src");
     std::fs::create_dir_all(&src_dir).context("create src dir")?;
     std::fs::write(
@@ -250,223 +275,478 @@ pub fn build_sample_v8_index(project_root: &Path) -> Result<PathBuf> {
     Ok(crate::util::config::index_path(project_root))
 }
 
+/// Rewrite a v9 index file in place as a byte-for-byte-equivalent v8
+/// file (see the module doc for why this exists instead of a writer
+/// `target_version` parameter). No `unsafe`: every header field is
+/// decoded via the already-vetted [`crate::store::reader::IndexReader`]
+/// accessors and re-encoded with plain `to_le_bytes` pushes, matching
+/// the `code-conventions.md` rule that only `store/reader.rs` and
+/// `store/writer.rs` contain `unsafe`.
+pub fn downgrade_v9_file_to_v8(index_path: &Path) -> Result<()> {
+    use crate::store::format::{
+        CallGraphHeader, Header, HierarchyHeader, PatternSkeletonHeader, UnresolvedHierarchyHeader,
+        UnresolvedRefsHeader, V5SectionHeader,
+    };
+    use crate::store::reader::IndexReader;
+
+    let data = std::fs::read(index_path).context("read v9 index for downgrade")?;
+    let reader = IndexReader::open(index_path).context("open v9 index for downgrade")?;
+    let header = reader.header();
+    anyhow::ensure!(
+        header.version == 9,
+        "downgrade_v9_file_to_v8: expected a v9 file, found v{}",
+        header.version
+    );
+
+    let cg = reader
+        .call_graph_header()
+        .context("v9 file missing CallGraphHeader")?;
+    let v5 = reader
+        .v5_section_header()
+        .context("v9 file missing V5SectionHeader")?;
+    let pat = reader
+        .pattern_skeleton_header()
+        .context("v9 file missing PatternSkeletonHeader")?;
+    let unres = reader
+        .unresolved_refs_header()
+        .context("v9 file missing UnresolvedRefsHeader")?;
+    let hier = reader
+        .hierarchy_header()
+        .context("v9 file missing HierarchyHeader")?;
+    let unres_hier = reader
+        .unresolved_hierarchy_header()
+        .context("v9 file missing UnresolvedHierarchyHeader")?;
+
+    // Every section except callees/ref_edges is copied verbatim — content
+    // and pool-relative offsets never depend on the format version.
+    let symbols_bytes = byte_slice(
+        &data,
+        header.symbols_offset,
+        header
+            .symbol_count
+            .saturating_mul(crate::store::format::SymbolRecord::SIZE as u64),
+    )?;
+    let vectors_bytes = byte_slice(
+        &data,
+        header.vectors_offset,
+        header.strings_offset.saturating_sub(header.vectors_offset),
+    )?;
+    let strings_bytes = byte_slice(
+        &data,
+        header.strings_offset,
+        header.fst_offset.saturating_sub(header.strings_offset),
+    )?;
+    let refs_fst_bytes = byte_slice(&data, header.fst_offset, header.fst_len)?;
+    let refs_postings_bytes = byte_slice(&data, header.postings_offset, header.postings_len)?;
+    let file_table_bytes = byte_slice(
+        &data,
+        header.file_table_offset,
+        (header.file_table_count as u64).saturating_mul(4),
+    )?;
+    let sym_fst_bytes = byte_slice(&data, header.sym_fst_offset, header.sym_fst_len)?;
+    let sym_postings_bytes =
+        byte_slice(&data, header.sym_postings_offset, header.sym_postings_len)?;
+    let call_edges_bytes = byte_slice(&data, cg.call_edges_offset, cg.call_edges_len)?;
+    let callers_fst_bytes = byte_slice(&data, cg.callers_fst_offset, cg.callers_fst_len)?;
+    let callers_postings_bytes =
+        byte_slice(&data, cg.callers_postings_offset, cg.callers_postings_len)?;
+    let bm25_fst_bytes = byte_slice(&data, cg.bm25_fst_offset, cg.bm25_fst_len)?;
+    let bm25_postings_bytes = byte_slice(&data, cg.bm25_postings_offset, cg.bm25_postings_len)?;
+    let bm25_stats_bytes = byte_slice(&data, cg.bm25_stats_offset, cg.bm25_stats_len)?;
+    let ref_edges_record_bytes = byte_slice(&data, v5.ref_edges_offset, v5.ref_edges_len)?;
+    let skel_records_bytes = byte_slice(&data, pat.skeletons_offset, pat.skeletons_len)?;
+    let skel_kind_path_bytes = byte_slice(&data, pat.kind_path_offset, pat.kind_path_len)?;
+    let skel_ident_pool_bytes = byte_slice(&data, pat.ident_pool_offset, pat.ident_pool_len)?;
+    let skel_file_index_bytes = byte_slice(&data, pat.file_index_offset, pat.file_index_len)?;
+    let unresolved_edge_bytes = byte_slice(
+        &data,
+        unres.unresolved_edges_offset,
+        unres.unresolved_edges_len,
+    )?;
+    let unresolved_fst_bytes =
+        byte_slice(&data, unres.unresolved_fst_offset, unres.unresolved_fst_len)?;
+    let unresolved_postings_bytes = byte_slice(
+        &data,
+        unres.unresolved_postings_offset,
+        unres.unresolved_postings_len,
+    )?;
+    let hierarchy_edge_bytes = byte_slice(&data, hier.edges_offset, hier.edges_len)?;
+    let hierarchy_index_bytes = byte_slice(&data, hier.index_offset, hier.index_len)?;
+    let hierarchy_postings_bytes = byte_slice(&data, hier.postings_offset, hier.postings_len)?;
+    let unresolved_hier_edge_bytes =
+        byte_slice(&data, unres_hier.edges_offset, unres_hier.edges_len)?;
+    let unresolved_hier_fst_bytes = byte_slice(&data, unres_hier.fst_offset, unres_hier.fst_len)?;
+    let unresolved_hier_postings_bytes =
+        byte_slice(&data, unres_hier.postings_offset, unres_hier.postings_len)?;
+
+    // Rebuild the two CSR-eligible sections as v8 decimal-FSTs from the
+    // v9 file's own (byte-identical) CallEdge / RefEdge records.
+    let callees_entries: Vec<(u32, u32)> = (0..reader.call_edge_count())
+        .filter_map(|i| reader.call_edge(i).map(|e| (e.caller_sym_idx, i as u32)))
+        .collect();
+    let (callees_fst_bytes, callees_post_bytes) = build_u32_keyed_fst(callees_entries)?;
+    let ref_entries: Vec<(u32, u32)> = (0..reader.ref_edge_count())
+        .filter_map(|i| reader.ref_edge(i).map(|e| (e.to_sym_idx, i as u32)))
+        .collect();
+    let (ref_fst_bytes, ref_post_bytes) = build_ref_edges_fst(&ref_entries)?;
+
+    // v8 layout: no ClusterHeader, so the chain ends at 656 bytes.
+    let symbols_offset_v8 = (Header::SIZE
+        + CallGraphHeader::SIZE
+        + V5SectionHeader::SIZE
+        + PatternSkeletonHeader::SIZE
+        + UnresolvedRefsHeader::SIZE
+        + HierarchyHeader::SIZE
+        + UnresolvedHierarchyHeader::SIZE) as u64;
+    debug_assert_eq!(symbols_offset_v8, 656, "v8 symbols_offset is pinned at 656");
+
+    let vectors_offset = symbols_offset_v8 + symbols_bytes.len() as u64;
+    let strings_offset = vectors_offset + vectors_bytes.len() as u64;
+    let fst_offset = strings_offset + strings_bytes.len() as u64;
+    let postings_offset = fst_offset + refs_fst_bytes.len() as u64;
+    let file_table_offset = postings_offset + refs_postings_bytes.len() as u64;
+    let sym_fst_offset = file_table_offset + file_table_bytes.len() as u64;
+    let sym_postings_offset = sym_fst_offset + sym_fst_bytes.len() as u64;
+
+    let call_edges_unaligned = sym_postings_offset + sym_postings_bytes.len() as u64;
+    let call_edges_offset = (call_edges_unaligned + 3) & !3u64;
+    let call_edges_pad = (call_edges_offset - call_edges_unaligned) as usize;
+    let call_edges_len = call_edges_bytes.len() as u64;
+    let callers_fst_offset = call_edges_offset + call_edges_len;
+    let callers_postings_offset = callers_fst_offset + callers_fst_bytes.len() as u64;
+    let callees_fst_offset = callers_postings_offset + callers_postings_bytes.len() as u64;
+    let callees_postings_offset = callees_fst_offset + callees_fst_bytes.len() as u64;
+    let bm25_fst_offset = callees_postings_offset + callees_post_bytes.len() as u64;
+    let bm25_postings_offset = bm25_fst_offset + bm25_fst_bytes.len() as u64;
+    let bm25_stats_offset = bm25_postings_offset + bm25_postings_bytes.len() as u64;
+
+    let ref_edges_unaligned = bm25_stats_offset + bm25_stats_bytes.len() as u64;
+    let ref_edges_offset = (ref_edges_unaligned + 3) & !3u64;
+    let ref_edges_pad = (ref_edges_offset - ref_edges_unaligned) as usize;
+    let ref_edges_len = ref_edges_record_bytes.len() as u64;
+    let ref_edges_fst_offset = ref_edges_offset + ref_edges_len;
+    let ref_edges_postings_offset = ref_edges_fst_offset + ref_fst_bytes.len() as u64;
+
+    let skel_unaligned = ref_edges_postings_offset + ref_post_bytes.len() as u64;
+    let skel_records_offset = (skel_unaligned + 3) & !3u64;
+    let skel_records_pad = (skel_records_offset - skel_unaligned) as usize;
+    let skel_records_len = skel_records_bytes.len() as u64;
+    let skel_kind_path_offset = skel_records_offset + skel_records_len;
+    let skel_kind_path_len = skel_kind_path_bytes.len() as u64;
+    let skel_ident_pool_offset = skel_kind_path_offset + skel_kind_path_len;
+    let skel_ident_pool_len = skel_ident_pool_bytes.len() as u64;
+    let skel_file_index_offset = skel_ident_pool_offset + skel_ident_pool_len;
+    let skel_file_index_len = skel_file_index_bytes.len() as u64;
+
+    let unresolved_unaligned = skel_file_index_offset + skel_file_index_len;
+    let unresolved_edges_offset = (unresolved_unaligned + 3) & !3u64;
+    let unresolved_edges_pad = (unresolved_edges_offset - unresolved_unaligned) as usize;
+    let unresolved_edges_len = unresolved_edge_bytes.len() as u64;
+    let unresolved_fst_offset = unresolved_edges_offset + unresolved_edges_len;
+    let unresolved_postings_offset = unresolved_fst_offset + unresolved_fst_bytes.len() as u64;
+
+    let hierarchy_unaligned = unresolved_postings_offset + unresolved_postings_bytes.len() as u64;
+    let hierarchy_edges_offset = (hierarchy_unaligned + 3) & !3u64;
+    let hierarchy_edges_pad = (hierarchy_edges_offset - hierarchy_unaligned) as usize;
+    let hierarchy_edges_len = hierarchy_edge_bytes.len() as u64;
+    let hierarchy_index_offset = hierarchy_edges_offset + hierarchy_edges_len;
+    let hierarchy_index_len = hierarchy_index_bytes.len() as u64;
+    let hierarchy_postings_offset = hierarchy_index_offset + hierarchy_index_len;
+
+    let unresolved_hier_unaligned =
+        hierarchy_postings_offset + hierarchy_postings_bytes.len() as u64;
+    let unresolved_hier_edges_offset = (unresolved_hier_unaligned + 3) & !3u64;
+    let unresolved_hier_edges_pad =
+        (unresolved_hier_edges_offset - unresolved_hier_unaligned) as usize;
+    let unresolved_hier_edges_len = unresolved_hier_edge_bytes.len() as u64;
+    let unresolved_hier_fst_offset = unresolved_hier_edges_offset + unresolved_hier_edges_len;
+    let unresolved_hier_postings_offset =
+        unresolved_hier_fst_offset + unresolved_hier_fst_bytes.len() as u64;
+
+    let mut out: Vec<u8> = Vec::with_capacity(data.len());
+    push_u8s(&mut out, &header.magic);
+    push_u32(&mut out, 8); // version
+    push_u64(&mut out, header.symbol_count);
+    push_u32(&mut out, header.vector_dim);
+    push_u32(&mut out, 0); // _padding
+    push_u64(&mut out, symbols_offset_v8);
+    push_u64(&mut out, vectors_offset);
+    push_u64(&mut out, strings_offset);
+    push_u64(&mut out, 0); // inverted_offset
+    push_u64(&mut out, 0); // hnsw_offset
+    push_u64(&mut out, fst_offset);
+    push_u64(&mut out, refs_fst_bytes.len() as u64);
+    push_u64(&mut out, postings_offset);
+    push_u64(&mut out, refs_postings_bytes.len() as u64);
+    push_u64(&mut out, file_table_offset);
+    push_u32(&mut out, header.file_table_count);
+    push_u32(&mut out, 0); // _padding2
+    push_u64(&mut out, sym_fst_offset);
+    push_u64(&mut out, sym_fst_bytes.len() as u64);
+    push_u64(&mut out, sym_postings_offset);
+    push_u64(&mut out, sym_postings_bytes.len() as u64);
+    debug_assert_eq!(out.len(), Header::SIZE);
+
+    push_u64(&mut out, call_edges_offset);
+    push_u64(&mut out, call_edges_len);
+    push_u64(&mut out, callers_fst_offset);
+    push_u64(&mut out, callers_fst_bytes.len() as u64);
+    push_u64(&mut out, callers_postings_offset);
+    push_u64(&mut out, callers_postings_bytes.len() as u64);
+    push_u64(&mut out, callees_fst_offset);
+    push_u64(&mut out, callees_fst_bytes.len() as u64);
+    push_u64(&mut out, callees_postings_offset);
+    push_u64(&mut out, callees_post_bytes.len() as u64);
+    push_u64(&mut out, bm25_fst_offset);
+    push_u64(&mut out, bm25_fst_bytes.len() as u64);
+    push_u64(&mut out, bm25_postings_offset);
+    push_u64(&mut out, bm25_postings_bytes.len() as u64);
+    push_u64(&mut out, bm25_stats_offset);
+    push_u64(&mut out, bm25_stats_bytes.len() as u64);
+    debug_assert_eq!(out.len(), Header::SIZE + CallGraphHeader::SIZE);
+
+    push_u64(&mut out, ref_edges_offset);
+    push_u64(&mut out, ref_edges_len);
+    push_u64(&mut out, ref_edges_fst_offset);
+    push_u64(&mut out, ref_fst_bytes.len() as u64);
+    push_u64(&mut out, ref_edges_postings_offset);
+    push_u64(&mut out, ref_post_bytes.len() as u64);
+    debug_assert_eq!(
+        out.len(),
+        Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE
+    );
+
+    push_u64(&mut out, skel_records_offset);
+    push_u64(&mut out, skel_records_len);
+    push_u64(&mut out, skel_kind_path_offset);
+    push_u64(&mut out, skel_kind_path_len);
+    push_u64(&mut out, skel_ident_pool_offset);
+    push_u64(&mut out, skel_ident_pool_len);
+    push_u64(&mut out, skel_file_index_offset);
+    push_u64(&mut out, skel_file_index_len);
+    for fp in pat.grammar_fingerprints {
+        push_u32(&mut out, fp);
+    }
+    debug_assert_eq!(
+        out.len(),
+        Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE + PatternSkeletonHeader::SIZE
+    );
+
+    push_u64(&mut out, unresolved_edges_offset);
+    push_u64(&mut out, unresolved_edges_len);
+    push_u64(&mut out, unresolved_fst_offset);
+    push_u64(&mut out, unresolved_fst_bytes.len() as u64);
+    push_u64(&mut out, unresolved_postings_offset);
+    push_u64(&mut out, unresolved_postings_bytes.len() as u64);
+
+    push_u64(&mut out, hierarchy_edges_offset);
+    push_u64(&mut out, hierarchy_edges_len);
+    push_u64(&mut out, hierarchy_index_offset);
+    push_u64(&mut out, hierarchy_index_len);
+    push_u64(&mut out, hierarchy_postings_offset);
+    push_u64(&mut out, hierarchy_postings_bytes.len() as u64);
+
+    push_u64(&mut out, unresolved_hier_edges_offset);
+    push_u64(&mut out, unresolved_hier_edges_len);
+    push_u64(&mut out, unresolved_hier_fst_offset);
+    push_u64(&mut out, unresolved_hier_fst_bytes.len() as u64);
+    push_u64(&mut out, unresolved_hier_postings_offset);
+    push_u64(&mut out, unresolved_hier_postings_bytes.len() as u64);
+    debug_assert_eq!(out.len(), symbols_offset_v8 as usize);
+
+    out.extend_from_slice(symbols_bytes);
+    out.extend_from_slice(vectors_bytes);
+    out.extend_from_slice(strings_bytes);
+    out.extend_from_slice(refs_fst_bytes);
+    out.extend_from_slice(refs_postings_bytes);
+    out.extend_from_slice(file_table_bytes);
+    out.extend_from_slice(sym_fst_bytes);
+    out.extend_from_slice(sym_postings_bytes);
+    out.extend(std::iter::repeat_n(0u8, call_edges_pad));
+    out.extend_from_slice(call_edges_bytes);
+    out.extend_from_slice(callers_fst_bytes);
+    out.extend_from_slice(callers_postings_bytes);
+    out.extend_from_slice(&callees_fst_bytes);
+    out.extend_from_slice(&callees_post_bytes);
+    out.extend_from_slice(bm25_fst_bytes);
+    out.extend_from_slice(bm25_postings_bytes);
+    out.extend_from_slice(bm25_stats_bytes);
+    out.extend(std::iter::repeat_n(0u8, ref_edges_pad));
+    out.extend_from_slice(ref_edges_record_bytes);
+    out.extend_from_slice(&ref_fst_bytes);
+    out.extend_from_slice(&ref_post_bytes);
+    out.extend(std::iter::repeat_n(0u8, skel_records_pad));
+    out.extend_from_slice(skel_records_bytes);
+    out.extend_from_slice(skel_kind_path_bytes);
+    out.extend_from_slice(skel_ident_pool_bytes);
+    out.extend_from_slice(skel_file_index_bytes);
+    out.extend(std::iter::repeat_n(0u8, unresolved_edges_pad));
+    out.extend_from_slice(unresolved_edge_bytes);
+    out.extend_from_slice(unresolved_fst_bytes);
+    out.extend_from_slice(unresolved_postings_bytes);
+    out.extend(std::iter::repeat_n(0u8, hierarchy_edges_pad));
+    out.extend_from_slice(hierarchy_edge_bytes);
+    out.extend_from_slice(hierarchy_index_bytes);
+    out.extend_from_slice(hierarchy_postings_bytes);
+    out.extend(std::iter::repeat_n(0u8, unresolved_hier_edges_pad));
+    out.extend_from_slice(unresolved_hier_edge_bytes);
+    out.extend_from_slice(unresolved_hier_fst_bytes);
+    out.extend_from_slice(unresolved_hier_postings_bytes);
+
+    drop(reader); // close the mmap before overwriting the file
+    let mut tmp_os = index_path.as_os_str().to_owned();
+    tmp_os.push(".v8downgrade.tmp");
+    let tmp_path = PathBuf::from(tmp_os);
+    std::fs::write(&tmp_path, &out).context("write downgraded v8 index")?;
+    std::fs::rename(&tmp_path, index_path).context("rename downgraded v8 index into place")?;
+    Ok(())
+}
+
+fn byte_slice(data: &[u8], offset: u64, len: u64) -> Result<&[u8]> {
+    let start = usize::try_from(offset).context("offset overflows usize")?;
+    let len = usize::try_from(len).context("len overflows usize")?;
+    let end = start
+        .checked_add(len)
+        .context("section end overflows usize")?;
+    data.get(start..end).with_context(|| {
+        format!(
+            "section [{start}..{end}) out of bounds (file is {} bytes)",
+            data.len()
+        )
+    })
+}
+
+fn push_u8s(buf: &mut Vec<u8>, v: &[u8]) {
+    buf.extend_from_slice(v);
+}
+
+fn push_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn push_u64(buf: &mut Vec<u8>, v: u64) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::call_graph::{
-        build_callees_fst, encode_caller_key as prod_encode_caller_key, CallEdgeBuilder,
-        CallGraphFstReader,
-    };
-    use crate::store::ref_edges::{build_ref_edges_section, RefEdgeBuilder};
 
     // -------------------------------------------------------------
-    // Sanity: the oracle copy is byte-identical to the production
-    // functions it stands in for, today. This is what makes it a
-    // valid oracle — if these ever diverge, the copy is stale.
+    // P2 note: the production-parity tests that used to live here
+    // (`encode_caller_key_matches_production`,
+    // `build_u32_keyed_fst_matches_build_callees_fst`,
+    // `build_ref_edges_fst_matches_production`, and the two parity
+    // proptests) imported `call_graph::build_callees_fst` /
+    // `encode_caller_key` / `encode_caller_key_into` and
+    // `ref_edges::build_ref_edges_section` — all deleted from
+    // production in the v9 CSR migration. There is nothing left to
+    // compare the oracle against, so these tests are gone too (per
+    // `docs/V9-FORMAT.md` §9's P2 note). The CSR-vs-oracle equivalence
+    // proptests in `store::csr` (which compare the oracle against the
+    // NEW `csr::build_csr` / `build_csr_offsets_sorted`) survive P2
+    // unchanged.
     // -------------------------------------------------------------
 
     #[test]
-    fn encode_caller_key_matches_production() {
-        for n in [0u32, 1, 42, 999_999, u32::MAX] {
-            assert_eq!(encode_caller_key(n), prod_encode_caller_key(n));
-        }
+    fn oracle_encode_caller_key_is_zero_padded_decimal() {
+        assert_eq!(encode_caller_key(42), "0000000042");
+        assert_eq!(encode_caller_key(0), "0000000000");
+        assert_eq!(encode_caller_key(u32::MAX), "4294967295");
     }
 
     #[test]
-    fn encode_caller_key_into_matches_production() {
+    fn oracle_encode_caller_key_into_matches_encode_caller_key() {
         for n in [0u32, 1, 9, 10, 12345, u32::MAX] {
-            let mut oracle_buf = [b'0'; 10];
-            let mut prod_buf = [b'0'; 10];
-            encode_caller_key_into(&mut oracle_buf, n);
-            crate::store::call_graph::encode_caller_key_into(&mut prod_buf, n);
-            assert_eq!(oracle_buf, prod_buf, "diverged for n={n}");
+            let mut buf = [b'0'; 10];
+            encode_caller_key_into(&mut buf, n);
+            assert_eq!(std::str::from_utf8(&buf).unwrap(), encode_caller_key(n));
         }
     }
 
     #[test]
-    fn build_u32_keyed_fst_matches_build_callees_fst() {
-        let edges = vec![
-            CallEdgeBuilder {
-                caller_sym_idx: 5,
-                callee_name: "alpha".into(),
+    fn oracle_build_u32_keyed_fst_groups_by_key() {
+        let entries = vec![(5, 0), (5, 1), (7, 2)];
+        let (fst, posts) = build_u32_keyed_fst(entries).unwrap();
+        let reader = FstOracleReader::new(&fst, &posts).unwrap();
+        assert_eq!(reader.find_decimal_key(5), vec![0, 1]);
+        assert_eq!(reader.find_decimal_key(7), vec![2]);
+        assert!(reader.find_decimal_key(99).is_empty());
+    }
+
+    #[test]
+    fn oracle_build_ref_edges_fst_no_dedup() {
+        // Unlike build_u32_keyed_fst, this builder never dedups — each
+        // edge_idx is the unique position of its record.
+        let entries = vec![(2, 0), (2, 1), (4, 2)];
+        let (fst, posts) = build_ref_edges_fst(&entries).unwrap();
+        let reader = FstOracleReader::new(&fst, &posts).unwrap();
+        assert_eq!(reader.find_decimal_key(2), vec![0, 1]);
+        assert_eq!(reader.find_decimal_key(4), vec![2]);
+    }
+
+    // -------------------------------------------------------------
+    // R20: `build_sample_v8_index` drives the real (v9) pipeline, then
+    // `downgrade_v9_file_to_v8` rewrites the file as v8 in place. Both
+    // go through `util::config`'s process-global cache resolver, so
+    // they're exercised at library level in
+    // `tests/legacy_v8_golden_test.rs` (its own test binary / process)
+    // rather than here — a `#[cfg(test)]` unit test in this file shares
+    // a process with every other `--lib` unit test, and a second
+    // `set_cache_override` call anywhere in that process is a silent
+    // no-op (`OnceLock`), which would make this test's behaviour depend
+    // on test execution order. `downgrade_v9_file_to_v8`'s own
+    // version-gate (non-v9 input) is covered directly below instead,
+    // using a plain `write_index_with_call_graph` fixture with no cache
+    // involvement.
+    // -------------------------------------------------------------
+
+    #[test]
+    fn downgrade_rejects_a_non_v9_file() {
+        use crate::index::symbols::{ParsedFile, ParsedSymbol, SymbolKind};
+
+        let parsed = vec![ParsedFile {
+            path: "a.rs".to_string(),
+            symbols: vec![ParsedSymbol {
+                name: "foo".to_string(),
+                kind: SymbolKind::Function,
                 line: 1,
-            },
-            CallEdgeBuilder {
-                caller_sym_idx: 5,
-                callee_name: "beta".into(),
-                line: 2,
-            },
-            CallEdgeBuilder {
-                caller_sym_idx: 7,
-                callee_name: "gamma".into(),
-                line: 3,
-            },
-        ];
-        let entries: Vec<(u32, u32)> = edges
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (e.caller_sym_idx, i as u32))
-            .collect();
+                signature: None,
+                doc: None,
+                body_tokens: None,
+            }],
+            refs: Vec::new(),
+            call_edges: Vec::new(),
+            bound_refs: Vec::new(),
+            skeletons: Vec::new(),
+            cpp_includes: Vec::new(),
+            trigram_bloom: None,
+            hierarchy_captures: Vec::new(),
+        }];
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out = tmp.path().join("index.vex");
+        crate::store::writer::write_index_full(
+            &parsed,
+            &[],
+            crate::store::format::VECTOR_DIM,
+            &out,
+        )
+        .expect("write v9 index");
 
-        let (prod_fst, prod_posts) = build_callees_fst(&edges).unwrap();
-        let (oracle_fst, oracle_posts) = build_u32_keyed_fst(entries).unwrap();
+        // The freshly-written file IS v9 (today's writer) — this proves
+        // the gate fires on a genuinely wrong version, not just "any
+        // file downgrade_v9_file_to_v8 is handed". Corrupt the on-disk
+        // version byte to something else and assert the gate still
+        // rejects it with a clear message.
+        let mut bytes = std::fs::read(&out).unwrap();
+        // Header: magic[4] then version (u32 LE) at byte offset 4.
+        bytes[4..8].copy_from_slice(&8u32.to_le_bytes());
+        std::fs::write(&out, &bytes).unwrap();
 
-        let prod_reader = CallGraphFstReader::new(&prod_fst, &prod_posts).unwrap();
-        let oracle_reader = FstOracleReader::new(&oracle_fst, &oracle_posts).unwrap();
-
-        for caller in [5u32, 7, 99] {
-            assert_eq!(
-                prod_reader.find(&prod_encode_caller_key(caller)),
-                oracle_reader.find_decimal_key(caller),
-                "diverged for caller={caller}"
-            );
-        }
-    }
-
-    #[test]
-    fn build_ref_edges_fst_matches_production() {
-        let edges = vec![
-            RefEdgeBuilder {
-                to_sym_idx: 2,
-                from_file_id: 0,
-                line: 10,
-                col: 1,
-                kind: 2,
-            },
-            RefEdgeBuilder {
-                to_sym_idx: 2,
-                from_file_id: 1,
-                line: 20,
-                col: 2,
-                kind: 1,
-            },
-            RefEdgeBuilder {
-                to_sym_idx: 4,
-                from_file_id: 0,
-                line: 30,
-                col: 3,
-                kind: 0,
-            },
-        ];
-        let (_prod_edge_bytes, prod_fst, prod_posts) = build_ref_edges_section(&edges).unwrap();
-
-        // Rebuild the same sorted (to_sym_idx, edge_idx) entries the
-        // production builder derives internally, to feed the oracle.
-        let mut sorted: Vec<&RefEdgeBuilder> = edges.iter().collect();
-        sorted.sort_by_key(|e| (e.to_sym_idx, e.from_file_id, e.line, e.col));
-        let entries: Vec<(u32, u32)> = sorted
-            .iter()
-            .enumerate()
-            .map(|(idx, e)| (e.to_sym_idx, idx as u32))
-            .collect();
-        let (oracle_fst, oracle_posts) = build_ref_edges_fst(&entries).unwrap();
-
-        let prod_reader = CallGraphFstReader::new(&prod_fst, &prod_posts).unwrap();
-        let oracle_reader = FstOracleReader::new(&oracle_fst, &oracle_posts).unwrap();
-
-        for sym in [2u32, 4, 99] {
-            assert_eq!(
-                prod_reader.find(&prod_encode_caller_key(sym)),
-                oracle_reader.find_decimal_key(sym),
-                "diverged for to_sym_idx={sym}"
-            );
-        }
-    }
-
-    // -------------------------------------------------------------
-    // Parity proptests: the oracle builders vs the production ones
-    // they stand in for, over RANDOM inputs (not just the handful of
-    // hand-picked edges above). These exist only to prove the oracle
-    // is faithful *today* — once P2 deletes the production FST-based
-    // `build_callees_fst` / `build_ref_edges_section` FST path, there
-    // is nothing left to compare against, so these two proptests are
-    // deleted alongside them (they are not part of the CSR-vs-oracle
-    // equivalence proptests in `store::csr`, which survive P2).
-    // -------------------------------------------------------------
-
-    proptest::proptest! {
-        #[test]
-        fn callees_oracle_matches_production_over_random_edges(
-            raw in proptest::collection::vec(
-                (0u32..20, "[a-z]{1,8}", 0u32..1000),
-                0..50,
-            )
-        ) {
-            let edges: Vec<CallEdgeBuilder> = raw
-                .iter()
-                .map(|(caller, name, line)| CallEdgeBuilder {
-                    caller_sym_idx: *caller,
-                    callee_name: name.clone(),
-                    line: *line,
-                })
-                .collect();
-            let entries: Vec<(u32, u32)> = edges
-                .iter()
-                .enumerate()
-                .map(|(i, e)| (e.caller_sym_idx, i as u32))
-                .collect();
-
-            let (prod_fst, prod_posts) = build_callees_fst(&edges).unwrap();
-            let (oracle_fst, oracle_posts) = build_u32_keyed_fst(entries).unwrap();
-            let prod_reader = CallGraphFstReader::new(&prod_fst, &prod_posts).unwrap();
-            let oracle_reader = FstOracleReader::new(&oracle_fst, &oracle_posts).unwrap();
-
-            for caller in 0u32..20 {
-                proptest::prop_assert_eq!(
-                    prod_reader.find(&prod_encode_caller_key(caller)),
-                    oracle_reader.find_decimal_key(caller),
-                    "diverged for caller={}", caller
-                );
-            }
-        }
-
-        #[test]
-        fn ref_edges_oracle_matches_production_over_random_edges(
-            raw in proptest::collection::vec(
-                (0u32..20, 0u32..10, 0u32..1000, 0u32..200, 0u8..4),
-                0..50,
-            )
-        ) {
-            let edges: Vec<RefEdgeBuilder> = raw
-                .iter()
-                .map(|&(to, file, line, col, kind)| RefEdgeBuilder {
-                    to_sym_idx: to,
-                    from_file_id: file,
-                    line,
-                    col,
-                    kind,
-                })
-                .collect();
-            if edges.is_empty() {
-                // `build_ref_edges_section` special-cases zero edges by
-                // returning literally empty byte vectors (not a valid
-                // minimal FST, unlike `build_callees_fst`'s always-build-
-                // through-the-FST-builder path) — nothing to compare.
-                return Ok(());
-            }
-            let (_prod_edge_bytes, prod_fst, prod_posts) = build_ref_edges_section(&edges).unwrap();
-
-            // Rebuild the same sorted (to_sym_idx, edge_idx) entries the
-            // production builder derives internally, to feed the oracle.
-            let mut sorted: Vec<&RefEdgeBuilder> = edges.iter().collect();
-            sorted.sort_by_key(|e| (e.to_sym_idx, e.from_file_id, e.line, e.col));
-            let entries: Vec<(u32, u32)> = sorted
-                .iter()
-                .enumerate()
-                .map(|(idx, e)| (e.to_sym_idx, idx as u32))
-                .collect();
-            let (oracle_fst, oracle_posts) = build_ref_edges_fst(&entries).unwrap();
-
-            let prod_reader = CallGraphFstReader::new(&prod_fst, &prod_posts).unwrap();
-            let oracle_reader = FstOracleReader::new(&oracle_fst, &oracle_posts).unwrap();
-
-            for sym in 0u32..20 {
-                proptest::prop_assert_eq!(
-                    prod_reader.find(&prod_encode_caller_key(sym)),
-                    oracle_reader.find_decimal_key(sym),
-                    "diverged for to_sym_idx={}", sym
-                );
-            }
-        }
+        let err = downgrade_v9_file_to_v8(&out).unwrap_err();
+        assert!(
+            err.to_string().contains("expected a v9 file"),
+            "unexpected error: {err}"
+        );
     }
 }

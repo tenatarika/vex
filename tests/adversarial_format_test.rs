@@ -504,12 +504,12 @@ fn open_missing_file_error_includes_path() {
 // All offsets stay zero in 11.1.3a; the section payload itself lands in 11.1.3b.
 // ---------------------------------------------------------------------------
 
-/// `VERSION` is the version this build writes. The typed hierarchy edge
-/// section P1 scaffold bumps it to 8 and appends a `HierarchyHeader`
-/// immediately after the `UnresolvedRefsHeader`.
+/// `VERSION` is the version this build writes. The v9 CSR migration
+/// (`docs/V9-FORMAT.md`) bumps it to 9 and appends a `ClusterHeader`
+/// immediately after the `UnresolvedHierarchyHeader`.
 #[test]
-fn version_is_five_after_format_bump() {
-    assert_eq!(VERSION, 8, "hierarchy edges P1 bumps the writer to v8");
+fn version_is_nine_after_csr_format_bump() {
+    assert_eq!(VERSION, 9, "the v9 CSR migration bumps the writer to v9");
 }
 
 /// A v5 file truncated *exactly* at the end of the CallGraphHeader (i.e.,

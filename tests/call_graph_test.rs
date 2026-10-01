@@ -4,8 +4,7 @@ use tempfile::TempDir;
 use vex::index::symbols::{ParsedFile, ParsedSymbol, SymbolKind};
 use vex::parse::language::Language;
 use vex::store::call_graph::{
-    build_callers_fst, encode_caller_key, find_callees_fast, find_callers_fast, CallEdgeBuilder,
-    CallGraphFstReader,
+    build_callers_fst, find_callees_fast, find_callers_fast, CallEdgeBuilder, CallGraphFstReader,
 };
 use vex::store::format::{CallEdge, CallGraphHeader, Header, MIN_SUPPORTED_VERSION, VERSION};
 use vex::store::reader::IndexReader;
@@ -59,11 +58,11 @@ fn write_and_open(tmp: &TempDir, parsed: &[ParsedFile], edges: &[CallEdgeBuilder
 // ---------------------------------------------------------------------------
 
 #[test]
-fn current_version_is_5() {
-    // Bumped to 8 for the typed hierarchy edge section P1 scaffold (adds
-    // HierarchyHeader for `extends`/`implements`/`uses` edges). v3..v7
+fn current_version_is_9() {
+    // Bumped to 9 for the CSR callees/ref_edges migration + the (always-
+    // zeroed in P2) ClusterHeader slot (`docs/V9-FORMAT.md`). v3..v8
     // indexes still open because MIN_SUPPORTED_VERSION stays at 3.
-    assert_eq!(VERSION, 8);
+    assert_eq!(VERSION, 9);
 }
 
 #[test]
@@ -458,13 +457,6 @@ fn build_callers_fst_dedups_within_callee() {
     assert_eq!(indices.len(), 2, "two distinct edges should both appear");
     assert_eq!(indices[0], 0);
     assert_eq!(indices[1], 1);
-}
-
-#[test]
-fn encode_caller_key_zero_padded() {
-    assert_eq!(encode_caller_key(42), "0000000042");
-    assert_eq!(encode_caller_key(0), "0000000000");
-    assert_eq!(encode_caller_key(u32::MAX), "4294967295");
 }
 
 // ---------------------------------------------------------------------------

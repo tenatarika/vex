@@ -4,15 +4,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{ensure, Context, Result};
 
-use super::call_graph::{build_callees_fst, build_callers_fst, CallEdgeBuilder};
+use super::call_graph::{build_callers_fst, callees_csr_keys, CallEdgeBuilder};
+use super::csr;
 use super::format::{
-    CallEdge, CallGraphHeader, Header, HierarchyHeader, PatternSkeletonHeader, SymbolRecord,
-    UnresolvedRefsHeader, V5SectionHeader, MAGIC, VECTOR_DIM, VERSION,
+    CallEdge, CallGraphHeader, ClusterHeader, Header, HierarchyHeader, PatternSkeletonHeader,
+    SymbolRecord, UnresolvedRefsHeader, V5SectionHeader, MAGIC, VECTOR_DIM, VERSION,
 };
 use super::hierarchy_edges::build_hierarchy_section;
 use super::include_resolver;
 use super::pattern_skeletons::build_pattern_skeleton_section;
-use super::ref_edges::{build_ref_edges_section, RefEdgeBuilder};
+use super::ref_edges::{build_ref_edges_records, RefEdgeBuilder};
 use super::unresolved_refs::{build_unresolved_section, UnresolvedRefBuilder};
 use super::{refs_fst, symbol_fst};
 use crate::parse::extractor::is_meaningful_identifier;
@@ -491,7 +492,26 @@ fn write_index_to(
         })
         .collect();
     let (callers_fst_bytes, callers_post_bytes) = build_callers_fst(call_edges)?;
-    let (callees_fst_bytes, callees_post_bytes) = build_callees_fst(call_edges)?;
+    // v9 callees CSR (§2.2, §3.1). `symbol_count` fits the writer's own
+    // numbering (`records.len()`), which every `caller_sym_idx` is drawn
+    // from. "or 0 when there are no call edges" (§2.2) — skip building the
+    // (otherwise all-empty-group) offsets array entirely rather than
+    // writing `4 * (symbol_count + 1)` zero bytes for a project with no
+    // calls at all.
+    let symbol_count_u32 = u32::try_from(records.len())
+        .context("symbol_count exceeds u32::MAX — cannot build v9 CSR sections")?;
+    let (callees_offsets_bytes, callees_edge_idx_bytes): (Vec<u8>, Vec<u8>) = if call_edges
+        .is_empty()
+    {
+        (Vec::new(), Vec::new())
+    } else {
+        let (offsets, edge_idx) = csr::build_csr(&callees_csr_keys(call_edges), symbol_count_u32)
+            .context("build v9 callees CSR")?;
+        (
+            csr::encode_le_u32s(&offsets),
+            csr::encode_le_u32s(&edge_idx),
+        )
+    };
 
     // v5 Pass 2 — cross-file Imported resolution (11.1.3c). Build a
     // name → global-idx index over every symbol so each
@@ -827,8 +847,34 @@ fn write_index_to(
         }
     }
 
-    let (ref_edge_bytes, ref_edge_fst_bytes, ref_edge_post_bytes) =
-        build_ref_edges_section(&ref_edge_builders)?;
+    // §13 R18: filter bad `to_sym_idx` records BEFORE sorting/writing so
+    // the physical record array and the (offsets-only, elided-edge_idx)
+    // CSR built from it stay in lockstep — `build_csr_offsets_sorted` has
+    // no `edge_idx` indirection to drop a bad record from after the fact.
+    let ref_edge_builders: Vec<RefEdgeBuilder> = {
+        let before = ref_edge_builders.len();
+        let kept: Vec<RefEdgeBuilder> = ref_edge_builders
+            .into_iter()
+            .filter(|e| e.to_sym_idx < symbol_count_u32)
+            .collect();
+        let dropped = before - kept.len();
+        if dropped > 0 {
+            tracing::warn!(
+                dropped,
+                symbol_count = symbol_count_u32,
+                "ref_edges: dropped {dropped} record(s) whose to_sym_idx >= symbol_count {symbol_count_u32} (writer bug)"
+            );
+        }
+        kept
+    };
+    let (ref_edge_bytes, ref_edges_keys) = build_ref_edges_records(&ref_edge_builders);
+    let ref_edges_offsets_bytes: Vec<u8> = if ref_edges_keys.is_empty() {
+        Vec::new()
+    } else {
+        let offsets = csr::build_csr_offsets_sorted(&ref_edges_keys, symbol_count_u32)
+            .context("build v9 ref_edges CSR offsets")?;
+        csr::encode_le_u32s(&offsets)
+    };
 
     // Multi-repo Phase 6 — carry forward unchanged files' unresolved refs.
     // Map each one's OLD from_file_id → OLD path → NEW file_id (mirrors the
@@ -881,21 +927,25 @@ fn write_index_to(
     let (skel_section, skel_fingerprints) =
         build_pattern_skeleton_section(pattern_skeletons, &mut no_intern_fn, lang_fingerprints)?;
 
-    // Calculate section offsets — v8 places CallGraphHeader, V5SectionHeader,
-    // PatternSkeletonHeader, UnresolvedRefsHeader, HierarchyHeader, and
-    // UnresolvedHierarchyHeader immediately after the base Header, so
-    // Symbols starts at:
+    // Calculate section offsets — v9 places CallGraphHeader, V5SectionHeader,
+    // PatternSkeletonHeader, UnresolvedRefsHeader, HierarchyHeader,
+    // UnresolvedHierarchyHeader, and ClusterHeader immediately after the
+    // base Header, so Symbols starts at:
     //   Header::SIZE + CallGraphHeader::SIZE + V5SectionHeader::SIZE
     //   + PatternSkeletonHeader::SIZE + UnresolvedRefsHeader::SIZE
     //   + HierarchyHeader::SIZE + UnresolvedHierarchyHeader::SIZE
+    //   + ClusterHeader::SIZE
+    // (`docs/V9-FORMAT.md` §2.1, §13 R9/R21 — 720 bytes on v9, pinned by
+    // `format::tests::v9_symbols_offset_is_seven_hundred_twenty`).
     let cg_header_offset = Header::SIZE as u64;
     let v5_header_offset = cg_header_offset + CallGraphHeader::SIZE as u64;
     let pat_header_offset = v5_header_offset + V5SectionHeader::SIZE as u64;
     let unres_header_offset = pat_header_offset + PatternSkeletonHeader::SIZE as u64;
     let hier_header_offset = unres_header_offset + UnresolvedRefsHeader::SIZE as u64;
     let unresolved_hier_header_offset = hier_header_offset + HierarchyHeader::SIZE as u64;
-    let symbols_offset =
+    let cluster_header_offset =
         unresolved_hier_header_offset + super::format::UnresolvedHierarchyHeader::SIZE as u64;
+    let symbols_offset = cluster_header_offset + ClusterHeader::SIZE as u64;
     let symbols_size = records.len() * SymbolRecord::SIZE;
 
     let vectors_offset = symbols_offset + symbols_size as u64;
@@ -921,13 +971,18 @@ fn write_index_to(
     let call_edges_len = (edge_records.len() * CallEdge::SIZE) as u64;
     let callers_fst_offset = call_edges_offset + call_edges_len;
     let callers_postings_offset = callers_fst_offset + callers_fst_bytes.len() as u64;
-    let callees_fst_offset = callers_postings_offset + callers_post_bytes.len() as u64;
-    let callees_postings_offset = callees_fst_offset + callees_fst_bytes.len() as u64;
+    // v9 callees CSR, 4-aligned (§2.2: "offsets start, 4-aligned (pad after
+    // callers postings)"). Not a safety requirement (csr.rs never casts to
+    // &[u32]) but keeps every fixed-width array in the file 4-aligned.
+    let callees_index_unaligned = callers_postings_offset + callers_post_bytes.len() as u64;
+    let callees_index_offset = (callees_index_unaligned + 3) & !3u64;
+    let callees_index_pad = (callees_index_offset - callees_index_unaligned) as usize;
+    let callees_edge_idx_offset = callees_index_offset + callees_offsets_bytes.len() as u64;
 
-    // BM25 sections come after callees postings. No alignment requirement —
+    // BM25 sections come after the callees CSR. No alignment requirement —
     // they're variable-length byte blobs (FST + posting + stats).
     let (bm25_fst, bm25_posts, bm25_stats): (&[u8], &[u8], &[u8]) = bm25.unwrap_or((&[], &[], &[]));
-    let bm25_fst_offset = callees_postings_offset + callees_post_bytes.len() as u64;
+    let bm25_fst_offset = callees_edge_idx_offset + callees_edge_idx_bytes.len() as u64;
     let bm25_postings_offset = bm25_fst_offset + bm25_fst.len() as u64;
     let bm25_stats_offset = bm25_postings_offset + bm25_posts.len() as u64;
 
@@ -937,12 +992,18 @@ fn write_index_to(
     let ref_edges_offset = (ref_edges_unaligned + 3) & !3u64;
     let ref_edges_pad = (ref_edges_offset - ref_edges_unaligned) as usize;
     let ref_edges_len = ref_edge_bytes.len() as u64;
-    let ref_edges_fst_offset = ref_edges_offset + ref_edges_len;
-    let ref_edges_postings_offset = ref_edges_fst_offset + ref_edge_fst_bytes.len() as u64;
+    // v9 ref_edges CSR offsets-only, 4-aligned. `ref_edges_edge_idx_len`
+    // is always 0 on v9 (§2.3: identity-elided) — `edge_idx_offset` still
+    // gets a well-defined value (`index_offset + index_len`) even though
+    // no bytes are written there.
+    let ref_edges_index_unaligned = ref_edges_offset + ref_edges_len;
+    let ref_edges_index_offset = (ref_edges_index_unaligned + 3) & !3u64;
+    let ref_edges_index_pad = (ref_edges_index_offset - ref_edges_index_unaligned) as usize;
+    let ref_edges_edge_idx_offset = ref_edges_index_offset + ref_edges_offsets_bytes.len() as u64;
 
     // v6 pattern skeleton sub-sections. Align skeleton records to 4 bytes so
     // SkeletonRecord (align_of == 4) can be cast from the mmap.
-    let skel_unaligned = ref_edges_postings_offset + ref_edge_post_bytes.len() as u64;
+    let skel_unaligned = ref_edges_edge_idx_offset; // ref_edges_edge_idx_len is always 0 on v9
     let skel_records_offset = (skel_unaligned + 3) & !3u64;
     let skel_records_pad = (skel_records_offset - skel_unaligned) as usize;
     let skel_records_len = skel_section.skeleton_records.len() as u64;
@@ -1032,16 +1093,34 @@ fn write_index_to(
         callers_fst_len: callers_fst_bytes.len() as u64,
         callers_postings_offset,
         callers_postings_len: callers_post_bytes.len() as u64,
-        callees_fst_offset,
-        callees_fst_len: callees_fst_bytes.len() as u64,
-        callees_postings_offset,
-        callees_postings_len: callees_post_bytes.len() as u64,
+        callees_index_offset,
+        callees_index_len: callees_offsets_bytes.len() as u64,
+        callees_edge_idx_offset,
+        callees_edge_idx_len: callees_edge_idx_bytes.len() as u64,
         bm25_fst_offset,
         bm25_fst_len: bm25_fst.len() as u64,
         bm25_postings_offset,
         bm25_postings_len: bm25_posts.len() as u64,
         bm25_stats_offset,
         bm25_stats_len: bm25_stats.len() as u64,
+    };
+
+    // v9: ClusterHeader immediately after UnresolvedHierarchyHeader,
+    // always written and always zeroed in P2 (`docs/V9-FORMAT.md` §2.1,
+    // §13 R9) — clustering itself lands in P4a. `flags` stays 0 (COMPUTED
+    // unset), so a reader must not interpret any other field as real data.
+    let cluster_header = ClusterHeader {
+        assign_offset: 0,
+        assign_len: 0,
+        table_offset: 0,
+        table_len: 0,
+        resolution_num: 0,
+        resolution_den: 0,
+        flags: 0,
+        algo_version: 0,
+        levels: 0,
+        build_symbol_count: 0,
+        _reserved: [0; 12],
     };
 
     let header = Header {
@@ -1092,10 +1171,11 @@ fn write_index_to(
     let v5_header = V5SectionHeader {
         ref_edges_offset,
         ref_edges_len,
-        ref_edges_fst_offset,
-        ref_edges_fst_len: ref_edge_fst_bytes.len() as u64,
-        ref_edges_postings_offset,
-        ref_edges_postings_len: ref_edge_post_bytes.len() as u64,
+        ref_edges_index_offset,
+        ref_edges_index_len: ref_edges_offsets_bytes.len() as u64,
+        ref_edges_edge_idx_offset,
+        // §2.3: always 0 on v9 — the identity range stands in for edge_idx.
+        ref_edges_edge_idx_len: 0,
     };
     // SAFETY: V5SectionHeader is #[repr(C)] with fixed layout.
     let v5_bytes: &[u8] = unsafe {
@@ -1155,6 +1235,17 @@ fn write_index_to(
     };
     w.write_all(unresolved_hier_header_bytes)?;
 
+    // v9: ClusterHeader immediately after UnresolvedHierarchyHeader —
+    // always written, always zeroed in P2 (§2.1, §13 R9). SAFETY:
+    // ClusterHeader is #[repr(C)] with fixed layout.
+    let cluster_header_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            &cluster_header as *const ClusterHeader as *const u8,
+            ClusterHeader::SIZE,
+        )
+    };
+    w.write_all(cluster_header_bytes)?;
+
     for rec in &records {
         // SAFETY: SymbolRecord is #[repr(C)] with fixed layout
         let bytes: &[u8] = unsafe {
@@ -1205,8 +1296,13 @@ fn write_index_to(
     }
     w.write_all(&callers_fst_bytes)?;
     w.write_all(&callers_post_bytes)?;
-    w.write_all(&callees_fst_bytes)?;
-    w.write_all(&callees_post_bytes)?;
+
+    // v9 callees CSR, 4-byte aligned (see callees_index_offset).
+    if callees_index_pad > 0 {
+        w.write_all(&[0u8; 3][..callees_index_pad])?;
+    }
+    w.write_all(&callees_offsets_bytes)?;
+    w.write_all(&callees_edge_idx_bytes)?;
 
     // v4 BM25 sections (may be empty slices, which is the right behaviour
     // when bm25 == None — writes nothing, header records 0-length).
@@ -1214,13 +1310,17 @@ fn write_index_to(
     w.write_all(bm25_posts)?;
     w.write_all(bm25_stats)?;
 
-    // v5 reference_edges sections, 4-byte aligned (see ref_edges_offset).
+    // v5 reference_edges records, 4-byte aligned (see ref_edges_offset).
     if ref_edges_pad > 0 {
         w.write_all(&[0u8; 3][..ref_edges_pad])?;
     }
     w.write_all(&ref_edge_bytes)?;
-    w.write_all(&ref_edge_fst_bytes)?;
-    w.write_all(&ref_edge_post_bytes)?;
+    // v9 ref_edges CSR offsets-only, 4-byte aligned (see
+    // ref_edges_index_offset). No edge_idx bytes — always elided (§2.3).
+    if ref_edges_index_pad > 0 {
+        w.write_all(&[0u8; 3][..ref_edges_index_pad])?;
+    }
+    w.write_all(&ref_edges_offsets_bytes)?;
 
     // v6 pattern skeleton sub-sections, 4-byte aligned before the records.
     if skel_records_pad > 0 {

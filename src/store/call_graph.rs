@@ -1,21 +1,27 @@
-//! Call-graph FST construction and zero-copy readers.
+//! Call-graph construction and zero-copy readers.
 //!
 //! At write time we collect `CallEdgeBuilder` records from the pipeline,
-//! intern callee names into the strings pool, and build two FSTs:
+//! intern callee names into the strings pool, and build:
 //!
 //! - **Callers FST**: `callee_name → posting_list[edge_idx]`. Powers
 //!   `vex callers <name>` — given a callee name, retrieve every edge whose
-//!   `callee` matches.
-//! - **Callees FST**: `caller_sym_idx (as decimal string) → posting_list[edge_idx]`.
-//!   Powers `vex callees <name>` — given a caller symbol (resolved by name
-//!   first), retrieve every outgoing edge.
+//!   `callee` matches. Name-keyed, so it stays an `fst::Map` (unaffected
+//!   by the v9 CSR migration — `docs/V9-FORMAT.md` §3.1).
+//! - **Callees index**: `caller_sym_idx → [edge_idx]`. Powers `vex
+//!   callees <name>` — given a caller symbol (resolved by name first),
+//!   retrieve every outgoing edge. v9+: a dense CSR (`offsets[n+1]` +
+//!   `edge_idx[m]`, `store::csr::build_csr`) built by `writer.rs`. v4–v8
+//!   (legacy): an in-memory CSR built once per `IndexReader` from the raw
+//!   `CallEdge` records (§13 R19) — the on-disk decimal-FST encoding this
+//!   module used to build/read lives on only as an oracle copy in
+//!   `store::legacy_v8` for the v8 compatibility tests.
 //!
-//! Both posting lists store edge indices (`u32`), letting the consumer
-//! read the full [`CallEdge`] record from the edges section.
+//! The callers posting list stores edge indices (`u32`), letting the
+//! consumer read the full [`CallEdge`] record from the edges section.
 
 use anyhow::{Context, Result};
 
-/// Input record for [`build_callers_fst`] / [`build_callees_fst`]. The
+/// Input record for [`build_callers_fst`] / [`callees_csr_keys`]. The
 /// writer assembles these from parsed files, then resolves callee strings
 /// into the same string pool as symbol names.
 #[derive(Debug, Clone)]
@@ -43,43 +49,12 @@ pub fn build_callers_fst(edges: &[CallEdgeBuilder]) -> Result<(Vec<u8>, Vec<u8>)
     build_string_keyed_fst(entries)
 }
 
-/// Build the callees FST + posting bytes (keyed by caller symbol index).
-///
-/// Keys are decimal strings of the symbol index so we reuse the same FST
-/// machinery as the callers index. A future format may switch to a sorted
-/// array — kept as FST here for code uniformity.
-///
-/// v1.13 P7: sort by `u32` numerically, then encode each key into a
-/// 10-byte stack buffer at FST-insert time. Zero per-edge string
-/// allocation (the previous `format!("{:010}")` allocated one `String`
-/// per edge).
-pub fn build_callees_fst(edges: &[CallEdgeBuilder]) -> Result<(Vec<u8>, Vec<u8>)> {
-    let mut entries: Vec<(u32, u32)> = Vec::with_capacity(edges.len());
-    for (i, e) in edges.iter().enumerate() {
-        entries.push((e.caller_sym_idx, i as u32));
-    }
-    build_u32_keyed_fst(entries)
-}
-
-/// Encode a caller symbol index as the lookup key for the callees FST.
-/// Zero-padded to 10 digits so FST keys sort numerically; this also keeps
-/// the key length constant which the FST library handles efficiently.
-///
-/// Reader-side helper; the writer uses [`encode_caller_key_into`] to
-/// avoid the per-edge `String` allocation.
-pub fn encode_caller_key(caller_sym_idx: u32) -> String {
-    format!("{caller_sym_idx:010}")
-}
-
-/// Stack-buffer encoder used by [`build_callees_fst`] hot loop. Same
-/// byte output as [`encode_caller_key`] but writes into a caller-owned
-/// `[u8; 10]` instead of allocating a `String`.
-#[inline]
-pub(crate) fn encode_caller_key_into(buf: &mut [u8; 10], mut n: u32) {
-    for slot in buf.iter_mut().rev() {
-        *slot = b'0' + (n % 10) as u8;
-        n /= 10;
-    }
+/// Build the callees CSR index (v9+): `caller_sym_idx` keys for every
+/// edge, in the same order as `edges` (= on-disk `CallEdge` order). The
+/// writer passes the returned `Vec<u32>` straight into
+/// `store::csr::build_csr(&keys, symbol_count)`.
+pub fn callees_csr_keys(edges: &[CallEdgeBuilder]) -> Vec<u32> {
+    edges.iter().map(|e| e.caller_sym_idx).collect()
 }
 
 /// String-keyed `Vec` → sorted FST. Indices inside each group are
@@ -126,51 +101,7 @@ fn build_string_keyed_fst(mut entries: Vec<(String, u32)>) -> Result<(Vec<u8>, V
     Ok((fst_bytes, posting_data))
 }
 
-/// u32-keyed `Vec` → sorted FST, encoding keys into a 10-digit stack
-/// buffer at insert time. Indices inside each group are sorted + deduped.
-fn build_u32_keyed_fst(mut entries: Vec<(u32, u32)>) -> Result<(Vec<u8>, Vec<u8>)> {
-    entries.sort_unstable();
-
-    let mut posting_data: Vec<u8> = Vec::with_capacity(entries.len() * 4 + entries.len());
-    let mut fst_builder = fst::MapBuilder::memory();
-    let mut key_buf = [b'0'; 10];
-
-    let mut i = 0;
-    while i < entries.len() {
-        let key = entries[i].0;
-        let mut j = i + 1;
-        while j < entries.len() && entries[j].0 == key {
-            j += 1;
-        }
-        let offset = posting_data.len() as u64;
-        let group = &mut entries[i..j];
-        // `sort_unstable` above ordered by (key, idx), so dedup is in-place.
-        let mut write = 0;
-        for read in 0..group.len() {
-            if write == 0 || group[read].1 != group[write - 1].1 {
-                group.swap(read, write);
-                write += 1;
-            }
-        }
-        let count = write as u32;
-        posting_data.extend_from_slice(&count.to_le_bytes());
-        for slot in group.iter().take(write) {
-            posting_data.extend_from_slice(&slot.1.to_le_bytes());
-        }
-        encode_caller_key_into(&mut key_buf, key);
-        fst_builder
-            .insert(key_buf, offset)
-            .context("fst insert (call graph)")?;
-        i = j;
-    }
-
-    let fst_bytes = fst_builder
-        .into_inner()
-        .context("finalize call-graph fst")?;
-    Ok((fst_bytes, posting_data))
-}
-
-/// Zero-copy reader for a call-graph FST (callers OR callees — same shape).
+/// Zero-copy reader for the callers FST.
 pub struct CallGraphFstReader<'a> {
     fst_map: fst::Map<&'a [u8]>,
     posting_data: &'a [u8],
@@ -292,9 +223,10 @@ pub fn find_callees_fast(
     if !reader.has_call_graph() {
         return Vec::new();
     }
-    let fst_bytes = reader.callees_fst_bytes();
-    let post_bytes = reader.callees_posting_bytes();
-    let Ok(fst) = CallGraphFstReader::new(fst_bytes, post_bytes) else {
+    // One query path for every version (§13 R19): `callees_csr_view`
+    // returns either the real v9 on-disk CSR or an in-memory CSR built
+    // once per `IndexReader` from the raw `CallEdge` records on v4–v8.
+    let Some(view) = reader.callees_csr_view() else {
         return Vec::new();
     };
 
@@ -316,8 +248,7 @@ pub fn find_callees_fast(
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for caller_sym_idx in candidates {
-        let key = encode_caller_key(caller_sym_idx);
-        for edge_idx in fst.find(&key) {
+        for edge_idx in view.neighbors(caller_sym_idx) {
             let Some(edge) = reader.call_edge(edge_idx as usize) else {
                 continue;
             };
@@ -377,50 +308,13 @@ mod tests {
         assert_eq!(bar_edges, vec![1]);
     }
 
+    /// `callees_csr_keys` must preserve edge order exactly — the writer
+    /// feeds this straight into `store::csr::build_csr`, whose groups are
+    /// stable-sorted (ascending edge_idx within a group, F4).
     #[test]
-    fn callees_lookup_by_caller_sym_idx() {
+    fn callees_csr_keys_preserve_edge_order() {
         let edges = vec![edge(5, "alpha", 1), edge(5, "beta", 2), edge(7, "alpha", 3)];
-        let (fst, posts) = build_callees_fst(&edges).unwrap();
-        let reader = CallGraphFstReader::new(&fst, &posts).unwrap();
-        let edges_from_5 = reader.find(&encode_caller_key(5));
-        assert_eq!(edges_from_5, vec![0, 1]);
-        let edges_from_7 = reader.find(&encode_caller_key(7));
-        assert_eq!(edges_from_7, vec![2]);
-        assert!(reader.find(&encode_caller_key(99)).is_empty());
-    }
-
-    /// `encode_caller_key_into` must produce byte-for-byte identical
-    /// output to `encode_caller_key`. Otherwise a v1.13 writer would
-    /// produce keys the reader (which still goes through
-    /// `encode_caller_key`) couldn't look up.
-    #[test]
-    fn encode_caller_key_into_matches_format_macro() {
-        for n in [0_u32, 1, 9, 10, 99, 100, 999, 1_000_000, u32::MAX] {
-            let mut buf = [b'0'; 10];
-            encode_caller_key_into(&mut buf, n);
-            let formatted = encode_caller_key(n);
-            assert_eq!(
-                std::str::from_utf8(&buf).unwrap(),
-                formatted,
-                "encoding diverged for n={n}"
-            );
-        }
-    }
-
-    /// Duplicate edges (same caller_sym_idx, same posting position) must
-    /// be deduped in the FST's posting list — the previous BTreeMap
-    /// builder did this via per-group `sort+dedup`; the new Vec builder
-    /// does it in-place over a sorted contiguous slice. Regression pin.
-    #[test]
-    fn callees_dedupes_duplicate_edge_indices() {
-        // Two edges from the same caller_sym_idx — posting list must
-        // contain BOTH edge_idx values, not a deduped single. Dedup is
-        // only for IDENTICAL (key, edge_idx) duplicates, which would
-        // only happen if the input edges slice itself contained dups.
-        let edges = vec![edge(3, "a", 1), edge(3, "b", 2)];
-        let (fst, posts) = build_callees_fst(&edges).unwrap();
-        let reader = CallGraphFstReader::new(&fst, &posts).unwrap();
-        assert_eq!(reader.find(&encode_caller_key(3)), vec![0, 1]);
+        assert_eq!(callees_csr_keys(&edges), vec![5, 5, 7]);
     }
 
     #[test]

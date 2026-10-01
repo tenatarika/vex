@@ -178,12 +178,47 @@ fn run_can_skip(manifest: &Manifest, opts: IndexOptions, embedder_id: &str) -> b
     true
 }
 
-/// `update`-specific skip gate. Only the option-coverage check matters —
-/// `update` never produces `pattern_index_full == true`, so reusing a peer's
-/// partial pattern index is identical to what `update` itself would have
-/// emitted.
-fn update_can_skip(manifest: &Manifest, opts: IndexOptions, embedder_id: &str) -> bool {
-    manifest_options_cover(manifest, opts, embedder_id)
+/// `update`-specific skip decision. Beyond the option-coverage check —
+/// `update` never produces `pattern_index_full == true`, so reusing a
+/// peer's partial pattern index is identical to what `update` itself
+/// would have emitted — this also refuses to skip when the on-disk
+/// index predates the current format (`docs/V9-FORMAT.md` §13 R5): an
+/// untouched v8 index must converge to v9 on the next `vex update`
+/// (including auto-update) rather than staying v8 forever just because
+/// nothing else changed. `clusters_full`/`run_can_skip`'s half of R5 is
+/// P4a scope, not this gate.
+///
+/// Opens the on-disk index **at most once** (code-review HIGH: the
+/// previous shape opened it twice on this hot path — once here for the
+/// version check, once more in the caller via `existing_symbol_count`
+/// on the skip-return branch). Returns:
+/// - `Ok(Some(symbol_count))` — skip is allowed; `symbol_count` is what
+///   the caller should report (0 when there is no index at all, matching
+///   `existing_symbol_count`'s old fallback).
+/// - `Ok(None)` — do not skip (manifest options don't cover the request,
+///   or the on-disk version is older than this build's `VERSION`).
+/// - `Err` — the index file exists but failed to open (corrupt). This
+///   must propagate so a corrupt index can never resolve to a silent
+///   skip.
+fn try_skip_update(
+    manifest: &Manifest,
+    opts: IndexOptions,
+    embedder_id: &str,
+    root: &Path,
+) -> Result<Option<usize>> {
+    if !manifest_options_cover(manifest, opts, embedder_id) {
+        return Ok(None);
+    }
+    let index_path = config::index_path(root);
+    if !index_path.exists() {
+        return Ok(Some(0));
+    }
+    let reader = crate::store::reader::IndexReader::open(&index_path)
+        .context("open existing index to check update skip eligibility")?;
+    if reader.header().version < crate::store::format::VERSION {
+        return Ok(None);
+    }
+    Ok(Some(reader.symbol_count()))
 }
 
 /// Full rebuild: index all files from scratch.
@@ -478,12 +513,11 @@ fn update_inner(
     // asked for. Before this gate `vex update --semantic` on a no-change
     // structural-only index would early-return and silently leave the
     // embedder request unfulfilled.
-    if diff.changed.is_empty()
-        && diff.deleted.is_empty()
-        && update_can_skip(&old_manifest, opts, embedder_id)
-    {
-        tracing::info!(unchanged = diff.unchanged, "nothing to update");
-        return Ok(Some((existing_symbol_count(&root)?, 0, 0)));
+    if diff.changed.is_empty() && diff.deleted.is_empty() {
+        if let Some(symbol_count) = try_skip_update(&old_manifest, opts, embedder_id, &root)? {
+            tracing::info!(unchanged = diff.unchanged, "nothing to update");
+            return Ok(Some((symbol_count, 0, 0)));
+        }
     }
 
     // Serialize concurrent rebuilds: take the build lock BEFORE the expensive
@@ -514,12 +548,11 @@ fn update_inner(
         let diff = manifest::diff_files(&hashed.hashes, &current_manifest);
         (diff, current_manifest)
     };
-    if diff.changed.is_empty()
-        && diff.deleted.is_empty()
-        && update_can_skip(&current_manifest, opts, embedder_id)
-    {
-        tracing::info!("index refreshed by a concurrent vex instance; skipping rebuild");
-        return Ok(Some((existing_symbol_count(&root)?, 0, 0)));
+    if diff.changed.is_empty() && diff.deleted.is_empty() {
+        if let Some(symbol_count) = try_skip_update(&current_manifest, opts, embedder_id, &root)? {
+            tracing::info!("index refreshed by a concurrent vex instance; skipping rebuild");
+            return Ok(Some((symbol_count, 0, 0)));
+        }
     }
 
     tracing::info!(

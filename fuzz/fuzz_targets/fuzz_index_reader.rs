@@ -81,14 +81,18 @@ fuzz_target!(|data: &[u8]| {
     // OOB probes — exhaustively cover boundary cases.
     let _ = reader.ref_edge(ref_count);
     let _ = reader.ref_edge(usize::MAX);
-    // `find_ref_edges_by_symbol` is the FST-keyed lookup path, currently
-    // dead-code in production (#[allow(dead_code)]). The upstream `fst`
-    // crate panics on adversarial-but-header-valid bytes at
-    // `node.rs:302` during traversal — production code uses
-    // `catch_unwind` defense-in-depth, but libfuzzer's panic hook fires
-    // BEFORE the unwind can be caught, so this fuzz target excludes the
-    // call. Re-enable when production wires the FST lookup or when we
-    // switch to a Result-returning FST API.
+    // v9 CSR migration (`docs/V9-FORMAT.md`): `find_ref_edges_by_symbol`
+    // no longer walks an `fst::Map` (v9: offsets-only CSR borrowed from
+    // the mmap; legacy v4–v8: an in-memory CSR built once per reader via
+    // `store::csr::build_csr` over the raw `RefEdge` records) — every
+    // decode is bounds-checked `u32::from_le_bytes` arithmetic, so the
+    // `libfuzzer` panic-hook-fires-before-`catch_unwind` gotcha that
+    // excluded this call no longer applies. Fuzz it directly.
+    for i in 0..ref_count as u32 {
+        let _ = reader.find_ref_edges_by_symbol(i);
+    }
+    let _ = reader.find_ref_edges_by_symbol(0);
+    let _ = reader.find_ref_edges_by_symbol(u32::MAX);
 
     // v8 hierarchy_edges section (P1-P4) — sorted-array + binary search,
     // FST-free, safe to fuzz directly through the same open reader.

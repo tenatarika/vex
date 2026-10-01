@@ -54,7 +54,7 @@ use vex::embed::integrity::{verify_file_sha256, verify_with_marker};
 use vex::index::symbols::{ParsedFile, ParsedSymbol, SymbolKind};
 use vex::search::similar::find_duplicates;
 use vex::store::bm25::tokenize_document;
-use vex::store::call_graph::{build_callees_fst, build_callers_fst, CallEdgeBuilder};
+use vex::store::call_graph::{build_callers_fst, CallEdgeBuilder};
 use vex::store::format::VECTOR_DIM;
 use vex::store::reader::IndexReader;
 use vex::store::symbol_fst::build_symbol_fst;
@@ -582,9 +582,11 @@ fn build_string_keyed_fst_legacy(symbols: &[(String, u32)]) -> anyhow::Result<(V
     Ok((fst_bytes, posting_data))
 }
 
-/// Pre-P7 `build_callees_fst` kept verbatim for side-by-side comparison.
-/// Allocates one `format!("{:010}")` per edge (the per-edge string
-/// alloc the stack-buffer encoder erased).
+/// Pre-P7 `build_callees_fst`, kept verbatim as a standalone historical
+/// baseline (the P7-era production comparison it used to run against is
+/// retired — see `bench_fst_builders`'s doc comment). Allocates one
+/// `format!("{:010}")` per edge (the per-edge string alloc the
+/// stack-buffer encoder erased).
 fn build_callees_fst_legacy(edges: &[CallEdgeBuilder]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     use anyhow::Context;
     let mut grouped: std::collections::BTreeMap<String, Vec<u32>> =
@@ -622,15 +624,19 @@ fn bench_fst_builders(c: &mut Criterion) {
     // Sanity: legacy and current must produce identical FST bytes.
     // For symbol_fst the legacy variant uses a simpler CamelCase
     // heuristic — compare just postings byte size as a smoke check
-    // (not byte equality). For callees_fst the encoding is identical.
-    {
-        let (legacy_fst, _) = build_callees_fst_legacy(&edges).unwrap();
-        let (new_fst, _) = build_callees_fst(&edges).unwrap();
-        assert_eq!(
-            legacy_fst, new_fst,
-            "build_callees_fst legacy/new produced different FST bytes"
-        );
-    }
+    // (not byte equality).
+    //
+    // The decimal-keyed callees comparison this block used to run
+    // (`build_callees_fst_legacy` vs the P7 `build_callees_fst`) is
+    // retired: the v9 CSR migration (`docs/V9-FORMAT.md`) deleted
+    // `build_callees_fst` from production — callees are now a dense
+    // CSR (`store::csr::build_csr`), not an FST at all. The P7-era
+    // "BTreeMap vs Vec accumulator" allocation win this bench measured
+    // is now moot for callees (no FST build happens there anymore);
+    // `benches/graph_v9.rs` (P3) supersedes this comparison with a
+    // CSR-vs-`legacy_v8` oracle bench. `build_callees_fst_legacy` is
+    // kept below standalone (self-contained, no production dependency)
+    // purely as a historical baseline data point.
 
     let mut group = c.benchmark_group("v113::p7_fst_builders");
 
@@ -657,13 +663,6 @@ fn bench_fst_builders(c: &mut Criterion) {
             black_box((fst.len(), posts.len()))
         })
     });
-    group.bench_function("decimal_keyed_p7_5000", |b| {
-        b.iter(|| {
-            let (fst, posts) = build_callees_fst(black_box(&edges)).unwrap();
-            black_box((fst.len(), posts.len()))
-        })
-    });
-
     // `build_callers_fst` is included for completeness — same shape
     // as the string-keyed path, no decimal encoding involved.
     group.bench_function("build_callers_fst_p7_5000", |b| {
