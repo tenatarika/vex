@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Symbol clusters, computed on `vex index`.** A full index groups symbols
+  that call and reference each other into "de-facto modules". It uses a
+  deterministic Leiden-CPM over the call, reference and type-hierarchy edges,
+  so the same tree gives the same clusters on every machine. `vex status`
+  reports `clusters`, `clusters_stale` and `clusters_new_since_build`.
+  `vex index --no-clusters` skips the computation. The `vex modules` command
+  that lists clusters comes in a later change.
+
 ### Changed
 
 - **Index format v9: callees and strict refs are stored as dense CSR arrays.**
