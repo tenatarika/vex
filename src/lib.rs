@@ -1,6 +1,7 @@
 pub mod callgraph;
 pub mod channel;
 pub mod cli;
+pub mod cluster;
 pub mod diff;
 pub mod embed;
 pub mod eval;

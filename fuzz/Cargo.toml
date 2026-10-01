@@ -128,5 +128,14 @@ name = "fuzz_csr"
 path = "fuzz_targets/fuzz_csr.rs"
 doc = false
 
+# V9-FORMAT P3 — deterministic Leiden-CPM (`src/cluster/leiden.rs`).
+# Decodes a <= 256-node graph from arbitrary bytes via the
+# `__fuzz_leiden_bytes` shim, runs it twice, and asserts identical
+# output plus "every cluster induces a connected subgraph".
+[[bin]]
+name = "fuzz_leiden"
+path = "fuzz_targets/fuzz_leiden.rs"
+doc = false
+
 [workspace]
 members = ["."]

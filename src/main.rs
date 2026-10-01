@@ -5,6 +5,7 @@ use clap::Parser;
 mod callgraph;
 mod channel;
 mod cli;
+mod cluster;
 mod diff;
 mod embed;
 mod eval;
