@@ -22,6 +22,10 @@
 //! in their sibling modules, so `write_index_to` stays focused on
 //! orchestration.
 
+use std::collections::HashMap;
+
+use anyhow::{ensure, Result};
+
 use super::format::{
     ClusterHeader, ClusterRecord, CLUSTER_NEW, CLUSTER_NOT_ELIGIBLE, CLUSTER_UNCLUSTERED,
 };
@@ -40,25 +44,48 @@ const _: () = assert!(CLUSTER_NOT_ELIGIBLE == crate::cluster::NOT_ELIGIBLE);
 const _: () = assert!(CLUSTER_UNCLUSTERED == crate::cluster::UNCLUSTERED);
 const _: () = assert!(CLUSTER_NEW == crate::cluster::NEW);
 
+/// Whether a write should compute symbol clusters fresh, carry a prior
+/// COMPUTED section forward (frozen + marked STALE), or leave the
+/// section absent (the all-zero P2 placeholder). `docs/V9-FORMAT.md` §5,
+/// §13 R10-R14.
+///
+/// `vex index` passes `Compute` (or `None` with `--no-clusters`). `vex
+/// update` passes `Carry` when the prior index has a COMPUTED section,
+/// `Compute` once when it doesn't and the user hasn't opted out (R14),
+/// and `None` when the user has opted out (`--no-clusters` on the last
+/// full `vex index`).
+pub(crate) enum ClusterInput {
+    Compute(ClusterComputeRequest),
+    Carry(crate::index::types::ClusterCarryArtefacts),
+    None,
+}
+
 /// P4a (`docs/V9-FORMAT.md` §13 R10/R14): whether this write should
-/// compute symbol clusters, and at what resolution. `None` means "don't
-/// compute" — the writer emits the all-zero P2 `ClusterHeader` — which is
-/// what every `vex update` call passes today (P4a never carries; that's
-/// P4b) and what `--no-clusters` passes for `vex index`. `vex index`
-/// without `--no-clusters` passes `Some`.
+/// compute symbol clusters, and at what resolution.
 #[derive(Debug, Clone, Copy)]
 pub struct ClusterComputeRequest {
     pub resolution: (u32, u32),
 }
 
+/// `docs/V9-FORMAT.md` §3.3 names this algorithm "leiden-cpm/1" — the
+/// only `algo_version` this build ever computes fresh. A P4b carry keeps
+/// whatever `algo_version` the OLD section recorded (§5 rule 6), which is
+/// always this value today but need not stay a literal `1` forever.
+pub(crate) const ALGO_VERSION_LEIDEN_CPM_1: u16 = 1;
+
 /// Writer-ready bytes + header fields for a COMPUTED cluster section —
 /// everything `write_index_to` needs to fill in `ClusterHeader` and write
-/// the `assign`/`table` bytes.
+/// the `assign`/`table` bytes. Produced by both [`build_cluster_section`]
+/// (fresh compute) and [`build_cluster_section_from_carry`] (P4b carry) so
+/// `write_index_to`'s downstream layout math stays branch-free on which
+/// path produced it.
+#[derive(Debug)]
 pub(crate) struct ClusterSectionBuilt {
     pub assign_bytes: Vec<u8>,
     pub table_bytes: Vec<u8>,
     pub resolution: (u32, u32),
     pub flags: u32,
+    pub algo_version: u16,
     pub levels: u16,
     pub build_symbol_count: u32,
 }
@@ -113,9 +140,267 @@ pub(crate) fn build_cluster_section(
         table_bytes,
         resolution,
         flags,
+        algo_version: ALGO_VERSION_LEIDEN_CPM_1,
         levels: output.levels,
         build_symbol_count: output.assign.len() as u32,
     }
+}
+
+/// P4b (`docs/V9-FORMAT.md` §5, §13 R11-R13) — carry a prior COMPUTED
+/// cluster section forward across `vex update` instead of recomputing.
+///
+/// `parsed` is the FULL new symbol set in the exact order `write_index_to`
+/// assigns `sym_idx` (unchanged-file prefix, then re-parsed/new files) —
+/// the same slice the caller builds `records` from. `carry` holds the
+/// per-symbol data `reconstruct_unchanged` already resolved for the
+/// unchanged prefix, plus everything needed to resolve the remainder:
+///
+/// - A symbol whose `per_symbol_carried` entry is `Some(v)` already has
+///   its final assign value (§5 rule 1, exact and positional).
+/// - Every other symbol belongs to a re-parsed file. A cascade-only file
+///   (content hash unchanged, re-parsed just to rebind refs) whose old
+///   and new symbol counts agree carries positionally. Otherwise each
+///   symbol is matched against the OLD symbols defined in the same path
+///   by `(name, kind)`, requiring the key to be unique on BOTH sides
+///   (§13 R12) — an ambiguous key (overloads, duplicates) always becomes
+///   NEW/NOT_ELIGIBLE rather than guessing a many-to-one match. A symbol
+///   with no match is NEW when eligible (§3.1/§3.2), NOT_ELIGIBLE
+///   otherwise (§13 R13).
+///
+/// `intern` re-interns each frozen cluster label into the NEW string
+/// pool — must be the SAME pool `write_index_to` uses for everything
+/// else, exactly like [`build_cluster_section`]'s caller contract.
+///
+/// Returns `Err` only for an internal writer-bug desync (§13 R1's
+/// "writer bug, not user input" category) — never for anything a
+/// malformed *input* file could trigger; those are the lazy reader's
+/// job (§13 R3). See [`carry_unchanged_prefix`], [`resolve_reparsed_files`]
+/// and [`remap_table_and_intern_labels`] for the three passes this
+/// splits into.
+pub(crate) fn build_cluster_section_from_carry(
+    parsed: &[crate::index::symbols::ParsedFile],
+    carry: &crate::index::types::ClusterCarryArtefacts,
+    intern: &mut dyn FnMut(&str) -> u32,
+) -> Result<ClusterSectionBuilt> {
+    let total_symbols = carry.per_symbol_carried.len();
+    let parsed_symbols: usize = parsed.iter().map(|f| f.symbols.len()).sum();
+    // Code-review follow-up (MEDIUM): this used to be a `debug_assert_eq!`
+    // pair. Every indexing operation below (`assign[slot]`,
+    // `carry.per_symbol_carried[base + j]`) trusts that `parsed`'s
+    // symbol count and `carry`'s carry-vector lengths agree — a desync
+    // between the pipeline's padding step and the writer's own symbol
+    // count would panic in a RELEASE build (no bounds-checked accessor
+    // stands between here and a raw `Vec` index). This is the §13 R1
+    // "writer bug, not user input" category: `ensure!` so a desync fails
+    // the write loudly and immediately, instead of either panicking
+    // release builds or silently reading garbage under
+    // `debug_assert_eq!`'s debug-only guard.
+    ensure!(
+        total_symbols == parsed_symbols,
+        "cluster carry desync: per_symbol_carried has {total_symbols} entries but `parsed` \
+         has {parsed_symbols} symbols — writer bug, not user input"
+    );
+    ensure!(
+        total_symbols == carry.per_symbol_old_idx.len(),
+        "cluster carry desync: per_symbol_carried has {total_symbols} entries but \
+         per_symbol_old_idx has {} — writer bug, not user input",
+        carry.per_symbol_old_idx.len()
+    );
+
+    let mut assign: Vec<u32> = vec![CLUSTER_NOT_ELIGIBLE; total_symbols];
+    let mut old_to_new: Vec<u32> = vec![u32::MAX; carry.old_symbol_count as usize];
+
+    carry_unchanged_prefix(carry, &mut assign, &mut old_to_new);
+    resolve_reparsed_files(parsed, carry, &mut assign, &mut old_to_new);
+    let table_bytes = remap_table_and_intern_labels(carry, &old_to_new, intern);
+
+    let mut flags = ClusterHeader::FLAG_COMPUTED | ClusterHeader::FLAG_STALE;
+    if carry.iter_cap_hit {
+        flags |= ClusterHeader::FLAG_ITER_CAP_HIT;
+    }
+
+    Ok(ClusterSectionBuilt {
+        assign_bytes: super::csr::encode_le_u32s(&assign),
+        table_bytes,
+        resolution: carry.resolution,
+        flags,
+        algo_version: carry.algo_version,
+        levels: carry.levels,
+        build_symbol_count: carry.build_symbol_count,
+    })
+}
+
+/// Pass 1 (§5 rule 1) — the unchanged-file prefix: exact, positional, no
+/// matching needed. `assign`/`old_to_new` must already be sized to
+/// `carry.per_symbol_carried.len()` / `carry.old_symbol_count`
+/// respectively (the caller's `ensure!`s guarantee this).
+fn carry_unchanged_prefix(
+    carry: &crate::index::types::ClusterCarryArtefacts,
+    assign: &mut [u32],
+    old_to_new: &mut [u32],
+) {
+    for (slot, (carried, old_idx)) in carry
+        .per_symbol_carried
+        .iter()
+        .zip(&carry.per_symbol_old_idx)
+        .enumerate()
+    {
+        if let Some(v) = carried {
+            assign[slot] = *v;
+            if let Some(old) = old_idx {
+                if let Some(dst) = old_to_new.get_mut(*old as usize) {
+                    *dst = slot as u32;
+                }
+            }
+        }
+    }
+}
+
+/// Pass 2 (§13 R12/R13) — every re-parsed (changed/cascade/new) file: a
+/// cascade-only file (content hash unchanged) whose old and new symbol
+/// counts agree carries positionally; otherwise each symbol is
+/// key-matched by `(name, kind)` against the OLD symbols in the same
+/// path, requiring uniqueness on BOTH sides; anything left over is NEW
+/// when eligible, NOT_ELIGIBLE otherwise.
+///
+/// A second pass over `parsed` (rather than interleaving with the
+/// caller's own symbol-numbering loop) keeps this function pure and
+/// independently testable; the extra O(symbols) walk is negligible next
+/// to the re-parse `vex update` already paid for.
+fn resolve_reparsed_files(
+    parsed: &[crate::index::symbols::ParsedFile],
+    carry: &crate::index::types::ClusterCarryArtefacts,
+    assign: &mut [u32],
+    old_to_new: &mut [u32],
+) {
+    use crate::parse::language::Language;
+
+    let mut sym_idx: u32 = 0;
+    for file in parsed {
+        let base = sym_idx as usize;
+        let file_needs_resolution =
+            (0..file.symbols.len()).any(|j| carry.per_symbol_carried[base + j].is_none());
+        if !file_needs_resolution {
+            sym_idx += file.symbols.len() as u32;
+            continue;
+        }
+
+        let old_entries = carry.old_symbols_by_path.get(&file.path);
+        let cascade_positional = carry.cascade_unchanged_paths.contains(&file.path)
+            && old_entries.map(Vec::len) == Some(file.symbols.len());
+
+        // Key-match tables, built only when NOT taking the positional
+        // path. `old_by_key` maps a (name, kind) key to the LAST old
+        // entry seen for it — only ever read when `old_key_counts` says
+        // that key is unique, so "last wins" never matters.
+        let mut new_key_counts: HashMap<(&str, u8), u32> = HashMap::new();
+        let mut old_key_counts: HashMap<(&str, u8), u32> = HashMap::new();
+        let mut old_by_key: HashMap<(&str, u8), (u32, u32)> = HashMap::new();
+        if !cascade_positional {
+            for sym in &file.symbols {
+                *new_key_counts
+                    .entry((sym.name.as_str(), sym.kind as u8))
+                    .or_insert(0) += 1;
+            }
+            if let Some(entries) = old_entries {
+                for (name, kind, old_idx, old_assign) in entries {
+                    let key = (name.as_str(), *kind);
+                    *old_key_counts.entry(key).or_insert(0) += 1;
+                    old_by_key.insert(key, (*old_idx, *old_assign));
+                }
+            }
+        }
+
+        let language = file
+            .path
+            .rsplit('.')
+            .next()
+            .and_then(Language::from_extension);
+
+        for (j, sym) in file.symbols.iter().enumerate() {
+            let slot = base + j;
+            if carry.per_symbol_carried[slot].is_some() {
+                continue; // resolved in pass 1
+            }
+
+            let matched: Option<(u32, u32)> = if cascade_positional {
+                old_entries
+                    .and_then(|entries| entries.get(j))
+                    .map(|(_, _, old_idx, old_assign)| (*old_idx, *old_assign))
+            } else {
+                let key = (sym.name.as_str(), sym.kind as u8);
+                if new_key_counts.get(&key).copied() == Some(1)
+                    && old_key_counts.get(&key).copied() == Some(1)
+                {
+                    old_by_key.get(&key).copied()
+                } else {
+                    None
+                }
+            };
+
+            match matched {
+                Some((old_idx, old_assign)) => {
+                    assign[slot] = old_assign;
+                    if let Some(dst) = old_to_new.get_mut(old_idx as usize) {
+                        *dst = slot as u32;
+                    }
+                }
+                None => {
+                    assign[slot] =
+                        if crate::cluster::projection::is_eligible(sym.kind as u8, language) {
+                            CLUSTER_NEW
+                        } else {
+                            CLUSTER_NOT_ELIGIBLE
+                        };
+                }
+            }
+        }
+
+        sym_idx += file.symbols.len() as u32;
+    }
+}
+
+/// Pass 3 (§5 rule 5) — remap `rep_sym_idx`/`hubs` through the completed
+/// `old_to_new` (built by the two passes above), freeze `size`/weights
+/// verbatim, and re-intern each label into the NEW string pool. Returns
+/// the encoded `table` bytes, one [`ClusterRecord`] per `carry.old_table`
+/// entry, in the SAME order (ordinals are never reshuffled by a carry).
+fn remap_table_and_intern_labels(
+    carry: &crate::index::types::ClusterCarryArtefacts,
+    old_to_new: &[u32],
+    intern: &mut dyn FnMut(&str) -> u32,
+) -> Vec<u8> {
+    let remap = |old: Option<u32>| -> u32 {
+        old.and_then(|i| old_to_new.get(i as usize).copied())
+            .unwrap_or(u32::MAX)
+    };
+
+    let mut table_bytes = Vec::with_capacity(carry.old_table.len() * ClusterRecord::SIZE);
+    for rec in &carry.old_table {
+        let label_offset = intern(&rec.label);
+        let mut hubs = [u32::MAX; 3];
+        for (slot, h) in hubs.iter_mut().zip(rec.hubs.iter()) {
+            *slot = remap(*h);
+        }
+        let on_disk = ClusterRecord {
+            rep_sym_idx: remap(rec.rep_sym_idx),
+            size: rec.size,
+            internal_weight: rec.internal_weight,
+            cut_weight: rec.cut_weight,
+            label_offset,
+            hubs,
+        };
+        // SAFETY: ClusterRecord is #[repr(C)] with fixed layout (mirrors
+        // `build_cluster_section`).
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &on_disk as *const ClusterRecord as *const u8,
+                ClusterRecord::SIZE,
+            )
+        };
+        table_bytes.extend_from_slice(bytes);
+    }
+    table_bytes
 }
 
 /// Per-symbol cluster membership outcome (`assign` sentinels, §2.4).
@@ -134,12 +419,27 @@ pub enum ClusterStatus {
     New,
 }
 
+impl ClusterStatus {
+    /// Inverse of the decode in [`ClusterSectionReader::status`] — the
+    /// raw on-disk `assign` value this status came from. Used by the
+    /// P4b carry path to read the OLD index's per-symbol assignment back
+    /// out of a `ClusterSectionReader` without a second, duplicate
+    /// bounds-checked byte accessor.
+    pub(crate) fn to_raw(self) -> u32 {
+        match self {
+            ClusterStatus::Clustered(ord) => ord,
+            ClusterStatus::Unclustered => CLUSTER_UNCLUSTERED,
+            ClusterStatus::NotEligible => CLUSTER_NOT_ELIGIBLE,
+            ClusterStatus::New => CLUSTER_NEW,
+        }
+    }
+}
+
 /// One finalized cluster's decoded fields (§2.4 `ClusterRecord`), with the
 /// label resolved to a borrowed `&str` via the owning reader's string
 /// pool. `rep_sym_idx` / `hubs` entries `>= symbol_count` read as
 /// `None` ("absent"), per §7.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)] // fields read only by `record()`, which has no CLI caller until P5
 pub struct ClusterRecordView<'a> {
     pub rep_sym_idx: Option<u32>,
     pub size: u32,
@@ -241,7 +541,6 @@ impl<'a> ClusterSectionReader<'a> {
 
     /// Status of `sym_idx`. Out-of-range (`sym_idx >= symbol_count`)
     /// degrades to [`ClusterStatus::NotEligible`] rather than panicking.
-    #[allow(dead_code)] // no CLI caller until P5 wires `vex modules` symbol mode
     pub fn status(&self, sym_idx: u32) -> ClusterStatus {
         if sym_idx >= self.n {
             return ClusterStatus::NotEligible;
@@ -279,7 +578,6 @@ impl<'a> ClusterSectionReader<'a> {
 
     /// Decoded record for cluster ordinal `ord`, or `None` for an
     /// out-of-range ordinal or a `table` slice too short to hold it.
-    #[allow(dead_code)] // no CLI caller until P5 wires `vex modules`
     pub fn record(&self, ord: usize) -> Option<ClusterRecordView<'a>> {
         let raw = self.record_raw(ord)?;
         let [rep_sym_idx, size, internal_weight, cut_weight, label_offset, h0, h1, h2] = raw;
@@ -358,5 +656,352 @@ mod tests {
         assert_eq!(CLUSTER_NOT_ELIGIBLE, 0xFFFF_FFFF);
         assert_eq!(CLUSTER_UNCLUSTERED, 0xFFFF_FFFE);
         assert_eq!(CLUSTER_NEW, 0xFFFF_FFFD);
+    }
+}
+
+#[cfg(test)]
+mod carry_tests {
+    //! P4b (`docs/V9-FORMAT.md` §13 R11-R13) unit tests for
+    //! `build_cluster_section_from_carry`, exercised directly against
+    //! hand-built `ClusterCarryArtefacts` — no `IndexReader`/pipeline
+    //! needed, so every match-logic branch (unchanged prefix, key-match,
+    //! cascade-positional, ambiguity, eligibility, table remap) is
+    //! isolated and deterministic. End-to-end coverage through the real
+    //! pipeline lives in `tests/incremental_consistency_clusters.rs`.
+    use std::collections::HashSet;
+
+    use super::*;
+    use crate::index::symbols::{ParsedFile, ParsedSymbol, SymbolKind};
+    use crate::index::types::{CarriedClusterRecord, ClusterCarryArtefacts};
+
+    fn mk_sym(name: &str, kind: SymbolKind, line: usize) -> ParsedSymbol {
+        ParsedSymbol {
+            name: name.to_string(),
+            kind,
+            line,
+            signature: None,
+            doc: None,
+            body_tokens: None,
+        }
+    }
+
+    fn mk_file(path: &str, symbols: Vec<ParsedSymbol>) -> ParsedFile {
+        ParsedFile {
+            path: path.to_string(),
+            symbols,
+            refs: Vec::new(),
+            call_edges: Vec::new(),
+            bound_refs: Vec::new(),
+            skeletons: Vec::new(),
+            cpp_includes: Vec::new(),
+            trigram_bloom: None,
+            hierarchy_captures: Vec::new(),
+        }
+    }
+
+    fn decode_assign(bytes: &[u8]) -> Vec<u32> {
+        bytes
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .collect()
+    }
+
+    /// Decode a `ClusterRecord`'s 8 `u32` fields in on-disk order:
+    /// `[rep_sym_idx, size, internal_weight, cut_weight, label_offset,
+    /// hubs[0], hubs[1], hubs[2]]`.
+    fn decode_table(bytes: &[u8]) -> Vec<[u32; 8]> {
+        bytes
+            .chunks_exact(ClusterRecord::SIZE)
+            .map(|rec| {
+                let mut out = [0u32; 8];
+                for (i, slot) in out.iter_mut().enumerate() {
+                    let off = i * 4;
+                    *slot = u32::from_le_bytes(rec[off..off + 4].try_into().unwrap());
+                }
+                out
+            })
+            .collect()
+    }
+
+    fn base_carry() -> ClusterCarryArtefacts {
+        ClusterCarryArtefacts {
+            per_symbol_carried: Vec::new(),
+            per_symbol_old_idx: Vec::new(),
+            old_symbols_by_path: HashMap::new(),
+            old_symbol_count: 0,
+            cascade_unchanged_paths: Default::default(),
+            old_table: Vec::new(),
+            resolution: (1, 8),
+            algo_version: 1,
+            levels: 3,
+            build_symbol_count: 0,
+            iter_cap_hit: false,
+        }
+    }
+
+    #[test]
+    fn unchanged_prefix_is_carried_verbatim() {
+        let parsed = vec![
+            mk_file("a.rs", vec![mk_sym("a0", SymbolKind::Function, 1)]),
+            mk_file("b.rs", vec![mk_sym("b0", SymbolKind::Function, 1)]),
+        ];
+        let carry = ClusterCarryArtefacts {
+            per_symbol_carried: vec![Some(5), Some(CLUSTER_UNCLUSTERED)],
+            per_symbol_old_idx: vec![Some(0), Some(1)],
+            old_symbol_count: 2,
+            ..base_carry()
+        };
+        let mut interned = Vec::new();
+        let built = build_cluster_section_from_carry(&parsed, &carry, &mut |s: &str| {
+            interned.push(s.to_string());
+            0
+        })
+        .expect("carry build");
+        assert_eq!(
+            decode_assign(&built.assign_bytes),
+            vec![5, CLUSTER_UNCLUSTERED]
+        );
+        assert_eq!(built.resolution, (1, 8));
+        assert_eq!(built.algo_version, 1);
+        assert_eq!(built.levels, 3);
+        assert_eq!(
+            built.flags,
+            ClusterHeader::FLAG_COMPUTED | ClusterHeader::FLAG_STALE
+        );
+    }
+
+    #[test]
+    fn key_match_unique_both_sides_inherits_old_assign() {
+        // `a.rs` is a re-parsed (changed) file — its one symbol has no
+        // precomputed carry entry (`None`), but it key-matches a unique
+        // OLD symbol of the same (name, kind) in the same path.
+        let parsed = vec![mk_file(
+            "a.rs",
+            vec![mk_sym("foo", SymbolKind::Function, 1)],
+        )];
+        let carry = ClusterCarryArtefacts {
+            per_symbol_carried: vec![None],
+            per_symbol_old_idx: vec![None],
+            old_symbols_by_path: HashMap::from([(
+                "a.rs".to_string(),
+                vec![("foo".to_string(), SymbolKind::Function as u8, 7u32, 3u32)],
+            )]),
+            old_symbol_count: 8,
+            ..base_carry()
+        };
+        let built =
+            build_cluster_section_from_carry(&parsed, &carry, &mut |_| 0).expect("carry build");
+        assert_eq!(decode_assign(&built.assign_bytes), vec![3]);
+    }
+
+    #[test]
+    fn ambiguous_key_on_new_side_becomes_new_not_many_to_one() {
+        // Two NEW symbols share (name, kind) — the OLD side has exactly
+        // one "dup", but R12 requires uniqueness on BOTH sides, so
+        // neither new symbol may inherit it; both become NEW rather than
+        // one guessing a many-to-one match.
+        let parsed = vec![mk_file(
+            "a.rs",
+            vec![
+                mk_sym("dup", SymbolKind::Function, 1),
+                mk_sym("dup", SymbolKind::Function, 5),
+            ],
+        )];
+        let carry = ClusterCarryArtefacts {
+            per_symbol_carried: vec![None, None],
+            per_symbol_old_idx: vec![None, None],
+            old_symbols_by_path: HashMap::from([(
+                "a.rs".to_string(),
+                vec![("dup".to_string(), SymbolKind::Function as u8, 2u32, 1u32)],
+            )]),
+            old_symbol_count: 8,
+            ..base_carry()
+        };
+        let built =
+            build_cluster_section_from_carry(&parsed, &carry, &mut |_| 0).expect("carry build");
+        assert_eq!(
+            decode_assign(&built.assign_bytes),
+            vec![CLUSTER_NEW, CLUSTER_NEW],
+            "ambiguous key on the new side must never many-to-one match"
+        );
+    }
+
+    #[test]
+    fn cascade_unchanged_path_carries_positionally_ignoring_name() {
+        // A cascade-only re-parse (content hash unchanged) with the SAME
+        // symbol count as the old file carries by POSITION, not by
+        // (name, kind) — proven here by giving the new symbols DIFFERENT
+        // names than their old counterparts.
+        let parsed = vec![mk_file(
+            "a.rs",
+            vec![
+                mk_sym("renamed_x", SymbolKind::Function, 1),
+                mk_sym("renamed_y", SymbolKind::Function, 5),
+            ],
+        )];
+        let carry = ClusterCarryArtefacts {
+            per_symbol_carried: vec![None, None],
+            per_symbol_old_idx: vec![None, None],
+            old_symbols_by_path: HashMap::from([(
+                "a.rs".to_string(),
+                vec![
+                    ("x".to_string(), SymbolKind::Function as u8, 10u32, 2u32),
+                    (
+                        "y".to_string(),
+                        SymbolKind::Function as u8,
+                        11u32,
+                        CLUSTER_UNCLUSTERED,
+                    ),
+                ],
+            )]),
+            old_symbol_count: 12,
+            cascade_unchanged_paths: HashSet::from(["a.rs".to_string()]),
+            ..base_carry()
+        };
+        let built =
+            build_cluster_section_from_carry(&parsed, &carry, &mut |_| 0).expect("carry build");
+        assert_eq!(
+            decode_assign(&built.assign_bytes),
+            vec![2, CLUSTER_UNCLUSTERED],
+            "position 0 -> old entry 0 (x), position 1 -> old entry 1 (y), despite the name change"
+        );
+    }
+
+    #[test]
+    fn new_ineligible_symbol_is_not_eligible_not_new() {
+        // A Markdown heading has no old counterpart and fails the
+        // eligibility predicate (kind AND language both exclude it) —
+        // §13 R13: it must read NOT_ELIGIBLE, never NEW.
+        let parsed = vec![mk_file(
+            "doc.md",
+            vec![mk_sym("Intro", SymbolKind::Heading, 1)],
+        )];
+        let carry = ClusterCarryArtefacts {
+            per_symbol_carried: vec![None],
+            per_symbol_old_idx: vec![None],
+            ..base_carry()
+        };
+        let built =
+            build_cluster_section_from_carry(&parsed, &carry, &mut |_| 0).expect("carry build");
+        assert_eq!(
+            decode_assign(&built.assign_bytes),
+            vec![CLUSTER_NOT_ELIGIBLE]
+        );
+    }
+
+    #[test]
+    fn new_eligible_symbol_with_no_match_becomes_new() {
+        let parsed = vec![mk_file(
+            "a.rs",
+            vec![mk_sym("brand_new", SymbolKind::Function, 1)],
+        )];
+        let carry = ClusterCarryArtefacts {
+            per_symbol_carried: vec![None],
+            per_symbol_old_idx: vec![None],
+            ..base_carry()
+        };
+        let built =
+            build_cluster_section_from_carry(&parsed, &carry, &mut |_| 0).expect("carry build");
+        assert_eq!(decode_assign(&built.assign_bytes), vec![CLUSTER_NEW]);
+    }
+
+    #[test]
+    fn table_remap_rep_and_hubs_to_new_idx_or_max() {
+        // Symbol at OLD sym_idx 0 survives (unchanged prefix) and lands
+        // at NEW sym_idx 0. OLD sym_idx 1 does not survive anywhere in
+        // this update (no carry entry, no key match) — its table
+        // references must degrade to `u32::MAX` ("lost"), never a stale
+        // or out-of-range index.
+        let parsed = vec![mk_file("a.rs", vec![mk_sym("a0", SymbolKind::Function, 1)])];
+        let carry = ClusterCarryArtefacts {
+            per_symbol_carried: vec![Some(0)],
+            per_symbol_old_idx: vec![Some(0)],
+            old_symbol_count: 2,
+            old_table: vec![CarriedClusterRecord {
+                rep_sym_idx: Some(0),
+                size: 4,
+                internal_weight: 9,
+                cut_weight: 1,
+                label: "src/a/".to_string(),
+                hubs: [Some(0), Some(1), None],
+            }],
+            ..base_carry()
+        };
+        let mut labels = Vec::new();
+        let built = build_cluster_section_from_carry(&parsed, &carry, &mut |s: &str| {
+            labels.push(s.to_string());
+            42
+        })
+        .expect("carry build");
+        let table = decode_table(&built.table_bytes);
+        assert_eq!(table.len(), 1);
+        let [rep, size, internal, cut, label_offset, h0, h1, h2] = table[0];
+        assert_eq!(rep, 0, "rep_sym_idx remapped OLD 0 -> NEW 0");
+        assert_eq!(size, 4, "size is a frozen build-time value");
+        assert_eq!(internal, 9);
+        assert_eq!(cut, 1);
+        assert_eq!(
+            label_offset, 42,
+            "label re-interned via the writer's intern closure"
+        );
+        assert_eq!(labels, vec!["src/a/".to_string()]);
+        assert_eq!(h0, 0, "hub OLD 0 -> NEW 0, same as rep");
+        assert_eq!(h1, u32::MAX, "hub OLD 1 did not survive -> lost (u32::MAX)");
+        assert_eq!(h2, u32::MAX, "a None hub slot stays u32::MAX");
+    }
+
+    #[test]
+    fn iter_cap_hit_flag_is_carried_forward() {
+        let parsed = vec![mk_file("a.rs", vec![mk_sym("a0", SymbolKind::Function, 1)])];
+        let carry = ClusterCarryArtefacts {
+            per_symbol_carried: vec![Some(CLUSTER_UNCLUSTERED)],
+            per_symbol_old_idx: vec![Some(0)],
+            old_symbol_count: 1,
+            iter_cap_hit: true,
+            ..base_carry()
+        };
+        let built =
+            build_cluster_section_from_carry(&parsed, &carry, &mut |_| 0).expect("carry build");
+        assert_eq!(
+            built.flags,
+            ClusterHeader::FLAG_COMPUTED
+                | ClusterHeader::FLAG_STALE
+                | ClusterHeader::FLAG_ITER_CAP_HIT
+        );
+    }
+
+    #[test]
+    fn desynced_carry_length_bails_instead_of_panicking() {
+        // Code-review follow-up (MEDIUM) — `per_symbol_carried` claims 2
+        // entries but `parsed` only has 1 symbol. Every direct index in
+        // the two resolution passes trusts these lengths agree; this
+        // must surface as a clean `Err`, never a release-mode panic.
+        let parsed = vec![mk_file("a.rs", vec![mk_sym("a0", SymbolKind::Function, 1)])];
+        let carry = ClusterCarryArtefacts {
+            per_symbol_carried: vec![Some(CLUSTER_UNCLUSTERED), Some(CLUSTER_UNCLUSTERED)],
+            per_symbol_old_idx: vec![Some(0), Some(1)],
+            old_symbol_count: 2,
+            ..base_carry()
+        };
+        let err = build_cluster_section_from_carry(&parsed, &carry, &mut |_| 0)
+            .expect_err("a length desync must bail, not panic");
+        assert!(
+            err.to_string().contains("writer bug"),
+            "error should name itself a writer bug, got: {err}"
+        );
+    }
+
+    #[test]
+    fn desynced_old_idx_length_bails_instead_of_panicking() {
+        let parsed = vec![mk_file("a.rs", vec![mk_sym("a0", SymbolKind::Function, 1)])];
+        let carry = ClusterCarryArtefacts {
+            per_symbol_carried: vec![Some(CLUSTER_UNCLUSTERED)],
+            per_symbol_old_idx: vec![Some(0), Some(1)],
+            old_symbol_count: 2,
+            ..base_carry()
+        };
+        let err = build_cluster_section_from_carry(&parsed, &carry, &mut |_| 0)
+            .expect_err("a per_symbol_old_idx length desync must bail, not panic");
+        assert!(err.to_string().contains("writer bug"));
     }
 }

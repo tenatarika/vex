@@ -283,15 +283,40 @@ pub(super) fn write_output_locked(
     } else {
         (Vec::new(), Vec::new())
     };
-    // P4a (`docs/V9-FORMAT.md` §13 R10/R14): compute clusters only on a
-    // full `vex index` that wants them. `vex update` always passes
-    // `is_full_rebuild = false`, so `cluster_request` is `None` there
-    // regardless of `opts.with_clusters` — P4a never carries (that's
-    // P4b); `vex update` keeps writing the all-zero P2 placeholder.
-    let cluster_request =
-        (is_full_rebuild && opts.with_clusters).then(|| store::writer::ClusterComputeRequest {
-            resolution: cluster_resolution(),
-        });
+    // P4a/P4b (`docs/V9-FORMAT.md` §5, §13 R10/R14): decide what this
+    // write does with clusters.
+    //   - Full `vex index` that wants them: Compute fresh.
+    //   - Full `vex index --no-clusters`: None.
+    //   - `vex update` whose prior index has a COMPUTED section: Carry
+    //     (freeze + STALE) — `artefacts.cluster_carry` was built from
+    //     that exact prior section (`pipeline::update_inner`).
+    //   - `vex update` whose prior index has NO COMPUTED section: Compute
+    //     once (R14), UNLESS the prior manifest recorded an explicit
+    //     `--no-clusters` opt-out (Q2) — then None, respecting the user's
+    //     choice instead of silently computing clusters they opted out of.
+    let cluster_input = if is_full_rebuild {
+        if opts.with_clusters {
+            store::writer::ClusterInput::Compute(store::writer::ClusterComputeRequest {
+                resolution: cluster_resolution(),
+            })
+        } else {
+            store::writer::ClusterInput::None
+        }
+    } else {
+        match artefacts.cluster_carry.clone() {
+            Some(carry) => store::writer::ClusterInput::Carry(carry),
+            None if artefacts.prior_clusters_opt_out != Some(true) => {
+                store::writer::ClusterInput::Compute(store::writer::ClusterComputeRequest {
+                    resolution: cluster_resolution(),
+                })
+            }
+            None => store::writer::ClusterInput::None,
+        }
+    };
+    // Mirrored into the manifest below, next to `clusters_full` /
+    // `clusters_opt_out` — computed once here so both fields (and any
+    // future consumer) read the exact same classification.
+    let cluster_input_is_compute = matches!(cluster_input, store::writer::ClusterInput::Compute(_));
     let writer_meta = store::writer::write_index_with_call_graph_and_skeletons_and_fingerprints(
         parsed,
         vectors,
@@ -303,7 +328,7 @@ pub(super) fn write_output_locked(
         &artefacts.reconstructed_refs,
         &artefacts.old_file_paths,
         &artefacts.reconstructed_unresolved_refs,
-        cluster_request,
+        cluster_input,
         &index_path,
     )
     .context("write index")?;
@@ -708,14 +733,26 @@ pub(super) fn write_output_locked(
         // skeletons) and would silently drop matches in unchanged
         // files. `is_update` is plumbed by the writer wrapper.
         pattern_index_full: Some(is_full_rebuild),
-        // P4a (`docs/V9-FORMAT.md` §4.1, §13 R5): `Some(true)` only when
-        // this run actually computed clusters (full rebuild AND
-        // `opts.with_clusters`) — mirrored by `cluster_request.is_some()`
-        // above. `vex update` always lands in the `Some(false)` arm (P4a
-        // never computes on update); so does `vex index --no-clusters`.
-        // Either way `run_can_skip`'s `!= Some(true)` check is satisfied
-        // without needing a third state.
-        clusters_full: Some(cluster_request.is_some()),
+        // P4a/P4b (`docs/V9-FORMAT.md` §4.1, §13 R5/R14): `Some(true)`
+        // when this write's cluster section is freshly COMPUTED — a full
+        // `vex index` that wanted clusters, OR `vex update`'s R14
+        // compute-once. `Some(false)` for a P4b carry-forward (frozen +
+        // STALE) or a write that didn't want clusters. Either way
+        // `run_can_skip`'s `!= Some(true)` check still does the right
+        // thing: a no-change `vex index` after a carry-update rebuilds
+        // (clearing STALE), and skips after a compute (nothing left to
+        // redo).
+        clusters_full: Some(cluster_input_is_compute),
+        // P4b (§13 R14, Q2) — sticky opt-out marker, independent of
+        // `clusters_full` above (see its doc comment in `manifest.rs`).
+        // `vex update` never derives this from `opts.with_clusters` (it
+        // has no CLI flag of its own): it carries the prior manifest's
+        // value forward via `artefacts.prior_clusters_opt_out`.
+        clusters_opt_out: Some(if is_full_rebuild {
+            !opts.with_clusters
+        } else {
+            artefacts.prior_clusters_opt_out.unwrap_or(false)
+        }),
         // v1.13 P5: vectors are L2-normalized by `pipeline::run` /
         // `pipeline::update` before they reach this writer. Only
         // meaningful when vectors are present; `None` for the

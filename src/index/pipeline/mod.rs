@@ -56,15 +56,17 @@ pub struct IndexOptions {
     /// section is written empty and `vex pattern` keeps using its
     /// live-scan path (today's behaviour). Default `true`. 11.4 Inc 4.
     pub with_pattern_index: bool,
-    /// P4a (`docs/V9-FORMAT.md` §4.1, §13 R10/R14) — compute symbol
+    /// P4a/P4b (`docs/V9-FORMAT.md` §4.1, §13 R10/R14) — compute symbol
     /// clusters (deterministic Leiden-CPM) on a full `vex index`. Default
     /// `true`. `--no-clusters` sets this `false`. Unlike `with_call_graph`
     /// / `with_bm25` / `with_pattern_index`, this is **not** a sticky
     /// manifest-backed opt-out (R5: the `clusters_full` marker lives only
-    /// in `run_can_skip`, never in `manifest_options_cover`) — `vex
-    /// update` never computes clusters in P4a regardless of this field
-    /// (that's P4b's carry-forward), so the field is read only by `run`
-    /// (`vex index`).
+    /// in `run_can_skip`, never in `manifest_options_cover`) — this field
+    /// is read only by `run` (`vex index`). `vex update` never reads it:
+    /// P4b's `ClusterInput` decision (`pipeline::output`) carries a prior
+    /// COMPUTED section forward, computes once (R14), or stays `None`
+    /// based on the prior index's own state and the manifest's
+    /// `clusters_opt_out`, independently of this field.
     pub with_clusters: bool,
     /// Phase 14.8 — build the `git_history` sidecar
     /// (`<index_dir>/index.git_history`) carrying every historical
@@ -182,12 +184,17 @@ fn manifest_options_cover(manifest: &Manifest, opts: IndexOptions, embedder_id: 
 ///
 /// `docs/V9-FORMAT.md` §13 R5: the `clusters_full` marker is checked ONLY
 /// here, never in [`manifest_options_cover`] — folding it in there would
-/// make every no-change `vex update` stop skipping forever, since `update`
-/// itself never produces `clusters_full == Some(true)` (P4a never computes
-/// on `update`). A no-change `vex index` that wants clusters and finds the
-/// on-disk index was last written by `update` (or by `vex index
-/// --no-clusters`) is NOT skipped — the rebuild is owed so STALE clears
-/// and a real cluster section gets computed.
+/// make every no-change `vex update` stop skipping forever. `update` CAN
+/// now produce `clusters_full == Some(true)` (P4b's R14 compute-once —
+/// a fresh, non-stale result, not just a carry-forward), but that still
+/// never affects THIS gate: `update`'s own skip path
+/// (`try_skip_update`/`manifest_options_cover`) never consults
+/// `clusters_full` at all, so a no-change `update` keeps skipping
+/// regardless of what the prior write recorded here. A no-change `vex
+/// index` that wants clusters and finds the on-disk index was last
+/// written by a P4b carry-forward (`clusters_full: Some(false)`, STALE
+/// set) or by `vex index --no-clusters` is NOT skipped — the rebuild is
+/// owed so STALE clears and a real cluster section gets computed.
 fn run_can_skip(manifest: &Manifest, opts: IndexOptions, embedder_id: &str) -> bool {
     if !manifest_options_cover(manifest, opts, embedder_id) {
         return false;
@@ -498,6 +505,43 @@ pub fn update_or_busy(
     update_inner(root, opts, embedder_id, excludes, /* no_wait = */ true)
 }
 
+/// Build the carried cluster table from a COMPUTED section's `k`
+/// records, or `None` if any ordinal in `0..k` fails to decode.
+/// Returns `None` for the WHOLE table (rather than silently skipping
+/// just the failing ordinal) so the caller can treat the entire prior
+/// section as corrupt/absent (§13 R3 code-review follow-up: a corrupt
+/// prior cluster section must never fail `vex update` — it degrades to
+/// "no carry", and R14 recomputes fresh clusters).
+///
+/// Takes `record` as a closure rather than a concrete
+/// `ClusterSectionReader` so this exact decision is unit-testable via
+/// injection: a REAL on-disk file can't actually reach a mid-table
+/// `record(ord) == None` for `ord < k`, because `ClusterSectionReader::new`
+/// derives `k` from `table_len` and only succeeds when the mmap slice
+/// is exactly `table_len` bytes long — so `record`'s own bounds check
+/// can never fail inside `0..k` once construction has succeeded. This
+/// function (and its test) exist as defense in depth for that
+/// "should never happen" case, same spirit as `cluster_section.rs`'s
+/// own doc comments on `record`/`record_raw`.
+fn build_old_table_from_records<'a>(
+    k: usize,
+    mut record: impl FnMut(usize) -> Option<crate::store::cluster_section::ClusterRecordView<'a>>,
+) -> Option<Vec<crate::index::types::CarriedClusterRecord>> {
+    let mut old_table = Vec::with_capacity(k);
+    for ord in 0..k {
+        let view = record(ord)?;
+        old_table.push(crate::index::types::CarriedClusterRecord {
+            rep_sym_idx: view.rep_sym_idx,
+            size: view.size,
+            internal_weight: view.internal_weight,
+            cut_weight: view.cut_weight,
+            label: view.label.to_string(),
+            hubs: view.hubs,
+        });
+    }
+    Some(old_table)
+}
+
 fn update_inner(
     root: &Path,
     opts: IndexOptions,
@@ -767,14 +811,22 @@ fn update_inner(
             None
         }
     };
-    let (unchanged_parsed, unchanged_vectors, artefacts) = if index_path.exists() {
+    let (unchanged_parsed, unchanged_vectors, mut artefacts) = if index_path.exists() {
         let reader = crate::store::reader::IndexReader::open(&index_path)
             .context("open existing index for incremental merge")?;
+        // P4b (`docs/V9-FORMAT.md` §13 R11) — built from THIS `reader`,
+        // the same one handed to `reconstruct_unchanged` two lines below
+        // and to the old-symbols-by-path / old-table extraction further
+        // down. One reader generation for the whole carry, never a
+        // second `IndexReader::open` that could observe a file some
+        // concurrent writer changed in between.
+        let cluster_reader = reader.cluster_section_reader();
         let recon = reconstruct_unchanged(
             &reader,
             &changed_set,
             &deleted_set,
             body_tokens_sidecar.as_deref(),
+            cluster_reader.as_ref(),
         );
         // Step (3) of the ordering invariant: no cascade importer
         // was reconstructed. `reconstruct_unchanged` skips anything
@@ -792,6 +844,73 @@ fn update_inner(
             "cascade ∩ reconstructed must be empty — Q4-B cascade must run \
                  before Q4-A reconstruction (see ordering invariant above)"
         );
+
+        // P4b (§13 R12/R14) — collect every OLD symbol whose path is
+        // being re-parsed this update (changed, cascade or both), plus
+        // the OLD cluster table, so the writer can key-match / carry
+        // positionally and remap `rep_sym_idx`/`hubs`. `None` when the
+        // prior index has no COMPUTED cluster section — R14's
+        // compute-once decision is made later in `output.rs`, which has
+        // `opts`/`is_full_rebuild` in scope.
+        //
+        // Code-review follow-up (perf HIGH): `old_symbols_by_path` used
+        // to come from a SECOND `0..reader.symbol_count()` scan here,
+        // re-decoding `(file_offset, name_offset)` for every old symbol
+        // that `reconstruct_unchanged`'s own loop had already decoded a
+        // moment earlier. It is now captured inline by that single pass
+        // (`reconstruct_unchanged`, `parse_files.rs`) and handed back on
+        // `recon` — one pass over the old symbol table total, not two.
+        let old_symbols_by_path = recon.cluster_old_symbols_by_changed_path;
+        // Code-review follow-up: a corrupt prior cluster table must NOT
+        // fail `vex update` (§13 R3 — cluster corruption may only break
+        // cluster *features*, and `update` runs on the auto-update path
+        // in front of every query). `build_old_table_from_records`
+        // returning `None` means some ordinal in `0..k` failed to
+        // decode — the prior section is corrupt. Rather than bail the
+        // whole update, warn once and treat the prior section as
+        // ABSENT: `cluster_carry` becomes `None`, so `pipeline::output`'s
+        // R14 compute-once path recomputes fresh clusters on this very
+        // update (unless the user opted out). `.and_then` (not `.map` +
+        // `?`) is what makes "drop the carry" possible instead of
+        // propagating an error.
+        let cluster_carry: Option<crate::index::types::ClusterCarryArtefacts> =
+            cluster_reader.as_ref().and_then(|cr| {
+                let summary = cr.summary();
+                let Some(old_table) = build_old_table_from_records(summary.k, |ord| cr.record(ord))
+                else {
+                    tracing::warn!(
+                        k = summary.k,
+                        "cluster table has a missing/corrupt record within its declared \
+                         ordinal range — corrupt prior index; treating clusters as absent \
+                         for this update (R14 will recompute fresh clusters unless opted out)"
+                    );
+                    return None;
+                };
+
+                let header = reader.cluster_header();
+                Some(crate::index::types::ClusterCarryArtefacts {
+                    // Padded to the full (unchanged + re-parsed) symbol
+                    // count once `new_sym_count` is known, below.
+                    per_symbol_carried: recon.cluster_carried.iter().map(|&v| Some(v)).collect(),
+                    per_symbol_old_idx: recon
+                        .cluster_old_sym_idx
+                        .iter()
+                        .map(|&v| Some(v))
+                        .collect(),
+                    old_symbols_by_path,
+                    old_symbol_count: reader.symbol_count() as u32,
+                    cascade_unchanged_paths: cascade_paths.iter().cloned().collect(),
+                    old_table,
+                    resolution: summary.resolution,
+                    algo_version: summary.algo_version,
+                    levels: header.map(|h| h.levels).unwrap_or(0),
+                    build_symbol_count: header.map(|h| h.build_symbol_count).unwrap_or(0),
+                    iter_cap_hit: header.is_some_and(|h| {
+                        h.flags & crate::store::format::ClusterHeader::FLAG_ITER_CAP_HIT != 0
+                    }),
+                })
+            });
+
         (
             recon.parsed_files,
             recon.vectors,
@@ -799,6 +918,8 @@ fn update_inner(
                 reconstructed_refs: recon.reconstructed_refs,
                 old_file_paths: recon.old_file_paths,
                 reconstructed_unresolved_refs: recon.reconstructed_unresolved_refs,
+                cluster_carry,
+                prior_clusters_opt_out: current_manifest.clusters_opt_out,
             },
         )
     } else {
@@ -837,6 +958,21 @@ fn update_inner(
 
     let newly_parsed = parse_files(&root, &changed_paths, &blob_map, &cache)?;
     let new_sym_count: usize = newly_parsed.iter().map(|f| f.symbols.len()).sum();
+
+    // P4b (`docs/V9-FORMAT.md` §13 R11) — pad the carry Vecs out to the
+    // FULL final symbol count (unchanged prefix + re-parsed/new suffix)
+    // now that `new_sym_count` is known. Every suffix slot starts `None`
+    // — "not yet resolved" — and the writer (`build_cluster_section_from_carry`)
+    // resolves each one via key-match / positional-cascade-carry /
+    // NEW / NOT_ELIGIBLE.
+    if let Some(carry) = artefacts.cluster_carry.as_mut() {
+        carry
+            .per_symbol_carried
+            .extend(std::iter::repeat_n(None, new_sym_count));
+        carry
+            .per_symbol_old_idx
+            .extend(std::iter::repeat_n(None, new_sym_count));
+    }
 
     // Generate embeddings for symbols in changed files. The E2b
     // embedding cache (`<index_dir>/embed_cache_<embedder_id>.bin`)

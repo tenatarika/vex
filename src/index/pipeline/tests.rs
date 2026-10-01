@@ -404,8 +404,9 @@ fn vex_downgrade_for_test(index_path: &std::path::Path) {
 /// pure `run_can_skip`/`manifest_options_cover` unit tests above):
 ///
 /// 1. `vex index` computes clusters (`clusters_full: Some(true)`).
-/// 2. A real file edit, then `vex update` — P4a never computes on
-///    update, so the manifest ends up `clusters_full: Some(false)`.
+/// 2. A real file edit, then `vex update` — the prior index already has a
+///    COMPUTED section, so P4b *carries* it forward (STALE) rather than
+///    recomputing, and the manifest ends up `clusters_full: Some(false)`.
 /// 3. A SECOND `vex index` with no further file changes must NOT skip
 ///    (R5) — it must actually rebuild and recompute, landing back on
 ///    `clusters_full: Some(true)`.
@@ -432,15 +433,16 @@ fn run_recomputes_clusters_after_update_but_update_itself_keeps_skipping() {
         "first full index must compute clusters"
     );
 
-    // 2. Real file change, then `vex update` — P4a never computes on
-    // update, so this writes `clusters_full: Some(false)`.
+    // 2. Real file change, then `vex update` — the prior index is
+    // COMPUTED, so P4b carries it forward (STALE), writing
+    // `clusters_full: Some(false)`.
     std::fs::write(root.join("a.rs"), "pub fn foo() {}\npub fn bar() {}\n").unwrap();
     super::update(&root, opts, "minilm-l6-v2", &[]).expect("update after edit");
     let m2 = Manifest::load(&manifest_path).unwrap();
     assert_eq!(
         m2.clusters_full,
         Some(false),
-        "vex update must never claim clusters_full: Some(true) (P4a never computes on update)"
+        "a P4b carry-forward update must not claim clusters_full: Some(true)"
     );
 
     // 3. A second `vex index` with ZERO further file changes must not
@@ -469,4 +471,54 @@ fn run_recomputes_clusters_after_update_but_update_itself_keeps_skipping() {
         "a no-change `vex update` must report zero changed/deleted (the skip path), \
          not run a real incremental rebuild"
     );
+}
+
+// --- P4b code-review follow-up: corrupt prior cluster table must not fail `vex update` ---
+
+#[test]
+fn build_old_table_from_records_returns_none_on_any_missing_record() {
+    use crate::store::cluster_section::ClusterRecordView;
+
+    // Ordinal 1 (strictly inside 0..3) fails to decode — simulates the
+    // "should never happen against a real file" corruption this helper
+    // guards against (see its doc comment for why a real file can't
+    // actually trigger this).
+    let result = build_old_table_from_records(3, |ord| {
+        if ord == 1 {
+            None
+        } else {
+            Some(ClusterRecordView {
+                rep_sym_idx: Some(ord as u32),
+                size: 2,
+                internal_weight: 1,
+                cut_weight: 0,
+                label: "src/",
+                hubs: [None, None, None],
+            })
+        }
+    });
+    assert!(
+        result.is_none(),
+        "a missing mid-table record must drop the WHOLE table, not just that ordinal"
+    );
+}
+
+#[test]
+fn build_old_table_from_records_returns_every_ordinal_when_all_present() {
+    use crate::store::cluster_section::ClusterRecordView;
+
+    let table = build_old_table_from_records(2, |ord| {
+        Some(ClusterRecordView {
+            rep_sym_idx: Some(ord as u32),
+            size: 1,
+            internal_weight: 0,
+            cut_weight: 0,
+            label: "src/",
+            hubs: [None, None, None],
+        })
+    })
+    .expect("every ordinal present");
+    assert_eq!(table.len(), 2);
+    assert_eq!(table[0].rep_sym_idx, Some(0));
+    assert_eq!(table[1].rep_sym_idx, Some(1));
 }

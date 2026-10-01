@@ -42,6 +42,29 @@ pub(super) struct ReconstructionResult {
     /// Unresolved-by-name refs carried forward from unchanged files
     /// (multi-repo Phase 6). Empty when the old index predates v7.
     pub reconstructed_unresolved_refs: Vec<ReconstructedUnresolvedRef>,
+    /// P4b (`docs/V9-FORMAT.md` §13 R11) — per reconstructed symbol, the
+    /// OLD index's raw cluster `assign` value (sentinel or ordinal),
+    /// built right next to `current_symbols.push` so it stays aligned
+    /// even when a corrupt/empty-name record is dropped. Empty when the
+    /// caller passed `cluster_reader: None` (prior index has no COMPUTED
+    /// cluster section) — NOT a signal callers may use to detect that
+    /// case themselves; they already know it from the `Option` they
+    /// passed in.
+    pub cluster_carried: Vec<u32>,
+    /// OLD `sym_idx` for each entry in `cluster_carried` (same length,
+    /// same order) — lets the writer grow `old_to_new` for this prefix
+    /// without a second pass.
+    pub cluster_old_sym_idx: Vec<u32>,
+    /// P4b code-review follow-up (perf HIGH) — every OLD symbol whose
+    /// path is in `changed` (re-parsed this update), captured in THIS
+    /// loop instead of a second full scan over `reader.symbol_count()`
+    /// in `pipeline::update_inner`. Grouped by path as
+    /// `(name, kind, old_sym_idx, old_assign)`, exactly the shape the
+    /// writer's key-match / cascade-positional carry needs. Empty when
+    /// the caller passed `cluster_reader: None`. `deleted` paths are
+    /// never captured — a deleted file has no new counterpart to match
+    /// against.
+    pub cluster_old_symbols_by_changed_path: HashMap<String, Vec<(String, u8, u32, u32)>>,
 }
 
 /// Reconstruct ParsedFile + vectors for unchanged files from the existing index.
@@ -67,6 +90,12 @@ pub(super) fn reconstruct_unchanged(
     changed: &HashSet<&str>,
     deleted: &HashSet<&str>,
     body_tokens_sidecar: Option<&[Option<String>]>,
+    // P4b (`docs/V9-FORMAT.md` §13 R11) — `Some` only when `reader`'s
+    // cluster section is COMPUTED. Built by the caller from the SAME
+    // `reader` this function receives (asserted at the call site,
+    // `pipeline/mod.rs`) so the per-symbol carry below can never read a
+    // stale cluster section against a fresh symbol table.
+    cluster_reader: Option<&crate::store::cluster_section::ClusterSectionReader<'_>>,
 ) -> ReconstructionResult {
     if reader.has_bm25()
         && (!changed.is_empty() || !deleted.is_empty())
@@ -84,18 +113,59 @@ pub(super) fn reconstruct_unchanged(
     let mut parsed_files: Vec<ParsedFile> = Vec::new();
     let mut current_path = String::new();
     let mut current_symbols: Vec<ParsedSymbol> = Vec::new();
+    // P4b (`docs/V9-FORMAT.md` §13 R11) — built next to `current_symbols`
+    // below, NOT derived from `unchanged_count` (that counts *vectors*,
+    // §13 R11's must-fix, and is 0 without embeddings).
+    let mut cluster_carried: Vec<u32> = Vec::new();
+    let mut cluster_old_sym_idx: Vec<u32> = Vec::new();
+    // P4b code-review follow-up (perf HIGH) — captured inline below, in
+    // the SAME pass this loop already makes over every old symbol,
+    // instead of a second `0..reader.symbol_count()` scan in
+    // `pipeline::update_inner` re-decoding the same `(file_offset,
+    // name_offset)` pairs.
+    let mut cluster_old_symbols_by_changed_path: HashMap<String, Vec<(String, u8, u32, u32)>> =
+        HashMap::new();
 
     for i in 0..reader.symbol_count() {
         let rec = match reader.symbol(i) {
             Some(r) => r,
             None => continue,
         };
-        let path = reader.read_string(rec.file_offset).to_string();
+        // Borrowed, not allocated yet — `deleted`/`changed` are
+        // `HashSet<&str>`, so membership can be checked against this
+        // borrow directly. The allocation below only happens for a path
+        // that actually continues into the unchanged-reconstruction
+        // branch (previously every changed/deleted record paid for a
+        // `String` it immediately discarded).
+        let path_str = reader.read_string(rec.file_offset);
 
-        // Skip changed/deleted files — they'll be re-parsed
-        if changed.contains(path.as_str()) || deleted.contains(path.as_str()) {
+        // Deleted files are gone — nothing to reconstruct, nothing to
+        // capture for the cluster carry (no new counterpart can ever
+        // exist).
+        if deleted.contains(path_str) {
             continue;
         }
+        // Changed files are re-parsed from source. Before skipping,
+        // capture this OLD symbol for the writer's P4b carry (§13
+        // R12) — the one piece of `old_symbols_by_path` data the
+        // writer needs for changed/cascade files, gathered here instead
+        // of a dedicated second pass over the whole old symbol table.
+        if changed.contains(path_str) {
+            if let Some(cr) = cluster_reader {
+                let name = reader.read_string(rec.name_offset);
+                // Mirrors the empty-name corruption guard below — never
+                // propagate a poisoned record into the carry data.
+                if !name.is_empty() {
+                    let raw = cr.status(i as u32).to_raw();
+                    cluster_old_symbols_by_changed_path
+                        .entry(path_str.to_string())
+                        .or_default()
+                        .push((name.to_string(), rec.kind, i as u32, raw));
+                }
+            }
+            continue;
+        }
+        let path = path_str.to_string();
 
         // Flush previous file group when path changes
         if path != current_path && !current_path.is_empty() {
@@ -159,6 +229,14 @@ pub(super) fn reconstruct_unchanged(
             doc: None,
             body_tokens,
         });
+        // P4b (§13 R11) — pushed in lockstep with `current_symbols`,
+        // right above, so a dropped empty-name record (the `continue`
+        // above) can never desync this Vec from the symbols it carries
+        // cluster data for.
+        if let Some(cr) = cluster_reader {
+            cluster_carried.push(cr.status(i as u32).to_raw());
+            cluster_old_sym_idx.push(i as u32);
+        }
 
         if has_vectors {
             if let Some(vec) = reader.vector(rec.vector_index) {
@@ -472,6 +550,9 @@ pub(super) fn reconstruct_unchanged(
         reconstructed_refs,
         old_file_paths,
         reconstructed_unresolved_refs,
+        cluster_carried,
+        cluster_old_sym_idx,
+        cluster_old_symbols_by_changed_path,
     }
 }
 
@@ -1031,7 +1112,7 @@ mod hierarchy_carry_forward_tests {
 
         let changed: HashSet<&str> = HashSet::new();
         let deleted: HashSet<&str> = HashSet::new();
-        let recon = reconstruct_unchanged(&reader, &changed, &deleted, None);
+        let recon = reconstruct_unchanged(&reader, &changed, &deleted, None, None);
 
         let b_file = recon
             .parsed_files
@@ -1082,7 +1163,7 @@ mod hierarchy_carry_forward_tests {
 
         let changed: HashSet<&str> = HashSet::new();
         let deleted: HashSet<&str> = HashSet::new();
-        let recon = reconstruct_unchanged(&reader, &changed, &deleted, None);
+        let recon = reconstruct_unchanged(&reader, &changed, &deleted, None, None);
 
         let b_file = recon
             .parsed_files
@@ -1126,7 +1207,7 @@ mod hierarchy_carry_forward_tests {
         let mut changed: HashSet<&str> = HashSet::new();
         changed.insert("b.rs");
         let deleted: HashSet<&str> = HashSet::new();
-        let recon = reconstruct_unchanged(&reader, &changed, &deleted, None);
+        let recon = reconstruct_unchanged(&reader, &changed, &deleted, None, None);
 
         assert!(
             recon.parsed_files.iter().all(|f| f.path != "b.rs"),
@@ -1162,7 +1243,7 @@ mod hierarchy_carry_forward_tests {
 
         let changed: HashSet<&str> = HashSet::new();
         let deleted: HashSet<&str> = HashSet::new();
-        let recon = reconstruct_unchanged(&reader, &changed, &deleted, None);
+        let recon = reconstruct_unchanged(&reader, &changed, &deleted, None, None);
 
         assert_eq!(recon.parsed_files.len(), 1);
         assert!(recon.parsed_files[0].hierarchy_captures.is_empty());

@@ -90,11 +90,16 @@ pub(crate) fn status(
         .map(|h| (h.edges_len as usize) / crate::store::format::HierarchyEdge::SIZE)
         .unwrap_or(0);
     let unresolved_hierarchy_count = reader.unresolved_hierarchy_all().len();
-    // P4a (`docs/V9-FORMAT.md` §4.1) — symbol-cluster summary. `None`
-    // covers every "no cluster data" case uniformly: pre-v9 index,
-    // `--no-clusters`, a `vex update`-only index (P4a never computes on
-    // update), or a corrupt cluster section (the lazy reader already
-    // degrades that to `None`, never an error here).
+    // P4a/P4b (`docs/V9-FORMAT.md` §4.1, §5) — symbol-cluster summary.
+    // `None` covers every "no cluster data" case uniformly: pre-v9 index,
+    // `--no-clusters` (or a later `vex update` that respected that
+    // opt-out), a corrupt cluster section (the lazy reader already
+    // degrades that to `None`, never an error here) — or, now that P4b
+    // ships, simply "no `vex index`/`vex update` has run since this
+    // project's v9 upgrade". `stale`/`new_count` reflect the real P4b
+    // carry state: a `vex update` that carried a prior COMPUTED section
+    // sets STALE and may introduce NEW symbols; a full `vex index`
+    // (or update's R14 compute-once) clears both.
     let cluster_summary = reader.cluster_section_reader().map(|r| r.summary());
     let cluster_count = cluster_summary.as_ref().map(|s| s.k).unwrap_or(0);
     let cluster_stale = cluster_summary.as_ref().is_some_and(|s| s.stale);
@@ -137,12 +142,13 @@ pub(crate) fn status(
                 // §3.5) and is likewise 0 when absent.
                 "hierarchy_edges": hierarchy_edge_count,
                 "unresolved_hierarchy": unresolved_hierarchy_count,
-                // P4a (`docs/V9-FORMAT.md` §4.1) — symbol-cluster summary,
-                // additive next to `hierarchy_edges` per PROTOCOL-EVOLUTION.
-                // `clusters` is `k` (0 when absent/corrupt); `clusters_stale`
-                // is always `false` in P4a (STALE is a P4b `vex update`-carry
-                // concept — this build never sets it); `clusters_new_since_build`
-                // is likewise always 0 in P4a (the NEW sentinel is P4b-only).
+                // P4a/P4b (`docs/V9-FORMAT.md` §4.1, §5) — symbol-cluster
+                // summary, additive next to `hierarchy_edges` per
+                // PROTOCOL-EVOLUTION. `clusters` is `k` (0 when
+                // absent/corrupt); `clusters_stale` is `true` exactly when
+                // the on-disk section was carried forward (not recomputed)
+                // by a `vex update`; `clusters_new_since_build` counts
+                // symbols introduced since then (the NEW sentinel).
                 "clusters": cluster_count,
                 "clusters_stale": cluster_stale,
                 "clusters_new_since_build": cluster_new_since_build,
@@ -279,10 +285,9 @@ pub(crate) fn status(
                     "Hierarchy edges: no (run `vex index` to enable `vex implementations`/`vex subtypes` index lookups)"
                 );
             }
-            // P4a (`docs/V9-FORMAT.md` §4.1) — symbol-cluster summary, one
-            // line. STALE / new-since-build are always 0/false in P4a
-            // (P4b-only concepts); shown anyway so the key's shape is
-            // stable once P4b starts setting them.
+            // P4a/P4b (`docs/V9-FORMAT.md` §4.1, §5) — symbol-cluster
+            // summary, one line. "— stale" appears exactly when a `vex
+            // update` carried the section forward instead of recomputing.
             match &cluster_summary {
                 Some(s) => println!(
                     "Clusters:   {} (γ={}/{}, algo v{}){}",

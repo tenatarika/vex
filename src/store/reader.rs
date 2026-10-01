@@ -1304,10 +1304,13 @@ impl IndexReader {
         slice_or_empty(&self.mmap, offset, len)
     }
 
-    /// Whether the index carries a COMPUTED cluster section (v9+, P4a).
-    /// `false` for v3..v8 indexes, for a v9 index built with
-    /// `--no-clusters`, and for one written by `vex update` (P4a never
-    /// computes on update).
+    /// Whether the index carries a COMPUTED cluster section (v9+,
+    /// P4a/P4b). `false` for v3..v8 indexes, for a v9 index built with
+    /// `--no-clusters`, and for an update that respected that opt-out
+    /// (§13 R14). `true` for a full `vex index` that wanted clusters, for
+    /// a P4b carry-forward (frozen, possibly STALE — check
+    /// `cluster_section_reader().summary().stale`), and for `vex
+    /// update`'s R14 compute-once.
     #[allow(dead_code)] // no CLI caller until P5 wires `vex modules`; exercised by tests
     pub fn has_clusters(&self) -> bool {
         self.cluster_header()
@@ -2462,6 +2465,7 @@ mod tests {
         use crate::store::call_graph::CallEdgeBuilder;
         use crate::store::writer::{
             write_index_with_call_graph_and_skeletons_and_fingerprints, ClusterComputeRequest,
+            ClusterInput,
         };
 
         fn mk_sym(name: &str, line: usize) -> ParsedSymbol {
@@ -2542,7 +2546,7 @@ mod tests {
                 &[],
                 &[],
                 &[],
-                Some(ClusterComputeRequest { resolution: (1, 8) }),
+                ClusterInput::Compute(ClusterComputeRequest { resolution: (1, 8) }),
                 &out,
             )
             .expect("write real clustered index");

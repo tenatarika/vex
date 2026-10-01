@@ -509,7 +509,6 @@ impl ClusterHeader {
     /// Bit 1 of `flags`: the prior computed assignment was carried
     /// forward by `vex update` rather than recomputed — stale relative
     /// to the current working tree (§5).
-    #[allow(dead_code)] // P4a never sets this (it never carries); reserved for P4b
     pub const FLAG_STALE: u32 = 0x2;
     /// Bit 2 of `flags`: the Leiden-CPM outer-iteration cap (§3.3 step 5)
     /// was hit before convergence.

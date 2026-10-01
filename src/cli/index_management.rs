@@ -123,9 +123,10 @@ pub(crate) fn handle_staleness(
                         manifest.pattern_index,
                     ),
                     // Auto-update always runs `pipeline::update`, which
-                    // never computes clusters in P4a regardless of this
-                    // value (that's P4b's carry-forward) — `true` is the
-                    // neutral default (`docs/V9-FORMAT.md` §13 R5).
+                    // never reads this field for its own cluster decision
+                    // — P4b's `ClusterInput` logic decides independently
+                    // (carry / compute-once / none) — so `true` is just
+                    // the neutral default (`docs/V9-FORMAT.md` §13 R5).
                     with_clusters: true,
                     // Phase 14.8 sticky-via-manifest: inherit the prior
                     // section decision so auto-update on a history-

@@ -6,10 +6,12 @@ use anyhow::{ensure, Context, Result};
 
 use super::call_graph::{build_callers_fst, callees_csr_keys, CallEdgeBuilder};
 use super::csr;
-// `ClusterComputeRequest` lives with the cluster-section builder and reader
-// in `cluster_section.rs`; re-exported so `pipeline/output.rs` can import it
-// from the writer like the other write options.
+// `ClusterComputeRequest` / `ClusterInput` live with the cluster-section
+// builder and reader in `cluster_section.rs`; re-exported so
+// `pipeline/output.rs` can import them from the writer like the other
+// write options.
 pub use super::cluster_section::ClusterComputeRequest;
+pub(crate) use super::cluster_section::ClusterInput;
 use super::format::{
     CallEdge, CallGraphHeader, ClusterHeader, Header, HierarchyHeader, PatternSkeletonHeader,
     SymbolRecord, UnresolvedRefsHeader, V5SectionHeader, MAGIC, VECTOR_DIM, VERSION,
@@ -267,10 +269,10 @@ pub fn write_index_with_call_graph(
         bm25,
         &[],
         &[],
-        &[],  // reconstructed_refs — full rebuild path
-        &[],  // old_file_paths
-        &[],  // reconstructed_unresolved_refs
-        None, // cluster_request — these back-compat shims never compute clusters
+        &[],                // reconstructed_refs — full rebuild path
+        &[],                // old_file_paths
+        &[],                // reconstructed_unresolved_refs
+        ClusterInput::None, // these back-compat shims never compute clusters
         output,
     )
     .map(|_meta| ())
@@ -298,10 +300,10 @@ pub fn write_index_with_call_graph_and_skeletons(
         bm25,
         pattern_skeletons,
         &[],
-        &[],  // reconstructed_refs — full rebuild path
-        &[],  // old_file_paths
-        &[],  // reconstructed_unresolved_refs
-        None, // cluster_request — this back-compat shim never computes clusters
+        &[],                // reconstructed_refs — full rebuild path
+        &[],                // old_file_paths
+        &[],                // reconstructed_unresolved_refs
+        ClusterInput::None, // this back-compat shim never computes clusters
         output,
     )
     .map(|_meta| ())
@@ -340,10 +342,11 @@ pub(crate) fn write_index_with_call_graph_and_skeletons_and_fingerprints(
     // unchanged files. Empty for full `vex index`. Mapped to new file_ids
     // and appended to the v7 unresolved-refs section after the per-file loop.
     reconstructed_unresolved_refs: &[crate::index::types::ReconstructedUnresolvedRef],
-    // P4a (`docs/V9-FORMAT.md` §13 R10/R14) — `Some` only for a full
-    // `vex index` that wants clusters; `None` for every `vex update` call
-    // (P4a never carries) and for `--no-clusters`.
-    cluster_request: Option<ClusterComputeRequest>,
+    // P4a/P4b (`docs/V9-FORMAT.md` §5, §13 R10-R14) — `Compute` for a
+    // full `vex index` that wants clusters, OR `vex update`'s R14
+    // compute-once; `Carry` for `vex update` when the prior index has a
+    // COMPUTED section; `None` for `--no-clusters` / an opted-out update.
+    cluster_input: ClusterInput,
     output: &Path,
 ) -> Result<NewIndexMetadata> {
     // Pre-validate every vector before opening the temp file. The header's
@@ -375,7 +378,7 @@ pub(crate) fn write_index_with_call_graph_and_skeletons_and_fingerprints(
         reconstructed_refs,
         old_file_paths,
         reconstructed_unresolved_refs,
-        cluster_request,
+        cluster_input,
     ) {
         Ok(meta) => meta,
         Err(e) => {
@@ -413,16 +416,16 @@ fn write_index_to(
     reconstructed_refs: &[crate::index::types::ReconstructedRef],
     old_file_paths: &[String],
     reconstructed_unresolved_refs: &[crate::index::types::ReconstructedUnresolvedRef],
-    cluster_request: Option<ClusterComputeRequest>,
+    cluster_input: ClusterInput,
 ) -> Result<NewIndexMetadata> {
     let mut strings = StringPool::new();
     let mut records = Vec::new();
     let mut symbol_idx: u32 = 0;
-    // P4a projection input, built in lockstep with `records` only when
-    // clustering is requested (`cluster_request.is_some()`) — skipped
-    // entirely on `vex update` and `--no-clusters` so those paths pay no
-    // extra allocation (§13 R10/R14: P4a is `vex index`-only).
-    let want_clusters = cluster_request.is_some();
+    // P4a projection input, built in lockstep with `records` only when a
+    // FRESH compute is requested — skipped for `ClusterInput::Carry`
+    // (which never runs Leiden/projection, see `build_cluster_section_from_carry`)
+    // and for `ClusterInput::None`, so those paths pay no extra allocation.
+    let want_clusters = matches!(cluster_input, ClusterInput::Compute(_));
     let mut projection_symbols: Vec<crate::cluster::projection::ProjectionSymbol<'_>> = Vec::new();
 
     // Assign file_id sequentially per unique path. Collect ordered file table.
@@ -1005,20 +1008,29 @@ fn write_index_to(
     let (skel_section, skel_fingerprints) =
         build_pattern_skeleton_section(pattern_skeletons, &mut no_intern_fn, lang_fingerprints)?;
 
-    // P4a (`docs/V9-FORMAT.md` §13 R10/R14/R21): cluster work AND label
+    // P4a/P4b (`docs/V9-FORMAT.md` §13 R10/R14/R21): cluster work AND label
     // interning run BEFORE the section-offset layout math below — interning
     // a label grows `strings.data`, and every downstream section offset is
-    // computed from its final length. `cluster_built` stays `None` for
-    // every `vex update` call and for `--no-clusters`, in which case the
-    // on-disk section is the all-zero P2 placeholder, byte-identical to
-    // before this phase.
+    // computed from its final length. `cluster_built` is `Some` for a full
+    // `vex index` that wants clusters (`Compute`), for `vex update`'s R14
+    // compute-once, AND for a P4b carry-forward (`Carry` freezes the prior
+    // section and marks it STALE); it stays `None` only for `--no-clusters`
+    // / an opted-out update, in which case the on-disk section is the
+    // all-zero P2 placeholder.
     //
     // Clustering runs sequentially: overlapping it with the section builds
     // above was measured and gained nothing (they are too cheap to hide the
     // projection + Leiden cost behind).
-    let cluster_built: Option<super::cluster_section::ClusterSectionBuilt> = match cluster_request {
-        None => None,
-        Some(req) => {
+    let cluster_built: Option<super::cluster_section::ClusterSectionBuilt> = match cluster_input {
+        ClusterInput::None => None,
+        ClusterInput::Carry(carry) => {
+            Some(super::cluster_section::build_cluster_section_from_carry(
+                parsed,
+                &carry,
+                &mut |s: &str| strings.intern(s),
+            )?)
+        }
+        ClusterInput::Compute(req) => {
             let projection_call_edges: Vec<crate::cluster::projection::ProjectionCallEdge<'_>> =
                 call_edges
                     .iter()
@@ -1277,7 +1289,7 @@ fn write_index_to(
             resolution_num: c.resolution.0,
             resolution_den: c.resolution.1,
             flags: c.flags,
-            algo_version: 1,
+            algo_version: c.algo_version,
             levels: c.levels,
             build_symbol_count: c.build_symbol_count,
             _reserved: [0; 12],
@@ -1866,7 +1878,7 @@ mod cluster_tests {
     fn write_with_clusters(
         parsed: &[ParsedFile],
         call_edges: &[CallEdgeBuilder],
-        cluster_request: Option<ClusterComputeRequest>,
+        cluster_input: ClusterInput,
         out: &Path,
     ) {
         write_index_with_call_graph_and_skeletons_and_fingerprints(
@@ -1880,7 +1892,7 @@ mod cluster_tests {
             &[],
             &[],
             &[],
-            cluster_request,
+            cluster_input,
             out,
         )
         .expect("write index");
@@ -1944,7 +1956,7 @@ mod cluster_tests {
         write_with_clusters(
             &parsed,
             &edges,
-            Some(ClusterComputeRequest { resolution: (1, 8) }),
+            ClusterInput::Compute(ClusterComputeRequest { resolution: (1, 8) }),
             &out,
         );
 
@@ -1999,7 +2011,7 @@ mod cluster_tests {
         let edges = four_clique_call_edges();
         let tmp = tempfile::TempDir::new().unwrap();
         let out = tmp.path().join("index.vex");
-        write_with_clusters(&parsed, &edges, None, &out);
+        write_with_clusters(&parsed, &edges, ClusterInput::None, &out);
 
         let reader = IndexReader::open(&out).expect("open index");
         assert!(!reader.has_clusters());
@@ -2033,7 +2045,7 @@ mod cluster_tests {
         write_with_clusters(
             &parsed,
             &edges,
-            Some(ClusterComputeRequest { resolution: (1, 8) }),
+            ClusterInput::Compute(ClusterComputeRequest { resolution: (1, 8) }),
             &out1,
         );
         let tmp2 = tempfile::TempDir::new().unwrap();
@@ -2041,7 +2053,7 @@ mod cluster_tests {
         write_with_clusters(
             &parsed,
             &edges,
-            Some(ClusterComputeRequest { resolution: (1, 8) }),
+            ClusterInput::Compute(ClusterComputeRequest { resolution: (1, 8) }),
             &out2,
         );
 
@@ -2094,7 +2106,7 @@ mod cluster_tests {
         write_with_clusters(
             &parsed,
             &[],
-            Some(ClusterComputeRequest { resolution: (1, 8) }),
+            ClusterInput::Compute(ClusterComputeRequest { resolution: (1, 8) }),
             &out,
         );
 

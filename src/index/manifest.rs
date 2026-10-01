@@ -73,18 +73,39 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern_index_full: Option<bool>,
 
-    /// P4a (`docs/V9-FORMAT.md` §4.1, §13 R5) — `Some(true)` only when
-    /// this manifest was written by a full `vex index` that computed
-    /// symbol clusters (not `--no-clusters`). `vex update` never sets
-    /// this `Some(true)` in P4a (it never computes; that's P4b's
-    /// carry-forward), so a no-change `vex index` after an `update`
-    /// still rebuilds instead of skipping — see `run_can_skip`, which is
-    /// the ONLY place this field is consulted. Like `pattern_index_full`,
-    /// it is deliberately absent from `manifest_options_cover` (R5), so a
-    /// no-change `vex update` keeps skipping forever. `None` on pre-v9
-    /// manifests and on any build that didn't compute clusters.
+    /// P4a/P4b (`docs/V9-FORMAT.md` §4.1, §13 R5/R14) — `Some(true)` only
+    /// when this write's on-disk cluster section is a freshly-COMPUTED
+    /// (non-carried, non-placeholder) result: a full `vex index` that
+    /// wanted clusters, OR `vex update`'s R14 compute-once (the prior
+    /// index had no COMPUTED section and the user hasn't opted out — see
+    /// `clusters_opt_out`). `Some(false)` for a P4b carry-forward (STALE)
+    /// or a write that didn't want clusters at all. A no-change `vex
+    /// index` still rebuilds instead of skipping whenever this is
+    /// anything but `Some(true)` — see `run_can_skip`, which is the ONLY
+    /// place this field is consulted. Like `pattern_index_full`, it is
+    /// deliberately absent from `manifest_options_cover` (R5), so a
+    /// no-change `vex update` keeps skipping forever regardless of this
+    /// value. `None` on pre-v9 manifests and on any build that didn't
+    /// compute clusters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clusters_full: Option<bool>,
+
+    /// P4b (`docs/V9-FORMAT.md` §13 R14, Q2) — explicit sticky opt-out
+    /// marker, DISTINCT from `clusters_full` above (R5: that one is read
+    /// ONLY by `run_can_skip` and must never gate `vex update`'s skip
+    /// path or its compute-once decision). `Some(true)` only on a full
+    /// `vex index --no-clusters` run; `vex update` never recomputes it
+    /// from its own (nonexistent) CLI flag — it carries the prior
+    /// manifest's value forward verbatim via
+    /// `IndexBuildArtefacts::prior_clusters_opt_out`. `Some(false)` on
+    /// every full `vex index` WITHOUT `--no-clusters`, clearing a stale
+    /// opt-out the moment the user runs a plain `vex index` again.
+    /// `None` on a pre-P4b manifest that no `vex index`/`vex update` has
+    /// touched yet — treated as "not opted out", so an upgrading user
+    /// gets R14's compute-once instead of a silently permanent
+    /// no-clusters state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clusters_opt_out: Option<bool>,
 
     /// v1.13 P5: `true` when the on-disk vectors are L2-normalized
     /// (unit length). `vex similar` / `vex duplicates` / `vex search
@@ -677,6 +698,7 @@ mod tests {
             "pattern_index",
             "pattern_index_full",
             "clusters_full",
+            "clusters_opt_out",
             "vectors_normalized",
             "rename_chains_built",
             "rename_chains_minilm_tiebreak_hits",

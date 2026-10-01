@@ -317,8 +317,12 @@ pub(crate) fn build_index_options(
         // three `resolve_section_enabled` fields above (`docs/V9-FORMAT.md`
         // §13 R5 — `clusters_full` lives only in `run_can_skip`). Only
         // `vex index`'s `--no-clusters` overrides this (`cmd_index.rs`,
-        // after this call); `vex update`/`vex watch` never compute
-        // clusters in P4a regardless of this value.
+        // after this call). `vex update`/`vex watch` never read THIS
+        // field for their own cluster decision — P4b's `ClusterInput`
+        // logic (`pipeline::output`) decides independently whether to
+        // carry a prior COMPUTED section forward, compute once (R14), or
+        // stay `None`, based on the prior index's cluster state and the
+        // manifest's `clusters_opt_out`, not on `opts.with_clusters`.
         with_clusters: true,
         with_history: resolved_with_history,
         history_depth: resolved_history_depth,
