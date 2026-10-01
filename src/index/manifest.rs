@@ -73,6 +73,19 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern_index_full: Option<bool>,
 
+    /// P4a (`docs/V9-FORMAT.md` §4.1, §13 R5) — `Some(true)` only when
+    /// this manifest was written by a full `vex index` that computed
+    /// symbol clusters (not `--no-clusters`). `vex update` never sets
+    /// this `Some(true)` in P4a (it never computes; that's P4b's
+    /// carry-forward), so a no-change `vex index` after an `update`
+    /// still rebuilds instead of skipping — see `run_can_skip`, which is
+    /// the ONLY place this field is consulted. Like `pattern_index_full`,
+    /// it is deliberately absent from `manifest_options_cover` (R5), so a
+    /// no-change `vex update` keeps skipping forever. `None` on pre-v9
+    /// manifests and on any build that didn't compute clusters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clusters_full: Option<bool>,
+
     /// v1.13 P5: `true` when the on-disk vectors are L2-normalized
     /// (unit length). `vex similar` / `vex duplicates` / `vex search
     /// --semantic` switch to a dot-product fast path that skips the
@@ -663,6 +676,7 @@ mod tests {
             "bm25",
             "pattern_index",
             "pattern_index_full",
+            "clusters_full",
             "vectors_normalized",
             "rename_chains_built",
             "rename_chains_minilm_tiebreak_hits",

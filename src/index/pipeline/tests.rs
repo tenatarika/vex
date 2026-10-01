@@ -116,6 +116,9 @@ fn run_accepts_full_or_pre_flag_pattern_index() {
     let opts = IndexOptions {
         with_embeddings: false,
         with_pattern_index: true,
+        // Orthogonal to this test's concern (pattern_index_full) — see
+        // the dedicated P4a cluster-skip-gate tests below for that gate.
+        with_clusters: false,
         ..IndexOptions::default()
     };
     let full = Manifest {
@@ -138,6 +141,9 @@ fn run_ignores_pattern_index_full_when_caller_did_not_ask_for_pattern_index() {
     let opts = IndexOptions {
         with_embeddings: false,
         with_pattern_index: false,
+        // Orthogonal to this test's concern — see the dedicated P4a
+        // cluster-skip-gate tests below.
+        with_clusters: false,
         ..IndexOptions::default()
     };
     let m = Manifest {
@@ -145,6 +151,84 @@ fn run_ignores_pattern_index_full_when_caller_did_not_ask_for_pattern_index() {
         ..Manifest::default()
     };
     assert!(run_can_skip(&m, opts, "minilm-l6-v2"));
+}
+
+// --- P4a (`docs/V9-FORMAT.md` §13 R5): cluster skip-gate regression guard --
+
+#[test]
+fn run_refuses_to_skip_when_clusters_wanted_but_not_computed() {
+    // Mirrors `run_refuses_to_skip_partial_pattern_index_when_caller_opted_in`:
+    // a peer's manifest from `vex update` (which never computes clusters in
+    // P4a) must not satisfy a `vex index` that wants them.
+    let opts = IndexOptions {
+        with_embeddings: false,
+        with_clusters: true,
+        ..IndexOptions::default()
+    };
+    for clusters_full in [Some(false), None] {
+        let m = Manifest {
+            clusters_full,
+            ..Manifest::default()
+        };
+        assert!(
+            !run_can_skip(&m, opts, "minilm-l6-v2"),
+            "clusters_full={clusters_full:?} must not allow a skip when clusters are wanted"
+        );
+    }
+}
+
+#[test]
+fn run_accepts_a_manifest_with_computed_clusters() {
+    let opts = IndexOptions {
+        with_embeddings: false,
+        with_clusters: true,
+        ..IndexOptions::default()
+    };
+    let m = Manifest {
+        clusters_full: Some(true),
+        ..Manifest::default()
+    };
+    assert!(run_can_skip(&m, opts, "minilm-l6-v2"));
+}
+
+#[test]
+fn run_ignores_clusters_full_when_caller_passed_no_clusters() {
+    // `vex index --no-clusters` never checks `clusters_full` at all.
+    let opts = IndexOptions {
+        with_embeddings: false,
+        with_clusters: false,
+        ..IndexOptions::default()
+    };
+    let m = Manifest {
+        clusters_full: Some(false),
+        ..Manifest::default()
+    };
+    assert!(run_can_skip(&m, opts, "minilm-l6-v2"));
+}
+
+#[test]
+fn update_skip_ignores_clusters_full_entirely() {
+    // R5's load-bearing invariant: `clusters_full` must NEVER reach
+    // `manifest_options_cover` (and therefore `try_skip_update`) — folding
+    // it in there would make every no-change `vex update` stop skipping
+    // forever, since `update` itself never produces `clusters_full ==
+    // Some(true)` in P4a. A no-change `vex update` must keep skipping
+    // regardless of the cluster state on the peer's manifest.
+    let opts = IndexOptions {
+        with_embeddings: false,
+        with_clusters: true,
+        ..IndexOptions::default()
+    };
+    let m = Manifest {
+        clusters_full: Some(false),
+        ..Manifest::default()
+    };
+    let no_index_root = std::path::Path::new("/nonexistent-vex-update-clusters-skip-test-root");
+    assert_eq!(
+        try_skip_update(&m, opts, "minilm-l6-v2", no_index_root).unwrap(),
+        Some(0),
+        "manifest_options_cover (and try_skip_update) must ignore clusters_full"
+    );
 }
 
 // --- A3 (v1.12.0): non-blocking IndexLock::try_acquire -----------------
@@ -313,4 +397,76 @@ fn vex_downgrade_for_test(index_path: &std::path::Path) {
     let mut bytes = std::fs::read(index_path).unwrap();
     bytes[4..8].copy_from_slice(&8u32.to_le_bytes());
     std::fs::write(index_path, &bytes).unwrap();
+}
+
+/// End-to-end regression guard for §13 R5's double-rebuild trap, through
+/// the real `pipeline::run`/`pipeline::update` entry points (not just the
+/// pure `run_can_skip`/`manifest_options_cover` unit tests above):
+///
+/// 1. `vex index` computes clusters (`clusters_full: Some(true)`).
+/// 2. A real file edit, then `vex update` — P4a never computes on
+///    update, so the manifest ends up `clusters_full: Some(false)`.
+/// 3. A SECOND `vex index` with no further file changes must NOT skip
+///    (R5) — it must actually rebuild and recompute, landing back on
+///    `clusters_full: Some(true)`.
+/// 4. A THIRD call, `vex update` again with no further changes, DOES
+///    skip (manifest_options_cover never looks at `clusters_full`) —
+///    this is the "don't regress update's own skip path" half of the
+///    guard.
+#[test]
+fn run_recomputes_clusters_after_update_but_update_itself_keeps_skipping() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    std::fs::write(root.join("a.rs"), "pub fn foo() {}\n").unwrap();
+
+    let opts = IndexOptions::default(); // with_clusters: true
+    let manifest_path = config::manifest_path(&root);
+
+    // 1. Full index: clusters computed.
+    let (_, rebuilt) = super::run(&root, opts, "minilm-l6-v2", &[]).expect("initial run");
+    assert!(rebuilt);
+    let m1 = Manifest::load(&manifest_path).unwrap();
+    assert_eq!(
+        m1.clusters_full,
+        Some(true),
+        "first full index must compute clusters"
+    );
+
+    // 2. Real file change, then `vex update` — P4a never computes on
+    // update, so this writes `clusters_full: Some(false)`.
+    std::fs::write(root.join("a.rs"), "pub fn foo() {}\npub fn bar() {}\n").unwrap();
+    super::update(&root, opts, "minilm-l6-v2", &[]).expect("update after edit");
+    let m2 = Manifest::load(&manifest_path).unwrap();
+    assert_eq!(
+        m2.clusters_full,
+        Some(false),
+        "vex update must never claim clusters_full: Some(true) (P4a never computes on update)"
+    );
+
+    // 3. A second `vex index` with ZERO further file changes must not
+    // skip — `clusters_full != Some(true)` on disk means the rebuild is
+    // owed (R5), and it must land back on `Some(true)`.
+    let (_, rebuilt) = super::run(&root, opts, "minilm-l6-v2", &[]).expect("second run");
+    assert!(
+        rebuilt,
+        "a no-change `vex index` must still rebuild when clusters_full != Some(true) (R5)"
+    );
+    let m3 = Manifest::load(&manifest_path).unwrap();
+    assert_eq!(
+        m3.clusters_full,
+        Some(true),
+        "the second full index must recompute and clear clusters_full back to Some(true)"
+    );
+
+    // 4. A no-change `vex update` must STILL skip — clusters_full is
+    // never part of `manifest_options_cover`, so this half of R5 must
+    // not regress `update`'s own thundering-herd skip path.
+    let (_, changed, deleted) =
+        super::update(&root, opts, "minilm-l6-v2", &[]).expect("no-change update");
+    assert_eq!(
+        (changed, deleted),
+        (0, 0),
+        "a no-change `vex update` must report zero changed/deleted (the skip path), \
+         not run a real incremental rebuild"
+    );
 }

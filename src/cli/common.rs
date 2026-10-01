@@ -313,6 +313,13 @@ pub(crate) fn build_index_options(
             cfg.pattern_index,
             manifest.and_then(|m| m.pattern_index),
         ),
+        // Default `true` here; NOT a sticky manifest opt-out like the
+        // three `resolve_section_enabled` fields above (`docs/V9-FORMAT.md`
+        // §13 R5 — `clusters_full` lives only in `run_can_skip`). Only
+        // `vex index`'s `--no-clusters` overrides this (`cmd_index.rs`,
+        // after this call); `vex update`/`vex watch` never compute
+        // clusters in P4a regardless of this value.
+        with_clusters: true,
         with_history: resolved_with_history,
         history_depth: resolved_history_depth,
         // `--no-history` is only meaningful when there's something to

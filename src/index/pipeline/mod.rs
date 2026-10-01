@@ -56,6 +56,16 @@ pub struct IndexOptions {
     /// section is written empty and `vex pattern` keeps using its
     /// live-scan path (today's behaviour). Default `true`. 11.4 Inc 4.
     pub with_pattern_index: bool,
+    /// P4a (`docs/V9-FORMAT.md` §4.1, §13 R10/R14) — compute symbol
+    /// clusters (deterministic Leiden-CPM) on a full `vex index`. Default
+    /// `true`. `--no-clusters` sets this `false`. Unlike `with_call_graph`
+    /// / `with_bm25` / `with_pattern_index`, this is **not** a sticky
+    /// manifest-backed opt-out (R5: the `clusters_full` marker lives only
+    /// in `run_can_skip`, never in `manifest_options_cover`) — `vex
+    /// update` never computes clusters in P4a regardless of this field
+    /// (that's P4b's carry-forward), so the field is read only by `run`
+    /// (`vex index`).
+    pub with_clusters: bool,
     /// Phase 14.8 — build the `git_history` sidecar
     /// (`<index_dir>/index.git_history`) carrying every historical
     /// symbol reachable from `HEAD`. Default `false`: opt-in only.
@@ -105,6 +115,7 @@ impl Default for IndexOptions {
             with_call_graph: true,
             with_bm25: true,
             with_pattern_index: true,
+            with_clusters: true,
             with_history: false,
             history_depth: None,
             drop_history: false,
@@ -168,11 +179,23 @@ fn manifest_options_cover(manifest: &Manifest, opts: IndexOptions, embedder_id: 
 /// `pattern_index_full == Some(false)`) when the caller explicitly ran
 /// `vex index` and opted into the pattern index — the partial pattern section
 /// is harmless but the user asked for the full one, so the rebuild is owed.
+///
+/// `docs/V9-FORMAT.md` §13 R5: the `clusters_full` marker is checked ONLY
+/// here, never in [`manifest_options_cover`] — folding it in there would
+/// make every no-change `vex update` stop skipping forever, since `update`
+/// itself never produces `clusters_full == Some(true)` (P4a never computes
+/// on `update`). A no-change `vex index` that wants clusters and finds the
+/// on-disk index was last written by `update` (or by `vex index
+/// --no-clusters`) is NOT skipped — the rebuild is owed so STALE clears
+/// and a real cluster section gets computed.
 fn run_can_skip(manifest: &Manifest, opts: IndexOptions, embedder_id: &str) -> bool {
     if !manifest_options_cover(manifest, opts, embedder_id) {
         return false;
     }
     if opts.with_pattern_index && manifest.pattern_index_full == Some(false) {
+        return false;
+    }
+    if opts.with_clusters && manifest.clusters_full != Some(true) {
         return false;
     }
     true
@@ -186,7 +209,7 @@ fn run_can_skip(manifest: &Manifest, opts: IndexOptions, embedder_id: &str) -> b
 /// untouched v8 index must converge to v9 on the next `vex update`
 /// (including auto-update) rather than staying v8 forever just because
 /// nothing else changed. `clusters_full`/`run_can_skip`'s half of R5 is
-/// P4a scope, not this gate.
+/// implemented in [`run_can_skip`] below, not this gate.
 ///
 /// Opens the on-disk index **at most once** (code-review HIGH: the
 /// previous shape opened it twice on this hot path — once here for the

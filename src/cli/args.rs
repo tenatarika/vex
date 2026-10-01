@@ -257,6 +257,14 @@ pub enum Commands {
         #[arg(long)]
         no_pattern_index: bool,
 
+        /// Skip computing symbol clusters (deterministic Leiden-CPM) on
+        /// this full rebuild. Unlike `--no-call-graph`/`--no-bm25`/
+        /// `--no-pattern-index`, this is NOT a sticky manifest opt-out —
+        /// a later `vex index` without this flag always recomputes
+        /// (`docs/V9-FORMAT.md` §4.1, §13 R5).
+        #[arg(long)]
+        no_clusters: bool,
+
         /// Exit immediately with a "busy" status if another vex instance
         /// is currently building the same index, instead of waiting for
         /// it to finish. Useful for editor integrations and CI cron jobs

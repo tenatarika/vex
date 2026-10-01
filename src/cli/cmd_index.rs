@@ -29,6 +29,7 @@ struct IndexFlags {
     no_call_graph: bool,
     no_bm25: bool,
     no_pattern_index: bool,
+    no_clusters: bool,
     history: bool,
     history_depth: Option<usize>,
     gpu: bool,
@@ -48,6 +49,7 @@ pub(crate) fn index(
     no_call_graph: bool,
     no_bm25: bool,
     no_pattern_index: bool,
+    no_clusters: bool,
     no_wait: bool,
     history: bool,
     history_depth: Option<usize>,
@@ -64,6 +66,7 @@ pub(crate) fn index(
         no_call_graph,
         no_bm25,
         no_pattern_index,
+        no_clusters,
         history,
         history_depth,
         gpu,
@@ -189,6 +192,11 @@ fn run_for_root(
     opts.drop_semantic = flags.drop_semantic;
     opts.device = resolved_device;
     opts.gpu_explicit = gpu_explicit;
+    // Not threaded through `build_index_options`/`resolve_section_enabled`
+    // like `call_graph`/`bm25`/`pattern_index` — clusters are NOT a sticky
+    // manifest opt-out (`docs/V9-FORMAT.md` §13 R5), so there is no prior
+    // state to layer under the CLI flag.
+    opts.with_clusters = !flags.no_clusters;
 
     if no_wait {
         pipeline::run_or_busy(root, opts, &embedder_id, excludes)

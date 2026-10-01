@@ -501,7 +501,6 @@ pub struct ClusterHeader {
     pub _reserved: [u8; 12],
 }
 
-#[allow(dead_code)] // reserved for the P4a cluster-section reader; flags stay 0 until clusters are computed
 impl ClusterHeader {
     pub const SIZE: usize = std::mem::size_of::<Self>();
     /// Bit 0 of `flags`: clusters were actually computed by Leiden-CPM
@@ -510,10 +509,48 @@ impl ClusterHeader {
     /// Bit 1 of `flags`: the prior computed assignment was carried
     /// forward by `vex update` rather than recomputed — stale relative
     /// to the current working tree (§5).
+    #[allow(dead_code)] // P4a never sets this (it never carries); reserved for P4b
     pub const FLAG_STALE: u32 = 0x2;
     /// Bit 2 of `flags`: the Leiden-CPM outer-iteration cap (§3.3 step 5)
     /// was hit before convergence.
     pub const FLAG_ITER_CAP_HIT: u32 = 0x4;
+}
+
+/// On-disk sentinel values for a slot in [`ClusterHeader`]'s `assign`
+/// sub-section (§2.4). Mirrors `crate::cluster::{NOT_ELIGIBLE, UNCLUSTERED,
+/// NEW}` — duplicated here as plain constants (rather than importing
+/// `crate::cluster`) so `format.rs` stays a leaf module with no dependency
+/// on the clustering algorithm, matching this file's existing convention
+/// for `EdgeKind` / `RefKind` discriminants.
+pub const CLUSTER_NOT_ELIGIBLE: u32 = 0xFFFF_FFFF;
+pub const CLUSTER_UNCLUSTERED: u32 = 0xFFFF_FFFE;
+pub const CLUSTER_NEW: u32 = 0xFFFF_FFFD;
+
+/// One finalized cluster record (§2.4 `ClusterRecord`), 32 bytes,
+/// `#[repr(C)]`, eight `u32` fields (align 4, no padding).
+///
+/// `rep_sym_idx` is the member with the minimum canonical key at build
+/// time (§13 R6); `u32::MAX` means "lost after a P4b carry" (never
+/// written by P4a, which always has a live representative). `hubs` pads
+/// with `u32::MAX` when the cluster has fewer than 3 members.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ClusterRecord {
+    pub rep_sym_idx: u32,
+    pub size: u32,
+    /// Sum of intra-cluster pair weights (saturating).
+    pub internal_weight: u32,
+    /// Sum of weights to other clusters, UNCLUSTERED counted (saturating).
+    pub cut_weight: u32,
+    /// Strings-pool offset of the dominant path-prefix label (§4.2).
+    pub label_offset: u32,
+    /// Top-3 members by intra-cluster weighted degree, descending;
+    /// `u32::MAX` pads when the cluster has fewer than 3 members.
+    pub hubs: [u32; 3],
+}
+
+impl ClusterRecord {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
 }
 
 /// One on-disk skeleton record (24 bytes, `#[repr(C)]`).
@@ -870,6 +907,22 @@ mod tests {
         assert_eq!(std::mem::offset_of!(ClusterHeader, levels), 46);
         assert_eq!(std::mem::offset_of!(ClusterHeader, build_symbol_count), 48);
         assert_eq!(std::mem::offset_of!(ClusterHeader, _reserved), 52);
+    }
+
+    #[test]
+    fn cluster_record_is_thirty_two_bytes() {
+        assert_eq!(ClusterRecord::SIZE, 32);
+        assert_eq!(std::mem::align_of::<ClusterRecord>(), 4);
+    }
+
+    #[test]
+    fn cluster_record_field_offsets_are_pinned() {
+        assert_eq!(std::mem::offset_of!(ClusterRecord, rep_sym_idx), 0);
+        assert_eq!(std::mem::offset_of!(ClusterRecord, size), 4);
+        assert_eq!(std::mem::offset_of!(ClusterRecord, internal_weight), 8);
+        assert_eq!(std::mem::offset_of!(ClusterRecord, cut_weight), 12);
+        assert_eq!(std::mem::offset_of!(ClusterRecord, label_offset), 16);
+        assert_eq!(std::mem::offset_of!(ClusterRecord, hubs), 20);
     }
 
     #[test]

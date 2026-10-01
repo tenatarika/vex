@@ -180,6 +180,7 @@ fn bake_v115_index(dir: &Path) -> PathBuf {
         bm25: Some(true),
         pattern_index: Some(true),
         pattern_index_full: Some(true),
+        clusters_full: None,
         vectors_normalized: Some(true),
         trigram_persisted: None,
         rename_chains_built: None,

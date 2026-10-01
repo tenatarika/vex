@@ -122,6 +122,11 @@ pub(crate) fn handle_staleness(
                         cfg.pattern_index,
                         manifest.pattern_index,
                     ),
+                    // Auto-update always runs `pipeline::update`, which
+                    // never computes clusters in P4a regardless of this
+                    // value (that's P4b's carry-forward) — `true` is the
+                    // neutral default (`docs/V9-FORMAT.md` §13 R5).
+                    with_clusters: true,
                     // Phase 14.8 sticky-via-manifest: inherit the prior
                     // section decision so auto-update on a history-
                     // enabled project doesn't silently drop it.
@@ -255,6 +260,9 @@ pub(crate) fn ensure_index_exists(
         with_call_graph: resolve_section_enabled(false, cfg.call_graph, None),
         with_bm25: resolve_section_enabled(false, cfg.bm25, None),
         with_pattern_index: resolve_section_enabled(false, cfg.pattern_index, None),
+        // Bootstrap is a full `pipeline::run`, so this DOES compute
+        // clusters (default on, matching `vex index`'s default).
+        with_clusters: true,
         with_history: false,
         history_depth: None,
         drop_history: false,

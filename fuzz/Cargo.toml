@@ -137,5 +137,15 @@ name = "fuzz_leiden"
 path = "fuzz_targets/fuzz_leiden.rs"
 doc = false
 
+# V9-FORMAT P4a — lazy cluster-section reader
+# (`store::cluster_section::ClusterSectionReader`). Opens arbitrary bytes
+# as an index file and, on a successful `IndexReader::open`, exercises
+# `summary()`/`record()`/`members()`/`status()` against whatever cluster
+# section (if any) survives open()'s structural checks.
+[[bin]]
+name = "fuzz_cluster_section"
+path = "fuzz_targets/fuzz_cluster_section.rs"
+doc = false
+
 [workspace]
 members = ["."]

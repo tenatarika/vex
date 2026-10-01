@@ -173,9 +173,19 @@ const SYNTH_SITES: usize = 200_000;
 /// realistic file size), and `SYNTH_SITES` call edges wired through
 /// `ProjectionCallEdge` (same-file-smallest / project-wide-unique
 /// resolution, exactly as a real corpus would resolve) from a fixed LCG.
+///
+/// Holds plain owned data (not `ProjectionSymbol<'a>`/`ProjectionCallEdge<'a>`
+/// directly — those now borrow `path`/`name`/`callee_name` as `&str`, §13
+/// perf review, which would make this struct self-referential). The
+/// borrowed `Projection*` Vecs are rebuilt from this data once per corpus
+/// in `report_and_bench_projection_leiden`, which outlives the bench loop.
 struct SynthCorpus {
-    symbols: Vec<ProjectionSymbol>,
-    call_edges: Vec<ProjectionCallEdge>,
+    sym_file_id: Vec<u32>,
+    sym_line: Vec<u32>,
+    sym_names: Vec<String>,
+    call_caller: Vec<u32>,
+    call_line: Vec<u32>,
+    call_callee_names: Vec<String>,
     ref_edges: Vec<ProjectionRefEdge>,
     ambiguous: Vec<bool>,
     hierarchy_edges: Vec<ProjectionHierarchyEdge>,
@@ -195,22 +205,17 @@ fn build_synthetic_corpus_random(seed: u64) -> SynthCorpus {
     const SYMS_PER_FILE: u32 = 35;
     let n_files = SYNTH_SYMBOLS.div_ceil(SYMS_PER_FILE);
 
-    let mut symbols = Vec::with_capacity(SYNTH_SYMBOLS as usize);
+    let mut sym_file_id = Vec::with_capacity(SYNTH_SYMBOLS as usize);
+    let mut sym_line = Vec::with_capacity(SYNTH_SYMBOLS as usize);
+    let mut sym_names = Vec::with_capacity(SYNTH_SYMBOLS as usize);
     let mut file_paths = Vec::with_capacity(n_files as usize);
     for f in 0..n_files {
         file_paths.push(format!("src/synth_{f:05}.rs"));
     }
     for sym_idx in 0..SYNTH_SYMBOLS {
-        let file_id = sym_idx / SYMS_PER_FILE;
-        let line = (sym_idx % SYMS_PER_FILE) + 1;
-        symbols.push(ProjectionSymbol {
-            sym_idx,
-            path: file_paths[file_id as usize].clone(),
-            line,
-            kind: 0, // Function — always eligible
-            name: format!("fn_{sym_idx}"),
-            language: Some(Language::Rust),
-        });
+        sym_file_id.push(sym_idx / SYMS_PER_FILE);
+        sym_line.push((sym_idx % SYMS_PER_FILE) + 1);
+        sym_names.push(format!("fn_{sym_idx}"));
     }
 
     // Call edges: resolved by caller sym_idx calling a per-file-unique
@@ -218,20 +223,24 @@ fn build_synthetic_corpus_random(seed: u64) -> SynthCorpus {
     // candidate project-wide" always resolves — this bench measures
     // projection+Leiden throughput, not call-name-resolution edge cases,
     // which `src/cluster/projection.rs`'s unit tests already cover).
-    let mut call_edges = Vec::with_capacity(SYNTH_SITES);
+    let mut call_caller = Vec::with_capacity(SYNTH_SITES);
+    let mut call_line = Vec::with_capacity(SYNTH_SITES);
+    let mut call_callee_names = Vec::with_capacity(SYNTH_SITES);
     for i in 0..SYNTH_SITES as u32 {
         let caller = lcg.next_u32_below(SYNTH_SYMBOLS);
         let callee = lcg.next_u32_below(SYNTH_SYMBOLS);
-        call_edges.push(ProjectionCallEdge {
-            caller_sym_idx: caller,
-            callee_name: format!("fn_{callee}"),
-            line: i + 1,
-        });
+        call_caller.push(caller);
+        call_line.push(i + 1);
+        call_callee_names.push(format!("fn_{callee}"));
     }
 
     SynthCorpus {
-        symbols,
-        call_edges,
+        sym_file_id,
+        sym_line,
+        sym_names,
+        call_caller,
+        call_line,
+        call_callee_names,
         ref_edges: Vec::new(),
         ambiguous: Vec::new(),
         hierarchy_edges: Vec::new(),
@@ -282,25 +291,22 @@ fn build_synthetic_corpus_planted(seed: u64) -> SynthCorpus {
         next_node = end;
     }
 
-    let mut symbols = Vec::with_capacity(SYNTH_SYMBOLS as usize);
+    let mut sym_file_id = Vec::with_capacity(SYNTH_SYMBOLS as usize);
+    let mut sym_line = Vec::with_capacity(SYNTH_SYMBOLS as usize);
+    let mut sym_names = Vec::with_capacity(SYNTH_SYMBOLS as usize);
     for sym_idx in 0..SYNTH_SYMBOLS {
-        let file_id = sym_idx / SYMS_PER_FILE;
-        let line = (sym_idx % SYMS_PER_FILE) + 1;
-        symbols.push(ProjectionSymbol {
-            sym_idx,
-            path: file_paths[file_id as usize].clone(),
-            line,
-            kind: 0,
-            name: format!("fn_{sym_idx}"),
-            language: Some(Language::Rust),
-        });
+        sym_file_id.push(sym_idx / SYMS_PER_FILE);
+        sym_line.push((sym_idx % SYMS_PER_FILE) + 1);
+        sym_names.push(format!("fn_{sym_idx}"));
     }
 
     let hubs: Vec<u32> = (0..NUM_HUBS)
         .map(|_| lcg.next_u32_below(SYNTH_SYMBOLS))
         .collect();
 
-    let mut call_edges = Vec::with_capacity(SYNTH_SITES);
+    let mut call_caller = Vec::with_capacity(SYNTH_SITES);
+    let mut call_line = Vec::with_capacity(SYNTH_SITES);
+    let mut call_callee_names = Vec::with_capacity(SYNTH_SITES);
     for i in 0..SYNTH_SITES as u32 {
         let caller = lcg.next_u32_below(SYNTH_SYMBOLS);
         let roll = lcg.next_u32_below(100);
@@ -316,16 +322,18 @@ fn build_synthetic_corpus_planted(seed: u64) -> SynthCorpus {
             let b = lcg.next_u32_below(NUM_HUBS);
             hubs[a.min(b) as usize]
         };
-        call_edges.push(ProjectionCallEdge {
-            caller_sym_idx: caller,
-            callee_name: format!("fn_{callee}"),
-            line: i + 1,
-        });
+        call_caller.push(caller);
+        call_line.push(i + 1);
+        call_callee_names.push(format!("fn_{callee}"));
     }
 
     SynthCorpus {
-        symbols,
-        call_edges,
+        sym_file_id,
+        sym_line,
+        sym_names,
+        call_caller,
+        call_line,
+        call_callee_names,
         ref_edges: Vec::new(),
         ambiguous: Vec::new(),
         hierarchy_edges: Vec::new(),
@@ -343,10 +351,31 @@ fn report_and_bench_projection_leiden(
     label: &str,
     corpus: &SynthCorpus,
 ) {
+    // Rebuild the borrowed `Projection*` Vecs once here — they live for
+    // the rest of this function (covering the report line AND the
+    // criterion-measured loop below), borrowing straight from `corpus`'s
+    // owned strings (no further clone).
+    let symbols: Vec<ProjectionSymbol<'_>> = (0..SYNTH_SYMBOLS as usize)
+        .map(|i| ProjectionSymbol {
+            sym_idx: i as u32,
+            path: &corpus.file_paths[corpus.sym_file_id[i] as usize],
+            line: corpus.sym_line[i],
+            kind: 0, // Function — always eligible
+            name: &corpus.sym_names[i],
+            language: Some(Language::Rust),
+        })
+        .collect();
+    let call_edges: Vec<ProjectionCallEdge<'_>> = (0..corpus.call_caller.len())
+        .map(|i| ProjectionCallEdge {
+            caller_sym_idx: corpus.call_caller[i],
+            callee_name: &corpus.call_callee_names[i],
+            line: corpus.call_line[i],
+        })
+        .collect();
     let input = ProjectionInput {
         symbol_count: SYNTH_SYMBOLS,
-        symbols: &corpus.symbols,
-        call_edges: &corpus.call_edges,
+        symbols: &symbols,
+        call_edges: &call_edges,
         ref_edges: &corpus.ref_edges,
         ambiguous: &corpus.ambiguous,
         hierarchy_edges: &corpus.hierarchy_edges,

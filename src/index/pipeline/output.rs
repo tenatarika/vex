@@ -38,6 +38,18 @@ pub(super) fn vector_dim_for(embedder_id: &str, vectors: &[Vec<f32>]) -> u32 {
     embed::embedder_dim(embedder_id).unwrap_or(embed::MINILM_DIM)
 }
 
+/// P4a cluster resolution γ = num/den (`docs/V9-FORMAT.md` §3.4): the
+/// validated `VEX_CLUSTER_RESOLUTION=a/b` env knob when set and parseable
+/// (`cluster::leiden::parse_resolution_env` already warns + falls back to
+/// the default on a bad value), else `Resolution::DEFAULT` (1/8).
+fn cluster_resolution() -> (u32, u32) {
+    let r = match std::env::var("VEX_CLUSTER_RESOLUTION") {
+        Ok(v) => crate::cluster::leiden::parse_resolution_env(&v),
+        Err(_) => crate::cluster::leiden::Resolution::DEFAULT,
+    };
+    (r.num, r.den)
+}
+
 /// Build the BM25 index from per-symbol term bags.
 ///
 /// Each symbol becomes a document whose terms are drawn from:
@@ -271,6 +283,15 @@ pub(super) fn write_output_locked(
     } else {
         (Vec::new(), Vec::new())
     };
+    // P4a (`docs/V9-FORMAT.md` §13 R10/R14): compute clusters only on a
+    // full `vex index` that wants them. `vex update` always passes
+    // `is_full_rebuild = false`, so `cluster_request` is `None` there
+    // regardless of `opts.with_clusters` — P4a never carries (that's
+    // P4b); `vex update` keeps writing the all-zero P2 placeholder.
+    let cluster_request =
+        (is_full_rebuild && opts.with_clusters).then(|| store::writer::ClusterComputeRequest {
+            resolution: cluster_resolution(),
+        });
     let writer_meta = store::writer::write_index_with_call_graph_and_skeletons_and_fingerprints(
         parsed,
         vectors,
@@ -282,6 +303,7 @@ pub(super) fn write_output_locked(
         &artefacts.reconstructed_refs,
         &artefacts.old_file_paths,
         &artefacts.reconstructed_unresolved_refs,
+        cluster_request,
         &index_path,
     )
     .context("write index")?;
@@ -686,6 +708,14 @@ pub(super) fn write_output_locked(
         // skeletons) and would silently drop matches in unchanged
         // files. `is_update` is plumbed by the writer wrapper.
         pattern_index_full: Some(is_full_rebuild),
+        // P4a (`docs/V9-FORMAT.md` §4.1, §13 R5): `Some(true)` only when
+        // this run actually computed clusters (full rebuild AND
+        // `opts.with_clusters`) — mirrored by `cluster_request.is_some()`
+        // above. `vex update` always lands in the `Some(false)` arm (P4a
+        // never computes on update); so does `vex index --no-clusters`.
+        // Either way `run_can_skip`'s `!= Some(true)` check is satisfied
+        // without needing a third state.
+        clusters_full: Some(cluster_request.is_some()),
         // v1.13 P5: vectors are L2-normalized by `pipeline::run` /
         // `pipeline::update` before they reach this writer. Only
         // meaningful when vectors are present; `None` for the

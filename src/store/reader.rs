@@ -7,8 +7,8 @@ use memmap2::Mmap;
 
 use super::csr::CsrView;
 use super::format::{
-    CallEdge, CallGraphHeader, ClusterHeader, Header, HierarchyEdge, HierarchyHeader,
-    HierarchyPostingEntry, PatternSkeletonHeader, SectionLayout, SymbolRecord,
+    CallEdge, CallGraphHeader, ClusterHeader, ClusterRecord, Header, HierarchyEdge,
+    HierarchyHeader, HierarchyPostingEntry, PatternSkeletonHeader, SectionLayout, SymbolRecord,
     UnresolvedHierarchyEdge, UnresolvedHierarchyHeader, UnresolvedRefsHeader, V5SectionHeader,
 };
 
@@ -417,6 +417,35 @@ impl IndexReader {
                         if CsrView::new(offsets_bytes, None, n_u32, m_u32).is_err() {
                             bail!("v9 index at {p} is corrupted (ref_edges CSR offsets invalid). Re-run `vex index` to rebuild.");
                         }
+                    }
+                }
+            }
+
+            // v9: structural (O(1)) cluster-section validation only —
+            // bounds plus two SHAPE invariants (§7, §13 R3/R4). Every
+            // semantic check (k vs symbol_count, resolution_den != 0,
+            // rep/hub validity, label bounds) is deferred to the lazy
+            // `ClusterSectionReader` (R3): a corrupt cluster section must
+            // degrade to "no cluster data", never brick `search` /
+            // `callers` / any other command.
+            if header.has_cluster_header() {
+                if let Some(ch) = reader.cluster_header() {
+                    let assign_end = ch.assign_offset.saturating_add(ch.assign_len);
+                    let table_end = ch.table_offset.saturating_add(ch.table_len);
+                    if assign_end > mmap_len || table_end > mmap_len {
+                        bail!("v9 index at {p} is corrupted (cluster section offsets exceed file size). Re-run `vex index` to rebuild.");
+                    }
+                    let computed = ch.flags & ClusterHeader::FLAG_COMPUTED != 0;
+                    if computed {
+                        let want_assign_len = header.symbol_count.saturating_mul(4);
+                        if ch.assign_len != want_assign_len {
+                            bail!("v9 index at {p} is corrupted (cluster assign length {} does not match symbol_count {}). Re-run `vex index` to rebuild.", ch.assign_len, header.symbol_count);
+                        }
+                        if !ch.table_len.is_multiple_of(ClusterRecord::SIZE as u64) {
+                            bail!("v9 index at {p} is corrupted (cluster table length {} is not a multiple of {}). Re-run `vex index` to rebuild.", ch.table_len, ClusterRecord::SIZE);
+                        }
+                    } else if ch.assign_len != 0 || ch.table_len != 0 {
+                        bail!("v9 index at {p} is corrupted (cluster section not COMPUTED but has non-zero lengths). Re-run `vex index` to rebuild.");
                     }
                 }
             }
@@ -1232,6 +1261,70 @@ impl IndexReader {
                 Vec::new()
             },
         )
+    }
+
+    /// Read the v9 [`ClusterHeader`] when present. Returns `None` for
+    /// v3..v8 indexes or when the bytes after the
+    /// [`UnresolvedHierarchyHeader`] don't fit / aren't aligned. Mirrors
+    /// [`Self::unresolved_hierarchy_header`]. This accessor alone is what
+    /// `open()` uses for its O(1) structural checks (§13 R3/R4) — it
+    /// never inspects `assign`/`table` content; use
+    /// [`Self::cluster_section_reader`] for that.
+    pub fn cluster_header(&self) -> Option<&ClusterHeader> {
+        if !self.header().has_cluster_header() {
+            return None;
+        }
+        let offset = Header::SIZE
+            .checked_add(CallGraphHeader::SIZE)?
+            .checked_add(V5SectionHeader::SIZE)?
+            .checked_add(PatternSkeletonHeader::SIZE)?
+            .checked_add(UnresolvedRefsHeader::SIZE)?
+            .checked_add(HierarchyHeader::SIZE)?
+            .checked_add(UnresolvedHierarchyHeader::SIZE)?;
+        let end = offset.checked_add(ClusterHeader::SIZE)?;
+        if end > self.mmap.len() {
+            return None;
+        }
+        let ptr = unsafe { self.mmap.as_ptr().add(offset) };
+        if ptr.align_offset(std::mem::align_of::<ClusterHeader>()) != 0 {
+            return None;
+        }
+        // SAFETY: bounds + alignment checked. ClusterHeader is #[repr(C)].
+        Some(unsafe { &*(ptr as *const ClusterHeader) })
+    }
+
+    /// Bounds-checked byte slice at `(offset, len)` within the mmap.
+    /// `pub(crate)` so sibling `store::*` sub-readers (currently
+    /// `cluster_section`) can borrow raw bytes from a header's
+    /// `(offset, len)` pair without `IndexReader` exposing the raw
+    /// `Mmap` itself.
+    pub(crate) fn mmap_slice(&self, offset: u64, len: u64) -> Option<&[u8]> {
+        let offset = usize::try_from(offset).ok()?;
+        let len = usize::try_from(len).ok()?;
+        slice_or_empty(&self.mmap, offset, len)
+    }
+
+    /// Whether the index carries a COMPUTED cluster section (v9+, P4a).
+    /// `false` for v3..v8 indexes, for a v9 index built with
+    /// `--no-clusters`, and for one written by `vex update` (P4a never
+    /// computes on update).
+    #[allow(dead_code)] // no CLI caller until P5 wires `vex modules`; exercised by tests
+    pub fn has_clusters(&self) -> bool {
+        self.cluster_header()
+            .is_some_and(|h| h.flags & ClusterHeader::FLAG_COMPUTED != 0)
+    }
+
+    /// Build a lazy [`super::cluster_section::ClusterSectionReader`] over
+    /// the cluster section's `assign`/`table` bytes, performing the
+    /// semantic validation `open()` deliberately skips (§13 R3). Returns
+    /// `None` when there is no COMPUTED section, or when its content
+    /// fails validation (corrupt `table_len`, `assign_len`, etc.) — in
+    /// either case the caller degrades to "no cluster data" rather than
+    /// propagating an error.
+    pub fn cluster_section_reader(
+        &self,
+    ) -> Option<super::cluster_section::ClusterSectionReader<'_>> {
+        super::cluster_section::ClusterSectionReader::new(self)
     }
 
     /// Number of call edges recorded in this index, 0 when absent.
@@ -2349,5 +2442,256 @@ mod tests {
         let path = write_minimal_index(tmp.path(), |_| {});
         let reader = IndexReader::open(&path).expect("v8 index with zeroed section");
         assert!(reader.unresolved_hierarchy_all().is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // P4a (`docs/V9-FORMAT.md` §7, §13 R3/R4) — adversarial cluster
+    // headers. Builds a REAL clustered index via the writer, then
+    // byte-patches one `ClusterHeader` field at a time. Structural
+    // violations (bounds, `table_len % 32`, `assign_len != 4*n`) must
+    // make `IndexReader::open` bail cleanly (same convention as every
+    // other CSR section in this file); purely semantic violations
+    // (`resolution_den == 0`, an absurd `k`) must let `open()` succeed
+    // and every non-cluster query keep working — only
+    // `cluster_section_reader()` degrades to `None`.
+    // -----------------------------------------------------------------
+
+    mod cluster_adversarial_tests {
+        use super::*;
+        use crate::index::symbols::{ParsedFile, ParsedSymbol, SymbolKind};
+        use crate::store::call_graph::CallEdgeBuilder;
+        use crate::store::writer::{
+            write_index_with_call_graph_and_skeletons_and_fingerprints, ClusterComputeRequest,
+        };
+
+        fn mk_sym(name: &str, line: usize) -> ParsedSymbol {
+            ParsedSymbol {
+                name: name.to_string(),
+                kind: SymbolKind::Function,
+                line,
+                signature: None,
+                doc: None,
+                body_tokens: None,
+            }
+        }
+
+        fn mk_file(path: &str, symbols: Vec<ParsedSymbol>) -> ParsedFile {
+            ParsedFile {
+                path: path.to_string(),
+                symbols,
+                refs: Vec::new(),
+                call_edges: Vec::new(),
+                bound_refs: Vec::new(),
+                skeletons: Vec::new(),
+                cpp_includes: Vec::new(),
+                trigram_bloom: None,
+                hierarchy_captures: Vec::new(),
+            }
+        }
+
+        /// Writes a real, COMPUTED v9 cluster section (a 4-function
+        /// clique in one file, like the writer's own roundtrip fixture)
+        /// and returns the file bytes plus the byte offset of the
+        /// `ClusterHeader` within them.
+        fn write_real_clustered_index() -> (std::path::PathBuf, Vec<u8>, usize) {
+            let parsed = vec![mk_file(
+                "src/a.rs",
+                vec![
+                    mk_sym("f0", 1),
+                    mk_sym("f1", 2),
+                    mk_sym("f2", 3),
+                    mk_sym("f3", 4),
+                ],
+            )];
+            let call_edges = vec![
+                CallEdgeBuilder {
+                    caller_sym_idx: 0,
+                    callee_name: "f1".to_string(),
+                    line: 1,
+                },
+                CallEdgeBuilder {
+                    caller_sym_idx: 1,
+                    callee_name: "f2".to_string(),
+                    line: 2,
+                },
+                CallEdgeBuilder {
+                    caller_sym_idx: 2,
+                    callee_name: "f3".to_string(),
+                    line: 3,
+                },
+                CallEdgeBuilder {
+                    caller_sym_idx: 3,
+                    callee_name: "f0".to_string(),
+                    line: 4,
+                },
+            ];
+            // `into_path()`: this helper hands the path back to the
+            // caller to re-open (and byte-patch) later, so the backing
+            // directory must outlive this function — a plain `TempDir`
+            // would delete it on drop right here.
+            let tmp = tempfile::TempDir::new().unwrap().keep();
+            let out = tmp.join("index.vex");
+            write_index_with_call_graph_and_skeletons_and_fingerprints(
+                &parsed,
+                &[],
+                crate::store::format::VECTOR_DIM,
+                &call_edges,
+                None,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(ClusterComputeRequest { resolution: (1, 8) }),
+                &out,
+            )
+            .expect("write real clustered index");
+
+            let bytes = std::fs::read(&out).unwrap();
+            let cluster_header_offset = Header::SIZE
+                + CallGraphHeader::SIZE
+                + V5SectionHeader::SIZE
+                + PatternSkeletonHeader::SIZE
+                + UnresolvedRefsHeader::SIZE
+                + HierarchyHeader::SIZE
+                + UnresolvedHierarchyHeader::SIZE;
+            (out, bytes, cluster_header_offset)
+        }
+
+        fn patch_u64(bytes: &mut [u8], base: usize, field_offset: usize, value: u64) {
+            bytes[base + field_offset..base + field_offset + 8]
+                .copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn patch_u32(bytes: &mut [u8], base: usize, field_offset: usize, value: u32) {
+            bytes[base + field_offset..base + field_offset + 4]
+                .copy_from_slice(&value.to_le_bytes());
+        }
+
+        #[test]
+        fn out_of_bounds_cluster_offset_bails_cleanly_at_open() {
+            let (out, mut bytes, base) = write_real_clustered_index();
+            // table_offset field is at byte 16 within ClusterHeader.
+            patch_u64(&mut bytes, base, 16, u64::MAX / 2);
+            std::fs::write(&out, &bytes).unwrap();
+
+            let err = match IndexReader::open(&out) {
+                Ok(_) => panic!("an out-of-bounds cluster table offset must bail, not panic"),
+                Err(e) => e,
+            };
+            assert!(
+                err.to_string()
+                    .contains("cluster section offsets exceed file size"),
+                "unexpected error: {err}"
+            );
+        }
+
+        #[test]
+        fn table_len_not_a_multiple_of_record_size_bails_cleanly_at_open() {
+            let (out, mut bytes, base) = write_real_clustered_index();
+            // table_len field is at byte 24. Shrink (not grow) by one
+            // byte so this stays within file bounds — the bounds check
+            // runs before the shape check, and growing would trip that
+            // one instead, defeating the point of this test.
+            let orig = u64::from_le_bytes(bytes[base + 24..base + 32].try_into().unwrap());
+            assert!(
+                orig >= 32,
+                "fixture must have at least one real cluster record"
+            );
+            patch_u64(&mut bytes, base, 24, orig - 1);
+            std::fs::write(&out, &bytes).unwrap();
+
+            let err = match IndexReader::open(&out) {
+                Ok(_) => panic!("a table_len not a multiple of ClusterRecord::SIZE must bail"),
+                Err(e) => e,
+            };
+            assert!(
+                err.to_string().contains("cluster table length"),
+                "unexpected error: {err}"
+            );
+        }
+
+        #[test]
+        fn assign_len_mismatch_bails_cleanly_at_open() {
+            let (out, mut bytes, base) = write_real_clustered_index();
+            // assign_len field is at byte 8.
+            let orig = u64::from_le_bytes(bytes[base + 8..base + 16].try_into().unwrap());
+            patch_u64(&mut bytes, base, 8, orig + 4);
+            std::fs::write(&out, &bytes).unwrap();
+
+            let err = match IndexReader::open(&out) {
+                Ok(_) => panic!("an assign_len mismatched against symbol_count must bail"),
+                Err(e) => e,
+            };
+            assert!(
+                err.to_string().contains("cluster assign length"),
+                "unexpected error: {err}"
+            );
+        }
+
+        #[test]
+        fn resolution_den_zero_degrades_only_the_cluster_reader() {
+            let (out, mut bytes, base) = write_real_clustered_index();
+            // resolution_den field is at byte 36.
+            patch_u32(&mut bytes, base, 36, 0);
+            std::fs::write(&out, &bytes).unwrap();
+
+            let reader = IndexReader::open(&out)
+                .expect("resolution_den == 0 is semantic, not structural — open() must succeed");
+            // Every non-cluster query keeps working.
+            assert_eq!(reader.symbol_count(), 4);
+            assert!(reader.has_call_graph());
+            assert!(reader.symbol(0).is_some());
+            // Only the cluster-specific lazy reader degrades.
+            assert!(
+                reader.cluster_section_reader().is_none(),
+                "resolution_den == 0 must make the lazy reader refuse, not panic or guess"
+            );
+        }
+
+        #[test]
+        fn absurd_k_degrades_only_the_cluster_reader() {
+            let (out, mut bytes, base) = write_real_clustered_index();
+            // build_symbol_count field is at byte 48 — zero it so even a
+            // single real cluster record (k=1) exceeds "2*k <=
+            // build_symbol_count", without touching table_len's shape
+            // (still a clean multiple of ClusterRecord::SIZE) so this
+            // stays purely semantic, not structural.
+            patch_u32(&mut bytes, base, 48, 0);
+            std::fs::write(&out, &bytes).unwrap();
+
+            let reader = IndexReader::open(&out).expect(
+                "build_symbol_count == 0 is semantic, not structural — open() must succeed",
+            );
+            assert_eq!(reader.symbol_count(), 4);
+            assert!(reader.has_call_graph());
+            assert!(
+                reader.cluster_section_reader().is_none(),
+                "2*k > build_symbol_count must make the lazy reader refuse, not panic"
+            );
+        }
+
+        #[test]
+        fn k_bound_rejects_between_half_and_full_build_symbol_count() {
+            // The bound is `2*k <= build_symbol_count` (every cluster has
+            // >= 2 members), not the looser `k <= build_symbol_count`. This fixture's real k=1
+            // genuinely has `build_symbol_count == 4` (satisfies
+            // `2*1 <= 4`); patching it down to 1 keeps the LOOSER
+            // (pre-tightening) bound satisfied (`1 <= 1`) while violating
+            // the tightened one (`2*1 > 1`) — exactly the gap the old
+            // bound missed.
+            let (out, mut bytes, base) = write_real_clustered_index();
+            patch_u32(&mut bytes, base, 48, 1);
+            std::fs::write(&out, &bytes).unwrap();
+
+            let reader = IndexReader::open(&out).expect(
+                "build_symbol_count == 1 is semantic, not structural — open() must succeed",
+            );
+            assert_eq!(reader.symbol_count(), 4);
+            assert!(
+                reader.cluster_section_reader().is_none(),
+                "k=1 with build_symbol_count=1 violates 2*k <= build_symbol_count and must be rejected"
+            );
+        }
     }
 }

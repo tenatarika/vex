@@ -6,6 +6,10 @@ use anyhow::{ensure, Context, Result};
 
 use super::call_graph::{build_callers_fst, callees_csr_keys, CallEdgeBuilder};
 use super::csr;
+// `ClusterComputeRequest` lives with the cluster-section builder and reader
+// in `cluster_section.rs`; re-exported so `pipeline/output.rs` can import it
+// from the writer like the other write options.
+pub use super::cluster_section::ClusterComputeRequest;
 use super::format::{
     CallEdge, CallGraphHeader, ClusterHeader, Header, HierarchyHeader, PatternSkeletonHeader,
     SymbolRecord, UnresolvedRefsHeader, V5SectionHeader, MAGIC, VECTOR_DIM, VERSION,
@@ -17,6 +21,7 @@ use super::ref_edges::{build_ref_edges_records, RefEdgeBuilder};
 use super::unresolved_refs::{build_unresolved_section, UnresolvedRefBuilder};
 use super::{refs_fst, symbol_fst};
 use crate::parse::extractor::is_meaningful_identifier;
+use crate::parse::language::Language;
 use crate::parse::scope::BindTarget;
 // RefKind ↔ u8 encoding lives at the scope module (`impl From<RefKind>
 // for u8` + `impl TryFrom<u8> for RefKind`) so reconstruction and the
@@ -262,9 +267,10 @@ pub fn write_index_with_call_graph(
         bm25,
         &[],
         &[],
-        &[], // reconstructed_refs — full rebuild path
-        &[], // old_file_paths
-        &[], // reconstructed_unresolved_refs
+        &[],  // reconstructed_refs — full rebuild path
+        &[],  // old_file_paths
+        &[],  // reconstructed_unresolved_refs
+        None, // cluster_request — these back-compat shims never compute clusters
         output,
     )
     .map(|_meta| ())
@@ -292,9 +298,10 @@ pub fn write_index_with_call_graph_and_skeletons(
         bm25,
         pattern_skeletons,
         &[],
-        &[], // reconstructed_refs — full rebuild path
-        &[], // old_file_paths
-        &[], // reconstructed_unresolved_refs
+        &[],  // reconstructed_refs — full rebuild path
+        &[],  // old_file_paths
+        &[],  // reconstructed_unresolved_refs
+        None, // cluster_request — this back-compat shim never computes clusters
         output,
     )
     .map(|_meta| ())
@@ -333,6 +340,10 @@ pub(crate) fn write_index_with_call_graph_and_skeletons_and_fingerprints(
     // unchanged files. Empty for full `vex index`. Mapped to new file_ids
     // and appended to the v7 unresolved-refs section after the per-file loop.
     reconstructed_unresolved_refs: &[crate::index::types::ReconstructedUnresolvedRef],
+    // P4a (`docs/V9-FORMAT.md` §13 R10/R14) — `Some` only for a full
+    // `vex index` that wants clusters; `None` for every `vex update` call
+    // (P4a never carries) and for `--no-clusters`.
+    cluster_request: Option<ClusterComputeRequest>,
     output: &Path,
 ) -> Result<NewIndexMetadata> {
     // Pre-validate every vector before opening the temp file. The header's
@@ -364,6 +375,7 @@ pub(crate) fn write_index_with_call_graph_and_skeletons_and_fingerprints(
         reconstructed_refs,
         old_file_paths,
         reconstructed_unresolved_refs,
+        cluster_request,
     ) {
         Ok(meta) => meta,
         Err(e) => {
@@ -401,10 +413,17 @@ fn write_index_to(
     reconstructed_refs: &[crate::index::types::ReconstructedRef],
     old_file_paths: &[String],
     reconstructed_unresolved_refs: &[crate::index::types::ReconstructedUnresolvedRef],
+    cluster_request: Option<ClusterComputeRequest>,
 ) -> Result<NewIndexMetadata> {
     let mut strings = StringPool::new();
     let mut records = Vec::new();
     let mut symbol_idx: u32 = 0;
+    // P4a projection input, built in lockstep with `records` only when
+    // clustering is requested (`cluster_request.is_some()`) — skipped
+    // entirely on `vex update` and `--no-clusters` so those paths pay no
+    // extra allocation (§13 R10/R14: P4a is `vex index`-only).
+    let want_clusters = cluster_request.is_some();
+    let mut projection_symbols: Vec<crate::cluster::projection::ProjectionSymbol<'_>> = Vec::new();
 
     // Assign file_id sequentially per unique path. Collect ordered file table.
     let mut file_ids: HashMap<String, u32> = HashMap::new();
@@ -441,6 +460,27 @@ fn write_index_to(
                 signature_offset: sig_offset,
                 vector_index: vec_idx,
             });
+            if want_clusters {
+                // `symbol_idx` here is the SymbolRecord position being
+                // pushed above (pre-increment) — same space `ref_edge`s /
+                // `call_edge`s / `hierarchy_edge`s already index into.
+                let language = file
+                    .path
+                    .rsplit('.')
+                    .next()
+                    .and_then(Language::from_extension);
+                // Borrowed straight from `parsed` (no per-symbol clone,
+                // §13 perf review) — `file.path`/`sym.name` outlive this
+                // whole function, same as `ParsedFile`/`ParsedSymbol`.
+                projection_symbols.push(crate::cluster::projection::ProjectionSymbol {
+                    sym_idx: symbol_idx,
+                    path: file.path.as_str(),
+                    line: sym.line as u32,
+                    kind: sym.kind as u8,
+                    name: sym.name.as_str(),
+                    language,
+                });
+            }
             symbol_idx += 1;
         }
     }
@@ -583,6 +623,13 @@ fn write_index_to(
     };
 
     let mut ref_edge_builders: Vec<RefEdgeBuilder> = Vec::new();
+    // §13 R7 — parallel to `ref_edge_builders`: `true` when this edge's
+    // resolution came from the `Imported` arm's `resolve_by_name_and_path`
+    // with a name that had MORE THAN ONE project-wide candidate (the arm
+    // takes `candidates.first()` regardless — this flag records that the
+    // pick was a guess, not a certainty). The P4a projection drops these
+    // edges entirely rather than attributing a cluster edge to a guess.
+    let mut ref_edge_ambiguous: Vec<bool> = Vec::new();
     // Multi-repo Phase 6: refs the Pass-2 loop below leaves unresolved —
     // `Imported`/`Unresolved` targets whose name has no local definition.
     // Dropped from the resolved `RefEdge` section, persisted by name in the
@@ -603,7 +650,13 @@ fn write_index_to(
                 .copied()
                 .expect("file_id must exist");
             for r in &file.bound_refs {
-                let to_sym_idx = match &r.target {
+                // §13 R7: `ambiguous` is set ONLY by the `Imported` arm, when
+                // the name had more than one project-wide candidate — the
+                // arm still resolves (first-candidate, historical semantics,
+                // unchanged), but the P4a projection must not treat the pick
+                // as a real edge. Every other arm resolves exactly (BFS /
+                // single-candidate) so `ambiguous` stays `false` for them.
+                let (to_sym_idx, ambiguous): (Option<u32>, bool) = match &r.target {
                     BindTarget::ModuleSymbol(local) => {
                         // `checked_add` would let an overflowing index
                         // silently disappear; we'd rather notice in
@@ -612,7 +665,7 @@ fn write_index_to(
                             base_idx.checked_add(*local).is_some(),
                             "global symbol idx overflow at base_idx={base_idx} + local={local}",
                         );
-                        Some(base_idx.wrapping_add(*local))
+                        (Some(base_idx.wrapping_add(*local)), false)
                     }
                     // Note: `file_paths_new` isn't built until after the
                     // per-file loop closes (it's the inverse of
@@ -622,16 +675,23 @@ fn write_index_to(
                     // so pass an empty slice + `None` preferred_path,
                     // which short-circuits to first-candidate semantics
                     // in `resolve_by_name_and_path`.
-                    BindTarget::Imported(use_path) => use_path.segments.last().and_then(|name| {
-                        resolve_by_name_and_path(
-                            name.as_str(),
-                            None,
-                            &name_to_global,
-                            &sym_to_file_id,
-                            &[],
-                        )
-                    }),
-                    BindTarget::Local(_) => None,
+                    BindTarget::Imported(use_path) => match use_path.segments.last() {
+                        Some(name) => {
+                            let ambiguous = name_to_global
+                                .get(name.as_str())
+                                .is_some_and(|cands| cands.len() > 1);
+                            let resolved = resolve_by_name_and_path(
+                                name.as_str(),
+                                None,
+                                &name_to_global,
+                                &sym_to_file_id,
+                                &[],
+                            );
+                            (resolved, ambiguous)
+                        }
+                        None => (None, false),
+                    },
+                    BindTarget::Local(_) => (None, false),
                     // v1.14 — C++ include-BFS fallback. The BFS itself
                     // bails for non-C++ files via the include_graph
                     // membership check, so this branch stays language-
@@ -653,7 +713,7 @@ fn write_index_to(
                         // None for non-C++ files (their file_id isn't in
                         // `include_graph`) or when the target isn't reachable
                         // through any included header.
-                        include_resolver::resolve_via_include_bfs(
+                        let resolved = include_resolver::resolve_via_include_bfs(
                             &r.name,
                             file_id,
                             &name_to_global,
@@ -678,7 +738,8 @@ fn write_index_to(
                                 .get(r.name.as_str())
                                 .filter(|hits| hits.len() == 1)
                                 .and_then(|hits| hits.first().copied())
-                        })
+                        });
+                        (resolved, false)
                     }
                 };
                 if let Some(global) = to_sym_idx {
@@ -689,6 +750,7 @@ fn write_index_to(
                         col: r.col as u32,
                         kind: u8::from(r.kind),
                     });
+                    ref_edge_ambiguous.push(ambiguous);
                     // Phase 11.1.10 (Q4-B): record (target_fid, from_fid) for
                     // cascade. Skip the ModuleSymbol arm (architect L1) —
                     // same-file edges have target_fid == file_id, contribute
@@ -824,6 +886,14 @@ fn write_index_to(
                 col: rr.col,
                 kind: u8::from(rr.kind),
             });
+            // Reconstructed (Q4-A) edges are path-tiebreak resolved, not
+            // the Imported arm's first-candidate guess — never ambiguous
+            // in the R7 sense. Also keeps `ref_edge_ambiguous` 1:1 with
+            // `ref_edge_builders` for the P4a projection (P4a itself never
+            // runs on `vex update`, which is the only caller with a
+            // non-empty `reconstructed_refs`, but staying aligned here
+            // costs nothing and protects P4b).
+            ref_edge_ambiguous.push(false);
         }
         // Surface aggregate drops so `RUST_LOG=vex=info` triagers a
         // degraded `--strict` result set without re-running. Split by
@@ -851,11 +921,19 @@ fn write_index_to(
     // the physical record array and the (offsets-only, elided-edge_idx)
     // CSR built from it stay in lockstep — `build_csr_offsets_sorted` has
     // no `edge_idx` indirection to drop a bad record from after the fact.
-    let ref_edge_builders: Vec<RefEdgeBuilder> = {
+    // Zipped with `ref_edge_ambiguous` so the P4a projection's ambiguity
+    // flags stay 1:1 with the surviving records (R7).
+    debug_assert_eq!(
+        ref_edge_builders.len(),
+        ref_edge_ambiguous.len(),
+        "ref_edge_builders and ref_edge_ambiguous must stay 1:1",
+    );
+    let (ref_edge_builders, ref_edge_ambiguous): (Vec<RefEdgeBuilder>, Vec<bool>) = {
         let before = ref_edge_builders.len();
-        let kept: Vec<RefEdgeBuilder> = ref_edge_builders
+        let kept: Vec<(RefEdgeBuilder, bool)> = ref_edge_builders
             .into_iter()
-            .filter(|e| e.to_sym_idx < symbol_count_u32)
+            .zip(ref_edge_ambiguous)
+            .filter(|(e, _)| e.to_sym_idx < symbol_count_u32)
             .collect();
         let dropped = before - kept.len();
         if dropped > 0 {
@@ -865,7 +943,7 @@ fn write_index_to(
                 "ref_edges: dropped {dropped} record(s) whose to_sym_idx >= symbol_count {symbol_count_u32} (writer bug)"
             );
         }
-        kept
+        kept.into_iter().unzip()
     };
     let (ref_edge_bytes, ref_edges_keys) = build_ref_edges_records(&ref_edge_builders);
     let ref_edges_offsets_bytes: Vec<u8> = if ref_edges_keys.is_empty() {
@@ -926,6 +1004,66 @@ fn write_index_to(
     let mut no_intern_fn = |_s: &str| -> u32 { 0 };
     let (skel_section, skel_fingerprints) =
         build_pattern_skeleton_section(pattern_skeletons, &mut no_intern_fn, lang_fingerprints)?;
+
+    // P4a (`docs/V9-FORMAT.md` §13 R10/R14/R21): cluster work AND label
+    // interning run BEFORE the section-offset layout math below — interning
+    // a label grows `strings.data`, and every downstream section offset is
+    // computed from its final length. `cluster_built` stays `None` for
+    // every `vex update` call and for `--no-clusters`, in which case the
+    // on-disk section is the all-zero P2 placeholder, byte-identical to
+    // before this phase.
+    //
+    // Clustering runs sequentially: overlapping it with the section builds
+    // above was measured and gained nothing (they are too cheap to hide the
+    // projection + Leiden cost behind).
+    let cluster_built: Option<super::cluster_section::ClusterSectionBuilt> = match cluster_request {
+        None => None,
+        Some(req) => {
+            let projection_call_edges: Vec<crate::cluster::projection::ProjectionCallEdge<'_>> =
+                call_edges
+                    .iter()
+                    .map(|e| crate::cluster::projection::ProjectionCallEdge {
+                        caller_sym_idx: e.caller_sym_idx,
+                        callee_name: e.callee_name.as_str(),
+                        line: e.line,
+                    })
+                    .collect();
+            let projection_ref_edges: Vec<crate::cluster::projection::ProjectionRefEdge> =
+                ref_edge_builders
+                    .iter()
+                    .map(|e| crate::cluster::projection::ProjectionRefEdge {
+                        from_file_id: e.from_file_id,
+                        line: e.line,
+                        to_sym_idx: e.to_sym_idx,
+                        kind: e.kind,
+                    })
+                    .collect();
+            let projection_hierarchy_edges: Vec<
+                crate::cluster::projection::ProjectionHierarchyEdge,
+            > = hierarchy_edge_builders
+                .iter()
+                .map(|e| crate::cluster::projection::ProjectionHierarchyEdge {
+                    from_sym_idx: e.from_sym_idx,
+                    to_sym_idx: e.to_sym_idx,
+                })
+                .collect();
+            let input = crate::cluster::projection::ProjectionInput {
+                symbol_count: symbol_count_u32,
+                symbols: &projection_symbols,
+                call_edges: &projection_call_edges,
+                ref_edges: &projection_ref_edges,
+                ambiguous: &ref_edge_ambiguous,
+                hierarchy_edges: &projection_hierarchy_edges,
+                file_paths: &file_paths_new,
+            };
+            let output = crate::cluster::cluster(&input, req.resolution);
+            Some(super::cluster_section::build_cluster_section(
+                &output,
+                req.resolution,
+                &mut |s: &str| strings.intern(s),
+            ))
+        }
+    };
 
     // Calculate section offsets — v9 places CallGraphHeader, V5SectionHeader,
     // PatternSkeletonHeader, UnresolvedRefsHeader, HierarchyHeader,
@@ -1056,6 +1194,24 @@ fn write_index_to(
     let unresolved_hier_postings_offset =
         unresolved_hier_fst_offset + unresolved_hierarchy_fst_bytes.len() as u64;
 
+    // v9 cluster section, 4-byte aligned, LAST in the file (§2.4: "the
+    // section sits at the end of the file, after the unresolved-hierarchy
+    // postings"). Zero-length (and thus zero-byte) on every path where
+    // `cluster_built` is `None`.
+    let cluster_unaligned =
+        unresolved_hier_postings_offset + unresolved_hierarchy_post_bytes.len() as u64;
+    let cluster_assign_offset = (cluster_unaligned + 3) & !3u64;
+    let cluster_assign_pad = (cluster_assign_offset - cluster_unaligned) as usize;
+    let cluster_assign_len = cluster_built
+        .as_ref()
+        .map(|c| c.assign_bytes.len())
+        .unwrap_or(0) as u64;
+    let cluster_table_offset = cluster_assign_offset + cluster_assign_len;
+    let cluster_table_len = cluster_built
+        .as_ref()
+        .map(|c| c.table_bytes.len())
+        .unwrap_or(0) as u64;
+
     let unresolved_hierarchy_header = super::format::UnresolvedHierarchyHeader {
         edges_offset: unresolved_hier_edges_offset,
         edges_len: unresolved_hier_edges_len,
@@ -1106,21 +1262,39 @@ fn write_index_to(
     };
 
     // v9: ClusterHeader immediately after UnresolvedHierarchyHeader,
-    // always written and always zeroed in P2 (`docs/V9-FORMAT.md` §2.1,
-    // §13 R9) — clustering itself lands in P4a. `flags` stays 0 (COMPUTED
-    // unset), so a reader must not interpret any other field as real data.
-    let cluster_header = ClusterHeader {
-        assign_offset: 0,
-        assign_len: 0,
-        table_offset: 0,
-        table_len: 0,
-        resolution_num: 0,
-        resolution_den: 0,
-        flags: 0,
-        algo_version: 0,
-        levels: 0,
-        build_symbol_count: 0,
-        _reserved: [0; 12],
+    // always written (`docs/V9-FORMAT.md` §2.1). P4a populates it with
+    // real offsets/flags only when `cluster_built.is_some()` (a full
+    // `vex index` that wants clusters); every other path (`vex update`,
+    // `--no-clusters`) writes the all-zero P2 placeholder — `flags` stays
+    // 0 (COMPUTED unset), so a reader must not interpret any other field
+    // as real data.
+    let cluster_header = match &cluster_built {
+        Some(c) => ClusterHeader {
+            assign_offset: cluster_assign_offset,
+            assign_len: cluster_assign_len,
+            table_offset: cluster_table_offset,
+            table_len: cluster_table_len,
+            resolution_num: c.resolution.0,
+            resolution_den: c.resolution.1,
+            flags: c.flags,
+            algo_version: 1,
+            levels: c.levels,
+            build_symbol_count: c.build_symbol_count,
+            _reserved: [0; 12],
+        },
+        None => ClusterHeader {
+            assign_offset: 0,
+            assign_len: 0,
+            table_offset: 0,
+            table_len: 0,
+            resolution_num: 0,
+            resolution_den: 0,
+            flags: 0,
+            algo_version: 0,
+            levels: 0,
+            build_symbol_count: 0,
+            _reserved: [0; 12],
+        },
     };
 
     let header = Header {
@@ -1348,13 +1522,24 @@ fn write_index_to(
     w.write_all(&hierarchy_postings_bytes)?;
 
     // v8 unresolved_hierarchy sub-sections, 4-byte aligned before the
-    // records. Positioned as the LAST variable-length section in the file.
+    // records.
     if unresolved_hier_edges_pad > 0 {
         w.write_all(&[0u8; 3][..unresolved_hier_edges_pad])?;
     }
     w.write_all(&unresolved_hierarchy_edge_bytes)?;
     w.write_all(&unresolved_hierarchy_fst_bytes)?;
     w.write_all(&unresolved_hierarchy_post_bytes)?;
+
+    // v9 cluster section (assign + table), 4-byte aligned, the LAST
+    // variable-length section in the file (§2.4). Zero bytes written on
+    // every path where `cluster_built` is `None`.
+    if cluster_assign_pad > 0 {
+        w.write_all(&[0u8; 3][..cluster_assign_pad])?;
+    }
+    if let Some(c) = &cluster_built {
+        w.write_all(&c.assign_bytes)?;
+        w.write_all(&c.table_bytes)?;
+    }
 
     // Flush the BufWriter, then recover the inner File so we can fsync it
     // before the caller atomic-renames. Without sync_all() between flush
@@ -1636,5 +1821,304 @@ mod hierarchy_resolution_tests {
         let reader = IndexReader::open(&out).expect("open index");
         assert!(!reader.has_hierarchy_edges());
         assert!(!reader.has_unresolved_hierarchy_edges());
+    }
+}
+
+#[cfg(test)]
+mod cluster_tests {
+    //! P4a (`docs/V9-FORMAT.md` §4, §8, §13) writer→reader roundtrip,
+    //! determinism, `--no-clusters`, and R7 ambiguous-import-edge tests.
+    //! Exercises `write_index_with_call_graph_and_skeletons_and_fingerprints`
+    //! directly (not the pipeline) so each case controls its own
+    //! `ClusterComputeRequest` and resolved call edges precisely.
+    use super::*;
+    use crate::index::symbols::{ParsedSymbol, SymbolKind};
+    use crate::parse::scope::{BindTarget, BoundRef, RefKind, UsePath};
+    use crate::store::cluster_section::ClusterStatus;
+    use crate::store::reader::IndexReader;
+
+    fn mk_sym(name: &str, kind: SymbolKind, line: usize) -> ParsedSymbol {
+        ParsedSymbol {
+            name: name.to_string(),
+            kind,
+            line,
+            signature: None,
+            doc: None,
+            body_tokens: None,
+        }
+    }
+
+    fn mk_file(path: &str, symbols: Vec<ParsedSymbol>) -> ParsedFile {
+        ParsedFile {
+            path: path.to_string(),
+            symbols,
+            refs: Vec::new(),
+            call_edges: Vec::new(),
+            bound_refs: Vec::new(),
+            skeletons: Vec::new(),
+            cpp_includes: Vec::new(),
+            trigram_bloom: None,
+            hierarchy_captures: Vec::new(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_with_clusters(
+        parsed: &[ParsedFile],
+        call_edges: &[CallEdgeBuilder],
+        cluster_request: Option<ClusterComputeRequest>,
+        out: &Path,
+    ) {
+        write_index_with_call_graph_and_skeletons_and_fingerprints(
+            parsed,
+            &[],
+            DEFAULT_VECTOR_DIM,
+            call_edges,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            cluster_request,
+            out,
+        )
+        .expect("write index");
+    }
+
+    /// `src/mod_a.rs` defines a 4-function clique (f0..f3, each calling
+    /// the next plus one extra chord) and `src/mod_b.rs` defines one
+    /// isolated function — the clique should land in one cluster, the
+    /// isolated symbol UNCLUSTERED.
+    fn four_clique_plus_isolated() -> Vec<ParsedFile> {
+        vec![
+            mk_file(
+                "src/mod_a.rs",
+                vec![
+                    mk_sym("f0", SymbolKind::Function, 1),
+                    mk_sym("f1", SymbolKind::Function, 2),
+                    mk_sym("f2", SymbolKind::Function, 3),
+                    mk_sym("f3", SymbolKind::Function, 4),
+                ],
+            ),
+            mk_file("src/mod_b.rs", vec![mk_sym("iso", SymbolKind::Function, 1)]),
+        ]
+    }
+
+    fn four_clique_call_edges() -> Vec<CallEdgeBuilder> {
+        vec![
+            CallEdgeBuilder {
+                caller_sym_idx: 0,
+                callee_name: "f1".to_string(),
+                line: 1,
+            },
+            CallEdgeBuilder {
+                caller_sym_idx: 1,
+                callee_name: "f2".to_string(),
+                line: 2,
+            },
+            CallEdgeBuilder {
+                caller_sym_idx: 2,
+                callee_name: "f3".to_string(),
+                line: 3,
+            },
+            CallEdgeBuilder {
+                caller_sym_idx: 3,
+                callee_name: "f0".to_string(),
+                line: 4,
+            },
+            CallEdgeBuilder {
+                caller_sym_idx: 0,
+                callee_name: "f2".to_string(),
+                line: 5,
+            },
+        ]
+    }
+
+    #[test]
+    fn roundtrip_every_cluster_field() {
+        let parsed = four_clique_plus_isolated();
+        let edges = four_clique_call_edges();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out = tmp.path().join("index.vex");
+        write_with_clusters(
+            &parsed,
+            &edges,
+            Some(ClusterComputeRequest { resolution: (1, 8) }),
+            &out,
+        );
+
+        let reader = IndexReader::open(&out).expect("open index");
+        assert!(reader.has_clusters());
+        let ch = reader.cluster_header().expect("cluster header");
+        assert_eq!(ch.resolution_num, 1);
+        assert_eq!(ch.resolution_den, 8);
+        assert_eq!(ch.algo_version, 1);
+        assert_eq!(ch.build_symbol_count, 5);
+        assert_eq!(
+            ch.flags & ClusterHeader::FLAG_COMPUTED,
+            ClusterHeader::FLAG_COMPUTED
+        );
+
+        let csr = reader
+            .cluster_section_reader()
+            .expect("semantic cluster section");
+        let summary = csr.summary();
+        assert_eq!(summary.k, 1);
+        assert_eq!(summary.unclustered, 1, "the isolated symbol");
+        assert_eq!(summary.not_eligible, 0);
+        assert_eq!(summary.new_count, 0);
+        assert!(!summary.stale, "P4a never sets STALE");
+        assert_eq!(summary.resolution, (1, 8));
+        assert_eq!(summary.algo_version, 1);
+
+        let rec = csr.record(0).expect("cluster ordinal 0");
+        assert_eq!(rec.size, 4);
+        assert!(rec.internal_weight > 0);
+        assert_eq!(rec.cut_weight, 0, "no edges cross to the isolated symbol");
+        assert_eq!(rec.label, "src/mod_a.rs/");
+        let rep = rec.rep_sym_idx.expect("rep_sym_idx present");
+        assert!(rep < 4);
+        let hub_count = rec.hubs.iter().filter(|h| h.is_some()).count();
+        assert_eq!(hub_count, 3, "a 4-member cluster fills all 3 hub slots");
+        for h in rec.hubs.iter().flatten() {
+            assert!(*h < 4);
+        }
+
+        let mut members = csr.members(0);
+        members.sort_unstable();
+        assert_eq!(members, vec![0, 1, 2, 3]);
+
+        assert_eq!(csr.status(4), ClusterStatus::Unclustered);
+        assert_eq!(csr.status(members[0]), ClusterStatus::Clustered(0));
+    }
+
+    #[test]
+    fn no_clusters_request_writes_zeroed_section() {
+        let parsed = four_clique_plus_isolated();
+        let edges = four_clique_call_edges();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out = tmp.path().join("index.vex");
+        write_with_clusters(&parsed, &edges, None, &out);
+
+        let reader = IndexReader::open(&out).expect("open index");
+        assert!(!reader.has_clusters());
+        assert!(reader.cluster_section_reader().is_none());
+        let ch = reader
+            .cluster_header()
+            .expect("cluster header always present on v9");
+        assert_eq!(ch.flags, 0);
+        assert_eq!(ch.assign_len, 0);
+        assert_eq!(ch.table_len, 0);
+        assert_eq!(ch.resolution_num, 0);
+        assert_eq!(ch.resolution_den, 0);
+    }
+
+    #[test]
+    fn two_cold_full_indexes_of_the_same_input_are_byte_identical() {
+        // This test fixes the INPUT ORDER (same `parsed`/`edges` fed twice)
+        // and proves the writer's own determinism — same symbols in, same
+        // bytes out. Cross-order robustness (the Leiden/projection node order
+        // being canonical-key-derived rather than input-sym_idx-derived,
+        // §13 R6) is a property of the `cluster` module itself and is
+        // already covered by that module's own tests (`cluster::projection::tests::
+        // canonical_order_is_independent_of_input_sym_idx_order` and
+        // `cluster::leiden::tests::shuffled_edge_order_gives_identical_result`),
+        // not re-proven here.
+        let parsed = four_clique_plus_isolated();
+        let edges = four_clique_call_edges();
+
+        let tmp1 = tempfile::TempDir::new().unwrap();
+        let out1 = tmp1.path().join("index.vex");
+        write_with_clusters(
+            &parsed,
+            &edges,
+            Some(ClusterComputeRequest { resolution: (1, 8) }),
+            &out1,
+        );
+        let tmp2 = tempfile::TempDir::new().unwrap();
+        let out2 = tmp2.path().join("index.vex");
+        write_with_clusters(
+            &parsed,
+            &edges,
+            Some(ClusterComputeRequest { resolution: (1, 8) }),
+            &out2,
+        );
+
+        let r1 = IndexReader::open(&out1).expect("open index 1");
+        let r2 = IndexReader::open(&out2).expect("open index 2");
+        let h1 = *r1.cluster_header().unwrap();
+        let h2 = *r2.cluster_header().unwrap();
+        let assign1 = r1.mmap_slice(h1.assign_offset, h1.assign_len).unwrap();
+        let assign2 = r2.mmap_slice(h2.assign_offset, h2.assign_len).unwrap();
+        let table1 = r1.mmap_slice(h1.table_offset, h1.table_len).unwrap();
+        let table2 = r2.mmap_slice(h2.table_offset, h2.table_len).unwrap();
+        assert_eq!(assign1, assign2, "assign bytes must be byte-identical");
+        assert_eq!(table1, table2, "table bytes must be byte-identical");
+
+        // Full-file determinism too, not just the cluster sub-section.
+        let bytes1 = std::fs::read(&out1).unwrap();
+        let bytes2 = std::fs::read(&out2).unwrap();
+        assert_eq!(
+            bytes1, bytes2,
+            "two cold full indexes of identical input must be byte-identical"
+        );
+    }
+
+    #[test]
+    fn ambiguous_imported_edge_is_dropped_from_clustering() {
+        // Two files each define a distinct `Thing`. A third file's
+        // `user` references `Thing` via an `Imported` bind target — the
+        // writer still resolves it (first-candidate semantics, §13 R7's
+        // "arm still resolves"), but with TWO project-wide candidates it
+        // is AMBIGUOUS, so the P4a projection must drop the edge
+        // entirely. With no other edges anywhere, every symbol must end
+        // up UNCLUSTERED rather than two of them wrongly joining a
+        // cluster over a guessed resolution.
+        let file_a = mk_file("src/a.rs", vec![mk_sym("Thing", SymbolKind::Class, 1)]);
+        let file_b = mk_file("src/b.rs", vec![mk_sym("Thing", SymbolKind::Class, 1)]);
+        let mut file_c = mk_file("src/c.rs", vec![mk_sym("user", SymbolKind::Function, 1)]);
+        file_c.bound_refs.push(BoundRef {
+            name: "Thing".to_string(),
+            line: 2,
+            col: 1,
+            target: BindTarget::Imported(UsePath {
+                segments: vec!["Thing".to_string()],
+            }),
+            kind: RefKind::Type,
+        });
+        let parsed = vec![file_a, file_b, file_c];
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out = tmp.path().join("index.vex");
+        write_with_clusters(
+            &parsed,
+            &[],
+            Some(ClusterComputeRequest { resolution: (1, 8) }),
+            &out,
+        );
+
+        let reader = IndexReader::open(&out).expect("open index");
+        // Sanity: the ambiguous ref really did resolve to a real edge
+        // (first-candidate semantics unchanged) — this is what makes the
+        // test meaningful; if resolution itself failed there'd be
+        // nothing to prove the projection dropped.
+        assert!(
+            !reader.find_ref_edges_by_symbol(0).is_empty()
+                || !reader.find_ref_edges_by_symbol(1).is_empty(),
+            "the Imported ref must still resolve to SOME RefEdge record"
+        );
+
+        let csr = reader
+            .cluster_section_reader()
+            .expect("semantic cluster section");
+        assert_eq!(
+            csr.summary().k,
+            0,
+            "an ambiguous import edge must not form a cluster"
+        );
+        for sym_idx in 0..3u32 {
+            assert_eq!(csr.status(sym_idx), ClusterStatus::Unclustered);
+        }
     }
 }

@@ -15,13 +15,9 @@
 //! leak in here), so P4 only needs to translate its own in-memory
 //! builders into this shape.
 
-// P3: pure, unwired code — nothing in `src/index/pipeline` or
-// `src/store/writer.rs` calls into this module yet (that is P4a/P4b), so
-// its public API is only exercised by this subtree's own tests today.
-// Remove this crate-wide allow once P4 wires `cluster::cluster` into
-// `write_index_to`.
-#![allow(dead_code)]
-
+// P4a: `src/store/writer.rs` now calls `cluster::cluster` directly when a
+// full `vex index` wants clusters, so the crate-wide P3 allow is gone —
+// any genuinely-unused item below gets its own narrow, explained allow.
 pub mod leiden;
 pub mod projection;
 
@@ -33,6 +29,7 @@ use projection::{ProjectedGraph, ProjectionInput};
 /// (any value `< NEW`) is a real cluster ordinal.
 pub const NOT_ELIGIBLE: u32 = 0xFFFF_FFFF;
 pub const UNCLUSTERED: u32 = 0xFFFF_FFFE;
+#[allow(dead_code)] // this module never emits NEW (P4b `vex update` carry only); exercised by the proptest below
 pub const NEW: u32 = 0xFFFF_FFFD;
 
 /// One finalized cluster record (§2.4 `ClusterRecord`, minus the
@@ -101,7 +98,7 @@ fn finalize(
 ) -> ClusterOutput {
     let symbol_count = projected.symbol_count as usize;
     let mut assign = vec![NOT_ELIGIBLE; symbol_count];
-    let sym_index: HashMap<u32, &projection::ProjectionSymbol> =
+    let sym_index: HashMap<u32, &projection::ProjectionSymbol<'_>> =
         input.symbols.iter().map(|s| (s.sym_idx, s)).collect();
 
     // First pass: how many level-0 (eligible) nodes does each Leiden
@@ -163,7 +160,7 @@ fn finalize(
 
 fn build_record(
     members: &[u32],
-    sym_index: &HashMap<u32, &projection::ProjectionSymbol>,
+    sym_index: &HashMap<u32, &projection::ProjectionSymbol<'_>>,
 ) -> ClusterRecordOut {
     // `members` order is node-id (canonical) order — R6 wants
     // `rep_sym_idx` to be the member with the smallest canonical key,
@@ -249,11 +246,11 @@ fn accumulate_cut_weight(
 /// members' files, else `"(mixed) <most common top dir>/"`.
 fn compute_label(
     members: &[u32],
-    sym_index: &HashMap<u32, &projection::ProjectionSymbol>,
+    sym_index: &HashMap<u32, &projection::ProjectionSymbol<'_>>,
 ) -> String {
     let paths: Vec<&str> = members
         .iter()
-        .filter_map(|s| sym_index.get(s).map(|sym| sym.path.as_str()))
+        .filter_map(|s| sym_index.get(s).map(|sym| sym.path))
         .collect();
     if paths.is_empty() {
         return "(mixed) /".to_string();
@@ -334,13 +331,13 @@ mod tests {
     use super::*;
     use projection::{ProjectionHierarchyEdge, ProjectionSymbol};
 
-    fn sym(sym_idx: u32, path: &str, line: u32, name: &str) -> ProjectionSymbol {
+    fn sym<'a>(sym_idx: u32, path: &'a str, line: u32, name: &'a str) -> ProjectionSymbol<'a> {
         ProjectionSymbol {
             sym_idx,
-            path: path.to_string(),
+            path,
             line,
             kind: 0, // Function
-            name: name.to_string(),
+            name,
             language: Some(crate::parse::language::Language::Rust),
         }
     }
@@ -348,9 +345,13 @@ mod tests {
     #[test]
     fn two_k5_joined_by_bridge_yields_two_clusters() {
         // Build two K5 cliques (sym_idx 0..5 and 5..10) joined by a single bridge edge (4-5).
+        // Names are materialized into `names` first (not inline `&format!(...)`)
+        // so the borrows `sym()` hands back into `symbols` outlive this
+        // function body instead of a per-call temporary.
+        let names: Vec<String> = (0..10u32).map(|i| format!("f{i}")).collect();
         let mut symbols = Vec::new();
         for i in 0..10u32 {
-            symbols.push(sym(i, "src/a.rs", i + 1, &format!("f{i}")));
+            symbols.push(sym(i, "src/a.rs", i + 1, &names[i as usize]));
         }
         let mut hierarchy_edges = Vec::new();
         for clique in [0u32, 5u32] {
@@ -419,10 +420,10 @@ mod tests {
         let symbols = vec![
             ProjectionSymbol {
                 sym_idx: 0,
-                path: "src/a.rs".into(),
+                path: "src/a.rs",
                 line: 1,
                 kind: 13, // Module
-                name: "<module:src/a.rs>".into(),
+                name: "<module:src/a.rs>",
                 language: Some(crate::parse::language::Language::Rust),
             },
             sym(1, "src/a.rs", 2, "f"),
@@ -461,10 +462,10 @@ mod tests {
     fn language_exclusion_marks_not_eligible() {
         let symbols = vec![ProjectionSymbol {
             sym_idx: 0,
-            path: "README.md".into(),
+            path: "README.md",
             line: 1,
             kind: 12, // Heading would also exclude, use Function to isolate the language check
-            name: "intro".into(),
+            name: "intro",
             language: Some(crate::parse::language::Language::Markdown),
         }];
         let input = ProjectionInput {
@@ -492,7 +493,36 @@ mod tests {
     // module's boundary.
     // -----------------------------------------------------------------
 
-    fn arb_symbol() -> impl proptest::strategy::Strategy<Value = projection::ProjectionSymbol> {
+    /// Owned mirror of [`projection::ProjectionSymbol`] — `ProjectionSymbol`
+    /// itself now borrows `path`/`name` as `&str` (no per-symbol clone, §13
+    /// perf review), which a `prop_map` closure cannot return directly (it
+    /// would borrow from a value the closure itself drops). The proptest
+    /// macro materializes this as an ordinary owned local that outlives the
+    /// whole test body, so `as_projection` can validly borrow from it.
+    #[derive(Debug, Clone)]
+    struct OwnedSymbol {
+        sym_idx: u32,
+        path: String,
+        line: u32,
+        kind: u8,
+        name: String,
+        language: Option<crate::parse::language::Language>,
+    }
+
+    impl OwnedSymbol {
+        fn as_projection(&self) -> projection::ProjectionSymbol<'_> {
+            projection::ProjectionSymbol {
+                sym_idx: self.sym_idx,
+                path: &self.path,
+                line: self.line,
+                kind: self.kind,
+                name: &self.name,
+                language: self.language,
+            }
+        }
+    }
+
+    fn arb_symbol() -> impl proptest::strategy::Strategy<Value = OwnedSymbol> {
         use proptest::prelude::*;
         (
             0u32..30,
@@ -506,23 +536,39 @@ mod tests {
                 crate::parse::language::Language::Python,
             ])),
         )
-            .prop_map(|(sym_idx, path, line, kind, name, language)| {
-                projection::ProjectionSymbol {
-                    sym_idx,
-                    path,
-                    line,
-                    kind,
-                    name,
-                    language,
-                }
+            .prop_map(|(sym_idx, path, line, kind, name, language)| OwnedSymbol {
+                sym_idx,
+                path,
+                line,
+                kind,
+                name,
+                language,
             })
     }
 
-    fn arb_call_edge() -> impl proptest::strategy::Strategy<Value = projection::ProjectionCallEdge>
-    {
+    /// Owned mirror of [`projection::ProjectionCallEdge`] — same rationale
+    /// as [`OwnedSymbol`].
+    #[derive(Debug, Clone)]
+    struct OwnedCallEdge {
+        caller_sym_idx: u32,
+        callee_name: String,
+        line: u32,
+    }
+
+    impl OwnedCallEdge {
+        fn as_projection(&self) -> projection::ProjectionCallEdge<'_> {
+            projection::ProjectionCallEdge {
+                caller_sym_idx: self.caller_sym_idx,
+                callee_name: &self.callee_name,
+                line: self.line,
+            }
+        }
+    }
+
+    fn arb_call_edge() -> impl proptest::strategy::Strategy<Value = OwnedCallEdge> {
         use proptest::prelude::*;
         (0u32..35, "[a-zA-Z_]{0,8}", 0u32..2000).prop_map(|(caller_sym_idx, callee_name, line)| {
-            projection::ProjectionCallEdge {
+            OwnedCallEdge {
                 caller_sym_idx,
                 callee_name,
                 line,
@@ -568,11 +614,17 @@ mod tests {
             gamma_den in 1u32..32,
         ) {
             let ambiguous: Vec<bool> = (0..ambiguous_len).map(|i| i % 2 == 0).collect();
+            // Borrow from the owned `symbols`/`call_edges` proptest locals —
+            // both outlive `input` for the rest of this closure body.
+            let projection_symbols: Vec<projection::ProjectionSymbol<'_>> =
+                symbols.iter().map(OwnedSymbol::as_projection).collect();
+            let projection_call_edges: Vec<projection::ProjectionCallEdge<'_>> =
+                call_edges.iter().map(OwnedCallEdge::as_projection).collect();
 
             let input = ProjectionInput {
                 symbol_count: declared_symbol_count,
-                symbols: &symbols,
-                call_edges: &call_edges,
+                symbols: &projection_symbols,
+                call_edges: &projection_call_edges,
                 ref_edges: &ref_edges,
                 ambiguous: &ambiguous,
                 hierarchy_edges: &hierarchy_edges,

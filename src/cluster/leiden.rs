@@ -96,6 +96,7 @@ impl LeidenGraph {
         }
     }
 
+    #[allow(dead_code)] // test/bench-only diagnostic accessor, no production caller
     pub fn node_count(&self) -> u32 {
         self.n
     }
@@ -103,6 +104,7 @@ impl LeidenGraph {
     /// Total CPM objective-friendly degree-weighted edge count, mostly
     /// useful for tests/benches (`sum of weights / 2`, since each
     /// undirected edge is stored twice).
+    #[allow(dead_code)] // test/bench-only diagnostic accessor, no production caller
     pub fn edge_count(&self) -> usize {
         self.neighbors.len() / 2
     }
@@ -685,6 +687,7 @@ fn build_next_seed(new_n: u32, reps_sorted: &[u32], p: &[u32]) -> Vec<u32> {
 /// node-id space (works for both "all singletons" and a real Leiden
 /// result). Two values at the *same* resolution compare correctly via
 /// `>=` despite the scaling, since both sides are scaled identically.
+#[allow(dead_code)] // proptest/unit-test helper only; no production caller
 pub fn cpm_objective_scaled(graph: &LeidenGraph, assignment: &[u32], res: Resolution) -> i128 {
     let n = graph.n as usize;
     if n == 0 {
@@ -732,7 +735,10 @@ pub fn cpm_objective_scaled(graph: &LeidenGraph, assignment: &[u32], res: Resolu
 /// Does every cluster in `assignment` induce a connected subgraph of
 /// `graph`? Used by both the proptests (lib-internal) and the
 /// `fuzz_leiden` target (an external crate, so this must be a genuine
-/// `pub fn`, not `#[cfg(test)]`-gated).
+/// `pub fn`, not `#[cfg(test)]`-gated). Only reachable from this crate's
+/// own tests and from `__fuzz_leiden_bytes` below — neither counts as a
+/// production caller for the `--bins` target's dead-code analysis.
+#[allow(dead_code)]
 pub fn is_partition_connected(graph: &LeidenGraph, assignment: &[u32]) -> bool {
     let n = graph.n as usize;
     if n == 0 {

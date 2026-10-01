@@ -32,23 +32,28 @@ const REF_KIND_CALL: u8 = 2;
 
 /// One symbol record, as the writer already has it in memory (path,
 /// line, kind, name, `sym_idx`, language) — see `docs/V9-FORMAT.md` §3.2.
-#[derive(Debug, Clone)]
-pub struct ProjectionSymbol {
+/// Borrowed (`path`/`name` are `&'a str`, not `String`) so the writer can
+/// feed straight from its own `ParsedFile`/`ParsedSymbol` data without an
+/// extra per-symbol allocation — this is [`ProjectionInput`]'s own
+/// "without an extra clone" promise, applied to this struct too.
+#[derive(Debug, Clone, Copy)]
+pub struct ProjectionSymbol<'a> {
     pub sym_idx: u32,
-    pub path: String,
+    pub path: &'a str,
     pub line: u32,
     /// `crate::index::symbols::SymbolKind` discriminant.
     pub kind: u8,
-    pub name: String,
+    pub name: &'a str,
     pub language: Option<Language>,
 }
 
 /// `CallEdgeBuilder`-shaped: caller `sym_idx` (exact) + callee *name*
-/// (needs resolving, §3.2).
-#[derive(Debug, Clone)]
-pub struct ProjectionCallEdge {
+/// (needs resolving, §3.2). `callee_name` is borrowed straight from the
+/// writer's own `CallEdgeBuilder.callee_name` — no per-edge clone.
+#[derive(Debug, Clone, Copy)]
+pub struct ProjectionCallEdge<'a> {
     pub caller_sym_idx: u32,
-    pub callee_name: String,
+    pub callee_name: &'a str,
     pub line: u32,
 }
 
@@ -84,8 +89,8 @@ pub struct ProjectionInput<'a> {
     /// NOT_ELIGIBLE, same as a genuinely ineligible symbol, since there
     /// is nothing to look it up in `symbols`).
     pub symbol_count: u32,
-    pub symbols: &'a [ProjectionSymbol],
-    pub call_edges: &'a [ProjectionCallEdge],
+    pub symbols: &'a [ProjectionSymbol<'a>],
+    pub call_edges: &'a [ProjectionCallEdge<'a>],
     pub ref_edges: &'a [ProjectionRefEdge],
     /// Parallel to `ref_edges`: `true` means "drop, ambiguous resolution"
     /// (§13 R7). Must be `ref_edges.len()` long, or empty to mean "none
@@ -149,10 +154,10 @@ pub fn project(input: &ProjectionInput<'_>) -> ProjectedGraph {
         let sa = &input.symbols[a];
         let sb = &input.symbols[b];
         sa.path
-            .cmp(&sb.path)
+            .cmp(sb.path)
             .then(sa.line.cmp(&sb.line))
             .then(sa.kind.cmp(&sb.kind))
-            .then(sa.name.cmp(&sb.name))
+            .then(sa.name.cmp(sb.name))
             .then(sa.sym_idx.cmp(&sb.sym_idx))
     });
 
@@ -181,10 +186,7 @@ pub fn project(input: &ProjectionInput<'_>) -> ProjectedGraph {
     let mut by_path: HashMap<&str, Vec<(u32, u32)>> = HashMap::new(); // path -> [(line, sym_idx)] ascending
     for &i in &eligible_indices {
         let s = &input.symbols[i];
-        by_path
-            .entry(s.path.as_str())
-            .or_default()
-            .push((s.line, s.sym_idx));
+        by_path.entry(s.path).or_default().push((s.line, s.sym_idx));
     }
 
     // Name indices for call-edge resolution (§3.2 call-name rule, R7
@@ -193,19 +195,16 @@ pub fn project(input: &ProjectionInput<'_>) -> ProjectedGraph {
     let mut eligible_by_name: HashMap<&str, Vec<u32>> = HashMap::new();
     for &i in &eligible_indices {
         let s = &input.symbols[i];
-        eligible_by_name
-            .entry(s.name.as_str())
-            .or_default()
-            .push(s.sym_idx);
+        eligible_by_name.entry(s.name).or_default().push(s.sym_idx);
         by_name_in_file
-            .entry((s.path.as_str(), s.name.as_str()))
+            .entry((s.path, s.name))
             .and_modify(|cur| *cur = (*cur).min(s.sym_idx))
             .or_insert(s.sym_idx);
     }
     // sym_idx -> path, for call-edge callers (to resolve same-file first).
     let mut path_of_sym: HashMap<u32, &str> = HashMap::new();
     for s in input.symbols {
-        path_of_sym.insert(s.sym_idx, s.path.as_str());
+        path_of_sym.insert(s.sym_idx, s.path);
     }
 
     // --- Sites: (file key, line, to_node) -> (from_node, weight) ------
@@ -221,11 +220,11 @@ pub fn project(input: &ProjectionInput<'_>) -> ProjectedGraph {
             continue;
         };
         let target = by_name_in_file
-            .get(&(caller_path, e.callee_name.as_str()))
+            .get(&(caller_path, e.callee_name))
             .copied()
             .or_else(|| {
                 eligible_by_name
-                    .get(e.callee_name.as_str())
+                    .get(e.callee_name)
                     .filter(|cands| cands.len() == 1)
                     .map(|cands| cands[0])
             });
@@ -322,13 +321,13 @@ fn add_weight(pair_weight: &mut HashMap<(u32, u32), u32>, a: u32, b: u32, w: u32
 mod tests {
     use super::*;
 
-    fn sym(sym_idx: u32, path: &str, line: u32, name: &str) -> ProjectionSymbol {
+    fn sym<'a>(sym_idx: u32, path: &'a str, line: u32, name: &'a str) -> ProjectionSymbol<'a> {
         ProjectionSymbol {
             sym_idx,
-            path: path.to_string(),
+            path,
             line,
             kind: 0,
-            name: name.to_string(),
+            name,
             language: Some(Language::Rust),
         }
     }
@@ -365,7 +364,7 @@ mod tests {
         ];
         let call_edges = vec![ProjectionCallEdge {
             caller_sym_idx: 2,
-            callee_name: "helper".to_string(),
+            callee_name: "helper",
             line: 21,
         }];
         let input = ProjectionInput {
@@ -390,7 +389,7 @@ mod tests {
         ];
         let call_edges = vec![ProjectionCallEdge {
             caller_sym_idx: 2,
-            callee_name: "helper".to_string(),
+            callee_name: "helper",
             line: 2,
         }];
         let input = ProjectionInput {
@@ -490,7 +489,7 @@ mod tests {
         ];
         let call_edges = vec![ProjectionCallEdge {
             caller_sym_idx: 0,
-            callee_name: "target".to_string(),
+            callee_name: "target",
             line: 5,
         }];
         let ref_edges = vec![ProjectionRefEdge {
@@ -519,10 +518,13 @@ mod tests {
 
     #[test]
     fn pair_cap_limits_accumulated_weight() {
+        // Names materialized up front (not inline `&format!(...)`) so the
+        // borrows `sym()` hands back into `symbols` outlive this function.
+        let names: Vec<String> = (0..20u32).map(|i| format!("t{i}")).collect();
         let mut symbols = vec![sym(0, "src/a.rs", 1, "caller")];
         let mut ref_edges = Vec::new();
         for i in 0..20u32 {
-            symbols.push(sym(i + 1, "src/b.rs", i + 1, &format!("t{i}")));
+            symbols.push(sym(i + 1, "src/b.rs", i + 1, &names[i as usize]));
         }
         // All ref edges target the SAME symbol (sym_idx 1) from many
         // distinct lines so they are NOT deduped, to exercise the cap.
@@ -583,7 +585,7 @@ mod tests {
         let symbols = vec![sym(0, "src/a.rs", 1, "f")];
         let call_edges = vec![ProjectionCallEdge {
             caller_sym_idx: 0,
-            callee_name: "f".to_string(),
+            callee_name: "f",
             line: 1,
         }];
         let hierarchy_edges = vec![ProjectionHierarchyEdge {
