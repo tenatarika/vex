@@ -1,6 +1,6 @@
 # vex index format v9: CSR adjacency and symbol clusters
 
-Status: **DESIGN, REVIEWED** (2026-09-30; architect + rust-reviewer). **§13 supersedes any earlier section it conflicts with.** One v8 → v9 format bump with three changes:
+Status: **IN PROGRESS** — design reviewed 2026-09-30 (architect + rust-reviewer); P0, P1, P2 implemented and reviewed; P3–P6 pending. No release tag before P4b. **§13 supersedes any earlier section it conflicts with.** One v8 → v9 format bump with three changes:
 
 1. **Callees CSR.** The callees FST keyed by 10-digit decimal strings becomes dense `offsets[n+1]` + `edge_idx[m]`.
 2. **ref_edges CSR.** The same decimal-string FST in `reference_edges` becomes a dense offsets array.
@@ -494,7 +494,8 @@ Monotonicity of `offsets` is **not** checked at open (that would be O(n) on ever
 - `build_csr` vs `build_callees_fst`;
 - projection + Leiden on a synthetic 35k-node / 200k-site graph from a fixed LCG.
 - Gates: CSR lookup ≤ 10 ns, and the §3.3 clustering budget.
-- `examples/callees_csr_measure.rs` is deleted in P2; the bench supersedes it.
+- The bench supersedes the local `examples/*_measure.rs` experiments. Those are
+  maintainer-owned, gitignored and never edited or deleted by any phase.
 
 ---
 

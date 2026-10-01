@@ -6,6 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Index format v9: callees and strict refs are stored as dense CSR arrays.**
+  The callees and `reference_edges` lookups used FSTs keyed by the symbol
+  index written as a 10-digit decimal string. They are now plain offset
+  arrays indexed by symbol, so a lookup is two array reads instead of a string
+  allocation plus an automaton walk. Callers stay a name-keyed FST. Index size
+  and `vex index` time are unchanged within noise on this repository. Indexes
+  in formats v3–v8 still open: callees and refs are rebuilt in memory once per
+  reader, and the next `vex update` rewrites the file as v9, even when no
+  source file changed. A v1.26 binary cannot open a v9 index and asks for
+  `vex index`. The v9 header also reserves the section for the upcoming symbol
+  clusters. See `docs/V9-FORMAT.md`.
+
+### Fixed
+
+- **BM25 postings are bounds-checked before they are read.** A corrupt or
+  crafted posting `count` could drive a huge allocation, or read the next
+  term's postings as this term's. The reader now rejects a count that does not
+  fit in the section and returns no postings for that term.
+- **Builds clean under clippy 1.98** (`chunks_exact_to_as_chunks`).
+
 ## [1.26.0] - 2026-08-16
 
 ### Added
