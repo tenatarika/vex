@@ -219,7 +219,7 @@ Bounds: Σw ≤ 8·m ≈ 1.6M and N ≤ 2³², so every product fits comfortably
    - This is the θ→0 greedy limit of Leiden's randomized choice. The γ-connectivity guarantee still holds, because merges only ever go into adjacent, well-connected T.
 3. **Aggregation.**
    - Aggregate nodes are the refined communities, ordered by their min level-0 id.
-   - Node weight = Σ member sizes. Edge weights are summed in integers. Internal weight becomes a self-weight.
+   - Node weight = Σ member sizes. Edge weights are summed in integers. Edges internal to an aggregate are dropped, not kept as a self-weight: an aggregate's internal weight is the same constant for every candidate community it could join, so it cancels out of Δ' and both well-connectedness tests (P3 review, verified by derivation).
    - The aggregate's initial partition is the **unrefined** partition from step 1 (the Leiden key step).
 4. **Levels.** Repeat 1–3 until refinement yields one aggregate node per community, or until `MAX_LEVELS = 32`.
 5. **Outer iterations.** Re-run from the flattened partition until it no longer changes, capped at `MAX_ITERATIONS = 4`. Hitting either cap sets `ITER_CAP_HIT` and logs `tracing::info!`.
@@ -247,18 +247,88 @@ On the same tree with the same binary, a full `vex index` run twice produces ide
 - Expected on a repo with about 35k symbols and 200k raw sites (roughly 120k undirected pairs after dedup): projection ≤ 30 ms, Leiden ≤ 100 ms, peak memory ≤ 15 MB.
 - **Budget gate:** ≤ 250 ms total and ≤ 3 % of full `vex index` wall time on the vex tree, enforced by the §8 bench.
 
-### 3.4 Resolution γ
+### 3.4 Resolution γ — **confirmed in P3, measured**
 
-The default is γ = **1/8**: in weight units, a node with one call edge (weight 2) joins a community of size ≤ 16. **It is a placeholder, confirmed in P3.**
+The default is γ = **1/8**: in weight units, a node with one call edge (weight 2) joins a community of size ≤ 16.
 
-Selection procedure:
-- Sweep γ ∈ {1/32, 1/16, 1/8, 1/4, 1/2} on vex, ast-index and one TS/Java corpus.
-- Metrics:
-  - clustered fraction;
-  - median and max cluster size;
-  - path purity, i.e. the share of members under the dominant prefix;
-  - stability, i.e. Jaccard overlap of clusters between a full index and the same tree after a synthetic one-file edit.
-- Pick the γ with the highest purity subject to: clustered ≥ 60 % of eligible symbols, and the largest cluster ≤ 10 % of eligible symbols.
+Selection procedure (as run):
+- Swept γ ∈ {1/32, 1/16, 1/8, 1/4, 1/2} via a local, gitignored harness
+  (`examples/cluster_sweep_measure.rs`) that opens a real v9 index through
+  `IndexReader`, rebuilds a `cluster::projection::ProjectionInput` from the
+  reader's own call/ref/hierarchy-edge records, and runs `cluster::cluster`
+  at each γ.
+- **Known approximation**: the on-disk `RefEdge` section does not carry the
+  writer's transient `ambiguous: Vec<bool>` (§13 R7) — that flag only exists
+  inside `write_index_to` and is never persisted. The harness therefore
+  treats every resolved ref edge as unambiguous, so its projected graph is a
+  slightly denser upper bound on what P4's writer-side sweep will actually
+  see. Purity/size numbers below are directionally correct, not
+  byte-identical to a future from-the-writer sweep.
+- Metrics collected: clustered fraction, median and max cluster size, and
+  path purity (share of each cluster's members whose path falls under that
+  cluster's own computed label prefix, size-weighted across clusters).
+  Leiden wall time is reported but is not a selection criterion (see §3.3's
+  bench gate instead). **Stability** (Jaccard overlap under a synthetic
+  one-file edit) was **not** measured in this sweep — that metric needs the
+  P4b update-carry machinery to produce a second, incrementally-updated
+  partition to compare against, so it is deferred to the P4b incremental
+  consistency tests (§8).
+- Corpora: this repository itself, a second Rust repository (~2,300
+  symbols, a smaller personal-tooling codebase), and a small Python/Django
+  repository (13 symbols, 6 eligible) that turned out too small to produce
+  any multi-member cluster at any γ — included anyway as a sanity check
+  that the empty/near-empty case degrades to zero clusters without
+  crashing, not as a data point for the γ choice. Per this document's
+  anonymity convention, non-vex repos are identified only by shape
+  (language, symbol count), never by name or path.
+
+**Results — this repository** (5,524 eligible symbols; 10 % of eligible = 552):
+
+| γ | clusters | clustered | clustered % | median size | max size | purity | Leiden wall time |
+|---|---|---|---|---|---|---|---|
+| 1/32 | 307 | 4,483 | 81.2 % | 10 | 79 | 0.893 | 23.2 ms |
+| 1/16 | 400 | 4,365 | 79.0 % | 8 | 59 | 0.911 | 17.4 ms |
+| **1/8** | **508** | **4,142** | **75.0 %** | **7** | **41** | **0.932** | **15.7 ms** |
+| 1/4 | 657 | 3,823 | 69.2 % | 5 | 32 | 0.942 | 15.1 ms |
+| 1/2 | 806 | 3,236 | 58.6 % | 3 | 17 | 0.951 | 15.3 ms |
+
+**Results — second Rust repository** (1,523 eligible symbols; 10 % of eligible = 152):
+
+| γ | clusters | clustered | clustered % | median size | max size | purity | Leiden wall time |
+|---|---|---|---|---|---|---|---|
+| 1/32 | 72 | 1,101 | 72.3 % | 7 | 134 | 0.874 | 4.6 ms |
+| 1/16 | 96 | 1,095 | 71.9 % | 7 | 97 | 0.894 | 4.5 ms |
+| **1/8** | **117** | **951** | **62.4 %** | **5** | **64** | **0.909** | **4.5 ms** |
+| 1/4 | 138 | 742 | 48.7 % | 4 | 43 | 0.902 | 4.3 ms |
+| 1/2 | 161 | 621 | 40.8 % | 3 | 36 | 0.908 | 4.7 ms |
+
+Applying the §3.4 rule (clustered ≥ 60 %, max cluster ≤ 10 % of eligible):
+
+- **The size ceiling never binds.** On this repository the ceiling is 552 and
+  the largest cluster at any γ is 79 (1.4 % of eligible). On the second
+  repository the ceiling is 152 and the largest cluster is 134 at γ = 1/32
+  (8.8 %), falling to 64 at γ = 1/8 (4.2 %).
+- **The 60 % floor is the binding constraint.** It excludes γ = 1/2 on this
+  repository (58.6 %), and γ = 1/4 and 1/2 on the second (48.7 %, 40.8 %).
+  That leaves {1/32, 1/16, 1/8} valid on both.
+- **Purity picks 1/8.** Among those three, 1/8 has the highest purity on
+  each corpus (0.932 here, 0.909 there) and averaged across them: 0.884
+  (1/32), 0.903 (1/16), **0.921 (1/8)**.
+
+**Decision: keep γ = 1/8** as the shipped default. Two caveats:
+- **The floor margin is thin on smaller corpora.** At γ = 1/8 the second
+  repository sits only 2.4 points above the 60 % floor (62.4 %). Smaller or
+  less-connected corpora may land under it, so the floor is a quality signal
+  to report, not a hard gate.
+- **Leiden hits its iteration cap on this repository.** At γ = 1/8 and 1/4 it
+  stops at `MAX_ITERATIONS = 4` (`ITER_CAP_HIT`) instead of converging. The
+  output is still deterministic, but this is worth watching in the P4 stability
+  measurements.
+
+Re-measured 2026-10-01 after the P3 `refine()` singleton-gate fix (a
+representative that had already absorbed followers could defect and strand
+them). The earlier table predated the fix; the decision did not change.
+
 - γ is persisted in the header, so output is self-describing.
 - `VEX_CLUSTER_RESOLUTION=a/b` is an undocumented experiment knob. A `.vex.toml` setting is Q3.
 
