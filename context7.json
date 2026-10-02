@@ -34,6 +34,7 @@
     "Use `vex usages <Name> --strict` for refactors: binder-resolved references on Rust, TypeScript, Python, C#, C++, Go, Java and Kotlin; other languages fall back to a text scan.",
     "Use `vex grep <regex>` for text such as string literals, comments and config values, not for symbols.",
     "Exit code 1 means an empty result, not a failure; only exit code 2 is an error.",
+    "Use `vex modules` to see the de-facto modules (symbol clusters) and `vex modules <Name>` for the module a symbol belongs to; cluster ids are only stable within one full `vex index`.",
     "Run `vex index` once per project and `vex update` afterwards; after an upgrade that bumps the index format, run `vex index` again.",
     "Pass `--format json` or `--format compact` for machine-readable, token-efficient output; connect agents with `vex mcp install --agent <name>`."
   ]

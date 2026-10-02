@@ -1313,6 +1313,50 @@ for every mtime in that whole interval.
 
 ---
 
+## 12. Symbol clusters (`vex modules`) are approximate and generation-scoped
+
+`vex modules` groups symbols that call and reference each other into
+"de-facto modules" (deterministic Leiden-CPM over call, reference and
+type-hierarchy edges; design in `docs/V9-FORMAT.md`). The groups are a
+navigation aid, not ground truth.
+
+- **Computed only on a full `vex index`.** `vex update` does not recluster.
+  Symbols in unchanged files keep their cluster. A symbol in an edited file
+  keeps its cluster only when its `(path, name, kind)` matches exactly one old
+  symbol, and new symbols show as `new_since_build`. The section is marked
+  stale until the next `vex index`. The first `vex update` on an index that
+  has no clusters computes them once.
+- **Cluster ids are stable within one full index only.** Two `vex index` runs
+  on an edited tree can renumber or regroup clusters, even far from the edit.
+  Do not store ids across indexes; use the label and hubs to recognise a
+  cluster.
+- **Labels, hubs and weights are frozen at build time.** After `vex update`
+  they describe the cluster as it was built, while the displayed size is
+  live.
+- **Some symbols never cluster.** Headings, modules, packages and symbols in
+  Markdown, YAML, TOML, CSS and HTML files are not eligible. An `impl` block
+  is often left unclustered while its methods are clustered, because calls
+  and references point at the methods.
+- **Quality follows edge coverage.** Languages with a scope binder (Rust,
+  TypeScript, Python, C#, C++, Go, Java, Kotlin) contribute reference edges.
+  Other languages only contribute name-resolved calls, so more of their
+  symbols stay unclustered. There are no cross-language edges (see §10), and
+  an import that resolves to several same-named definitions is dropped rather
+  than guessed.
+- **Reference edges are attributed approximately.** A reference is credited to
+  the nearest preceding symbol in its file, so module-level code after a
+  function counts towards that function.
+- **Leiden may stop at its iteration cap.** On this repository it reaches
+  `MAX_ITERATIONS = 4` before the partition stops changing. The output is still
+  deterministic, but it is not guaranteed to be fully converged.
+- **Test files dominate the list on test-heavy repositories.** They form tight,
+  cohesive clusters. Filter them with
+  `vex modules --exclude 'tests/**' --exclude '**/tests.rs'`.
+- **It costs a little indexing time.** On this repository (~7.3k symbols) a
+  full `vex index` takes about 11 ms longer with clusters (median 157 vs
+  146 ms, warm). `vex index --no-clusters` skips it, and `vex update` keeps
+  that choice.
+
 ## Coverage matrix (one-line summary)
 
 | Query | T1 strict | T1 default | T2 (line-scan) | Module-level | Decorator | String-resolved |

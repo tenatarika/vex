@@ -1,6 +1,6 @@
 # vex index format v9: CSR adjacency and symbol clusters
 
-Status: **IN PROGRESS** — design reviewed 2026-09-30 (architect + rust-reviewer); P0–P4b implemented and reviewed; P5 (`vex modules`) and P6 (MCP tool) pending. No release tag before P4b. **§13 supersedes any earlier section it conflicts with.** One v8 → v9 format bump with three changes:
+Status: **SHIPPED in v1.27.0** — design reviewed 2026-09-30 (architect + rust-reviewer); P0–P6 implemented and reviewed. Deferred: incremental Leiden (Phase B), the ranking boost (§6), cluster stability measurements. **§13 supersedes any earlier section it conflicts with.** One v8 → v9 format bump with three changes:
 
 1. **Callees CSR.** The callees FST keyed by 10-digit decimal strings becomes dense `offsets[n+1]` + `edge_idx[m]`.
 2. **ref_edges CSR.** The same decimal-string FST in `reference_edges` becomes a dense offsets array.
