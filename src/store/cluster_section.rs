@@ -700,8 +700,10 @@ mod carry_tests {
 
     fn decode_assign(bytes: &[u8]) -> Vec<u32> {
         bytes
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
             .collect()
     }
 
@@ -710,7 +712,9 @@ mod carry_tests {
     /// hubs[0], hubs[1], hubs[2]]`.
     fn decode_table(bytes: &[u8]) -> Vec<[u32; 8]> {
         bytes
-            .chunks_exact(ClusterRecord::SIZE)
+            .as_chunks::<{ ClusterRecord::SIZE }>()
+            .0
+            .iter()
             .map(|rec| {
                 let mut out = [0u32; 8];
                 for (i, slot) in out.iter_mut().enumerate() {

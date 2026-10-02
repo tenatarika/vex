@@ -811,7 +811,7 @@ pub fn __fuzz_leiden_bytes(data: &[u8]) {
     }
     let rest = &data[1..];
     let mut pairs: Vec<(u32, u32, u32)> = Vec::new();
-    for chunk in rest.chunks_exact(3) {
+    for chunk in rest.as_chunks::<3>().0 {
         let u = u32::from(chunk[0]) % n;
         let v = u32::from(chunk[1]) % n;
         if u == v {
