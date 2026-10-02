@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-10-02
+
 ### Added
 
 - **Symbol clusters, computed on `vex index`.** A full index groups symbols
@@ -4007,7 +4009,8 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.26.0...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.27.0...HEAD
+[1.27.0]: https://github.com/tenatarika/vex/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/tenatarika/vex/compare/v1.25.5...v1.26.0
 [1.25.1]: https://github.com/tenatarika/vex/compare/v1.25.0...v1.25.1
 [1.25.0]: https://github.com/tenatarika/vex/compare/v1.24.1...v1.25.0
