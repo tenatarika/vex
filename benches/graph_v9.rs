@@ -341,20 +341,13 @@ fn build_synthetic_corpus_planted(seed: u64) -> SynthCorpus {
     }
 }
 
-/// Runs projection+Leiden once (unmeasured, for the eprintln report)
-/// plus the criterion-measured loop, for a given corpus/label. Shared by
-/// both the stress and planted-community benches so the two report
-/// lines are directly comparable.
-fn report_and_bench_projection_leiden(
-    c: &mut Criterion,
-    bench_name: &str,
-    label: &str,
+/// Rebuilds the borrowed `Projection*` Vecs from a `SynthCorpus` — shared
+/// by every bench function below so each one borrows straight from the
+/// corpus's owned strings (no further clone) instead of duplicating this
+/// mapping per bench.
+fn build_projection_vecs(
     corpus: &SynthCorpus,
-) {
-    // Rebuild the borrowed `Projection*` Vecs once here — they live for
-    // the rest of this function (covering the report line AND the
-    // criterion-measured loop below), borrowing straight from `corpus`'s
-    // owned strings (no further clone).
+) -> (Vec<ProjectionSymbol<'_>>, Vec<ProjectionCallEdge<'_>>) {
     let symbols: Vec<ProjectionSymbol<'_>> = (0..SYNTH_SYMBOLS as usize)
         .map(|i| ProjectionSymbol {
             sym_idx: i as u32,
@@ -372,6 +365,20 @@ fn report_and_bench_projection_leiden(
             line: corpus.call_line[i],
         })
         .collect();
+    (symbols, call_edges)
+}
+
+/// Runs projection+Leiden once (unmeasured, for the eprintln report)
+/// plus the criterion-measured loop, for a given corpus/label. Shared by
+/// both the stress and planted-community benches so the two report
+/// lines are directly comparable.
+fn report_and_bench_projection_leiden(
+    c: &mut Criterion,
+    bench_name: &str,
+    label: &str,
+    corpus: &SynthCorpus,
+) {
+    let (symbols, call_edges) = build_projection_vecs(corpus);
     let input = ProjectionInput {
         symbol_count: SYNTH_SYMBOLS,
         symbols: &symbols,
@@ -429,6 +436,28 @@ fn bench_projection_and_leiden_synthetic_planted(c: &mut Criterion) {
     );
 }
 
+/// `project()` alone (no Leiden, no finalize) on the planted-community
+/// corpus — isolates the projection cost the rest of this bench file
+/// only measures bundled with Leiden, so a projection-only regression
+/// (or improvement) is visible without the clustering noise on top.
+fn bench_project_only_synthetic_planted(c: &mut Criterion) {
+    let corpus = build_synthetic_corpus_planted(0xC0FF_EE11);
+    let (symbols, call_edges) = build_projection_vecs(&corpus);
+    let input = ProjectionInput {
+        symbol_count: SYNTH_SYMBOLS,
+        symbols: &symbols,
+        call_edges: &call_edges,
+        ref_edges: &corpus.ref_edges,
+        ambiguous: &corpus.ambiguous,
+        hierarchy_edges: &corpus.hierarchy_edges,
+        file_paths: &corpus.file_paths,
+    };
+
+    c.bench_function("graph_v9::project_only_synthetic_35k_200k_planted", |b| {
+        b.iter(|| black_box(vex::cluster::projection::project(black_box(&input))));
+    });
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(20);
@@ -437,5 +466,6 @@ criterion_group! {
         bench_build_csr_vs_legacy,
         bench_projection_and_leiden_synthetic_random_stress,
         bench_projection_and_leiden_synthetic_planted,
+        bench_project_only_synthetic_planted,
 }
 criterion_main!(benches);
