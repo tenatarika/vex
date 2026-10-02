@@ -993,6 +993,85 @@ expression: descriptors
     "name": "subtypes"
   },
   {
+    "description": "De-facto modules: clusters of symbols that call/reference each other (deterministic Leiden-CPM over call + ref + hierarchy edges, computed on full `vex index`). Without `symbol`: list clusters with a label (dominant path prefix; a bare file path when the cluster is a single file), size, cohesion and hub symbols. With `symbol`: that symbol's cluster and its members (`limit` caps the matching symbols). Use for `what are the modules` / `which module is X in` instead of reading directory listings. Requires a v9 index built by `vex index`; after `vex update` clusters are frozen and flagged `stale`. Returns an empty result with `empty_reason` and a hint on older indexes or when built with `--no-clusters`. Cluster ids are stable only within one full-index generation: do not persist them across `vex index` runs.",
+    "inputSchema": {
+      "properties": {
+        "async_update": {
+          "default": false,
+          "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)",
+          "type": "boolean"
+        },
+        "auto_update": {
+          "default": true,
+          "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Blacklist members by path glob; wins over include (repeatable)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Whitelist members by path glob, gitignore syntax (repeatable). A cluster is shown iff at least one member is in scope.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Max clusters to list, or max matching symbols when `symbol` is given (per repo with `workspace`). Must be at least 1.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "members": {
+          "description": "Members to list per cluster, ordered by path then line (default: 0 when listing, 25 for a `symbol` lookup). Must be in `[0, 10000]`.",
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "min_size": {
+          "default": 3,
+          "description": "Hide clusters with fewer in-scope symbols than this. List mode only; ignored when `symbol` is given. Must be in `[1, 1000000]`.",
+          "maximum": 1000000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "no_stale_check": {
+          "default": false,
+          "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.",
+          "type": "boolean"
+        },
+        "project_root": {
+          "description": "Absolute path to the project root (defaults to the MCP working directory)",
+          "type": "string"
+        },
+        "sort": {
+          "default": "size",
+          "description": "Order clusters by in-scope size or by cohesion; ties by cluster id.",
+          "enum": [
+            "size",
+            "cohesion"
+          ],
+          "type": "string"
+        },
+        "symbol": {
+          "description": "Symbol whose cluster to show. Omit to list all clusters.",
+          "type": "string"
+        },
+        "workspace": {
+          "default": false,
+          "description": "Multi-repo: fan out across every repo declared in the nearest `.vex-workspace.toml` (set `project_root` at or above it — the manifest is found by walking up). Results become an object `{workspace, repos:[...]}` grouped by repo, NOT the flat per-tool array — branch on shape. `why` is ignored in workspace mode (single-repo only).",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "name": "modules"
+  },
+  {
     "description": "Direct callers of a function via the persistent call-graph FST (~4ms when indexed; falls back to live-scan). Prefer over grep for `who calls Foo?` — grep on the function name hits doc comments and string literals; the call-graph edges are resolved at parse time. Phase 14.2 + 14.2.2 + 14.2.1: Python/Java function/method decorators, Kotlin annotations / C# method+constructor attributes, and TypeScript method decorators / Rust outer attributes on fns/methods emit forward edges, so `callers GetMapping` lists every Spring handler, `callers get` lists every FastAPI route, `callers HttpGet` every ASP.NET action, `callers JvmStatic` every Kotlin function annotated `@JvmStatic`, `callers Get` every Nest.js `@Get(...)`, `callers test` every Rust `#[tokio::test]` (the rightmost identifier of the decorator/attribute path becomes the callee; arguments are ignored — `#[serde(rename = \"x\")]` → `serde`, not `rename`). Rust `#[derive(...)]` is filtered (compile-time codegen, not call edges). Note the rightmost-identifier convention means `callers get` mixes decorator handlers with any regular `.get()` call — narrow with `include`/`exclude` if needed. Pair with `paths` for multi-hop chains. Supports diff scoping: `since` / `since_branched` / `changed_only` (mutually exclusive) to restrict callers to recently-touched code.",
     "inputSchema": {
       "properties": {

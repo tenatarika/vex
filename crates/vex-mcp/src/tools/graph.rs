@@ -9,7 +9,9 @@ use serde_json::Value;
 use crate::args::{
     push_auto_update, push_diff_scope, push_no_stale_check, push_scope, push_workspace,
 };
-use crate::params::{opt_bool, opt_u64, opt_u64_some, read_canonical_str, req_str, ParamError};
+use crate::params::{
+    opt_bool, opt_str, opt_u64, opt_u64_some, read_canonical_str, req_str, ParamError,
+};
 
 pub(crate) fn build_usages(
     args: &Value,
@@ -151,6 +153,65 @@ pub(crate) fn build_subtypes(
     push_scope(&mut extra, args)?;
     push_diff_scope(&mut extra, args)?;
     Ok(("subtypes".to_string(), extra))
+}
+
+/// v9 P6 (`docs/V9-FORMAT.md` §4.3) — `modules` lists the symbol clusters
+/// stored in the v9 cluster section, or (with `symbol`) shows one symbol's
+/// cluster. `symbol` is optional; `limit` is `>= 1` and caps both modes;
+/// `min_size` (list mode only on the CLI side) is `[1, 1_000_000]`;
+/// `members` is `[0, 10_000]`; `sort` is `size|cohesion`. Violations return
+/// `-32602` up front rather than a CLI usage error.
+pub(crate) fn build_modules(
+    args: &Value,
+    project_root: &str,
+    _deprecated: &mut Vec<String>,
+) -> Result<(String, Vec<String>)> {
+    let symbol = opt_str(args, "symbol")?;
+    let limit = opt_u64(args, "limit", 50)?;
+    if limit < 1 {
+        return Err(ParamError(format!("`limit` must be at least 1 (got: {limit})")).into());
+    }
+    let min_size = opt_u64(args, "min_size", 3)?;
+    if !(1..=1_000_000).contains(&min_size) {
+        return Err(ParamError(format!(
+            "`min_size` must be between 1 and 1000000 (got: {min_size})"
+        ))
+        .into());
+    }
+    let mut extra = Vec::new();
+    if let Some(s) = symbol {
+        extra.push(s.to_string());
+    }
+    extra.extend([
+        "--path".into(),
+        project_root.to_string(),
+        "--limit".into(),
+        limit.to_string(),
+        "--min-size".into(),
+        min_size.to_string(),
+    ]);
+    if let Some(m) = opt_u64_some(args, "members")? {
+        if m > 10_000 {
+            return Err(
+                ParamError(format!("`members` must be between 0 and 10000 (got: {m})")).into(),
+            );
+        }
+        extra.extend(["--members".into(), m.to_string()]);
+    }
+    if let Some(sort) = opt_str(args, "sort")? {
+        if !matches!(sort, "size" | "cohesion") {
+            return Err(ParamError(format!(
+                "`sort` must be \"size\" or \"cohesion\" (got: {sort:?})"
+            ))
+            .into());
+        }
+        extra.extend(["--sort".into(), sort.to_string()]);
+    }
+    push_auto_update(&mut extra, args)?;
+    push_no_stale_check(&mut extra, args)?;
+    push_scope(&mut extra, args)?;
+    push_workspace(&mut extra, args)?;
+    Ok(("modules".to_string(), extra))
 }
 
 pub(crate) fn build_callers(

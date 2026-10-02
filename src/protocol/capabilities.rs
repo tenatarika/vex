@@ -16,5 +16,6 @@ pub fn current() -> Capabilities {
         history_diff: true,
         structured_result_kind: true,
         result_completeness: true,
+        symbol_clusters: true,
     }
 }

@@ -60,6 +60,11 @@ pub struct Capabilities {
     /// capability but emitting no `truncated` key is a producer bug, not
     /// "complete".
     pub result_completeness: bool,
+    /// v9 (V9-FORMAT §4.3) — `vex modules` / the MCP `modules` tool is
+    /// available: symbol clusters ("de-facto modules") stored in the v9 index.
+    /// Additive (PROTOCOL-EVOLUTION §1b): consumers treat an absent flag as
+    /// `false`.
+    pub symbol_clusters: bool,
 }
 
 #[derive(Serialize, Default, Clone, Debug)]

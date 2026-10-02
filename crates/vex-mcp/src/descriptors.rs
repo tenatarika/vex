@@ -24,6 +24,7 @@ pub(crate) const WORKSPACE_TOOLS: &[&str] = &[
     "callers",
     "callees",
     "reachable",
+    "modules",
     "index",
     "update",
 ];
@@ -370,6 +371,26 @@ pub(crate) fn tool_descriptors() -> Value {
                     "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
                 },
                 "required": ["symbol"]
+            }
+        },
+        {
+            "name": "modules",
+            "description": "De-facto modules: clusters of symbols that call/reference each other (deterministic Leiden-CPM over call + ref + hierarchy edges, computed on full `vex index`). Without `symbol`: list clusters with a label (dominant path prefix; a bare file path when the cluster is a single file), size, cohesion and hub symbols. With `symbol`: that symbol's cluster and its members (`limit` caps the matching symbols). Use for `what are the modules` / `which module is X in` instead of reading directory listings. Requires a v9 index built by `vex index`; after `vex update` clusters are frozen and flagged `stale`. Returns an empty result with `empty_reason` and a hint on older indexes or when built with `--no-clusters`. Cluster ids are stable only within one full-index generation: do not persist them across `vex index` runs.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbol": { "type": "string", "description": "Symbol whose cluster to show. Omit to list all clusters." },
+                    "limit": { "type": "integer", "description": "Max clusters to list, or max matching symbols when `symbol` is given (per repo with `workspace`). Must be at least 1.", "default": 50, "minimum": 1 },
+                    "min_size": { "type": "integer", "description": "Hide clusters with fewer in-scope symbols than this. List mode only; ignored when `symbol` is given. Must be in `[1, 1000000]`.", "default": 3, "minimum": 1, "maximum": 1000000 },
+                    "members": { "type": "integer", "description": "Members to list per cluster, ordered by path then line (default: 0 when listing, 25 for a `symbol` lookup). Must be in `[0, 10000]`.", "minimum": 0, "maximum": 10000 },
+                    "sort": { "type": "string", "enum": ["size", "cohesion"], "description": "Order clusters by in-scope size or by cohesion; ties by cluster id.", "default": "size" },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist members by path glob, gitignore syntax (repeatable). A cluster is shown iff at least one member is in scope." },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist members by path glob; wins over include (repeatable)" },
+                    "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
+                    "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
+                    "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
+                    "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false }
+                }
             }
         },
         {

@@ -176,3 +176,21 @@ fn capabilities_command_results_carries_capability_matrix() {
         "results.bundle_modes must be an array, got: {out}"
     );
 }
+
+/// v9 P6 — `symbol_clusters` advertises `vex modules` / the MCP `modules`
+/// tool. Additive (PROTOCOL-EVOLUTION §1b): consumers treat absent as false.
+#[test]
+fn capabilities_command_advertises_symbol_clusters() {
+    let tmp = TempDir::new().unwrap();
+    write_minimal_project(tmp.path());
+    let out = run_capabilities(tmp.path());
+    assert_eq!(
+        out["capabilities"]["symbol_clusters"].as_bool(),
+        Some(true),
+        "expected capabilities.symbol_clusters == true, got: {out}"
+    );
+    assert_eq!(
+        out["results"]["symbol_clusters"],
+        out["capabilities"]["symbol_clusters"]
+    );
+}

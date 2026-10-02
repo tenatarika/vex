@@ -2265,6 +2265,7 @@ fn workspace_tool_cases() -> Vec<(&'static str, Value)> {
         ("callers", json!({ "symbol": "Foo" })),
         ("callees", json!({ "symbol": "Foo" })),
         ("reachable", json!({ "target": "Foo" })),
+        ("modules", json!({})),
         ("index", json!({})),
         ("update", json!({})),
     ]
@@ -2362,5 +2363,151 @@ fn workspace_param_exposed_on_covered_tools_only() {
     assert!(
         !has_ws("find_symbol"),
         "find_symbol must NOT expose `workspace` (excluded by design)"
+    );
+}
+
+// ── v9 P6: `modules` tool (docs/V9-FORMAT.md §4.3) ──────────────────────
+
+/// Value following `flag` in an argv, if present.
+fn flag_value<'a>(extra: &'a [String], flag: &str) -> Option<&'a str> {
+    extra
+        .iter()
+        .position(|a| a == flag)
+        .and_then(|i| extra.get(i + 1))
+        .map(String::as_str)
+}
+
+#[test]
+fn modules_defaults_list_mode() {
+    let built = build_command("modules", &json!({}), "/tmp/proj").expect("build");
+    assert_eq!(built.subcommand, "modules");
+    let extra = built.extra_args;
+    assert_eq!(
+        extra[0], "--path",
+        "list mode must not emit a positional symbol"
+    );
+    assert_eq!(flag_value(&extra, "--path"), Some("/tmp/proj"));
+    assert_eq!(flag_value(&extra, "--limit"), Some("50"));
+    assert_eq!(flag_value(&extra, "--min-size"), Some("3"));
+    assert!(!extra.iter().any(|a| a == "--members" || a == "--sort"));
+    assert!(extra.iter().any(|a| a == "--auto-update"));
+    assert!(!extra
+        .iter()
+        .any(|a| a == "--async-update" || a == "--workspace"));
+    assert!(built.deprecated_args.is_empty());
+}
+
+#[test]
+fn modules_symbol_is_positional_first() {
+    let extra = args_for("modules", json!({"symbol": "Foo"}));
+    assert_eq!(extra[0], "Foo");
+}
+
+#[test]
+fn modules_each_arg_maps_to_cli_flag() {
+    let extra = args_for(
+        "modules",
+        json!({
+            "limit": 7, "min_size": 5, "members": 0, "sort": "cohesion",
+            "include": ["src/**"], "exclude": ["**/gen/**"],
+            "async_update": true, "no_stale_check": true, "workspace": true
+        }),
+    );
+    assert_eq!(flag_value(&extra, "--limit"), Some("7"));
+    assert_eq!(flag_value(&extra, "--min-size"), Some("5"));
+    assert_eq!(flag_value(&extra, "--members"), Some("0"));
+    assert_eq!(flag_value(&extra, "--sort"), Some("cohesion"));
+    assert_eq!(flag_value(&extra, "--include"), Some("src/**"));
+    assert_eq!(flag_value(&extra, "--exclude"), Some("**/gen/**"));
+    for f in [
+        "--auto-update",
+        "--async-update",
+        "--no-stale-check",
+        "--workspace",
+    ] {
+        assert!(extra.iter().any(|a| a == f), "missing {f}: {extra:?}");
+    }
+}
+
+#[test]
+fn modules_auto_update_false_omits_flags() {
+    let extra = args_for(
+        "modules",
+        json!({"auto_update": false, "async_update": true}),
+    );
+    assert!(!extra
+        .iter()
+        .any(|a| a == "--auto-update" || a == "--async-update"));
+}
+
+#[test]
+fn modules_range_validation_is_invalid_params() {
+    assert_param_error("modules", json!({"limit": 0}), "limit");
+    assert_param_error("modules", json!({"min_size": 0}), "min_size");
+    assert_param_error("modules", json!({"min_size": 1_000_001}), "min_size");
+    assert_param_error("modules", json!({"members": 10_001}), "members");
+    assert_param_error("modules", json!({"sort": "alphabetical"}), "sort");
+    assert_param_error("modules", json!({"limit": "ten"}), "limit");
+    assert_param_error("modules", json!({"symbol": 5}), "symbol");
+}
+
+#[test]
+fn modules_range_boundaries_accepted() {
+    for args in [
+        json!({"limit": 1, "min_size": 1, "members": 0}),
+        json!({"min_size": 1_000_000, "members": 10_000}),
+    ] {
+        build_command("modules", &args, "/tmp/proj").expect("boundary must build");
+    }
+}
+
+#[test]
+fn modules_out_of_range_maps_to_minus_32602() {
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: Some(json!(9)),
+        method: "tools/call".into(),
+        params: Some(json!({"name": "modules", "arguments": {"min_size": 0}})),
+    };
+    let err = handle_request(&req).error.expect("error response");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("min_size"));
+}
+
+#[test]
+fn modules_schema_exposes_documented_properties() {
+    let desc = tool_descriptors();
+    let entry = desc
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "modules")
+        .expect("modules tool");
+    let props = &entry["inputSchema"]["properties"];
+    for k in [
+        "symbol",
+        "limit",
+        "min_size",
+        "members",
+        "sort",
+        "include",
+        "exclude",
+        "project_root",
+        "auto_update",
+        "async_update",
+        "no_stale_check",
+        "workspace",
+    ] {
+        assert!(props[k].is_object(), "modules schema missing {k}: {props}");
+    }
+    assert_eq!(props["sort"]["enum"], json!(["size", "cohesion"]));
+    assert!(entry["inputSchema"].get("required").is_none());
+    assert!(
+        !desc
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "clusters"),
+        "Q7: no `clusters` tool"
     );
 }
