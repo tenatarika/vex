@@ -62,7 +62,27 @@ use anyhow::{ensure, Result};
 pub fn build_csr(keys: &[u32], n: u32) -> Result<(Vec<u32>, Vec<u32>)> {
     let (offsets, out_of_range) = count_into_offsets(keys, n)?;
     warn_and_debug_assert_out_of_range(out_of_range, n);
+    Ok(scatter(keys, n, offsets))
+}
 
+/// [`build_csr`] for keys read back from an index file rather than produced
+/// by the writer. Such keys are untrusted input: an out-of-range key is
+/// corruption, not a writer bug, so it is dropped with a warning and never
+/// trips the debug assertion. Used by the reader's legacy (v4–v8) path.
+pub fn build_csr_from_untrusted(keys: &[u32], n: u32) -> Result<(Vec<u32>, Vec<u32>)> {
+    let (offsets, out_of_range) = count_into_offsets(keys, n)?;
+    if out_of_range > 0 {
+        tracing::warn!(
+            out_of_range,
+            symbol_count = n,
+            "dropped {out_of_range} edge(s) whose key >= symbol_count {n} (corrupt index)"
+        );
+    }
+    Ok(scatter(keys, n, offsets))
+}
+
+/// Second counting-sort pass: place each in-range edge index into its group.
+fn scatter(keys: &[u32], n: u32, offsets: Vec<u32>) -> (Vec<u32>, Vec<u32>) {
     let n_usize = n as usize;
     let m = offsets[n_usize] as usize;
     let mut cursor = offsets[..n_usize].to_vec();
@@ -76,7 +96,7 @@ pub fn build_csr(keys: &[u32], n: u32) -> Result<(Vec<u32>, Vec<u32>)> {
         *slot += 1;
     }
 
-    Ok((offsets, edge_idx))
+    (offsets, edge_idx)
 }
 
 /// Build the `offsets`-only CSR for a key sequence that is already
@@ -432,6 +452,16 @@ mod tests {
     #[should_panic(expected = "key(s) >= symbol_count")]
     fn out_of_range_keys_trip_debug_assert_in_dev_test_builds() {
         let _ = build_csr(&[0, 5, 1], 3);
+    }
+
+    /// Keys decoded from an on-disk legacy index are untrusted input, not a
+    /// writer bug: a corrupt `caller_sym_idx` / `to_sym_idx` must be dropped
+    /// without the `build_csr` debug trip-wire (found by fuzz_index_reader).
+    #[test]
+    fn untrusted_out_of_range_keys_are_dropped_without_panicking() {
+        let (offsets, edge_idx) = build_csr_from_untrusted(&[0, 5, 1], 3).unwrap();
+        assert_eq!(offsets, vec![0, 1, 2, 2]);
+        assert_eq!(edge_idx, vec![0, 2]);
     }
 
     #[test]

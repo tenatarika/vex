@@ -819,7 +819,7 @@ impl IndexReader {
         for i in 0..count {
             keys.push(self.ref_edge(i)?.to_sym_idx);
         }
-        let (offsets, edge_idx) = super::csr::build_csr(&keys, n).ok()?;
+        let (offsets, edge_idx) = super::csr::build_csr_from_untrusted(&keys, n).ok()?;
         let m = u32::try_from(edge_idx.len()).ok()?;
         Some(LegacyCsr {
             offsets: super::csr::encode_le_u32s(&offsets),
@@ -1484,7 +1484,7 @@ impl IndexReader {
         for i in 0..count {
             keys.push(self.call_edge(i)?.caller_sym_idx);
         }
-        let (offsets, edge_idx) = super::csr::build_csr(&keys, n).ok()?;
+        let (offsets, edge_idx) = super::csr::build_csr_from_untrusted(&keys, n).ok()?;
         let m = u32::try_from(edge_idx.len()).ok()?;
         Some(LegacyCsr {
             offsets: super::csr::encode_le_u32s(&offsets),
