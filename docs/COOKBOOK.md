@@ -16,6 +16,7 @@ All snippets use the MCP tool surface (`usages(...)`, `bundle(mode=..., ...)`) a
 | Find regex hits in source text               | `grep(pattern="…regex…")`                          | `usages` (symbol-only)             |
 | Find AST patterns                            | `pattern(pattern="…", lang="…")`                   | `grep` (no scope, no metavars)     |
 | Find subtypes of a base class                | `implementations(symbol="Base")`                   | `grep "extends Base"`              |
+| What are the modules / which module is X in | `modules()` to list clusters, `modules(symbol="X", members=25)` for X's cluster | `ls` / directory guesses; `search` (ranked, not structural) |
 | Who calls / who do I call                    | `callers` / `callees`                              | Reading file to find call sites    |
 | Multi-hop "can A reach B"                    | `paths(from="A", to="B")` or `reachable(symbol="B")` | Manual graph walk                |
 | Symbol-level diff vs git base                | `diff(base="origin/main")`                         | `git diff` (line-level only)       |

@@ -1076,8 +1076,8 @@ Each member keeps its own per-repo index; results are grouped by repo. See
   the command re-reads it; a member added between the two reads routes to the
   shared default for that run (re-run to pick it up). `VEX_CACHE_DIR` /
   `--cache-dir` still override every member (env/CLI beat a member's config).
-- **MCP `workspace` param** mirrors the CLI on 10 tools (search, grep, check,
-  usages, impact, callers, callees, reachable, index, update). `find_symbol`
+- **MCP `workspace` param** mirrors the CLI on 11 tools (search, grep, check,
+  usages, impact, callers, callees, reachable, modules, index, update). `find_symbol`
   has no `workspace` (use `check`/`search`); `why` is ignored in workspace
   mode. Workspace results arrive as `structuredContent.results =
   {workspace, repos:[...]}` (an object, not the flat array) — agents must

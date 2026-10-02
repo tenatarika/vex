@@ -607,8 +607,10 @@ feature-detect additive changes instead of gating on `protocol_version`.
 Evolution rules live in §1b; per-flag emission rule in §2 step-2.
 
 Current flags: `signals`, `empty_reason`, `bundle_modes`, `why`,
-`scope_filters`, `metadata_filters`, `auto_update`, `history_diff`,
-`structured_result_kind` (v1.24.0).
+`scope_filters`, `metadata_filters`, `auto_update`, `async_update`,
+`history_diff`, `structured_result_kind` (v1.24.0), `result_completeness`,
+`symbol_clusters` (v9: the `modules` tool and `vex modules`; ungated and
+additive, so absent means false).
 
 Proposed additions (flip as each expand step lands):
 

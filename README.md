@@ -853,7 +853,7 @@ cargo build --release -p vex-mcp
 
 `VEX_DEVICE` (v1.16.0) picks the GPU execution provider when the binary was built with `gpu-cuda` / `gpu-directml` / `gpu-coreml` — relevant when an MCP-driven `index` / `update` call rebuilds semantic embeddings on a large repo (51× CUDA / 29× DirectML over CPU on MiniLM-L6). `auto` is safe on CPU-only builds (degrades silently). Run `vex gpu` once to confirm the EP actually engages.
 
-**MCP Tools (27):**
+**MCP Tools (28):**
 - `search` — 3-way hybrid (structural + BM25 + semantic); accepts `filter` / `include` / `exclude` / `kind` / `context_path` / `no_bm25` / `--why` / metadata filters / diff-scope (`since` / `since_branched` / `changed_only`)
 - `find_symbol` — exact name lookup
 - `find_similar` — semantic search by free-form description
@@ -867,6 +867,7 @@ cargo build --release -p vex-mcp
 - `pattern` — AST pattern matching with metavar back-references; diff-scope; `--why`
 - `implementations` — find types extending a base class/trait/interface (incl. generics); diff-scope
 - `subtypes` — transitive-down closure over extends/implements edges (direct children, grandchildren, …), depth-labelled; index-only (no live-walk fallback); `depth` / diff-scope
+- `modules` — de-facto modules: clusters of symbols that call/reference each other (v9 index, computed on full `vex index`); list clusters (label, size, cohesion, hubs) or pass `symbol` for its cluster; `limit` / `min_size` / `members` / `sort` / scope / `workspace`; empty result + `empty_reason` on older indexes or `--no-clusters`
 - `callers` / `callees` — direct callgraph navigation (fast path via persistent index); diff-scope
 - `paths` — enumerate caller chains between two functions
 - `reachable` — transitive callers of a target
@@ -875,14 +876,14 @@ cargo build --release -p vex-mcp
 - `check` — fast symbol existence check
 - `bundle` — unified multi-source bundle (`mode: symbol | pr-impact | project`), Phase 13 envelope
 - `eval` — ranking-evaluation harness (`bench` / `min_ndcg`), MCP defaults `json: true` so agents get a structured `EvalReport`
-- `capabilities` — machine-readable capability matrix (`protocol_version`, `signals`, `bundle_modes`, `history_diff` *(v1.16.0)*, etc.)
+- `capabilities` — machine-readable capability matrix (`protocol_version`, `signals`, `bundle_modes`, `history_diff` *(v1.16.0)*, `symbol_clusters`, etc.)
 - `index` / `update` — build/rebuild index; **v1.16.0** adds `gpu: bool` / `device: cpu|auto|cuda|directml|coreml` args (GPU-enabled builds only) so an agent can opt into GPU semantic embedding per-call without touching env or config
 - `status` — index statistics (now includes `gpu_support` / `default_device` *(v1.16.0)*)
 - `history` — historical versions of a symbol across commits *(MCP tool since v1.20.0, D5)*; `depth` / `limit` / `since` / `until` / `author` / `kind` / `diff` / `exact_presence`
 
 > **Note:** `vex history` and `vex tests-for` were promoted to first-class MCP tools in v1.20.0 (D5); earlier docs that called `history` "CLI-only" are stale. Both emit the same `--format json` envelope as every other vex command.
 
-> **Multi-repo (v1.22.0):** ten tools — `search`, `grep`, `check`, `usages`, `impact`, `callers`, `callees`, `reachable`, `index`, `update` — take a `workspace: boolean` arg that fans the call across every `.vex-workspace.toml` member, returning the grouped `{workspace, repos:[...]}` payload under `structuredContent.results`. Point `project_root` at or above the `.vex-workspace.toml`. `find_symbol` is excluded (use `check`/`search`); `why` is ignored in workspace mode. See `docs/MULTIREPO-PHASE8-mcp.md`.
+> **Multi-repo (v1.22.0):** eleven tools — `search`, `grep`, `check`, `usages`, `impact`, `callers`, `callees`, `reachable`, `modules`, `index`, `update` — take a `workspace: boolean` arg that fans the call across every `.vex-workspace.toml` member, returning the grouped `{workspace, repos:[...]}` payload under `structuredContent.results`. Point `project_root` at or above the `.vex-workspace.toml`. `find_symbol` is excluded (use `check`/`search`); `why` is ignored in workspace mode. See `docs/MULTIREPO-PHASE8-mcp.md`.
 
 **MCP ↔ CLI parity (v1.10):** the schemas now mirror the CLI surface for every path-aware tool. Glob filters (`include` / `exclude`), substring `filter`, `kind` boost, `context_path` proximity hint, `no_bm25`, Phase 13.3 truncation, diff-scope, and `no_stale_check` are exposed everywhere the CLI accepts them — agents no longer need to drop to bash for "Rust files under `crates/api/` since `main`"-style scoping.
 

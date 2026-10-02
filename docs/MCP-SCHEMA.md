@@ -1,6 +1,6 @@
 # MCP schema vocabulary (vex 1.7+)
 
-The vex MCP server exposes ~16 tools to LLMs and IDE-style clients via
+The vex MCP server exposes 28 tools to LLMs and IDE-style clients via
 the Model Context Protocol. v1.8 added `strict` to `usages` (binder-
 resolved refs, see [README → Type-aware refs](../README.md#type-aware-refs)).
 Before v1.7 the argument naming had drifted
@@ -555,6 +555,38 @@ the channel ran normally. Values:
 Pre-v1.20 the semantic channel silently no-op'd in both cases and
 agents couldn't tell whether `semantic_rank: None` on a result
 meant "didn't match" or "channel didn't run".
+
+## v9 — `modules` tool and `symbol_clusters` capability
+
+`modules` surfaces the symbol clusters ("de-facto modules") stored in the
+v9 index: groups of symbols that call, reference or inherit from each other
+(deterministic Leiden-CPM, computed on a full `vex index`). Wraps
+`vex modules`. Additive: `tools/list` gains one entry, and
+`capabilities.symbol_clusters` is `true` (consumers treat an absent flag as
+`false`, see `docs/PROTOCOL-EVOLUTION.md`).
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `symbol` | string | no | Show this symbol's cluster and members. Omit to list clusters. |
+| `limit` | integer | no | Default 50, at least 1. Caps listed clusters, or matching symbols in symbol mode (`symbols_total` reports the uncapped count). |
+| `min_size` | integer | no | Default 3, range `[1, 1000000]`. List mode only; ignored with `symbol`. |
+| `members` | integer | no | Range `[0, 10000]`. Default 0 when listing, 25 with `symbol`. |
+| `sort` | `"size"` \| `"cohesion"` | no | Default `size`; ties by cluster id. |
+| `include` / `exclude` | string[] | no | Path globs applied to members; a cluster is shown iff at least one member is in scope. |
+| `project_root` / `auto_update` / `async_update` / `no_stale_check` / `workspace` | — | no | Same role as everywhere else. |
+
+Out-of-range values return JSON-RPC `-32602`. `results` carries
+`total_clusters`, `matching_clusters`, `clusters[]` (`id`, `label`, `size`,
+`size_at_build`, `cohesion`, `hubs`, optional `members`), `stale` /
+`new_since_build` (clusters are frozen by `vex update` and only recomputed by
+`vex index`), and, in symbol mode, `symbol[]` with per-symbol cluster status.
+A cluster label is the dominant path prefix (`src/store/`), the bare file path
+for a single-file cluster, or `(mixed) <dir>/`.
+
+On a pre-v9 index or one built with `--no-clusters` the result is empty with
+`empty_reason: "clusters_not_built"` (other reasons: `symbol_not_found`,
+`filtered_all`). Cluster ids are stable only within one full-index
+generation; do not persist them across `vex index` runs.
 
 ## Stability guarantees
 

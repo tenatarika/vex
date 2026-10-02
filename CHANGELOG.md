@@ -30,6 +30,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     example the index has no clusters) and 2 on a corrupt cluster section.
   - A stale line says when clusters predate the latest edits.
   - `clusters` is accepted as an alias.
+- **MCP tool `modules`** wraps `vex modules` with the same arguments, and the
+  `capabilities` tool reports `symbol_clusters: true`.
 
 ### Changed
 
