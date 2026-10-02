@@ -245,7 +245,8 @@ On the same tree with the same binary, a full `vex index` run twice produces ide
 - Refinement: O(m).
 - Aggregation: O(m) using scratch arrays. Graph size shrinks geometrically per level.
 - Expected on a repo with about 35k symbols and 200k raw sites (roughly 120k undirected pairs after dedup): projection ≤ 30 ms, Leiden ≤ 100 ms, peak memory ≤ 15 MB.
-- **Budget gate:** ≤ 250 ms total and ≤ 3 % of full `vex index` wall time on the vex tree, enforced by the §8 bench.
+- **Budget gate:** projection + Leiden ≤ 250 ms on the planted-community synthetic corpus (~35k nodes / ~200k sites) in `benches/graph_v9.rs`. Measured: ~124 ms after the projection rewrite (`535c125`).
+- **Relative budget dropped (maintainer decision, 2026-10-02).** The original "≤ 3 % of `vex index`" target is not met on small repositories, because the cost is mostly fixed. On this repository (~7.3k symbols) clusters add +11.4 ms, which is 7.8 % (157.0 vs 145.6 ms median, 6 interleaved warm runs). Reaching 3 % would mean moving Leiden off the writer's critical path (for example running it alongside BM25), which is not worth the pipeline change. Clusters run only on a full `vex index` or on an update's one-time compute, never on queries or carrying updates, and `--no-clusters` opts out.
 
 ### 3.4 Resolution γ — **confirmed in P3, measured**
 
