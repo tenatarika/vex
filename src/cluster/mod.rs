@@ -280,7 +280,10 @@ fn compute_label(
             // count/total >= 0.6  <=>  5*count >= 3*total (integer-safe).
             if 5 * count >= 3 * total {
                 let mut label = best_prefix.to_string();
-                if !label.ends_with('/') {
+                // A prefix equal to a member's full path is a FILE: keep
+                // it bare. Directory labels keep their trailing slash.
+                let is_file = paths.contains(&best_prefix);
+                if !is_file && !label.ends_with('/') {
                     label.push('/');
                 }
                 return label;
@@ -340,6 +343,42 @@ mod tests {
             name,
             language: Some(crate::parse::language::Language::Rust),
         }
+    }
+
+    fn label_of(paths: &[&str]) -> String {
+        let names: Vec<String> = (0..paths.len()).map(|i| format!("n{i}")).collect();
+        let symbols: Vec<ProjectionSymbol<'_>> = paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| sym(i as u32, p, 1, &names[i]))
+            .collect();
+        let index: HashMap<u32, &ProjectionSymbol<'_>> =
+            symbols.iter().map(|s| (s.sym_idx, s)).collect();
+        let members: Vec<u32> = (0..paths.len() as u32).collect();
+        compute_label(&members, &index)
+    }
+
+    #[test]
+    fn label_is_bare_for_a_file_and_slashed_for_a_directory() {
+        // >= 60% of members in one file: bare file path, no trailing slash.
+        assert_eq!(
+            label_of(&[
+                "src/store/reader.rs",
+                "src/store/reader.rs",
+                "src/store/writer.rs"
+            ]),
+            "src/store/reader.rs"
+        );
+        // Spread over several files of one directory: directory + slash.
+        assert_eq!(
+            label_of(&["src/net/a.rs", "src/net/b.rs", "src/net/c.rs"]),
+            "src/net/"
+        );
+        // No prefix reaches 60%: (mixed) form keeps its trailing slash.
+        assert_eq!(
+            label_of(&["a/x.rs", "b/y.rs", "c/z.rs", "d/w.rs"]),
+            "(mixed) a/"
+        );
     }
 
     #[test]

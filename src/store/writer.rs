@@ -1988,7 +1988,7 @@ mod cluster_tests {
         assert_eq!(rec.size, 4);
         assert!(rec.internal_weight > 0);
         assert_eq!(rec.cut_weight, 0, "no edges cross to the isolated symbol");
-        assert_eq!(rec.label, "src/mod_a.rs/");
+        assert_eq!(rec.label, "src/mod_a.rs");
         let rep = rec.rep_sym_idx.expect("rep_sym_idx present");
         assert!(rep < 4);
         let hub_count = rec.hubs.iter().filter(|h| h.is_some()).count();
