@@ -528,7 +528,6 @@ impl<'a> ClusterSectionReader<'a> {
         })
     }
 
-    #[allow(dead_code)] // no CLI caller until P5 wires `vex modules`
     pub fn k(&self) -> usize {
         self.k
     }

@@ -2,6 +2,24 @@ use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
 use std::path::PathBuf;
 
+/// clap value parser: an integer >= 1.
+fn parse_positive(s: &str) -> Result<usize, String> {
+    match s.parse::<usize>() {
+        Ok(0) => Err("must be at least 1".to_string()),
+        Ok(n) => Ok(n),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// `vex modules --sort` ordering.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum ModulesSort {
+    /// Largest in-scope cluster first (default).
+    Size,
+    /// Highest internal/(internal+cut) first.
+    Cohesion,
+}
+
 /// Per-query path scope filters — `--include <glob>` and `--exclude <glob>`,
 /// both repeatable. Flatten into every search-shaped subcommand for a
 /// consistent UX.
@@ -954,6 +972,59 @@ docs/GPU_SUPPORT.md §11 — heavy embedders / shared GPU only)."
 
         #[command(flatten)]
         diff: DiffFilterArgs,
+    },
+
+    /// De-facto modules: clusters of symbols that call/reference each other
+    /// (deterministic Leiden-CPM over call + ref + hierarchy edges, computed
+    /// on `vex index`). Without SYMBOL: list clusters with a label (dominant
+    /// path prefix), size, cohesion and hub symbols. With SYMBOL: that
+    /// symbol's cluster and its members. Requires a v9 index built by
+    /// `vex index` without `--no-clusters`; after `vex update` clusters are
+    /// frozen and flagged stale. `docs/V9-FORMAT.md` §4.1.
+    #[command(alias = "clusters")]
+    Modules {
+        /// Symbol to look up the cluster of (omit to list clusters)
+        symbol: Option<String>,
+
+        /// Project root path (defaults to cwd)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Max clusters to list, or max matching symbols in SYMBOL mode (per
+        /// repo with --workspace). Must be at least 1.
+        #[arg(short, long, default_value = "50", value_parser = parse_positive)]
+        limit: usize,
+
+        /// Hide clusters with fewer in-scope symbols than this (list mode
+        /// only; ignored when SYMBOL is given)
+        #[arg(long, default_value = "3")]
+        min_size: usize,
+
+        /// Members to list per cluster (default: 0 when listing, 25 for a
+        /// SYMBOL lookup), ordered by path then line
+        #[arg(long)]
+        members: Option<usize>,
+
+        /// Order clusters by size (default) or by cohesion; ties by cluster id
+        #[arg(long, value_enum, default_value = "size")]
+        sort: ModulesSort,
+
+        /// Auto-update index if stale (or bootstrap if missing) before querying.
+        #[arg(long)]
+        auto_update: bool,
+
+        /// Skip staleness check entirely
+        #[arg(long)]
+        no_stale_check: bool,
+
+        #[command(flatten)]
+        scope: ScopeArgs,
+
+        /// Query every repo of a `.vex-workspace.toml` (found at or above
+        /// `--path`/cwd), grouped by repo. Clusters never span repos.
+        /// See docs/MULTIREPO.md.
+        #[arg(long)]
+        workspace: bool,
     },
 
     /// Find all functions that call a given function. Uses the persistent call

@@ -13,6 +13,7 @@ pub(crate) mod cmd_impact;
 pub(crate) mod cmd_implementations;
 pub(crate) mod cmd_index;
 pub(crate) mod cmd_mcp;
+pub(crate) mod cmd_modules;
 pub(crate) mod cmd_outline;
 pub(crate) mod cmd_pattern;
 pub(crate) mod cmd_search;
@@ -472,6 +473,32 @@ fn dispatch_inner(mut cli: Cli) -> Result<()> {
             no_stale_check,
             scope,
             diff,
+        ),
+        Commands::Modules {
+            symbol,
+            path,
+            limit,
+            min_size,
+            members,
+            sort,
+            auto_update,
+            no_stale_check,
+            scope,
+            workspace,
+        } => cmd_modules::modules(
+            &ctx,
+            cmd_modules::ModulesArgs {
+                symbol,
+                path,
+                limit,
+                min_size,
+                members,
+                sort,
+                auto_update,
+                no_stale_check,
+                scope,
+                workspace,
+            },
         ),
         Commands::Callers {
             name,

@@ -18,7 +18,7 @@ and failed" into a single non-zero, non-one bucket.
 
 **Distinguishes 0 / 1:** `search`, `usages`, `callers`, `callees`,
 `pattern`, `grep`, `show`, `similar`, `duplicates`, `implementations`,
-`paths`, `reachable`, `tests-for`, `history`, `diff`, `bundle`.
+`paths`, `reachable`, `tests-for`, `history`, `diff`, `bundle`, `modules`.
 
 These commands query the index for results. Empty result sets are a
 normal outcome, not an error.
@@ -32,6 +32,15 @@ path silently swallowed unknown refs and returned HEAD-time data with
 exit `0` — the new exit code is more honest. Scripts that pass
 user-supplied refs should treat `2` as "bad ref" and recover, not
 abort.
+
+**`vex modules` caveat — empty has a reason, corruption is `2`.** `modules`
+exits `1` when there is nothing to show and always says why in
+`results.empty_reason` (plus a stderr hint): `clusters_not_built` (pre-v9
+index or `vex index --no-clusters`), `no_clusters_found`, `filtered_all`
+(`--min-size` / scope removed every cluster), `symbol_not_found`, and
+`symbol_unclustered` (every match is unclustered, not eligible, or new since
+the last `vex index`; the per-match `status` is in `results.symbol`). A
+corrupt cluster section is a real error and exits `2`.
 
 **`vex bundle` caveat — soft-degrades exit `1`.** `--mode project`
 without a call graph (or with `--directory-tree-only` filtering to

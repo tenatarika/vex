@@ -1311,7 +1311,6 @@ impl IndexReader {
     /// a P4b carry-forward (frozen, possibly STALE — check
     /// `cluster_section_reader().summary().stale`), and for `vex
     /// update`'s R14 compute-once.
-    #[allow(dead_code)] // no CLI caller until P5 wires `vex modules`; exercised by tests
     pub fn has_clusters(&self) -> bool {
         self.cluster_header()
             .is_some_and(|h| h.flags & ClusterHeader::FLAG_COMPUTED != 0)

@@ -234,6 +234,7 @@ vex completions zsh > ~/.zfunc/_vex
 | `vex outline <file> [--kind fn]` | Show file structure, optionally filter by symbol kind. |
 | `vex implementations <name>` | Find types that extend/implement a base class, trait, or interface (incl. generic-parameterised: `class Foo : Repository<T>`). **Index-backed (v8 hierarchy section)** — a `find_hierarchy_edges_by_symbol` FST + binary-search lookup, falling back to the original live tree-sitter walk only when the index lacks the section. Bench (`benches/hierarchy.rs`, 150 implementers): **~265 ns index-backed vs ~22.7 ms live walk — ~85,000× faster.** |
 | **`vex subtypes <name> [--depth N]`** | **NEW.** Transitive-down closure over `extends`/`implements` edges (direct children, grandchildren, …), each row labelled with its BFS hop depth. Excludes `Uses` (trait/mixin composition) from the walk — mixing in a trait doesn't make you a subtype of everything the trait itself composes. Index-only, no live-walk fallback (requires an index with the v8 hierarchy section). Bench: ~1.1 µs for a 20-hop transitive chain. |
+| **`vex modules [SYMBOL] [--min-size N] [--members N] [--sort size\|cohesion]`** | **NEW (v9).** De-facto modules: clusters of symbols that call/reference each other, computed on `vex index` (deterministic Leiden-CPM over call + ref + hierarchy edges). Without `SYMBOL`, lists clusters with a label (dominant path prefix), size, cohesion and hub symbols; with `SYMBOL`, shows that symbol's cluster and members. `--include`/`--exclude` scope the members. Exits `1` with an `empty_reason` when the index has no clusters (pre-v9 index, `--no-clusters`). Hidden alias: `vex clusters`. See [Symbol clusters](#symbol-clusters-vex-modules). |
 | `vex callers <name>` | Direct callers of a function (fast path via persistent call graph; falls back to live tree-sitter scan when the index is missing). |
 | `vex callees <name>` | Direct callees of a function (same fast path). |
 | **`vex paths <from> <to> [--max-hops N]`** | **NEW.** Enumerate all caller chains from `from` to `to` over the persistent call graph. Bounded DFS with cycle prevention; default `--max-hops 6`. |
@@ -288,7 +289,7 @@ vex update --workspace                  # incremental refresh, per-repo changed/
 vex usages Config --strict --workspace  # cross-repo strict refs, grouped by repo
 ```
 
-- `--workspace` is accepted by `index`, `update`, `search`, `grep`, `check`, `usages`, `impact`, `callers`, `callees`, `reachable`, and `watch`. Each member keeps its own `.vex.toml` (excludes / embedder / sections / cache).
+- `--workspace` is accepted by `index`, `update`, `search`, `grep`, `check`, `usages`, `impact`, `callers`, `callees`, `reachable`, `modules`, and `watch`. Each member keeps its own `.vex.toml` (excludes / embedder / sections / cache).
 - Reference and call-graph resolution is **per-repo by default**. The one exception is `vex usages <name> --strict --workspace`, which resolves a reference in repo B to a symbol defined in repo A via a gtags-style name fallback (rendered as a `name-resolved` sub-tier). This needs a **v7 index** — re-run `vex index` after upgrading.
 - A member missing a capability (`--strict` on an old index, a call graph for `reachable`) is reported unavailable for that repo instead of aborting the whole fan-out. `--workspace` conflicts with `--why`. See [`docs/MULTIREPO.md`](docs/MULTIREPO.md) and LIMITATIONS §7.
 
@@ -473,6 +474,31 @@ When the index has all three channels (built with `--semantic`), `vex search` fu
 
 ### Usages (FST)
 References stored in an FST (Finite State Transducer) — zero-copy lookup from mmap with prefix search support.
+
+### Symbol clusters (`vex modules`)
+
+`vex index` groups symbols into clusters of code that call or reference each other (deterministic Leiden-CPM over the call, reference and hierarchy edges; no randomness, so two indexes of the same tree agree). `vex modules` reads them back:
+
+```bash
+vex modules                         # clusters of >= 3 symbols, largest first
+vex modules --members 5 --sort cohesion --include 'src/**'
+vex modules IndexReader             # the cluster of one symbol, with its members
+```
+
+```text
+Modules — leiden-cpm/1 γ=1/8 · 475 clusters (≥3, showing 3) · 1,469 unclustered · 1,464 not eligible
+  #60  src/cli/                     39 symbols  cohesion 0.49  hubs: OutputFormat, print_envelope, default_meta_for
+  #23  crates/vex-mcp/src/tools/    38 symbols  cohesion 0.68  hubs: opt_bool, build_command, opt_u64
+  #286 src/pattern/matcher/tests.rs 32 symbols  cohesion 0.78  hubs: parse_pattern, find_matches, Segment
+```
+
+(Output above is from this repository at the time of writing; cluster ids are ordinals in the section, not ranks.)
+
+- A cluster's `label` is the deepest path prefix holding at least 60 % of its members' files. `cohesion` is `internal / (internal + cut)` edge weight; the hubs are the three members best connected inside the cluster.
+- `--include`/`--exclude` filter *members* and hubs (out-of-scope hubs are dropped); a cluster is shown when at least one member is in scope, and its `size` is the in-scope count (`size_at_build` keeps the build-time count in JSON).
+- Symbol mode reports a per-match `status`: `clustered`, `unclustered` (isolated), `not_eligible` (headings, modules, markup/config languages) or `new_since_build`.
+- Clusters are computed by `vex index` and carried, frozen, across `vex update`. After an update the JSON has `stale: true` and `new_since_build`, and text output ends with a `!` line; run `vex index` to recompute. This is separate from `_meta.vex.dev/stale`, which still means "index older than the working tree".
+- `--limit` must be at least 1; with a SYMBOL it caps the matched symbols (JSON `symbols_total` reports the uncapped count) and `--min-size` is ignored. Exit codes: `0` with results, `1` when empty (the reason is in `results.empty_reason` and on stderr), `2` for a corrupt cluster section. With `--workspace`, clusters are per repo and `--limit` applies per repo.
 
 ### Type-aware refs (`--strict`)
 

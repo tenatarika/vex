@@ -60,6 +60,7 @@ pub(crate) fn extract_workspace_flag(cmd: &Commands) -> bool {
         | Commands::Callees { workspace, .. }
         | Commands::Reachable { workspace, .. }
         | Commands::Check { workspace, .. }
+        | Commands::Modules { workspace, .. }
         | Commands::Watch { workspace, .. } => *workspace,
         _ => false,
     }
@@ -75,6 +76,7 @@ pub(crate) fn extract_path_hint(cmd: &Commands) -> Option<std::path::PathBuf> {
         | Commands::Status { path, .. }
         | Commands::Implementations { path, .. }
         | Commands::Subtypes { path, .. }
+        | Commands::Modules { path, .. }
         | Commands::Callers { path, .. }
         | Commands::Callees { path, .. }
         | Commands::Diff { path, .. }
