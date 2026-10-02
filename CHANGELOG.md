@@ -18,7 +18,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and new symbols are marked as new, and the section is flagged stale until
   the next full `vex index`. The first `vex update` on an index without
   clusters (for example one written in an older format) computes them once.
-  The `vex modules` command that lists clusters comes in a later change.
+- **`vex modules` lists the symbol clusters.** Each line shows the cluster's
+  label (its dominant directory, or the file when every member lives in one),
+  its size, cohesion and hub symbols. `vex modules <Symbol>` shows the
+  cluster that symbol belongs to.
+  - It respects `--include`/`--exclude` for members and hubs.
+  - `--min-size`, `--members` and `--sort size|cohesion` shape the list, and
+    `--limit` caps both list and symbol mode.
+  - `--workspace` gives one report per member repository.
+  - It exits 1 with an `empty_reason` when there is nothing to show (for
+    example the index has no clusters) and 2 on a corrupt cluster section.
+  - A stale line says when clusters predate the latest edits.
+  - `clusters` is accepted as an alias.
 
 ### Changed
 

@@ -401,7 +401,7 @@ JSON: a standard envelope via `print_envelope` (`cli/output.rs:23`). All keys ar
 
 ### 4.2 Labels and hubs (computed at build time, frozen)
 
-- **Label:** the deepest directory prefix that contains ≥ 60 % of the members' files. If no prefix of depth ≥ 1 reaches that share, the label is `"(mixed) <most common top dir>/"`. It is interned into the Strings pool (the StringPool is still open inside `write_index_to`).
+- **Label:** the deepest path prefix that contains ≥ 60 % of the members. A directory prefix ends in `/` (`src/store/`). When the prefix is a whole file, the label is the bare file path (`src/store/reader.rs`). If no prefix of depth ≥ 1 reaches that share, the label is `"(mixed) <most common top dir>/"`. It is interned into the Strings pool (the StringPool is still open inside `write_index_to`).
 - **Hubs:** the top 3 members by intra-cluster weighted degree, descending, ties by smallest `sym_idx`.
 
 ### 4.3 MCP tool `modules`
