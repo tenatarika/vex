@@ -124,7 +124,8 @@ change.
 semantic surprise. Cross-repo existence is better served by `check
 --workspace`, ranked cross-repo by `search --workspace`. So `find_symbol`
 does NOT get the param. Covered set: **search, grep, check, usages, impact,
-callers, callees, reachable, index, update** (10 tools).
+callers, callees, reachable, index, update, modules** (11 tools, + `modules`
+v1.27.0).
 
 **HIGH — `push_workspace` is the plain helper for 8 tools; `search` + `usages`
 gate `--why` inline.** `args::push_workspace(&mut extra, args)` (plain push)

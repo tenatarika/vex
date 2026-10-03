@@ -3,9 +3,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/tenatarika/vex/actions/workflows/ci.yml/badge.svg)](https://github.com/tenatarika/vex/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
-[![Commands](https://img.shields.io/badge/commands-30-blue.svg)]()
+[![Commands](https://img.shields.io/badge/commands-32-blue.svg)]()
 [![Languages](https://img.shields.io/badge/languages-19-blueviolet.svg)]()
-[![Tests](https://img.shields.io/badge/tests-3449-green.svg)]()
+[![Tests](https://img.shields.io/badge/tests-4000%2B-green.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
 
@@ -19,7 +19,7 @@ $ vex callers "process_event"              # who calls this function? (~4ms; cov
 $ vex implementations "BaseService"        # who extends/implements this?
 $ vex search "timeout retry"               # fuzzy / multi-word — BM25 finds rare body terms
 $ vex search "handle alert" --semantic     # find by meaning, not just name
-$ vex pattern 'fn $NAME($$$) -> Result'    # AST pattern matching (like ast-grep)
+$ vex pattern 'fn $NAME($$$) -> Result' --lang rust    # AST pattern matching (like ast-grep)
 $ vex similar "PaymentService"             # semantically close symbols
 $ vex duplicates --threshold 0.95          # near-duplicate pairs
 $ vex bundle --mode symbol --symbol Foo    # body + callers + callees + similar in 1 call
@@ -33,7 +33,7 @@ $ vex bundle --mode symbol --symbol Foo    # body + callers + callees + similar 
 - **3-channel hybrid search** — structural FST (names) + BM25 (rare body terms) + semantic HNSW (meaning), fused via Reciprocal Rank Fusion. Find symbols when you don't know the exact name AND when generic semantic-only search would be too noisy
 - **Persistent call graph** — `vex callers`/`vex callees` read from a persistent index built at index time (~4ms), not a live tree-sitter scan (seconds): `callers` is a name-keyed FST, `callees` is a dense CSR index (v9+). Module-scope expressions are reported via synthetic `<module:path>` callers (Phase 14.1); Python + Java function/method decorators (Phase 14.2), Kotlin annotations + C# method/constructor attributes (Phase 14.2.2), and TypeScript method decorators + Rust outer attributes (Phase 14.2.1) emit forward edges to their targets. Class-level decorators remain invisible — see [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
 - **Pluggable embedder** — `Embedder` trait + registry; swap MiniLM-L6-v2 for future code-specific models (BGE, CodeBERT) without touching call sites
-- **Token-efficient** — compact output saves typically 6-10x fewer tokens than grep on average lookups (up to 88x on minified JS/CSS); `vex show` extracts just the symbol body instead of the whole file
+- **Token-efficient** — compact output saves typically 6x fewer tokens than grep on average lookups (up to 217x on minified JS/CSS); `vex show` extracts just the symbol body instead of the whole file
 - **19 languages** indexed via tree-sitter, with three coverage tiers: **type-aware `--strict usages`** on 8 binder languages (Rust / TypeScript / Python / C# / C++ / Go / Java / Kotlin); **indexed pattern prefilter** on 15 T1+T2a languages; baseline structural + semantic search on all 19 (see [Supported Languages](#supported-languages) for the matrix)
 - **Single binary, zero config** — no LSP servers, no databases, no Docker. Just `vex index && vex check Foo`
 
@@ -59,7 +59,7 @@ See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for the full coverage matrix, c
 | **Semantic search** | HNSW + embeddings | -- | -- | -- | -- |
 | **Pattern matching** | `fn $NAME($$$)` | regex only | -- | `fn $NAME($$$)` | regex only |
 | **Index size** | **~1.5-2x smaller** than ast-index | no index | SQLite + FTS5 | no index | no index |
-| **Token efficiency** | **6-88x** fewer than rg | baseline | ~3x fewer than rg | N/A | N/A |
+| **Token efficiency** | **6-217x** fewer than rg | baseline | ~3x fewer than rg | N/A | N/A |
 | **Symbol body extraction** | `vex show` | -- | -- | -- | -- |
 | **Languages** | 19 | any | 10+ | 10+ | 40+ (LSP) |
 | **Refactoring** | -- | -- | -- | -- | rename, move, inline |
@@ -204,7 +204,7 @@ vex watch
 # Multi-repo: treat a set of sibling repos as one workspace (v1.22.0)
 vex index --workspace                     # build every member of .vex-workspace.toml
 vex search "RetryPolicy" --workspace      # fan out, results grouped by repo
-vex usages Config --strict --workspace    # cross-repo strict refs (needs a v7 index)
+vex usages Config --strict --workspace    # cross-repo strict refs (v7+ index)
 vex watch --workspace                     # keep every member incrementally fresh
 
 # Show index stats
@@ -223,44 +223,45 @@ vex completions zsh > ~/.zfunc/_vex
 
 | Command | Description |
 |---------|-------------|
-| `vex index [--path .] [--semantic] [--embedder ID] [--history [--history-depth N]]` | Build full index. `--semantic` generates embeddings + HNSW + BM25. `--embedder` selects embedding model (default `minilm-l6-v2`). **`--history` (v1.15.0)** builds the Phase 14.8 persistent history-symbol section (`<index_dir>/index.git_history`) so `vex history <Symbol>` runs in FST-lookup time. `--history-depth N` caps the walk at N newest commits (global, not per-file). |
+| `vex index [--path .] [--semantic] [--embedder ID] [--history [--history-depth N]] [--no-clusters] [--no-pattern-index] [--drop-semantic] [--gpu/--device]` | Build full index. `--semantic` generates embeddings + HNSW + BM25. `--embedder` selects embedding model (default `minilm-l6-v2`). `--no-clusters` skips symbol clustering (v9). `--no-pattern-index` skips pattern skeleton section (v6). `--drop-semantic` (with `--no-semantic`) deletes the on-disk semantic artifacts (HNSW + hash index + embedder cache). `--gpu`/`--device` controls GPU acceleration (GPU-enabled builds). **`--history` (v1.15.0)** builds the Phase 14.8 persistent history-symbol section (`<index_dir>/index.git_history`) so `vex history <Symbol>` runs in FST-lookup time. `--history-depth N` caps the walk at N newest commits (global, not per-file). |
 | `vex search <query> [--semantic] [--no-bm25] [--limit N] [--kind def,fn,…] [--visibility V] [--async-only] [--code-only] [--exclude-generated] [--why]` | Hybrid search: structural + BM25 + semantic (when `--semantic`). 3-way RRF fusion. Multi-value `--kind` (canonical names + meta-selectors `def`/`comment`/`test`/`ref`). Metadata post-filters narrow by signature keywords. **v1.20.0 (D4)**: per-result `signals` block now carries raw `bm25_score` + `semantic_cosine` alongside the rank ordinals so agents can read absolute relevance quality; `_meta.vex.dev/semantic_channel` reports `"not_requested"` / `"index_lacks_vectors"` when the semantic channel didn't run; `--code-only` drops hits in `*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc` for code-intent queries; `--exclude-generated` drops machine-generated files (protobuf stubs, sqlc output, bindgen bindings, ORM schemas), recognised from the generator's header banner — useful on repos that check in generated code, and a heuristic that under-reports rather than hiding hand-written code (see [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) §10.2). `--why` appends a JSON trace to stderr. **v1.15.0 search-drift hint**: when the query is identifier-shaped (`compile_query`, `Foo`, `_internal`) and the structural FST finds zero matches, vex prints a one-line stderr hint pointing at `vex check` / `vex show` / `vex usages --strict` — the typical "imported-from-dependency" case where BM25 would otherwise surface callers as if they were the definition. See [`docs/COOKBOOK.md`](docs/COOKBOOK.md) FAQ. |
-| `vex show <symbol> [--limit N] [--context N] [--kind fn] [--visibility V] [--async-only] [--signature-only \| --head N \| --no-body]` | Extract symbol body from source (saves tokens vs full file read). Same metadata + kind filters as `search`. **v1.9 (Phase 13.3):** smart truncation flags — `--signature-only` keeps only the declaration line, `--head N` keeps the first N body lines, `--no-body` returns signature + docstring only. Mutually exclusive. |
+| `vex show <symbol> [--limit N] [--context N] [--kind fn] [--visibility V] [--async-only] [--signature-only \| --head N \| --no-body]` | Extract symbol body from source (saves tokens vs full file read). Same metadata + kind filters as `search`. Smart truncation flags (since v1.9) — `--signature-only` keeps only the declaration line, `--head N` keeps the first N body lines, `--no-body` returns signature + docstring only. Mutually exclusive. |
 | `vex similar <name> [--limit N] [--min-score T] [--explain]` | Find symbols semantically close to an existing one (HNSW nearest neighbors). `--explain` adds identifier-Jaccard + truncated unified diff per match. `--min-score` is an alias for `--threshold`. |
 | `vex duplicates [--min-score T] [--min-body-lines N] [--explain]` | List near-duplicate symbol pairs by embedding similarity. `--explain` shows what's actually different between the bodies. |
 | `vex usages <name> [--limit N] [--strict] [--include-self] [--include-docs]` | Find all references/usages of a symbol. Non-strict path = FST lookup; **v1.20.0 strips the row at the symbol's own definition line and `*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc` matches by default** — use `--include-self` / `--include-docs` to restore the pre-v1.20 wide-net behaviour. `--strict` reads binder-resolved refs from the v5 `reference_edges` section (Rust / TypeScript / Python / C# / C++ / Go / Java / Kotlin). |
-| **`vex impact <name> [--depth N] [--exclude-docs]`** | **NEW (v1.20.0, F1).** One-call delete-safety blast-radius report. Composes four reference channels — strict refs (binder-resolved), FST refs, `grep \b<Name>\b`, and direct call-graph callers — into a single verdict (`safe` / `unsafe` / `uncertain`) with a per-channel evidence sample. Use this BEFORE proposing to delete or rename a symbol; one call replaces the manual usages→grep→callers dance. Verdict rule: `unsafe` if strict refs OR call-graph callers report >0 (binder/graph confirms real usage); `uncertain` if only text channels hit (likely string-dispatch / comment / decorator); `safe` only when every channel returns zero. **v1.21.0:** `--depth N` (`1..16`) walks the call graph backward to surface indirect callers at depth ≥ 2; `--exclude-docs` drops prose-format mentions (`*.md`/`*.txt`/…) so a CHANGELOG-only symbol flips to `safe`. |
+| **`vex impact <name> [--depth N] [--exclude-docs]`** | One-call delete-safety blast-radius report (since v1.20.0). Composes four reference channels — strict refs (binder-resolved), FST refs, `grep \b<Name>\b`, and direct call-graph callers — into a single verdict (`safe` / `unsafe` / `uncertain`) with a per-channel evidence sample. Use this BEFORE proposing to delete or rename a symbol; one call replaces the manual usages→grep→callers dance. Verdict rule: `unsafe` if strict refs OR call-graph callers report >0 (binder/graph confirms real usage); `uncertain` if only text channels hit (likely string-dispatch / comment / decorator); `safe` only when every channel returns zero. `--depth N` (`1..16`) walks the call graph backward to surface indirect callers at depth ≥ 2; `--exclude-docs` drops prose-format mentions (`*.md`/`*.txt`/…) so a CHANGELOG-only symbol flips to `safe`. |
 | `vex pattern '<pat>' --lang <lang> [--why]` | AST pattern matching with metavariables (`$NAME`, `$_`, `$$$`, plus the v6 named multi-line forms `$$$BODY` / `$$ARGS`). Repeated metavars enforce back-references. Space-flanked ` && ` / ` || ` compose sub-patterns (AND requires both shapes in the file with shared captures agreeing; OR takes the union). When a v6 index is present an indexed prefilter narrows candidates to lang-matching files with the right root kind; falls back to live-scan otherwise. `--why` surfaces a JSON `ScanTrace` (mode / root_kind / candidate vs total / fallback reason) on stderr — and under `_meta.why` in the MCP response. |
 | `vex outline <file> [--kind fn]` | Show file structure, optionally filter by symbol kind. |
 | `vex implementations <name>` | Find types that extend/implement a base class, trait, or interface (incl. generic-parameterised: `class Foo : Repository<T>`). **Index-backed (v8 hierarchy section)** — a `find_hierarchy_edges_by_symbol` FST + binary-search lookup, falling back to the original live tree-sitter walk only when the index lacks the section. Bench (`benches/hierarchy.rs`, 150 implementers): **~265 ns index-backed vs ~22.7 ms live walk — ~85,000× faster.** |
-| **`vex subtypes <name> [--depth N]`** | **NEW.** Transitive-down closure over `extends`/`implements` edges (direct children, grandchildren, …), each row labelled with its BFS hop depth. Excludes `Uses` (trait/mixin composition) from the walk — mixing in a trait doesn't make you a subtype of everything the trait itself composes. Index-only, no live-walk fallback (requires an index with the v8 hierarchy section). Bench: ~1.1 µs for a 20-hop transitive chain. |
-| **`vex modules [SYMBOL] [--min-size N] [--members N] [--sort size\|cohesion]`** | **NEW (v9).** De-facto modules: clusters of symbols that call/reference each other, computed on `vex index` (deterministic Leiden-CPM over call + ref + hierarchy edges). Without `SYMBOL`, lists clusters with a label (dominant path prefix), size, cohesion and hub symbols; with `SYMBOL`, shows that symbol's cluster and members. `--include`/`--exclude`/`--exclude-tests` scope the members. Exits `1` with an `empty_reason` when the index has no clusters (pre-v9 index, `--no-clusters`). Hidden alias: `vex clusters`. See [Symbol clusters](#symbol-clusters-vex-modules). |
+| **`vex subtypes <name> [--depth N]`** | Transitive-down closure over `extends`/`implements` edges (direct children, grandchildren, …), each row labelled with its BFS hop depth. Excludes `Uses` (trait/mixin composition) from the walk — mixing in a trait doesn't make you a subtype of everything the trait itself composes. Index-only, no live-walk fallback (requires an index with the v8 hierarchy section). Bench: ~1.1 µs for a 20-hop transitive chain. |
+| **`vex modules [SYMBOL] [--min-size N] [--members N] [--sort size\|cohesion]`** | De-facto modules: clusters of symbols that call/reference each other, computed on `vex index` (deterministic Leiden-CPM over call + ref + hierarchy edges; requires v9 index). Without `SYMBOL`, lists clusters with a label (dominant path prefix), size, cohesion and hub symbols; with `SYMBOL`, shows that symbol's cluster and members. `--include`/`--exclude`/`--exclude-tests` scope the members. Exits `1` with an `empty_reason` when the index has no clusters (pre-v9 index, `--no-clusters`). Hidden alias: `vex clusters`. See [Symbol clusters](#symbol-clusters-vex-modules). |
 | `vex callers <name>` | Direct callers of a function (fast path via persistent call graph; falls back to live tree-sitter scan when the index is missing). |
 | `vex callees <name>` | Direct callees of a function (same fast path). |
-| **`vex paths <from> <to> [--max-hops N]`** | **NEW.** Enumerate all caller chains from `from` to `to` over the persistent call graph. Bounded DFS with cycle prevention; default `--max-hops 6`. |
-| **`vex reachable <target> [--max-hops N] [--limit N]`** | **NEW.** Transitive set of symbols whose callees reach `target`, with the BFS depth labelled per row. Blast-radius analysis. |
-| **`vex tests-for <target> [--max-hops N] [--limit N] [--test-pattern <glob>] [--include-fixtures]`** | **NEW (Phase 13.10).** Test functions that transitively cover `<target>`. Post-filter on top of `vex reachable`: walks the call graph backwards, keeps rows under recognized test-path globs (Rust / Python / TS-JS / Go / Java / Kotlin / C# / C++), stamps each row with a `framework` label (`pytest`, `jest`, `go-test`, …) so an agent can pick the right runner. `--test-pattern <glob>` (repeatable) REPLACES the default set; `--include-fixtures` admits one forward hop of test-path helpers in addition to weakening the name-prefix filter. |
-| **`vex diff --base <rev> [--limit N]`** | **NEW.** Symbol-level diff between an arbitrary git revision and the working tree: added / removed / moved-within-file / body-changed entries. `git diff --no-renames` semantics so a `git mv` surfaces both halves. |
-| **`vex bundle --mode <symbol\|pr-impact\|project> [...]`** | **NEW (v1.9, Phase 13.2).** Unified multi-source bundle — replaces 4 round-trips (`show → callers → callees → similar`) with one. `--mode symbol --symbol Foo` returns body + callers + callees + semantic similar. `--mode pr-impact --base origin/main` returns changed symbols + transitive callers (depth=2 default) + tests. `--mode project [--top-n 30]` returns top-N by reverse call-graph indegree (experimental — see `docs/MCP-SCHEMA.md#bundle-modes-v19` for the response shape and `mode_hints` per-mode keys). Always emits the v1 envelope `{ protocol_version, capabilities, _meta, results }`. |
+| **`vex paths <from> <to> [--max-hops N]`** | Enumerate all caller chains from `from` to `to` over the persistent call graph. Bounded DFS with cycle prevention; default `--max-hops 6`. |
+| **`vex reachable <target> [--max-hops N] [--limit N]`** | Transitive set of symbols whose callees reach `target`, with the BFS depth labelled per row. Blast-radius analysis. |
+| **`vex tests-for <target> [--max-hops N] [--limit N] [--test-pattern <glob>] [--include-fixtures]`** | Test functions that transitively cover `<target>`. Post-filter on top of `vex reachable`: walks the call graph backwards, keeps rows under recognized test-path globs (Rust / Python / TS-JS / Go / Java / Kotlin / C# / C++), stamps each row with a `framework` label (`pytest`, `jest`, `go-test`, …) so an agent can pick the right runner. `--test-pattern <glob>` (repeatable) REPLACES the default set; `--include-fixtures` admits one forward hop of test-path helpers in addition to weakening the name-prefix filter. |
+| **`vex diff --base <rev> [--limit N]`** | Symbol-level diff between an arbitrary git revision and the working tree: added / removed / moved-within-file / body-changed entries. `git diff --no-renames` semantics so a `git mv` surfaces both halves. |
+| **`vex bundle --mode <symbol\|pr-impact\|project> [...]`** | Unified multi-source bundle (since v1.9) — replaces 4 round-trips (`show → callers → callees → similar`) with one. `--mode symbol --symbol Foo` returns body + callers + callees + semantic similar. `--mode pr-impact --base origin/main` returns changed symbols + transitive callers (depth=2 default) + tests. `--mode project [--top-n 30]` returns top-N by reverse call-graph indegree (experimental — see `docs/MCP-SCHEMA.md#bundle-modes-v19` for the response shape and `mode_hints` per-mode keys). Always emits the v1 envelope `{ protocol_version, capabilities, _meta, results }`. |
 | `vex check <name> [name...]` | Fast existence check — which symbols exist in the index? |
 | `vex grep <pattern> [--filter-path path/]` | Regex content search (no index needed). |
 | `vex update [--path .] [--semantic] [--embedder ID] [--history \| --no-history]` | Incremental update — re-parse only changed files, reuse unchanged symbols from existing index. **`--history` (v1.15.0)** is sticky via the manifest: if the prior build had a history section, `vex update` keeps it fresh via a 3-branch walker (fast-path skip on no-new-commits, incremental on linear history, full rebuild on force-push). `--no-history` drops the section + nulls the manifest fields. |
 | `vex watch [--path .] [--semantic] [--embedder ID]` | Watch filesystem, auto re-index on changes. |
-| `vex status [--path .]` | Show index stats: symbol count, size, embeddings, call graph, BM25, GPU support. |
+| `vex status [--path .] [--coverage]` | Show index stats: symbol count, size, embeddings, call graph, BM25, GPU support. `--coverage` adds a file-coverage diagnostic: indexed files per language, files discovered but not indexed (with reason), and manifest entries missing on disk. |
 | **`vex gpu [device] [--enable]`** | Diagnose GPU acceleration: prints the execution provider compiled into this binary and **actively probes** whether it engages on this machine (a silent CPU fallback shows as `FAILED` with setup remediation). `vex gpu cuda` probes one EP; `--enable` persists the working device to `VEX_DEVICE` (user env via `setx` on Windows; prints the `export` line to add on macOS/Linux) when a GPU engages. See [GPU Acceleration](#gpu-acceleration). |
 | `vex completions <shell>` | Generate shell completions (bash, zsh, fish). |
-| `vex init` | Create a default `.vex.toml` config file in the project root. |
-| **`vex capabilities`** | **NEW (v1.9, Phase 13.0).** Print the machine-readable capability matrix (`protocol_version`, `signals`, `why`, `scope_filters`, `metadata_filters`, `empty_reason`, `bundle_modes`, `auto_update`). MCP / agent clients probe this once at startup instead of re-reading help text. |
-| **`vex eval [--bench PATH] [--min-ndcg F] [--json]`** | **NEW (v1.9, Phase 13.12).** Run the ranking-evaluation harness against a hand-curated golden query set; reports nDCG@10 / recall@10 / MRR per query and aggregated. CI regression guard — fails when mean nDCG drops below `--min-ndcg`. Default golden set: `benches/ranking_golden/queries.toml`. |
+| `vex init [--agents-md] [--agents-md-only]` | Create a default `.vex.toml` in the current directory. `--agents-md` also writes AGENTS.md for agent tools. `--agents-md-only` writes only AGENTS.md (skip `.vex.toml`). |
+| **`vex mcp <install\|uninstall\|list> --agent <id\|all> [--dry-run] [--force]`** | Manage `vex-mcp` server entry in coding agent configs. `install` registers idempotently; `uninstall` removes; `list` shows current entries. `--agent all` fans out across all supported agents. `--dry-run` previews without writing. `--force` overwrites existing entries. |
+| **`vex capabilities`** | Print the machine-readable capability matrix (since v1.9): `protocol_version`, `signals`, `why`, `scope_filters`, `metadata_filters`, `empty_reason`, `bundle_modes`, `auto_update`, `async_update`, `history_diff`, `structured_result_kind`, `result_completeness`, `symbol_clusters`. MCP / agent clients probe this once at startup instead of re-reading help text. |
+| **`vex eval [--bench PATH] [--min-ndcg F] [--json]`** | Run the ranking-evaluation harness against a hand-curated golden query set (since v1.9); reports nDCG@10 / recall@10 / MRR per query and aggregated. CI regression guard — fails when mean nDCG drops below `--min-ndcg`. Default golden set: `benches/ranking_golden/queries.toml`. |
 | **`vex history <Symbol> [--depth N] [--limit N] [--branch REV] [--no-index] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--author SUBSTR] [--kind KIND] [--diff] [--exact-presence]`** | **NEW (v1.15.0); expanded in v1.16.0 (Phase 14.9).** Every historical version of a symbol reachable from a chosen tip. With `vex index --history` previously run, queries hit a persistent FST sidecar (~10 ms — 1640× faster on tokio-scale repos than the walker). Without the section, shells out to `git log` (~seconds). Indexed mode also finds symbols whose name has been **deleted** from HEAD — the walker can't. **v1.16.0 additions:** date/author/kind filters (lex YYYY-MM-DD compare); `--diff` renders unified diffs between consecutive versions (only signature lines change shape, head of group keeps full sig); `--exact-presence` enumerates the exact commit set where each entry's blob lived (revert-aware, capped by `--exact-presence-max-commits`); prefix-FST fallback on the indexed path for identifier-shaped queries length ≥ 3; JSON envelope ported to standard `ResponseEnvelope` shape (BREAKING for MCP consumers reading `results.items[]`). See `docs/HISTORY-INDEX.md` for the full pipeline + cookbook. |
 | `vex self-update [--check] [--yes]` | Update vex to the latest GitHub release. Replaces the running binary in place. Works on Linux, macOS, and Windows. |
 
 ### Per-query filters (every search-shaped command)
 
-All search-shaped commands (`search`, `usages`, `pattern`, `show`, `grep`, `implementations`, `subtypes`, `callers`, `callees`, `paths`, `reachable`, `tests-for`, `similar`, `duplicates`, `diff`, `bundle`) accept:
+All search-shaped commands accept scope filters. Specific filters vary by command:
 
-- **`--include <glob>` / `--exclude <glob>`** (repeatable, gitignore syntax) — per-call path scoping that doesn't require re-indexing. `--exclude` wins over `--include`. Example: `vex search Foo --include 'src/**' --exclude '**/*.gen.*'`. **`--exclude-tests`** (MCP: `exclude_tests: true`) drops test files (`tests/`, `*_test.*`, `test_*.py`, `*.spec.ts`, `__tests__/`, `tests.rs`, … — the same set as `vex tests-for`); it composes with `--include`/`--exclude`, is recorded in the `--why` trace, and is applied by every command that takes the scope flags (`search`, `usages`, `callers`/`callees`, `impact`, `grep`, `show`, `pattern`, `implementations`/`subtypes`, `similar`/`duplicates`, `modules`, `diff`, `bundle` pr-impact — there it filters the changed files *and* the transitive-caller/test rows; `bundle` `symbol`/`project` modes ignore all scope filters). `vex tests-for` rejects `--exclude-tests` (exit 2): it lists test functions, so the flag would always return nothing. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are **not** excluded.
-- **`--filter-path <substring>`** (alias `--filter`) — path-substring filter. Composes AND with the globs.
+- **`--include <glob>` / `--exclude <glob>`** (repeatable, gitignore syntax) — per-call path scoping that doesn't require re-indexing. `--exclude` wins over `--include`. Example: `vex search Foo --include 'src/**' --exclude '**/*.gen.*'`. **`--exclude-tests`** (MCP: `exclude_tests: true`) drops test files (`tests/`, `*_test.*`, `test_*.py`, `*.spec.ts`, `__tests__/`, `tests.rs`, … — the same set as `vex tests-for`); it composes with `--include`/`--exclude`, is recorded in the `--why` trace, and is applied by every command that takes the scope flags (`search`, `usages`, `callers`/`callees`, `impact`, `grep`, `show`, `pattern`, `implementations`/`subtypes`, `similar`/`duplicates`, `modules`, `paths`, `reachable`, `diff`, `bundle` pr-impact — there it filters the changed files *and* the transitive-caller/test rows; `bundle` `symbol`/`project` modes ignore all scope filters). `vex tests-for` rejects `--exclude-tests` (exit 2): it lists test functions, so the flag would always return nothing. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are **not** excluded.
+- **`--filter-path <substring>`** (alias `--filter`) — path-substring filter on `search`, `show`, `usages`, `grep`, `similar`, `duplicates`. Composes AND with the globs.
 
 `vex search` / `vex show` additionally accept:
 
@@ -290,7 +291,7 @@ vex usages Config --strict --workspace  # cross-repo strict refs, grouped by rep
 ```
 
 - `--workspace` is accepted by `index`, `update`, `search`, `grep`, `check`, `usages`, `impact`, `callers`, `callees`, `reachable`, `modules`, and `watch`. Each member keeps its own `.vex.toml` (excludes / embedder / sections / cache).
-- Reference and call-graph resolution is **per-repo by default**. The one exception is `vex usages <name> --strict --workspace`, which resolves a reference in repo B to a symbol defined in repo A via a gtags-style name fallback (rendered as a `name-resolved` sub-tier). This needs a **v7 index** — re-run `vex index` after upgrading.
+- Reference and call-graph resolution is **per-repo by default**. The one exception is `vex usages <name> --strict --workspace`, which resolves a reference in repo B to a symbol defined in repo A via a gtags-style name fallback (rendered as a `name-resolved` sub-tier). Requires **v7+ index** — re-run `vex index` after upgrading.
 - A member missing a capability (`--strict` on an old index, a call graph for `reachable`) is reported unavailable for that repo instead of aborting the whole fan-out. `--workspace` conflicts with `--why`. See [`docs/MULTIREPO.md`](docs/MULTIREPO.md) and LIMITATIONS §7.
 
 ## Configuration
@@ -392,7 +393,7 @@ Semantic indexing (`--semantic`) can run the embedding model on a GPU — a larg
 **Two layers — the binary, and the device:**
 
 - **Prebuilt binaries bake in a driver-only GPU EP:** Windows → **DirectML** (any DX12 GPU — NVIDIA/AMD/Intel; the redist `DirectML.dll` is bundled in the archive), macOS arm64 → **CoreML**. No SDK, no extra install. The Linux prebuilt is CPU-only.
-- **CUDA is a source-build opt-in** (fastest on NVIDIA — ~1.75× DirectML): `cargo install vex --features gpu-cuda`. Needs the CUDA 12 runtime + cuDNN 9 on `PATH` (the NVIDIA *driver alone* is not enough — it ships only `nvcuda.dll`, not the runtime/cuDNN). Source builds for the others: `--features gpu-coreml` / `gpu-directml`.
+- **CUDA is a source-build opt-in** (fastest on NVIDIA — ~1.75× DirectML): `cargo install --git https://github.com/tenatarika/vex vex --features gpu-cuda`. Needs the CUDA 12 runtime + cuDNN 9 on `PATH` (the NVIDIA *driver alone* is not enough — it ships only `nvcuda.dll`, not the runtime/cuDNN). Source builds for the others: `--features gpu-coreml` / `gpu-directml`.
 
 **Selecting the device** (`vex index` / `vex update`):
 
@@ -443,7 +444,7 @@ envelope. Single shape, easy to detect via `protocol_version`:
 ```
 
 Pre-v1.11 only `search` and `bundle` returned this envelope; the other
-~14 subcommands (`show`, `usages`, `pattern`, `grep`, `implementations`,
+subcommands (`show`, `usages`, `pattern`, `grep`, `implementations`,
 `callers`, `callees`, `paths`, `reachable`, `tests-for`, `check`,
 `similar`, `duplicates`, `diff`, `outline`, `index`, `update`,
 `status`, `eval`) emitted bare arrays / objects. **Migration**: pre-1.11 `jq '.[0].name'`
@@ -483,6 +484,7 @@ References stored in an FST (Finite State Transducer) — zero-copy lookup from 
 vex modules                         # clusters of >= 3 symbols, largest first
 vex modules --members 5 --sort cohesion --include 'src/**'
 vex modules IndexReader             # the cluster of one symbol, with its members
+vex modules --format text           # text output (shown below)
 ```
 
 ```text
@@ -597,7 +599,7 @@ Compared against [ast-index](https://github.com/defendend/Claude-ast-index-searc
 | Small (vex itself, 6.8K symbols) | 442 ms | **254 ms** | **4.6 MB** | 6.7 MB |
 | Medium (ast-index repo, 2.3K symbols) | 204 ms | **109 ms** | **1.6 MB** | 3.4 MB |
 
-**Honest read:** vex indexing is ~1.7-1.9x *slower* than ast-index — it builds far more at index time (FST + BM25 + persistent call graph + resolved reference edges + a v8 type-hierarchy section + a trigram skip-index + pattern skeletons), where ast-index builds a SQLite + FTS5 store. That one-time cost buys the constant-time queries below; the resulting index is still **~1.4-2x smaller** on disk (mmap + FST vs SQLite). The gap was ~2.5-3x when last measured at v1.25.1; v1.25.5 is the main reason it has narrowed — a single-variable A/B against v1.25.4 put its cold-index gain at −34% and −31% on two corpora, from parsing each file once and sharing the tree across all extractors instead of re-parsing it per extractor. Projects indexed with `--semantic` are slower again (ONNX embedding generation) and produce a larger index.
+**Honest read:** vex indexing is ~1.7-1.9x *slower* than ast-index — it builds far more at index time (FST + BM25 + persistent call graph + resolved reference edges + a v8 type-hierarchy section + a trigram skip-index + pattern skeletons + symbol clusters (v9)), where ast-index builds a SQLite + FTS5 store. That one-time cost buys the constant-time queries below; the resulting index is still **~1.4-2x smaller** on disk (mmap + FST vs SQLite). These measurements are from v1.25.5 (before v9); v9 adds the cluster pass — re-measure pending. The gap was ~2.5-3x when last measured at v1.25.1; v1.25.5 is the main reason it has narrowed — a single-variable A/B against v1.25.4 put its cold-index gain at −34% and −31% on two corpora, from parsing each file once and sharing the tree across all extractors instead of re-parsing it per extractor. Projects indexed with `--semantic` are slower again (ONNX embedding generation) and produce a larger index.
 
 ### Search: vex vs ast-index vs ripgrep
 
@@ -705,10 +707,10 @@ For an agent making 10-20 code lookups per task, vex saves **5,000-20,000 tokens
 | Language | Extensions | Symbols | Imports | Binder | Patterns |
 |----------|------------|---------|---------|--------|----------|
 | Rust | `.rs` | functions, structs, enums, traits, impls, types, constants | `use` declarations | cross-file | indexed |
-| TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx` | classes, interfaces, enums, functions, arrows, type aliases | `import` | cross-file | indexed |
+| TypeScript/JS | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs` | classes, interfaces, enums, functions, arrows, type aliases | `import` | cross-file | indexed |
 | Python | `.py` | classes, functions (incl. async, decorated) | `import`, `from..import` | cross-file | indexed |
 | C# | `.cs` | classes, interfaces, structs, enums, methods, properties | `using` | cross-file | indexed |
-| C/C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | classes, structs, functions, methods, templates, enums | `#include` | cross-file (v1.14 BFS over quoted `#include "..."`; class methods still in-file) | indexed |
+| C/C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` (`.c` files not indexed, only `.h` via C++) | classes, structs, functions, methods, templates, enums | `#include` | cross-file (v1.14 BFS over quoted `#include "..."`; class methods still in-file) | indexed |
 | Go | `.go` | functions, methods, structs, interfaces | `import` | cross-file | indexed |
 | Java | `.java` | classes, interfaces, enums, methods, constructors | `import` | cross-file | indexed |
 | Kotlin | `.kt`, `.kts` | classes, interfaces, objects, functions, properties | `import` | cross-file | indexed |
@@ -735,11 +737,15 @@ YAML, and TOML remain on live-scan.
 ## Index Location
 
 ```
-macOS:   ~/Library/Caches/vex/<hash>/index.vex
-Linux:   $XDG_CACHE_HOME/vex/<hash>/index.vex
+macOS:     ~/Library/Caches/vex/<hash>/index.vex
+Linux:     $XDG_CACHE_HOME/vex/<hash>/index.vex (fallback: ~/.cache/vex/<hash>/index.vex)
+Windows:   %LOCALAPPDATA%\vex\<hash>\index.vex   (fallback: %USERPROFILE%\AppData\Local\vex\<hash>\index.vex)
 ```
 
-Each project gets its own index based on a hash of the project root path.
+Each project gets its own index based on a hash of the canonical project root path (xxh3). Overrides:
+- `--cache-dir <path>` — point vex at a custom cache directory
+- `$VEX_CACHE_DIR` — environment variable (lower precedence than `--cache-dir`)
+- `cache_dir` in `.vex.toml` — configuration file (lowest precedence)
 
 ## Known limitations
 
@@ -826,7 +832,17 @@ auto_update = true
 
 ### Claude Code (MCP Server)
 
-Alternatively, vex includes an MCP server (`vex-mcp`) that exposes all commands as MCP tools. Since **v1.11.2** a prebuilt `vex-mcp` binary ships in every release alongside `vex` for the three triples the build matrix covers: `aarch64-apple-darwin` (macOS Apple Silicon), `x86_64-unknown-linux-gnu` (Linux), and `x86_64-pc-windows-msvc` (Windows). Intel-Mac and other triples still require the source build below.
+Alternatively, vex includes an MCP server (`vex-mcp`) that exposes all commands as MCP tools. **Note:** Homebrew installs only `vex` (not `vex-mcp`). Since **v1.11.2** a prebuilt `vex-mcp` binary ships in every release alongside `vex` for the three triples the build matrix covers: `aarch64-apple-darwin` (macOS Apple Silicon), `x86_64-unknown-linux-gnu` (Linux), and `x86_64-pc-windows-msvc` (Windows). Intel-Mac and other triples still require the source build below.
+
+**Easiest setup (v1.15.0+):**
+
+```bash
+vex mcp install --agent claude-code
+```
+
+This runs `claude mcp add --scope user --transport stdio vex --env VEX_ROOT=<root> -- <vex-mcp>` for you (v1.27.1+). If the `claude` CLI is not on `PATH`, it prints that command instead and writes nothing. Releases before v1.27.1 wrote `~/.claude/claude_desktop_config.json`, which Claude Code does not read; re-run the command after upgrading.
+
+**Manual setup:**
 
 ```bash
 # 1. Download the prebuilt for your platform from
@@ -837,18 +853,13 @@ Alternatively, vex includes an MCP server (`vex-mcp`) that exposes all commands 
 # Source build (if you prefer or are on an unsupported triple)
 cargo build --release -p vex-mcp
 
-# Add to Claude Code MCP config (~/.claude/claude_desktop_config.json)
-{
-  "mcpServers": {
-    "vex": {
-      "command": "/path/to/vex-mcp",
-      "env": {
-        "VEX_ROOT": "/path/to/your/project",
-        "VEX_DEVICE": "auto"
-      }
-    }
-  }
-}
+# Register with Claude Code (user scope; Claude Code keeps it in ~/.claude.json)
+claude mcp add --scope user --transport stdio vex \
+  --env VEX_ROOT=/path/to/your/project --env VEX_DEVICE=auto \
+  -- /path/to/vex-mcp
+
+# Or project scope: commit a .mcp.json at the project root
+# (see integrations/claude-code/mcp.json)
 ```
 
 `VEX_DEVICE` (v1.16.0) picks the GPU execution provider when the binary was built with `gpu-cuda` / `gpu-directml` / `gpu-coreml` — relevant when an MCP-driven `index` / `update` call rebuilds semantic embeddings on a large repo (51× CUDA / 29× DirectML over CPU on MiniLM-L6). `auto` is safe on CPU-only builds (degrades silently). Run `vex gpu` once to confirm the EP actually engages.
@@ -861,7 +872,7 @@ cargo build --release -p vex-mcp
 - `duplicates` — near-duplicate symbol pairs (`explain` shows what differs); diff-scope
 - `show` — extract symbol body from source; Phase 13.3 truncation flags (`signature_only` / `head` / `no_body` / `collapsed`, mutually exclusive)
 - `outline` — file structure
-- `usages` — find all references to a symbol; `filter` / `--strict` / `--why`
+- `usages` — find all references to a symbol; `filter_path` / `strict` / `why`
 - `impact` — delete-safety blast radius (verdict + per-channel evidence); `depth` / `exclude_docs`
 - `grep` — regex content search
 - `pattern` — AST pattern matching with metavar back-references; diff-scope; `--why`
@@ -903,18 +914,18 @@ vex mcp install --agent all          # fan out across every supported agent
 vex mcp install --agent cursor --dry-run   # preview the post-merge config without writing
 ```
 
-`vex mcp install` reads your existing agent config, merges a single `vex` server entry without disturbing siblings, and writes back atomically. Idempotent — re-running on a matching entry is a no-op skip (`--force` overrides). `vex mcp uninstall --agent <X>` removes the entry; `vex mcp list` enumerates current entries per agent. The same seven config files documented below are exactly what `vex mcp install` writes — keep [`integrations/`](integrations/) handy for manual edits, agents the auto-installer doesn't know yet, or anything more exotic than the default shape.
+For file-based agents, `vex mcp install` reads your existing agent config, merges a single `vex` server entry without disturbing siblings, and writes back atomically. For Claude Code it runs `claude mcp add` instead of editing a file. Idempotent — re-running on a matching entry is a no-op skip (`--force` overrides). `vex mcp uninstall --agent <X>` removes the entry; `vex mcp list` enumerates current entries per agent. The config files documented below for the other agents are exactly what `vex mcp install` writes — keep [`integrations/`](integrations/) handy for manual edits, agents the auto-installer doesn't know yet, or anything more exotic than the default shape.
 
 Copy-pasteable snippets for the most common ones live under [`integrations/`](integrations/):
 
 | Agent              | Snippet                                                                            | Target file on disk                                                  |
 | ------------------ | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Claude Code        | [`integrations/claude-code/claude_desktop_config.json`](integrations/claude-code/claude_desktop_config.json) | `~/.claude/claude_desktop_config.json`                               |
+| Claude Code        | [`integrations/claude-code/`](integrations/claude-code/README.md) (`mcp.json` for project scope) | registered via `claude mcp add` (user scope) *or* `<project>/.mcp.json` |
 | Cursor             | [`integrations/cursor/mcp.json`](integrations/cursor/mcp.json)                     | `~/.cursor/mcp.json` *or* `<project>/.cursor/mcp.json`               |
 | Codex CLI (OpenAI) | [`integrations/codex-cli/config.toml`](integrations/codex-cli/config.toml)         | `~/.codex/config.toml` *or* `<project>/.codex/config.toml`           |
 | Windsurf (Codeium) | [`integrations/windsurf/mcp_config.json`](integrations/windsurf/mcp_config.json)   | `~/.codeium/windsurf/mcp_config.json`                                |
-| Cline (VS Code)    | [`integrations/cline/mcp.json`](integrations/cline/mcp.json)                       | Cline panel → MCP Servers → Configure tab                            |
-| Continue.dev       | [`integrations/continue/vex.yaml`](integrations/continue/vex.yaml)                 | `<project>/.continue/mcpServers/vex.yaml`                            |
+| Cline (CLI)        | [`integrations/cline/mcp.json`](integrations/cline/mcp.json)                       | `~/.cline/mcp.json` (VS Code extension: configure via panel UI)      |
+| Continue.dev       | [`integrations/continue/vex.yaml`](integrations/continue/vex.yaml)                 | `./.continue/mcpServers/vex.yaml` (project-scoped)                   |
 | Zed                | [`integrations/zed/settings.json`](integrations/zed/settings.json)                 | `~/.config/zed/settings.json`                                        |
 
 Per-agent caveats (auto-approve flags, timeout overrides, agent-mode requirements) are documented in [`integrations/README.md`](integrations/README.md).
@@ -922,6 +933,10 @@ Per-agent caveats (auto-approve flags, timeout overrides, agent-mode requirement
 ### Agent Recipes & Workflows
 
 Once vex-mcp is wired into your agent, the next question is *what to ask the agent so it picks the right tools in the right order*. [`docs/COOKBOOK.md`](docs/COOKBOOK.md) is a recipe collection for the common chains — code archaeology, cross-file refactor with `usages --strict` verification, PR-impact analysis via `bundle(mode="pr-impact")`, dead-code & duplicate cleanup, and multi-repo orchestration. Each recipe shows the tool sequence, the *why* of the ordering, and a phrase that reliably triggers the chain in agent prompts.
+
+**Documentation & Integration:**
+- Full vex documentation and API reference: https://context7.com/tenatarika/vex (on [Context7](https://context7.com))
+- Agent skill reference: `.claude/skills/vex/SKILL.md` (included in the project)
 
 ### Shell Integration
 
@@ -951,13 +966,16 @@ Set `auto_update = true` in `.vex.toml` so the index stays fresh automatically.
 
 Use vex for code search instead of grep or manual file reading:
 
-- `vex search "SymbolName"` — find symbol definitions (~4ms)
+- `vex check "SymbolName"` — exact-name lookup: does it exist? (~4ms)
+- `vex search "SymbolName"` — fuzzy symbol search: find definitions by name or meaning
+- `vex search "description" --semantic` — search by meaning (requires --semantic index)
+- `vex search "rare_term"` — BM25 channel finds rare terms in symbol bodies (auto-on when index has BM25 data)
 - `vex show "SymbolName"` — extract symbol body (use INSTEAD of Read for specific symbols)
 - `vex show "A" "B" "C"` — extract multiple symbols at once
 - `vex usages "SymbolName"` — find all references
-- `vex grep "pattern"` — regex content search (when you need text, not symbols)
-- `vex search "description" --semantic` — search by meaning
-- `vex search "rare_term"` — BM25 channel finds rare terms in symbol bodies (auto-on when index has BM25 data)
+- `vex usages "SymbolName" --strict` — refactor-grade refs (binder-resolved, high precision)
+- `vex impact "SymbolName"` — delete-safety blast-radius report (safe/unsafe/uncertain)
+- `vex modules [SYMBOL]` — de-facto code clusters (symbol communities)
 - `vex pattern 'class $NAME(BaseModel):' --lang python` — AST pattern matching with metavariables
 - `vex pattern 'fn $N($$ARGS) -> Result<$T, $E> { $$$BODY }' --lang rust` — multi-line `$$$BODY` / `$$ARGS` capture
 - `vex pattern 'struct $S && impl $S' --lang rust` — AND composition (back-ref `$S` must agree across both shapes)
@@ -968,16 +986,17 @@ Use vex for code search instead of grep or manual file reading:
 - `vex subtypes "BaseService"` — transitive-down closure over extends/implements edges (direct children, grandchildren, …)
 - `vex callers "function_name"` — find all callers (~4ms via persistent call graph)
 - `vex callees "function_name"` — find all callees (~4ms via persistent call graph)
-- `vex similar "SymbolName"` — semantically close symbols (requires --semantic index)
-- `vex duplicates --threshold 0.95` — near-duplicate symbol pairs
-- `vex check "A" "B" "C"` — fast symbol existence check
 - `vex paths "from" "to"` — enumerate caller chains between two functions (multi-hop)
 - `vex reachable "Target"` — transitive callers of a target (blast-radius analysis)
+- `vex tests-for "SymbolName"` — test functions that cover a symbol (framework-labeled)
+- `vex history "SymbolName"` — historical versions of a symbol across commits
+- `vex similar "SymbolName"` — semantically close symbols (requires --semantic index)
+- `vex duplicates --threshold 0.95` — near-duplicate symbol pairs
 - `vex diff --base main` — symbol-level diff against a branch (added / removed / moved / body-changed)
 - `vex bundle --mode symbol --symbol Foo` — single-call body + callers + callees + similar (replaces 4 round-trips)
 - `vex bundle --mode pr-impact --base origin/main` — changed symbols + transitive callers + tests on the current branch
 
-All commands support `--filter-path "path/"` (alias `--filter`) to narrow results to a directory. Most search-shaped commands also accept `--since <rev>` / `--since-branched` / `--changed-only` for diff-scoping.
+Many search-shaped commands support `--filter-path "path/"` (alias `--filter`) to narrow results to a directory (e.g. `search`, `show`, `usages`, `grep`, `similar`, `duplicates`). Most search-shaped commands also accept `--since <rev>` / `--since-branched` / `--changed-only` for diff-scoping.
 
 ### Rules
 - **Always prefer `vex show` over `Read`** when you need a specific function or class
@@ -1003,9 +1022,12 @@ All commands support `--filter-path "path/"` (alias `--filter`) to narrow result
 ### Unit & Integration Tests
 
 ```bash
-cargo test                    # 1973 tests — unit, integration, property-based, adversarial
-cargo clippy -- -D warnings   # zero warnings policy
+cargo nextest run --workspace          # ~4,000 tests — unit, integration, property-based, adversarial
+cargo test --doc                       # doctests
+cargo clippy -- -D warnings            # zero warnings policy
 ```
+
+(nextest ≥ 0.9.145 is recommended — older versions report spurious `LEAK`s on macOS; update with `cargo nextest self update`.)
 
 Test coverage includes:
 - **Per-language grammar regression** (NEW): `tests/<lang>_query_test.rs` for all 19 supported languages — catches ABI mismatches and AST node renames when a tree-sitter grammar crate is upgraded
@@ -1057,7 +1079,7 @@ RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_rename_chains_load  -- -max_total_t
 RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_state_load          -- -max_total_time=60
 ```
 
-Twelve fuzz targets cover the reader's `unsafe` paths plus every text /
+Eighteen fuzz targets cover the reader's `unsafe` paths plus every text /
 sidecar parser that takes adversarial input:
 
 | Target | What it fuzzes | Surface |
@@ -1074,9 +1096,15 @@ sidecar parser that takes adversarial input:
 | `fuzz_incremental_hnsw` (v1.15.0) | Adversarial `new_hashes` slices | `build_hnsw_incremental_at` (duplicates, tombstones, dedup-and-skip) |
 | `fuzz_rename_chains_load` (v1.17.0) | Arbitrary bytes as `index.rename_chains` sidecar | `rename_chains::load` (VEXR v1, MinHash + LSH replay) |
 | `fuzz_state_load` (v1.18) | Arbitrary bytes as `index.state` sidecar | `incremental_state::load` (`VEXS` v1, 256 MiB cap, bincode payload) |
+| `fuzz_unresolved_refs` (v1.22.0) | Arbitrary FST + posting + edge bytes | `UnresolvedRefReader` (v7 `unresolved_refs` section, multi-repo strict fallback) |
+| `fuzz_kotlin_binder` (v1.23.0) | Arbitrary bytes as Kotlin source | tree-sitter parse → symbol extraction → Kotlin `bind_refs` |
+| `fuzz_unresolved_hierarchy` (v1.25.0) | Arbitrary FST + posting + edge bytes | `UnresolvedHierarchyReader` (v8 `unresolved_hierarchy` section) |
+| `fuzz_csr` (v1.27.0) | Arbitrary `offsets` / `edge_idx` bytes and `n` / `m` | `CsrView::new` + `neighbors` (v9 CSR, callees and ref-edge shapes) |
+| `fuzz_leiden` (v1.27.0) | Arbitrary bytes decoded as a ≤256-node graph | deterministic Leiden-CPM (run twice: identical output, every cluster connected) |
+| `fuzz_cluster_section` (v1.27.0) | Arbitrary bytes opened as an index file | `ClusterSectionReader` entry points (v9 clusters section inside `index.vex`) |
 
 Most recent system-wide audit (Q4-A/B closure, 2026-06-17): **~76M
-total executions across all 11 targets, 0 crashes / panics /
+total executions across all 11 targets that existed at the time, 0 crashes / panics /
 AddressSanitizer hits / leaks** (61s per target, libFuzzer +
 ASan + nightly). One latent FST panic was caught en route in a
 dead-code path on adversarial `ref_edge` bytes and fixed before the
@@ -1087,7 +1115,7 @@ v1.14.1 (2026-06-05) ran 5.8M iterations across 9 targets clean;
 v1.15.2 release-gate (2026-06-08) ran ~853k focused executions on
 the four highest-signal targets clean.
 
-Fuzzing has found and fixed six real defects across the project life:
+Fuzzing has found and fixed eight real defects across the project life:
 
 - v1.x: out-of-bounds read on crafted `symbol_count`, misaligned
   pointer dereference on odd `symbols_offset`, unchecked section
@@ -1108,6 +1136,15 @@ Fuzzing has found and fixed six real defects across the project life:
   size cap blocks hostile JSON before serde can allocate multi-GB
   heap (Q4-B audit follow-up; defense-in-depth, threat model is
   user-owned files).
+- v1.23.0: a 451-byte malformed Kotlin input drove tree-sitter's GLR
+  error recovery into super-linear time and memory (334 s, >2 GB; DoS, not
+  a crash; found by `fuzz_kotlin_binder`). Fix: every production parse goes
+  through `parser_pool::parse_text`, which caps progress-callback
+  invocations (scaled by input size) for all languages.
+- v1.23.0: `tree_sitter::Node::utf8_text()` panicked on malformed input
+  where tree-sitter emitted a node past EOF (found by `fuzz_kotlin_binder`).
+  Fix: the bounds-checked `NodeTextExt` (`node_text` / `node_text_opt`)
+  replaces raw `utf8_text` in the extractor, binders and pattern prefilter.
 
 The v1.13.0 / v1.14.1 additions found no defects in fresh code — the
 review-driven `MAX_COUNT` guards on `hash_index::save` / `load` were
@@ -1120,20 +1157,24 @@ sustained 3M / 5.8M iteration runs confirmed they hold.
 ```
 CLI (clap) → Pipeline (rayon, 500-file chunks) → Tree-sitter
                                       ↓
-                           Binary format v6 (mmap, zero-copy)
+                           Binary format v9 (mmap, zero-copy)
                                       ↓
-       ┌──────────────────┬──────────────┬──────────────┬──────────────┐
-       ↓                  ↓              ↓              ↓              ↓
-  Symbol FST         Refs FST        BM25 doc       HNSW vectors  Call graph
-  (structural)    (cross-file refs) (body tokens)   (semantic)   (callers FST / callees CSR)
+       ┌──────────────────┬──────────────┬──────────────┬──────────────┬─────────────┬──────────────┐
+       ↓                  ↓              ↓              ↓              ↓             ↓              ↓
+  Symbol FST         Refs FST        BM25 doc       HNSW vectors  Call graph   Hierarchy     Clusters
+  (structural)    (cross-file refs) (body tokens)   (semantic)   (callers FST / (v8 edges)   (v9 Leiden-
+                                                                  callees CSR)                 CPM)
                                       ↓
                        Embedder trait → fastembed / MiniLM-L6 (default)
 
 Per-project sidecars (in <index_dir>/):
-  · index.vex             — primary index (format v6)
+  · index.vex             — primary index (format v9)
+  · manifest.json         — metadata: embedder, sections, version, staleness tracking
+  · index.bloom           — symbol-name bloom filter (`vex check` skips FST lookups for definitely-missing names)
+  · index.trigram         — per-file trigram bloom so `vex grep` skips non-matching files (v1.24.1)
   · index.hnsw            — semantic vectors (HNSW graph)
   · index.bodytokens      — per-symbol terms for BM25 + semantic context (B1.2)
-  · index.git_history     — historical symbol presence (Phase 14.8)
+  · index.git_history     — historical symbol presence (Phase 14.8, FST + git-walk fallback)
   · index.rename_chains   — MinHash+LSH rename tracking across commits (Phase 14.10)
   · index.state           — incremental state: imported_by reverse map + writer-provenance sentinels (audit C1)
 

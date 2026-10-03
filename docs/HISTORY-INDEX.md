@@ -24,12 +24,20 @@ inline comments, and LIMITATIONS.md.
 <cache-dir>/<project-hash>/
 ├── index.vex                ← binary index (unchanged by Phase 14.8)
 ├── index.git_history        ← Phase 14.8 sidecar (VXGH magic)
-├── manifest.json            ← gains `history_indexed_at`,
-│                              `history_tip_sha`, `history_depth`,
-│                              `history: { commit_count, blob_count,
-│                              entry_count, depth_capped }`
+├── index.state              ← incremental state sidecar (v1.18+): `history_indexed_at`,
+│                              `history_tip_sha`, `history_depth`, `history: { commit_count,
+│                              blob_count, entry_count, depth_capped }`
+├── manifest.json            ← file hashes + index metadata (history fields are
+│                              overlaid from `index.state` at load, never written here)
 └── …(existing sidecars for HNSW, body_tokens, bloom, etc.)
 ```
+
+**Note:** Since v1.18, the `history_indexed_at`, `history_tip_sha` and `history_depth`
+fields and the aggregated `history` stats struct live in the binary `index.state`
+sidecar (`Manifest.state.history_*` / `Manifest.state.history`), not in the JSON
+manifest; `Manifest::load` overlays them, so `vex status` still reads them through
+the manifest type. The move keeps `vex update`'s JSON parse off the
+O(cross-file-edges) `imported_by` map stored in the same sidecar.
 
 The history index is a **sidecar**, not an inline section in `index.vex`.
 Architect-locked design called for inline (v6→v7 sub-header chain).
@@ -432,8 +440,7 @@ unconditionally during `vex index --history` (no opt-in flag) and
 persists chain assignments to a paired sidecar at
 `<index_dir>/index.rename_chains` (VEXR v1 magic, 48 B header).
 
-**Algorithm summary** (full design in
-`.claude/Task/PHASE14.10-symbol-rename-tracking.md`):
+**Algorithm summary**:
 
 1. **Phase 0 (serial)** — per `HistoryEntry`, build a 240-slot
    MinHash signature over `body_tokens` and insert into a 20×12 LSH

@@ -22,10 +22,19 @@ The build lock lives next to the index file:
 ```text
 <cache-dir>/<project-hash>/
 ├── index.vex          ← binary index
+├── index.state        ← incremental state sidecar (v1.18+)
+├── index.hashes       ← semantic sidecar hash index (v1.14.1+)
+├── index.bodytokens   ← semantic sidecar body tokens (v1.15.0+)
 ├── index.hnsw         ← optional HNSW vectors (when --semantic was used)
-├── index.bloom        ← optional bloom-filter sidecar (v1.12.0+, used by `vex check`)
+├── index.trigram      ← optional grep trigram bloom filter (v1.24.1+)
+├── index.bloom        ← optional structural bloom-filter (v1.12.0+, used by `vex check`)
+├── index.git_history  ← optional historical symbol index (v1.15.0+, `vex index --history`)
+├── index.rename_chains ← optional semantic rename-chain index (v1.17+)
+├── embed_cache_*.bin  ← project-specific embedder cache (v1.13+)
 ├── manifest.json      ← file hashes + index metadata
-└── index.lock         ← persistent advisory-lock sentinel
+├── index.lock         ← persistent advisory-lock sentinel
+├── async_update.attempt ← cooldown marker for background refresh
+└── async_update.log   ← last background refresh stderr
 ```
 
 - **Per-project.** The lock path is derived from the index path, which is
@@ -87,7 +96,7 @@ the first millisecond of contention so it's clear what's happening.
 Since v1.11.2, contention is logged:
 
 ```text
-INFO vex::index::pipeline: waiting for index lock (another vex instance is indexing) lock=/Users/foo/Library/Caches/vex/abc123/index.lock
+INFO vex::index::pipeline::lock: waiting for index lock (another vex instance is indexing) lock=/Users/foo/Library/Caches/vex/abc123/index.lock
 ```
 
 The wait itself is silent at the syscall level (a blocking `flock`),
@@ -143,16 +152,21 @@ Run them with `cargo test --test concurrency_test`.
 
 ## Known limitations
 
-- **Skip path is fingerprint-only, not options-aware.** Both
-  `pipeline::run` and `pipeline::update` decide whether to skip a
-  rebuild purely from the file-hash diff. A peer that built without
-  `--semantic`, followed by a `vex index --semantic` waiter, will be
-  served the structural-only index from the skip path and *no error
-  is raised*. The waiter's `--semantic` request is silently
-  downgraded. Tracked as a v1.12.0 follow-up; the workaround is to
-  delete the cache directory and rebuild manually. This is a
-  pre-existing behaviour shared with `update` since v1.11.1, not a
-  regression introduced in v1.11.2.
+*None currently known*. The skip path is now options-aware: both
+`pipeline::run` and `pipeline::update` gate skips on `manifest_options_cover`
+(fixed in v1.12.0), ensuring that a peer built without `--semantic` will
+not silently serve a structural-only index to a `vex index --semantic`
+waiter.
+
+## Asynchronous updates (`--async-update`)
+
+With `--async-update` (or `async_update` in `.vex.toml`), a stale index is
+refreshed by a detached `vex update --no-wait` child while the current query
+uses the existing (stale) index. The response includes `_meta.vex.dev/stale`
+so callers know freshness was not achieved. See `src/cli/async_update.rs` for
+the full contract: a cooldown marker prevents process churn from parallel
+queries, and the child's stderr is logged for diagnosis if the refresh fails
+repeatedly.
 
 ## Things that intentionally are NOT locked
 

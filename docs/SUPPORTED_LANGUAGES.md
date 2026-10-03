@@ -9,20 +9,20 @@ which grammar version each release ships against.
 
 ## Version matrix
 
-Last verified: **2026-05-14** (vex 1.4.3).
+Last verified: **2026-10-03** (vex 1.27.1).
 
 | Language | Extensions | Grammar crate | Grammar version | Symbol kinds extracted | `implementations` |
 |---|---|---|---|---|---|
 | Rust       | `.rs`                                   | `tree-sitter-rust`        | 0.24 | function, struct, enum, trait, impl, method, constant | ✅ `impl Trait for Type` |
 | Python     | `.py`                                   | `tree-sitter-python`      | 0.25 | class, function (incl. decorated), import | ✅ `class Sub(Base)` |
-| TypeScript / TSX / JavaScript / JSX | `.ts`, `.tsx`, `.js`, `.jsx` | `tree-sitter-typescript`  | 0.23 | class, interface, enum, function, arrow function (const), type alias, import | ✅ `extends` + `implements` |
+| TypeScript / TSX / JavaScript / JSX | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs` | `tree-sitter-typescript`  | 0.23 | class, interface, enum, function, arrow function (const), type alias, import | ✅ `extends` + `implements` |
 | Go         | `.go`                                   | `tree-sitter-go`          | 0.25 | function, method, struct, interface, type alias, import | — (structural typing) |
 | Kotlin     | `.kt`, `.kts`                           | `tree-sitter-kotlin-ng`   | 1.1  | function, class, interface, object, data class, property, import | ✅ delegation specifier |
 | Java       | `.java`                                 | `tree-sitter-java`        | 0.23 | class, interface, enum, method, constructor, import | ✅ `extends` + `implements` |
 | C#         | `.cs`                                   | `tree-sitter-c-sharp`     | 0.23 | class, interface, struct, enum, method, property | ✅ base list |
 | Ruby       | `.rb`                                   | `tree-sitter-ruby`        | 0.23 | class, module (as class), method, singleton method | ✅ `class < Bar` + `include`/`extend`/`prepend` |
 | Swift      | `.swift`                                | `tree-sitter-swift`       | 0.7  | class, struct, enum, actor (mapped to class), protocol (as interface), function, import | ✅ inheritance specifier |
-| C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | `tree-sitter-cpp`     | 0.23 | function, class, struct, enum (incl. enum class), type alias (using/typedef), include | ✅ base class clause |
+| C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.h` | `tree-sitter-cpp`     | 0.23 | function, class, struct, enum (incl. enum class), type alias (using/typedef), include (quoted `#include "foo.h"` resolves cross-file; `<system>` and macro includes don't) | ✅ base class clause |
 | SQL (PostgreSQL flavour) | `.sql`                    | `tree-sitter-sequel`      | 0.3  | table, view, materialized view, schema, type (enum), function, trigger, index, sequence, extension | — (no hierarchy) |
 | Markdown   | `.md`, `.markdown`                      | `tree-sitter-md`          | 0.5  | ATX headings (`#` through `######`) | — |
 | PHP        | `.php`, `.phtml`                        | `tree-sitter-php`         | 0.24 | class, interface, trait, enum, function, method, class constant, `use` import | ✅ `extends` + `implements` (incl. enum 8.1+) + trait `use` |
@@ -79,16 +79,25 @@ lives in `src/parse/queries.rs::try_get_query` and the aggregation in
 3. Add a `<lang>_QUERY` static in `src/parse/queries.rs` and add the match
    arm to `lookup`.
 4. Add the new variant to the `inheritance_query` match in
-   `src/hierarchy/mod.rs` (return `None` unless the language has
-   class-hierarchy semantics to support `vex implementations`).
+   `src/hierarchy/queries.rs` (return `None` unless the language has
+   class-hierarchy semantics to support `vex implementations` / `vex subtypes`).
 5. Add the canonical CLI name(s) to the `Commands::Pattern` arm in
-   `src/cli/mod.rs` so `vex pattern --lang <name>` works for spellings
+   `src/cli/cmd_pattern.rs` so `vex pattern --lang <name>` works for spellings
    that aren't file extensions (e.g. `--lang shell` for Bash).
-6. Author `queries/<lang>.scm` with the capture names listed in
-   `src/parse/extractor.rs` (`fn.name`, `class.name`, etc).
-7. Add `tests/<lang>_query_test.rs` covering at minimum: grammar loads on
+6. Optionally add a call-graph query arm to `callgraph_query` in
+   `src/callgraph/queries.rs` (inline query string), and — if the language has
+   imports — a scope binder in `src/parse/scope/` (enables `vex usages --strict`).
+   A binder language usually also joins `Language::has_ast_ref_filter` in
+   `src/parse/language.rs` (AST-aware ref filter for non-strict `vex usages`).
+7. Author `queries/<lang>.scm` with the capture names mapped in
+   `src/parse/extractor/symbols.rs` (`fn.name`, `class.name`, etc). It is the
+   only per-language `.scm` file; there are no separate refs/callgraph `.scm` files.
+8. For indexed `vex pattern` prefiltering (T1/T2a), add the language's
+   pattern-targetable node kinds to `pattern_targetable_kinds` in
+   `src/pattern/skeleton/kinds.rs`.
+9. Add `tests/<lang>_query_test.rs` covering at minimum: grammar loads on
    empty input + one canonical example per symbol kind.
-8. Update this file's version matrix and trim the Roadmap candidates.
+10. Update this file's version matrix and trim the Roadmap candidates.
 
 ## Roadmap
 

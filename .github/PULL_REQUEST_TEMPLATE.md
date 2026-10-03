@@ -21,8 +21,8 @@ Closes #
 ## Checklist
 
 - [ ] `cargo fmt --check` is clean
-- [ ] `cargo clippy --all-targets -- -D warnings` is clean
-- [ ] `cargo test` passes locally
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` is clean
+- [ ] `cargo test --workspace` passes locally
 - [ ] New behavior is covered by a test (unit, integration, or fuzz target)
 - [ ] CHANGELOG entry added under `## [Unreleased]` in the right section (`### Added` / `### Changed` / `### Fixed` / `### Refactored`)
 - [ ] If breaking: migration note in the CHANGELOG entry **and** README updated

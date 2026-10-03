@@ -1,10 +1,12 @@
 # Response-Protocol Evolution — Plan
 
-Status: **PLAN** (2026-07-08, revised after architect + code-reviewer
-review). No code changes yet. This doc is the agreed methodology + backlog
-for evolving the `ResponseEnvelope` (`protocol_version` currently `"v1"`)
-without breaking existing consumers. It supersedes the earlier "defer
-nested Signals to a v1→v2 bump" note from the v1.20.0 release audit (§7).
+Status: **PLAN, partly SHIPPED.** §3.1 (v1.23.0, internal structure changes),
+§3.2 (v1.23.0, `scope_dropped` sub-count), §4.1/§4.2 + `structured_result_kind`
+(v1.24.0) are shipped. §5 (`v2` contract cleanup) is still DESIGN. This doc
+is the agreed methodology + backlog for evolving the `ResponseEnvelope`
+(`protocol_version` currently `"v1"`) without breaking existing consumers.
+It supersedes the earlier "defer nested Signals to a v1→v2 bump" note from
+the v1.20.0 release audit (§7).
 
 The core reversal: **a `protocol v2` version-gate is NOT the vehicle for
 the pending contract changes.** Each item lands *additively* in the v1 line
@@ -138,6 +140,11 @@ Per step, add (not just "update the snapshot"):
 Historically tagged "needs v2". All land additively in v1.x.
 
 ### 3.1 `Signals` decomposition — internal now, wire nesting at v2
+
+**Status: SHIPPED (v1.23.0, internal structure refactor).** Sub-structs
+`StructuralSignals` / `LexicalSignals` / `SemanticSignals` / `PostSignals`
+introduced and wired internal-only; flat `Signals` envelope unchanged on
+the wire. Zero risk; wire is byte-identical.
 
 **Problem.** `src/protocol/mod.rs::Signals` is 8 flat `Option<...>` fields
 mixing four concerns. Every new search channel forces another flat field
@@ -627,11 +634,10 @@ Proposed additions (flip as each expand step lands):
   v1.x (the v1.x work is internal-only). True iff a requested v2 envelope
   emits nested `signals` (§5.4 Tier B).
 - `result_completeness` — §4.2 completeness signal
-  (`_meta.vex.dev/{truncated,result_total,result_total_exact}`). **Gated
-  (resolved):** absence must be distinguishable from `false` for a safety
-  signal, which an ungated `_meta` field can't express. Flips in the release
-  that first emits it; v1 scope is `usages` (exact) + search (lower bound);
-  callers/callees/implementations deferred (§4.2).
+  (`_meta.vex.dev/{truncated,result_total,result_total_exact}`). **SHIPPED
+  (v1.24.0, scope: `usages` only).** Gated by the flag (absence means
+  "unknown", never "complete"). Search and callers/callees/implementations
+  deferred (§4.2).
 - `concise_text` — **NOT a capability (resolved).** §4.1 straight-replaces the
   advisory `content` text; gating a text channel invites double-maintenance.
   Migration via the indefinite `VEX_MCP_TEXT=raw` env hatch, not a flag.

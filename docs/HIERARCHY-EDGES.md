@@ -35,7 +35,11 @@ Non-goals (the Kythe/CodeQL boundary — need real type inference or a build):
 | `usages --strict` (access pattern we mirror) | index-backed `reference_edges` (v5) lookup | `src/cli/cmd_usages.rs:57` |
 | cross-file name→symbol resolution | `name_to_global` Pass-2 loop | `src/store/writer.rs:413-419`, consumed `475-559` |
 | unresolved spill (multi-repo) | `UnresolvedRefsHeader` + by-name FST | `format.rs:240`, `unresolved_refs.rs:43`, `reader.rs:694` |
-| current format version | `VERSION = 7` | `src/store/format.rs:41` |
+| current format version | `VERSION = 7` (at time of writing; v9 in v1.27.0) | `src/store/format.rs:41` |
+
+**Note:** §0 is the pre-v8 design survey. Since v1.27.0 (v9 format), the callees
+and ref_edges FSTs have been replaced with CSR (Compressed Sparse Row) format —
+see `docs/V9-FORMAT.md` for the current index structure.
 
 **Key reuse insight:** the tree-sitter queries that find `extends`/`implements`
 targets **already exist and are battle-tested** in `src/hierarchy/queries.rs`.
@@ -288,13 +292,13 @@ but **not** supertypes-of-X. Options:
   at parse time into the symbol record. No reverse CSR needed.
 
 **Q2 locked: Option (A) — target-keyed only for v8** (architect). Ship the headline
-query (implementations/subtypes-of-T). `vex supertypes <X>` is deferred to a **v9
+query (implementations/subtypes-of-T). `vex supertypes <X>` is deferred to a **future
 additive reverse section** (option B: a second sorted-array index keyed on
 `from_sym_idx`, pure derived data built in the same pass). Option (C) (parse-time
 parent capture on the `SymbolRecord`) is **rejected** — it fights the fixed-width
 `SymbolRecord` layout (`format.rs:376`) and splits hierarchy data across two
 structures. Deferral is format-safe *because* the record keeps `from_sym_idx`
-(Q5), so the v9 reverse index is a normal additive header, not a rewrite.
+(Q5), so a future reverse index is a normal additive header, not a rewrite.
 
 ## 7. Query surface
 
@@ -312,7 +316,7 @@ structures. Deferral is format-safe *because* the record keeps `from_sym_idx`
   materialization — vex is a warm local mmap where a bounded BFS is microseconds,
   and materialized transitive edges would bloat the section and complicate the §8
   carry-forward (distinguishing direct from derived edges on update).
-- **`vex supertypes <X>`** — **deferred to v9** per §6 (Q2=A).
+- **`vex supertypes <X>`** — **deferred to a future format bump (not in v9)** per §6 (Q2=A).
 - **MCP:** add `implementations` (already exists — swap to index path) + new tools
   behind the same additive-envelope rules as the multirepo Phase-8 work.
 

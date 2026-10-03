@@ -1,20 +1,19 @@
 # Optional GPU Support for Semantic Indexing
 
-> Status: **RELEASED in v1.16.0**. Runtime validation is performed on the
-> user's machine by the `vex gpu` doctor command, which actively probes the
-> compiled EP with strict registration (one real inference) and reports
-> `FAILED` with EP-specific remediation on a silent CPU fallback.
+> Status: **RELEASED in v1.16.0** — this document describes the feature shipped in that release and maintained since. GPU acceleration is now available in the prebuilt Windows and macOS binaries (v1.16.0+) and can be compiled in via `--features gpu-coreml` (macOS), `--features gpu-directml` (Windows), or `--features gpu-cuda` (NVIDIA).
+> 
+> Runtime validation is performed on the user's machine by the `vex gpu` doctor command, which actively probes the compiled EP with strict registration (one real inference) and reports `FAILED` with EP-specific remediation on a silent CPU fallback.
+> 
 > Scope: GPU acceleration of the **ONNX embedding** step only. Parsing, BM25,
 > HNSW build, and call-graph extraction are **not** GPU targets (see §9).
 
 ## 1. Why (and why not)
 
 `vex index --semantic` generates one 384-dim MiniLM-L6-v2 embedding per symbol
-via `fastembed 5.14 → ort 2.0.0-rc.12` (ONNX Runtime). Today the model runs
-**CPU-only** — `MiniLMEmbedder::new()` builds `InitOptions` with no execution
-provider, so ort's EP list is empty and it uses the default CPU EP
-(`src/embed/minilm.rs:43-48`, verified repo-wide: zero `ExecutionProvider`
-references in `src/`).
+via `fastembed 5.14 → ort 2.0.0-rc.12` (ONNX Runtime). The prebuilt binaries
+shipped in v1.16.0+ support GPU acceleration (CoreML on macOS, DirectML on Windows),
+while CPU is always available as a fallback.
+For source builds, specify the feature: `cargo install --git https://github.com/tenatarika/vex vex --features gpu-cuda` for NVIDIA support.
 
 GPU is worth it **only** for cold / large-delta builds:
 
@@ -35,9 +34,7 @@ batch of misses, CPU may be faster — hence the miss-count gate (§3 principle 
 itself (a Cargo build-time feature) — *not* building an index. The index is
 runtime data produced by `vex index`; its format and vectors are identical no
 matter which device computed them, and any vex binary can read any index. A
-binary becomes GPU-capable only via `cargo install vex --features gpu-cuda`
-(or `gpu-directml` / `gpu-coreml`), or via the prebuilt Windows/macOS releases
-we ship with the feature on (§6). `--gpu` / `--device` then choose, *at index
+binary becomes GPU-capable via `cargo install --git https://github.com/tenatarika/vex vex --features <gpu-*>`, or by downloading the prebuilt Windows/macOS releases we ship with the feature on (since v1.16.0). `--gpu` / `--device` then choose, *at index
 time*, whether that compiled-in EP is actually used.
 
 ## 3. Design principles

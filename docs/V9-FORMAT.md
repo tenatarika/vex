@@ -71,6 +71,8 @@ off   size  struct
 704   ...   Symbols section            (symbols_offset = 704 on v9, 656 on v8)
 ```
 
+*Note: superseded by §13 R9: ClusterHeader is actually 64 B, symbols_offset = 720.*
+
 - `Header::has_cluster_header()` returns `version >= 9`.
 - `reader.open` gains the same fit check as `reader.rs:205-229` for the 704-byte chain, plus bounds checks for the cluster section's `(offset, len)` pairs.
 - `format.rs` gains `ClusterHeader::SIZE == 48` and `ClusterRecord::SIZE == 32` pin tests next to `format.rs:661-693`.

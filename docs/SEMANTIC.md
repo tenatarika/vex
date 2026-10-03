@@ -7,7 +7,8 @@ that was previously spread across CHANGELOG, inline comments, and
 LIMITATIONS.md.
 
 > **Quick model:** every symbol is hashed into a content-addressed key,
-> embedded into a 384-dim vector, and the vectors land in an HNSW graph
+> embedded into a vector (384 dimensions with the default MiniLM-L6-v2
+> embedder; other embedders differ), and the vectors land in an HNSW graph
 > keyed by that hash. `vex update --semantic` mutates the existing
 > graph in place (`load → diff → remove → add → save`) instead of
 > rebuilding from scratch. The same hash is used by the embed cache
@@ -44,9 +45,10 @@ full rebuild, full re-embed).
 
 ### Versioning policy
 
-- **`index.vex` format version** is `v6` (`MIN_SUPPORTED_VERSION = 3`).
+- **`index.vex` format version** is `v9` (readers support `MIN_SUPPORTED_VERSION = 3`).
   B1.2 did **not** bump the format — body_tokens persistence is a
-  sidecar, not a section.
+  sidecar, not a section. The v9 bump is for callees/ref_edges CSR and clusters
+  (see `docs/V9-FORMAT.md`).
 - **`index.hnsw`** is opaque usearch state; no version field of our own.
   Compatibility is whatever usearch promises (currently stable across
   the 2.25.x line we pin).
@@ -54,12 +56,14 @@ full rebuild, full re-embed).
   `VEXT v1` (`index.bodytokens`). Each carries its own magic + version
   + count + guard against `MAX_COUNT` (≤ 10M entries) to prevent
   crafted-input OOM during load.
-- **Manifest markers** (`vectors_normalized`, `cpp_includes_processed`,
-  `body_tokens_persisted`) are `Option<bool>` — `None` means "pre-this
-  version" with conservative fallback semantics, `Some(true)` is the
+- **Manifest markers** — `vectors_normalized` lives in the JSON manifest as
+  `Option<bool>`. Since v1.18, `cpp_includes_processed` and
+  `body_tokens_persisted` live in the `index.state` binary sidecar
+  (as `Manifest.state.*`). All three have the same semantics: `None` means
+  "pre-this version" with conservative fallback, `Some(true)` is the
   current version's behaviour, `Some(false)` indicates a failed write
   that needs re-priming. Pre-v1.15 indexes carry `None` for the v1.15
-  marker.
+  body_tokens marker.
 
 ---
 

@@ -18,20 +18,17 @@ and failed" into a single non-zero, non-one bucket.
 
 **Distinguishes 0 / 1:** `search`, `usages`, `callers`, `callees`,
 `pattern`, `grep`, `show`, `similar`, `duplicates`, `implementations`,
-`paths`, `reachable`, `tests-for`, `history`, `diff`, `bundle`, `modules`.
+`subtypes`, `paths`, `reachable`, `tests-for`, `diff`, `bundle`, `modules`.
 
 These commands query the index for results. Empty result sets are a
 normal outcome, not an error.
 
-**`vex history` caveat — `--branch <unknown-ref>` exits `2`.** Phase
-14.11 routes non-HEAD `--branch` queries to the walker, which shells
-out to `git log` / `git grep <revision>`. Git surfaces an error for
-revisions it can't resolve; vex propagates that as exit `2` (real
-error from a handler), not `1` (empty result). Pre-14.11 the indexed
-path silently swallowed unknown refs and returned HEAD-time data with
-exit `0` — the new exit code is more honest. Scripts that pass
-user-supplied refs should treat `2` as "bad ref" and recover, not
-abort.
+**`vex history` caveat — exits `0` on empty, `2` on a bad ref.** `history`
+never signals an empty result: a symbol with no recorded versions exits `0`
+on both the indexed path (`vex index --history`) and the `git log` walker.
+A `--branch <unknown-ref>` routes to the walker, git fails to resolve the
+revision, and vex propagates that as exit `2` — scripts that pass
+user-supplied refs should treat `2` as "bad ref".
 
 **`vex modules` caveat — empty has a reason, corruption is `2`.** `modules`
 exits `1` when there is nothing to show and always says why in
@@ -45,14 +42,15 @@ corrupt cluster section is a real error and exits `2`.
 **`vex bundle` caveat — soft-degrades exit `1`.** `--mode project`
 without a call graph (or with `--directory-tree-only` filtering to
 nothing) returns an empty `items[]` plus a populated
-`mode_hints.empty_reason` (`"no_call_graph"`,
+`mode_hints.empty_reason` (`"no_call_graph"`, `"no_call_edges"`,
 `"directory_tree_top_zero"`, `"path_glob_filtered_all"`). The exit
 code is `1` for both "genuinely unreachable" and "soft-degrade" cases
 — scripts that need to distinguish them must read
 `results.mode_hints.empty_reason` from the JSON envelope.
 
 **Always `0` on success:** `index`, `update`, `watch`, `self-update`,
-`status`, `outline`, `check`, `init`, `completions`, `eval`, `impact`.
+`status`, `outline`, `check`, `init`, `completions`, `eval`, `impact`,
+`history`, `gpu`, `capabilities`, `mcp`.
 
 These are actions or configuration queries. There is no
 "empty-but-successful" state worth distinguishing from regular success.

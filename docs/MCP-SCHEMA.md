@@ -1,4 +1,4 @@
-# MCP schema vocabulary (vex 1.7+)
+# MCP schema vocabulary (vex 1.7+, updated for v1.27.1)
 
 The vex MCP server exposes 28 tools to LLMs and IDE-style clients via
 the Model Context Protocol. v1.8 added `strict` to `usages` (binder-
@@ -22,19 +22,20 @@ across every tool.
 | Field | Type | Meaning | Used by |
 | --- | --- | --- | --- |
 | `query` | string | **Free-text** — symbol name, partial name, signature snippet, or natural-language description. Not regex; not for exact resolution. | `search`, `find_similar` |
-| `symbol` | string | **Exact symbol name** (function/class/struct/etc.) — canonical resolution key (v1.7+). | `find_symbol`, `usages`, `implementations`, `callers`, `callees`, `similar`, `bundle` |
+| `symbol` | string | **Exact symbol name** (function/class/struct/etc.) — canonical resolution key (v1.7+). | `find_symbol`, `usages`, `implementations`, `callers`, `callees`, `similar`, `bundle`, `impact`, `history`, `subtypes`, `modules` |
 | `symbols` | string[] | Array of exact symbol names — batch lookup / existence probe. | `show`, `check` |
 | `path` | string | Filesystem path to a single source file (absolute or relative to `project_root`). | `outline` |
 | `pattern` | string | Regex pattern (`grep`) *or* structural AST pattern with `$METAVARS` (`pattern`). Tool docstring states which. | `grep`, `pattern` |
 | `filter_path` | string | Substring path filter applied to result paths (single substring; use `include`/`exclude` for globs). `filter` is the deprecated alias (v1.24.0 rename, PROTOCOL-EVOLUTION §3.3). | `search`, `show`, `usages`, `grep`, `similar`, `duplicates` |
-| `include` | string[] | Path-glob whitelist (gitignore syntax, repeatable). | every search-shaped tool |
-| `exclude` | string[] | Path-glob blacklist, wins over `include` (repeatable). | every search-shaped tool |
+| `include` | string[] | Path-glob whitelist (gitignore syntax, repeatable). `bundle` honours it only in `pr-impact` mode (`symbol` / `project` modes ignore all scope filters). | `search`, `find_symbol`, `find_similar`, `show`, `usages`, `impact`, `tests_for`, `grep`, `implementations`, `subtypes`, `modules`, `callers`, `callees`, `pattern`, `diff`, `paths`, `reachable`, `similar`, `duplicates`, `bundle` |
+| `exclude` | string[] | Path-glob blacklist, wins over `include` (repeatable). Same tools and `bundle` caveat as `include`. | `search`, `find_symbol`, `find_similar`, `show`, `usages`, `impact`, `tests_for`, `grep`, `implementations`, `subtypes`, `modules`, `callers`, `callees`, `pattern`, `diff`, `paths`, `reachable`, `similar`, `duplicates`, `bundle` |
+| `exclude_tests` | boolean | Drop test-path files (`tests/` dirs, `*_test.*`, `test_*.py`, `*.spec.ts`, `__tests__/`, `tests.rs`, `*Tests.swift`, `*_spec.rb`, …; same set as `tests_for`). Composes with `include`/`exclude`. `bundle` honours it only in `pr-impact` mode (changed files plus transitive-caller/test rows). Not offered by `tests_for` (the CLI rejects `--exclude-tests` there with exit 2). | every tool that takes `include`/`exclude` except `tests_for` |
 | `mode` | enum | **Bundle assembly mode** — `symbol` / `pr-impact` / `project`. Discriminator for per-mode required fields (see [Bundle modes](#bundle-modes-v19)). | `bundle` |
 | `base` | string | Git base revision to diff against (e.g. `origin/main`, `HEAD~3`, a SHA). | `bundle` (mode: `pr-impact`) |
 | `depth` | integer | Transitive callers walk depth (default 2). | `bundle` (mode: `pr-impact`) |
 | `path_glob` | string | Single path glob applied as a post-rank filter (separate from the universal `include`/`exclude` arrays). | `bundle` (mode: `project`) |
 | `top_n` | integer | Max top-ranked symbols to return (default 30). | `bundle` (mode: `project`) |
-| `target` | string | **Exact symbol name** whose test coverage / blast radius we want — canonical resolution key for `tests_for` (matches the CLI positional). Distinct from `symbol` only in that the intent is "this is what the agent wants to assess", not "this is what to look up". `symbol` is accepted as a deprecated alias. | `tests_for` |
+| `target` | string | **Exact symbol name** whose test coverage / blast radius we want — canonical resolution key for `tests_for` (matches the CLI positional). Distinct from `symbol` only in that the intent is "this is what the agent wants to assess", not "this is what to look up". `symbol` is accepted as a deprecated alias (on `tests_for`). | `tests_for`, `reachable` |
 | `include_self` | boolean | (`usages` non-strict, v1.20.0 D2) Keep the row at the symbol's own definition line. Default `false` — v1.20.0+ strips it because "find all callers" doesn't want the declaration showing up as a usage. No-op under `strict: true`. | `usages` |
 | `include_docs` | boolean | (`usages` non-strict, v1.20.0 D2) Keep matches in `*.md` / `*.markdown` / `*.txt` / `*.rst` / `*.adoc` files. Default `false` — README/CHANGELOG mentions are prose, not callers. No-op under `strict: true`. | `usages` |
 | `code_only` | boolean | (`search`, v1.20.0 D4) Drop hits in prose-format files (`*.md` / `*.markdown` / `*.txt` / `*.rst` / `*.adoc`). Default `false` so `vex search README` still finds READMEs; pass for code-intent queries. Triggers a fetch-limit over-fetch so the post-filtered set still honours `limit`. | `search` |
@@ -122,7 +123,7 @@ sub-list of the bundle it came from:
 | `similar` | `symbol` | A semantic-similar match — carries `similarity: f32` (cosine). |
 | `changed` | `pr-impact` | A symbol whose `(name, body)` differs between `base` and the working tree. |
 | `transitive_caller` | `pr-impact` | A non-test symbol that reaches a `changed` symbol within `depth` hops over the call graph. |
-| `test` | `pr-impact` | A test symbol that reaches a `changed` symbol. Heuristic: path contains `/tests/` / `/test/` / `_test.` / `.test.` / `/spec/` / `/__tests__/`, OR signature starts with `#[test]` / `#[tokio::test...]` / `#[cfg(test)]`. |
+| `test` | `pr-impact` | A test symbol that reaches a `changed` symbol. Test role = path matches the shared predicate in `src/util/test_paths.rs` (the same set `--exclude-tests` and `tests_for` use) OR signature starts with `#[test]` / `#[tokio::test` / `#[cfg(test)]`. |
 | `top` | `project` | A top-N symbol by reverse call-graph indegree. The indegree count is exposed under `signals.indegree` (Phase 13.2 additive field; absent on every other code path). |
 
 `rank_percentile` is **global** monotonic-descending across the full
@@ -153,7 +154,7 @@ ordering after sorting the bundle by `rank_percentile`.
 {
   "scoring": "reverse_indegree", "top_n": 30, "path_glob": null,
   "total_ranked_symbols": 12, "has_call_graph": true,
-  "empty_reason": null | "no_call_graph" | "no_call_edges" | "path_glob_filtered_all"
+  "empty_reason": null | "no_call_graph" | "no_call_edges" | "directory_tree_top_zero" | "path_glob_filtered_all"
 }
 ```
 
@@ -177,10 +178,14 @@ ordering after sorting the bundle by `rank_percentile`.
 | --- | --- | --- |
 | `find_symbol` | `name` | `symbol` |
 | `usages` | `name` | `symbol` |
+| `impact` | `name` | `symbol` |
 | `implementations` | `name` | `symbol` |
+| `subtypes` | `name` | `symbol` |
 | `callers` | `name` | `symbol` |
 | `callees` | `name` | `symbol` |
 | `similar` | `name` | `symbol` |
+| `history` | `name` | `symbol` |
+| `tests_for` | `symbol` | `target` |
 | `outline` | `file` | `path` |
 | `check` | `names` | `symbols` |
 | `show` | `symbol` (singular) | `symbols: [name]` |

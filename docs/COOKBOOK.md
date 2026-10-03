@@ -2,7 +2,7 @@
 
 End-to-end recipes for chaining vex's MCP tools to solve common code-navigation tasks. Each recipe shows the **tool sequence** an agent should run, **why this ordering**, and **how to phrase the request** so an agent picks the right chain without prompting nudges.
 
-All snippets use the MCP tool surface (`usages(...)`, `bundle(mode=..., ...)`) and the canonical v1.7+ vocabulary (`symbol` / `query` / `path` / `pattern` / `filter` / `include` / `exclude`); the CLI equivalents (`vex usages ... --strict`, `vex bundle ...`) are 1:1 with the same args. See [`docs/MCP-SCHEMA.md`](MCP-SCHEMA.md) for the canonical schema.
+All snippets use the MCP tool surface (`usages(...)`, `bundle(mode=..., ...)`) and the canonical v1.7+ vocabulary (`symbol` / `query` / `path` / `pattern` / `filter_path` / `include` / `exclude`); the CLI equivalents (`vex usages ... --strict`, `vex bundle ...`) are 1:1 with the same args. See [`docs/MCP-SCHEMA.md`](MCP-SCHEMA.md) for the canonical schema.
 
 ## Tool-selection cheat sheet
 
@@ -16,9 +16,10 @@ All snippets use the MCP tool surface (`usages(...)`, `bundle(mode=..., ...)`) a
 | Find regex hits in source text               | `grep(pattern="…regex…")`                          | `usages` (symbol-only)             |
 | Find AST patterns                            | `pattern(pattern="…", lang="…")`                   | `grep` (no scope, no metavars)     |
 | Find subtypes of a base class                | `implementations(symbol="Base")`                   | `grep "extends Base"`              |
+| Find all transitive subtypes (descendants)   | `subtypes(symbol="Base")`                          | `implementations` (direct only)    |
 | What are the modules / which module is X in | `modules()` to list clusters, `modules(symbol="X", members=25)` for X's cluster | `ls` / directory guesses; `search` (ranked, not structural) |
 | Who calls / who do I call                    | `callers` / `callees`                              | Reading file to find call sites    |
-| Multi-hop "can A reach B"                    | `paths(from="A", to="B")` or `reachable(symbol="B")` | Manual graph walk                |
+| Multi-hop "can A reach B"                    | `paths(from="A", to="B")` or `reachable(target="B")` | Manual graph walk                |
 | Symbol-level diff vs git base                | `diff(base="origin/main")`                         | `git diff` (line-level only)       |
 | Near-duplicate code                          | `duplicates(explain=true)`                         | Manual review                      |
 | One-shot LLM context for a symbol            | `bundle(mode="symbol", symbol="X")`                | 4 separate tool calls              |
@@ -77,7 +78,7 @@ This is by design — `vex search` is the **ranked-relevance** surface, not the 
 **When to deviate**:
 - If you only need the body (no relations or history), `show(symbols=["process_payment"], head=40)` is cheapest.
 - If the symbol is overloaded across files, follow up with `find_symbol` and disambiguate by `path`.
-- For a transitive reachability check (who eventually calls this), add `reachable(symbol="process_payment")` — but expect a wider set than `callers`.
+- For a transitive reachability check (who eventually calls this), add `reachable(target="process_payment")` — but expect a wider set than `callers`.
 - If `history` returns empty but you know the symbol existed: try `--no-index` (forces the walker, which may have a different match policy) or check `vex status` for a `History: no` line meaning the section isn't built.
 - For symbols whose name has been **deleted** from HEAD: the indexed path finds them (NEW capability vs walker); the walker can't because its `git grep` probe runs at HEAD and finds nothing.
 
@@ -100,7 +101,7 @@ This is by design — `vex search` is the **ranked-relevance** surface, not the 
 **Why this chain**:
 - Step 2 with `strict=true` is the difference between "I think I got them all" and "the binder says I got them all." On a 50k-LOC Rust crate, `--strict` typically drops 30-60% of text-scan false hits.
 - Step 5 is the verification gate. Skipping it is how stale references survive a rename.
-- The binder coverage matrix lives in [`README.md` → Type-aware refs](../README.md#type-aware-refs). For wildcard-form imports (Python `from x import *`, Rust `use foo::*`, C++ `using namespace`) `strict=true` falls back to text-scan; expect the response `signals` to flag this.
+- The binder coverage matrix lives in [`README.md` → Type-aware refs (#type-aware-refs---strict)](../README.md#type-aware-refs---strict). For wildcard-form imports (Python `from x import *`, Rust `use foo::*`, C++ `using namespace`) `strict=true` falls back to text-scan; expect the response `signals` to flag this.
 
 **Variants**:
 - For function signature changes (not just renames), follow up `callers("OldName")` and `show` each caller to inspect call sites for arity / type compatibility before applying the change.
@@ -116,8 +117,8 @@ This is by design — `vex search` is the **ranked-relevance** surface, not the 
 **Tool sequence**:
 
 1. `diff(base="origin/main")` — symbol-level diff (added / removed / moved / body-changed) for files touched on the branch. Line-level `git diff` doesn't tell you "which functions changed"; this does.
-2. `bundle(mode="pr-impact", base="origin/main", depth=2, tests_max=20)` — one call returns the changed symbols, their transitive callers up to `depth=2`, and a sample of tests that exercise the changed surface. The Phase 9 PR-impact bundle is calibrated for review workflows: response includes a `_meta.vex.dev/diff_filter` envelope showing how many candidates were dropped vs retained (visibility into what the bundle decided to surface).
-3. For each high-risk change (large body diff, public API, called by many places), `reachable(symbol="<changed_symbol>")` — surfaces transitive consumers your reviewer eye might miss.
+2. `bundle(mode="pr-impact", base="origin/main", depth=2, tests_max=20)` — one call returns the changed symbols, their transitive callers up to `depth=2`, and a sample of tests that exercise the changed surface. The PR-impact bundle is calibrated for review workflows: response includes a `_meta.vex.dev/diff_filter` envelope showing how many candidates were dropped vs retained (visibility into what the bundle decided to surface). Tests come back as `items` with role "test", and `mode_hints` carries `test_count` and `tests_truncated` flags.
+3. For each high-risk change (large body diff, public API, called by many places), `reachable(target="<changed_symbol>")` — surfaces transitive consumers your reviewer eye might miss.
 4. Optional: `similar(symbol="<changed_symbol>", explain=true)` — finds symbols semantically close to the changed one. If a developer changed `parse_json_v2` but `parse_json_legacy` looks similar, the similar-symbols response is a hint that the legacy path might need analogous treatment.
 
 **Why this order**:
@@ -137,7 +138,7 @@ This is by design — `vex search` is the **ranked-relevance** surface, not the 
 
 **Tool sequence**:
 
-1. `duplicates(explain=true, threshold=0.85)` — semantic near-duplicate symbol pairs across the repo. `explain=true` surfaces identifier-overlap (Jaccard) + a unified diff per pair, so you can tell at a glance whether the pair is a real dupe vs two methods that just share helpers. Default `threshold=0.8`; bump to `0.85+` to cut noise on first pass.
+1. `duplicates(explain=true, threshold=0.85, limit=50)` — semantic near-duplicate symbol pairs across the repo. `explain=true` surfaces identifier-overlap (Jaccard) + a unified diff per pair, so you can tell at a glance whether the pair is a real dupe vs two methods that just share helpers. Default `threshold=0.9` (lower to 0.85 for a wider net); `limit` caps how many pairs come back (default 50).
 2. For each suspect from step 1, `usages(symbol="<name>", strict=true)` on both members of the pair. If one has zero callers, you've found a consolidation candidate (delete the unused one, retarget callers to the survivor).
 3. For "unused" candidates not surfaced by `duplicates`, the search shape is `find_symbol` + `usages` per suspect; the cheaper sweep is `search(query="…likely-stale-substring…")` to surface candidates first, then verify with `usages --strict`.
 4. `callers(symbol="<suspect>")` — verification that the zero-usages result wasn't a false negative on the binder coverage matrix (dynamic dispatch / reflection / generated code can be invisible — see [`docs/LIMITATIONS.md`](LIMITATIONS.md)).

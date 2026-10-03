@@ -1,6 +1,6 @@
 # Contributing to vex
 
-Thanks for your interest in vex. This doc covers the local development loop: building, testing, and the quality gates CI enforces. For release mechanics, see [`docs/RELEASING.md`](docs/RELEASING.md); for architecture, for honest coverage caveats, [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
+Thanks for your interest in vex. This doc covers the local development loop: building, testing, and the quality gates CI enforces. For release mechanics, see [`docs/RELEASING.md`](docs/RELEASING.md); for architecture and honest coverage caveats, see [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) and [`docs/V9-FORMAT.md`](docs/V9-FORMAT.md) (index format v9 architecture).
 
 ## Prerequisites
 
@@ -71,7 +71,7 @@ cargo fmt --check                 # autofix: cargo fmt
 cargo clippy --workspace --all-targets -- -D warnings
 
 # 3. Tests across the workspace.
-cargo test --workspace            # ~67 binaries, ~1990 tests, < 2 minutes on a recent laptop
+cargo test --workspace            # ~4,000 tests across ~110 test files, < 2 minutes on a recent laptop
 
 # 4. Benches compile (optional but cheap — catches benchmark drift).
 cargo bench --no-run
@@ -84,7 +84,8 @@ If any check fails, fix the code, not the gate. Clippy / fmt drift in particular
 `cargo test` parallelises tests within each test binary but runs the
 integration-test binaries themselves sequentially. With 20+ files in `tests/`,
 [`cargo-nextest`](https://nexte.st/) is meaningfully faster — it runs every
-test in its own process and parallelises across binaries.
+test in its own process and parallelises across binaries. Use **cargo-nextest ≥ 0.9.145**,
+which fixes spurious `LEAK` reports on macOS that plagued earlier versions.
 
 ```bash
 cargo install cargo-nextest --locked
@@ -108,29 +109,34 @@ For language-specific grammar regression, the per-language `tests/<lang>_query_t
 
 ## Adding a new language
 
-Vex supports new languages with three files and a registration:
+Vex supports new languages — see the comprehensive guide in [`docs/SUPPORTED_LANGUAGES.md`](docs/SUPPORTED_LANGUAGES.md) § "How to add a new language". Briefly:
 
-1. **Vendor the tree-sitter grammar** as a Cargo dependency in `[dependencies]` (`tree-sitter-<lang> = "X.Y"`).
-2. **Write the AST queries**: `queries/<lang>.scm` (symbol extraction), optionally `queries/<lang>-refs.scm` and `queries/<lang>-callgraph.scm`.
-3. **Register the language** in `src/parse/language.rs::Language` enum + `from_extension` mapping.
-4. **Add per-language tests** in `tests/<lang>_query_test.rs` — copy the shape of `tests/rust_query_test.rs`. Cover at minimum: simple symbol extraction, refs, callgraph for the function-shaped node kinds.
-5. **Update [`docs/SUPPORTED_LANGUAGES.md`](docs/SUPPORTED_LANGUAGES.md)** with the tier (T1 / T2 / T3) and any coverage caveats.
+1. Add the grammar crate to `Cargo.toml`.
+2. Add a `Language::<Name>` variant in `src/parse/language.rs`.
+3. Write the symbol-extraction query `queries/<lang>.scm` (the only per-language `.scm` file) and register it in `src/parse/queries.rs`; optionally add a call-graph query arm in `src/callgraph/queries.rs`.
+4. Register in `src/hierarchy/queries.rs` (inheritance) and `src/cli/cmd_pattern.rs` (pattern `--lang` spelling).
+5. Add a scope binder in `src/parse/scope/` if your language has imports (enables `vex usages --strict`), and usually add it to `src/parse/language.rs::has_ast_ref_filter` (AST-aware ref filter for non-strict `usages`).
+6. For indexed `vex pattern` prefiltering, add pattern-targetable node kinds in `src/pattern/skeleton/kinds.rs`.
+7. Add per-language test in `tests/<lang>_query_test.rs`.
+8. Update [`docs/SUPPORTED_LANGUAGES.md`](docs/SUPPORTED_LANGUAGES.md).
 
 Before writing the `.scm` files, dump the grammar's `node-types.json` and parse a sample file with an AST printout — this saves multiple `Query::new` compile-fail iterations.
 
 ## Adding an MCP tool
 
-Two files, one snapshot:
+Three files and one snapshot update:
 
-1. **`crates/vex-mcp/src/main.rs`** — add a dispatch arm in `build_command(...)` translating MCP args into CLI argv, and add a schema entry in `tool_descriptors()`.
-2. **Tests** — add inline `#[test]` cases mirroring the existing `<tool>_<flag>_pushes_flag` / `<tool>_<flag>_default_omits_flag` pattern; the `tool_descriptors_snapshot` regression guard locks the schema.
-3. **Regenerate the snapshot**: `INSTA_UPDATE=always cargo test -p vex-mcp tool_descriptors_snapshot`.
+1. **Dispatch**: `crates/vex-mcp/src/tools/mod.rs` → `build_command(...)` translating MCP args into CLI argv.
+2. **Schema**: `crates/vex-mcp/src/descriptors.rs` → add a tool entry in `tool_descriptors()` JSON.
+3. **Helpers**: `crates/vex-mcp/src/args.rs` → optional shared parameter helpers (reduce boilerplate).
+4. **Tests** — add inline `#[test]` cases mirroring the existing `<tool>_<flag>_pushes_flag` / `<tool>_<flag>_default_omits_flag` pattern; the `tool_descriptors_snapshot` regression guard locks the schema.
+5. **Regenerate the snapshot**: `INSTA_UPDATE=always cargo test -p vex-mcp tool_descriptors_snapshot`.
 
 The shared helpers (`push_scope`, `push_metadata`, `push_diff_scope`, `push_show_truncate`, `push_kind`, `push_no_stale_check`, `push_auto_update`) handle the standard flag families — reuse them rather than inlining.
 
 ## Fuzzing the binary format
 
-Three fuzz targets cover all `unsafe` code paths in the reader. Requires nightly Rust:
+Multiple fuzz targets cover all `unsafe` code paths in the reader and format parsers. Requires nightly Rust. See `fuzz/Cargo.toml [[bin]]` for the full count:
 
 ```bash
 cargo install cargo-fuzz
@@ -140,7 +146,7 @@ RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_refs_fst    -- -max_total_time=60
 RUSTUP_TOOLCHAIN=nightly cargo fuzz run fuzz_symbol_fst  -- -max_total_time=60
 ```
 
-Any new `unsafe` block in the reader path SHOULD be exercised by an existing or new fuzz target before merge.
+Any new `unsafe` block in the reader path SHOULD be exercised by an existing or new fuzz target before merge. See the README's Fuzzing section for the full fuzz target list and historical defects, and [`SECURITY.md`](SECURITY.md) § "In-Scope Issues" for the fuzzed security surfaces.
 
 ## Commit & PR conventions
 

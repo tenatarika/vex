@@ -7,9 +7,8 @@ are not patched — please upgrade to the latest release before reporting.
 
 | Version | Supported |
 |---------|-----------|
-| 1.17.x  | yes       |
-| 1.16.x  | yes       |
-| < 1.16  | no — upgrade first |
+| 1.27.x  | yes       |
+| < 1.27  | no — upgrade first |
 
 `vex self-update` will fetch the latest GitHub release on Linux, macOS,
 and Windows.
@@ -56,6 +55,11 @@ These are the surfaces we treat as security-relevant:
     embedding cache from v1.13 E2b. Validated at load (magic + dim
     bound) but not yet fuzzed; defence-in-depth via existing roundtrip
     unit tests.
+  - `index.trigram` (`src/store/trigram.rs`, per-file trigram bloom for the
+    `vex grep` skip-index) — not fuzzed; a malformed sidecar degrades to
+    reading every file.
+  - `index.bodytokens` (`src/store/body_tokens.rs`, body-token sidecar) —
+    not fuzzed.
   - `index.hashes` (`src/search/hash_index.rs`, `fuzz_hash_index_load`,
     v1.14.1) — `VEXH` sidecar pairing HNSW hash keys with sym_idx
     positions; `MAX_COUNT` guard on both save + load paths after a
@@ -93,7 +97,7 @@ These are the surfaces we treat as security-relevant:
   is also fuzzed (`fuzz_tokenize_document`, v1.13.0) since it walks
   attacker-supplied UTF-8 byte-by-byte during every `vex index`.
 - **MCP server (`crates/vex-mcp`)**: JSON-RPC parser, stdio handling,
-  path-traversal in tool arguments (`VEX_ROOT` containment), or
+  path-traversal in tool arguments (argument validation), or
   resource exhaustion via malformed `tools/call` payloads.
 - **`vex self-update`**: signature verification, archive extraction
   (path traversal in tar/zip), or downgrade attacks via the release
@@ -135,7 +139,10 @@ If you're embedding vex into a multi-tenant environment:
   `fuzz_index_reader`) with zero crashes; the v1.14.1 system-wide
   audit (2026-06-05) ran ~5.8M iterations across all then-9 targets
   with zero crashes — historical baseline retained for comparison.
-- The MCP server reads `VEX_ROOT` from the environment and rejects paths
-  that escape it. Don't pass user-controlled values into `VEX_ROOT`.
+- The MCP server reads `project_root` from tool arguments and validates that it
+  exists and is a directory. The `VEX_ROOT` environment variable is supported
+  as a fallback but can be overridden by the `project_root` argument. Do NOT
+  expose the MCP server to untrusted clients — they can manipulate `project_root`
+  to index arbitrary directories on the host.
 - `vex self-update` verifies release archives via zipsign signatures —
   do not pipe arbitrary URLs into the updater.

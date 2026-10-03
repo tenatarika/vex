@@ -28,12 +28,12 @@
     "V9-FORMAT.md"
   ],
   "rules": [
-    "Use `vex check <Name>` for exact-name lookup; it reports hit/miss with path:line and bypasses the ranker.",
+    "Use `vex check <Name>` for exact-name lookup; it reports hit/miss only and bypasses the ranker; use `vex show` for the location and body.",
     "Use `vex search \"keywords\"` only for fuzzy, multi-word exploration; when no symbol matches literally it returns ranked neighbors (callers, imports), not the definition.",
     "Use `vex show <Name>` to read a symbol's body instead of reading the whole file.",
     "Use `vex usages <Name> --strict` for refactors: binder-resolved references on Rust, TypeScript, Python, C#, C++, Go, Java and Kotlin; other languages fall back to a text scan.",
     "Use `vex grep <regex>` for text such as string literals, comments and config values, not for symbols.",
-    "Exit code 1 means an empty result, not a failure; only exit code 2 is an error.",
+    "Exit code 1 means an empty result (not an error); exit code 2 is an error. `history`, `impact`, and `check` always exit 0 on success.",
     "Use `vex modules` to see the de-facto modules (symbol clusters) and `vex modules <Name>` for the module a symbol belongs to; cluster ids are only stable within one full `vex index`.",
     "Run `vex index` once per project and `vex update` afterwards; after an upgrade that bumps the index format, run `vex index` again.",
     "Pass `--format json` or `--format compact` for machine-readable, token-efficient output; connect agents with `vex mcp install --agent <name>`."

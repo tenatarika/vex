@@ -7,6 +7,11 @@ All §9 review resolutions folded in; 3036/3036 nextest, clippy + stable-fmt
 clean. (TOCTOU on the double `find_and_load` accepted for MVP — see §9 /
 LIMITATIONS §7.)
 
+**Implementation:** `CacheResolver` and `install_cache_resolver` live in
+`src/util/config.rs`; `build_workspace_resolver` lives in `src/cli/mod.rs`,
+which also holds the guard that rejects a hash-less (`local_cache`) cache at
+the workspace root when there is more than one member.
+
 ## 1. Problem
 
 `src/util/config.rs` holds a process-global `CACHE_OVERRIDE:

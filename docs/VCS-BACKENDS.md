@@ -388,7 +388,7 @@ shape drifts):
 
 ---
 
-## 7b. `vex diff` / `vex bundle --mode pr-impact` are git-only (next release)
+## 7b. `vex diff` / `vex bundle --mode pr-impact` are git-only (SHIPPED v1.25.4)
 
 The `Vcs` trait abstracts **diff-scoping** (`changed_paths`) only. The
 symbol-level base diff behind `vex diff --base <rev>` and `vex bundle --mode
@@ -415,7 +415,7 @@ Promoting these to full backend support means adding a `content_at(rev, path)`
 op to the `Vcs` trait and field-verifying `arc show` — deferred (see §6 growth
 phases).
 
-## 7c. `.vex.local.toml` auto-discovery (next release)
+## 7c. `.vex.local.toml` auto-discovery (SHIPPED v1.25.4)
 
 The config walk-up (`util::config::load_config`) now stops at the first ancestor
 holding **either** `.vex.toml` **or** `.vex.local.toml`, and merges the local

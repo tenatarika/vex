@@ -32,12 +32,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `bundle pr-impact` now recognises a root-level `tests/` directory. It
     previously missed it.
   - The ranking evaluation set is unchanged by this.
+- **`vex mcp install --agent all` keeps going after an error.** A failure for
+  one agent is reported and the remaining agents are still configured; the
+  command exits 2 at the end. A single-agent run reports errors as before.
 - **`bundle pr-impact` applies scope filters to the whole report.**
   `--include`, `--exclude` and `--exclude-tests` now also filter the caller and
   test rows, not only the changed files.
 
 ### Fixed
 
+- **`vex mcp install --agent claude-code` now actually configures Claude
+  Code.** Earlier releases wrote `~/.claude/claude_desktop_config.json`, which
+  is Claude Desktop's file; Claude Code never read it. vex now runs
+  `claude mcp add --scope user --transport stdio vex --env VEX_ROOT=<root> --
+  <vex-mcp>` (and `claude mcp remove` / `claude mcp get` for `uninstall` /
+  `list`). If the `claude` CLI is not on `PATH`, vex prints the command to run
+  and writes nothing. The old entry in `claude_desktop_config.json` is left
+  alone; re-run the install after upgrading.
+- **`vex show` picks the same definition on every platform.** With the default
+  `--limit 1` it cut the candidates to one before ranking, so the result
+  depended on the order the filesystem listed directories (a test file could
+  win on macOS, the production file on Windows). It now ranks a pool of
+  candidates first and breaks ties by path. `bundle --mode symbol` chooses its
+  seed symbol the same way, so it now goes through the normal ranking and
+  prefers a production definition over a test one.
+- **`vex show <missing>` exits 1 in text and compact output,** as it already
+  did with `--format json`.
+- **Help text:** `--history` on `vex index` / `vex update` describes the
+  history index instead of calling it a no-op, `vex mcp --agent` lists the
+  agent ids, and the GPU hints say `cargo install --git
+  https://github.com/tenatarika/vex vex --features …` (vex is not published on
+  crates.io).
+- **Documentation pass** over the README and `docs/` against the current code:
+  the format version, binder languages, MCP argument names, exit codes,
+  security notes (there is no `VEX_ROOT` containment for MCP clients) and
+  release/packaging details.
 - **Spurious `LEAK` reports from cargo-nextest on macOS** came from a nextest
   bug, not from vex. `.config/nextest.toml` now recommends nextest 0.9.145 or
   later, which fixes it.

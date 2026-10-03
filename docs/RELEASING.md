@@ -177,6 +177,6 @@ struct.
   cheap insurance. (Bumped to `5` for the hierarchy-edges P2
   `ParsedFile.hierarchy_captures` field.)
 
-The v6 binary index, by contrast, carries grammar fingerprints inline
+The binary index, by contrast, carries grammar fingerprints inline
 and self-invalidates without a manual bump — see
 `src/store/pattern_skeletons.rs`.

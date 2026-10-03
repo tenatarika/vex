@@ -1,6 +1,6 @@
 # vex MCP — Editor / Agent Integrations
 
-Ready-to-paste MCP-server configs for every editor or coding agent that speaks the [Model Context Protocol](https://modelcontextprotocol.io/). All clients use the same `vex-mcp` binary (prebuilt since v1.11.2 — see the project [`README.md` Integration section](../README.md#claude-code-mcp-server) for download / build instructions and the full 23-tool catalog). Only the config file location and serialization format differ.
+Ready-to-paste MCP-server configs for every editor or coding agent that speaks the [Model Context Protocol](https://modelcontextprotocol.io/). All clients use the same `vex-mcp` binary (prebuilt since v1.11.2 — see the project [`README.md` Integration section](../README.md#claude-code-mcp-server) for download / build instructions and the full 28-tool catalog). Only the config file location and serialization format differ.
 
 ## Quick start
 
@@ -27,7 +27,7 @@ The snippets in this folder are still useful for **manual edits**, **agents the 
 
 | Agent              | Snippet                                                            | Target file on disk                                                  |
 | ------------------ | ------------------------------------------------------------------ | -------------------------------------------------------------------- |
-| Claude Code        | [`claude-code/claude_desktop_config.json`](claude-code/claude_desktop_config.json) | `~/.claude/claude_desktop_config.json`                               |
+| Claude Code        | [`claude-code/`](claude-code/README.md) (`mcp.json` for project scope) | registered via `claude mcp add --scope user` *or* `<project>/.mcp.json` |
 | Cursor             | [`cursor/mcp.json`](cursor/mcp.json)                               | `~/.cursor/mcp.json` *or* `<project>/.cursor/mcp.json`               |
 | Codex CLI (OpenAI) | [`codex-cli/config.toml`](codex-cli/config.toml)                   | `~/.codex/config.toml` *or* `<project>/.codex/config.toml`           |
 | Windsurf (Codeium) | [`windsurf/mcp_config.json`](windsurf/mcp_config.json)             | `~/.codeium/windsurf/mcp_config.json`                                |

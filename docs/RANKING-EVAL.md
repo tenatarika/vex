@@ -167,8 +167,6 @@ Phase 13.12 intentionally records the no-semantic baseline because:
 * CI cost: downloading the ONNX model on every CI run is wasteful.
 * Cross-machine reproducibility: HNSW + embeddings introduce floating
   point variance the regression guard doesn't need.
-* Phase 13.5 (`--max-tokens` budgeted output) will operate over the
-  fused channels; the eval harness measures the same fused output.
 
 A future phase can add a `vex eval --semantic` flag if/when the value
 exceeds the CI cost.
@@ -178,5 +176,3 @@ exceeds the CI cost.
 * `src/eval/mod.rs` — metric implementations + unit tests.
 * `src/eval/harness.rs` — golden-set loader + query driver.
 * `tests/ranking_regression_test.rs` — the CI assertion.
-* `.claude/Task/ROADMAP-improvements.md` — Phase 13.12 entry +
-  rationale.

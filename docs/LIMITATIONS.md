@@ -1,4 +1,4 @@
-# Known limitations (v1.9-pre)
+# Known limitations
 
 This document lists vex's known coverage gaps. Each entry has a concrete
 repro, an explanation, and a workaround. Agents reading this should
@@ -6,7 +6,7 @@ treat the items below as **the kind of result vex cannot find — reach
 for `vex grep` or shell tools when you suspect a hit lives outside vex's
 extraction model**.
 
-Updated 2026-05-25 after external review of v1.8.2.
+Updated for v1.27.1 (index format v9).
 
 ---
 
@@ -117,7 +117,7 @@ class C {
 fn it_works() { ... }   // ← Phase 14.2.1: edge it_works → test
 ```
 
-For class-level decorators, TS property/parameter decorators, and Rust
+For TS property/parameter decorators and Rust
 `#[derive(...)]` the gap remains — see "What is still invisible" above
 for the deferred phase numbers and the intentional exclusions.
 
@@ -948,7 +948,7 @@ greps line-by-line over a Rust `String` and cannot lossy-decode.
 
 Each of the four reference channels listed above misses something
 different. To answer "is it safe to delete this?" the historical
-recommendation in `pets/CLAUDE.md` was a manual dance:
+recommendation in the historical agent instructions was a manual dance:
 
 1. `vex usages X --strict` — binder-resolved real refs.
 2. `vex grep '\bX\b'` — catch string-literal mentions, configs, comments.
@@ -983,7 +983,7 @@ An unavailable channel's `count: 0` does NOT drag the verdict toward
 **Channel-by-channel caveats** (so the verdict can be read accurately):
 
 - **strict_refs** misses everything `vex usages --strict` misses —
-  see §2 (uneven cross-language coverage) and §4 (decorator /
+  see §2 (uneven cross-language coverage) and §1 (decorator /
   property-binding edges).
 - **fst_refs** false-positives on identifier matches in comments and
   string literals — these inflate `uncertain` verdicts without
@@ -1004,7 +1004,7 @@ points at file:line so a follow-up `vex show` / `vex usages` /
 ## 7. `--workspace` (multi-repo) caveats
 
 `vex index / update / search / check / grep / usages / impact / callers /
-callees / reachable --workspace` fan a command across every repo declared
+callees / reachable / modules / watch --workspace` fan a command across every repo declared
 in the nearest `.vex-workspace.toml`.
 Each member keeps its own per-repo index; results are grouped by repo. See
 `docs/MULTIREPO.md` for the design. Known limits of the shipped MVP:
@@ -1286,7 +1286,7 @@ index alone.
 ## 11. `vex update` change detection is stat-based
 
 `vex update` decides what to re-index by comparing each file's content hash to
-the manifest. Since v1.25.6 it does not re-read a file whose `(length, mtime)`
+the manifest. Since v1.26.0 it does not re-read a file whose `(length, mtime)`
 is byte-identical to the previous run — it reuses the recorded hash instead.
 
 Reuse requires three conditions, not two: identical length, identical mtime to
@@ -1360,6 +1360,8 @@ navigation aid, not ground truth.
   146 ms, warm). `vex index --no-clusters` skips it, and `vex update` keeps
   that choice.
 
+---
+
 ## 13. `--exclude-tests` is a path heuristic
 
 `--exclude-tests` (MCP `exclude_tests`) uses the same test-path set as
@@ -1376,7 +1378,7 @@ every scope filter.
 | --- | --- | --- | --- | --- | --- | --- |
 | `vex search` | ✅ | ✅ | ✅ | n/a (it finds names) | n/a | n/a |
 | `vex usages` | ✅ binder | ✅ AST idents | ⚠️ regex (FPs) | ✅ if symbol used by name | ❌ | ❌ |
-| `vex callers` | ✅ | ✅ | ✅ | ✅ via `<module:>` (14.1) | ⚠️ Python+Java (14.2), Kotlin+C# (14.2.2), TS+Rust (14.2.1); class-level → 14.6 | ❌ (15) |
+| `vex callers` | ✅ | ✅ | ✅ | ✅ via `<module:>` (14.1) | ⚠️ Python+Java (14.2), Kotlin+C# (14.2.2), TS+Rust (14.2.1); class-level → `<module:>` (14.6) | ❌ (Phase 15) |
 | `vex implementations` | ✅ index-backed (§9), live-walk fallback | ✅ | ⚠️ depends on grammar query; ❌ Go (§9) | n/a | n/a | n/a |
 | `vex subtypes` | ✅ index-only, no live-walk fallback (§9) | ✅ | ⚠️ depends on grammar query; ❌ Go (§9) | n/a | n/a | n/a |
 | `vex grep` | ✅ all | ✅ all | ✅ all | ✅ | ✅ | ✅ (literal) |
@@ -1387,14 +1389,14 @@ Legend: ✅ covered · ⚠️ partial · ❌ invisible
 
 ## Roadmap items that close some of these
 
-- **Phase 13.10 `vex tests-for`** — reverse callgraph walk gated on
+- **Phase 13.10 `vex tests-for`** (SHIPPED v1.19.0) — reverse callgraph walk gated on
   test-classifier; covers a subset of the "is this code reachable from
   tests" question that decorator-based test discovery currently misses.
-- **Phase 14.x (planned)** — extend callgraph extractor to capture
-  module-level call expressions. Would close the `app = create_app()`
-  gap but not decorator dispatch.
-- **No current plan** for decorator-aware or string-literal-resolved
-  references. These are framework-specific and a fundamental limit
+- **Phase 14.1 module-level callers** (SHIPPED v1.10.0) — extend callgraph extractor to capture
+  module-level call expressions. Closes the `app = create_app()` gap via synthetic `<module:>` symbols.
+- **Phase 14.2 decorator edges** (SHIPPED v1.10.0; class-level via Phase 14.6 in v1.12.0) — decorators emit forward edges, surfaced as callers.
+  Python/Java method decorators (14.2), Kotlin/C# annotations (14.2.2), TypeScript/Rust attributes (14.2.1).
+- **No current plan** for string-literal-resolved references. These are framework-specific and a fundamental limit
   of static analysis without per-framework heuristics.
 
 Open new issues on the roadmap if a specific pattern hurts your
