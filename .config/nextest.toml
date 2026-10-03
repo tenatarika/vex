@@ -11,6 +11,14 @@
 # Note: nextest does NOT run doctests (cargo limitation). After a nextest
 # run, also run `cargo test --doc` if you've touched doc examples.
 
+# Nextest before 0.9.145 reports random tests as `LEAK` on macOS. The cause
+# is in nextest, not in the tests. std creates pipes without setting
+# FD_CLOEXEC atomically on Apple targets (rust-lang/rust#95584), so a test
+# spawned on another runner thread can inherit a sibling's capture pipe and
+# keep it open after the sibling exits. The sibling then gets reported as
+# leaky. Fixed in nextest-rs/nextest#3553. Older versions print a warning.
+nextest-version = { recommended = "0.9.145" }
+
 [profile.default]
 # Re-run any test that fails up to twice. Catches the rare flake without
 # masking real regressions — three consecutive failures still fail the run.
