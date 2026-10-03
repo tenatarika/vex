@@ -1,7 +1,9 @@
 {
   "mcpServers": {
     "vex": {
+      "type": "stdio",
       "command": "/path/to/vex-mcp",
+      "args": [],
       "env": {
         "VEX_ROOT": "/path/to/your/project"
       }

@@ -2,8 +2,12 @@
 //! merge primitives + the seven concrete handlers vex ships (Claude
 //! Code / Cursor / Codex CLI / Windsurf / Cline / Continue.dev / Zed).
 //!
+//! Claude Code is the exception to everything below: its handler (in
+//! [`super::mcp_claude_code`]) shells out to `claude mcp add|remove|get`
+//! and never touches a file — see that module for why.
+//!
 //! The configurator is **idempotent** and **format-respectful**: every
-//! handler reads the agent's existing config (if any), merges a single
+//! file-based handler reads the agent's existing config (if any), merges a single
 //! `vex` server entry without disturbing siblings, and writes back
 //! atomically (`.tmp` + rename). When the entry already matches the
 //! intended shape the handler returns [`InstallOutcome::AlreadyExists`]
@@ -19,6 +23,8 @@
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
+
+pub use super::mcp_claude_code::{ClaudeCliMissing, ClaudeCodeHandler};
 
 /// Default name vex registers itself as in every agent's MCP server
 /// table. Users override with `--server-name`; multiple `VEX_ROOT`s in
@@ -65,18 +71,39 @@ pub enum InstallOutcome {
         config_path: PathBuf,
         preview: String,
     },
+    /// CLI-delegating handler (Claude Code): the agent's own CLI ran
+    /// these commands successfully, in order.
+    Registered { commands: Vec<String> },
+    /// CLI-delegating handler: the agent's CLI refused to add because
+    /// the entry already exists (`message` is its own wording) and
+    /// `--force` was not set, so nothing changed.
+    AlreadyRegistered { message: String },
+    /// CLI-delegating handler under `--dry-run`: the commands that
+    /// would run, in order. Nothing was executed.
+    WouldRun { commands: Vec<String> },
+    /// The agent's CLI is not installed, so nothing was done. The user
+    /// must run `commands` themselves; `reason` says why.
+    NeedsAction {
+        reason: String,
+        commands: Vec<String>,
+    },
 }
 
 impl InstallOutcome {
-    /// Path the outcome refers to, regardless of variant. Public helper
-    /// for callers that want to summarise across a heterogeneous
-    /// `Vec<InstallOutcome>` (`--agent all` output) without matching.
+    /// Config file the outcome refers to, or `None` for CLI-delegating
+    /// handlers that never touch a file. Public helper for callers that
+    /// want to summarise across a heterogeneous `Vec<InstallOutcome>`
+    /// (`--agent all` output) without matching.
     #[allow(dead_code)]
-    pub fn config_path(&self) -> &Path {
+    pub fn config_path(&self) -> Option<&Path> {
         match self {
             InstallOutcome::Installed { config_path }
             | InstallOutcome::AlreadyExists { config_path }
-            | InstallOutcome::WouldInstall { config_path, .. } => config_path,
+            | InstallOutcome::WouldInstall { config_path, .. } => Some(config_path),
+            InstallOutcome::Registered { .. }
+            | InstallOutcome::AlreadyRegistered { .. }
+            | InstallOutcome::WouldRun { .. }
+            | InstallOutcome::NeedsAction { .. } => None,
         }
     }
 }
@@ -88,6 +115,16 @@ pub enum UninstallOutcome {
     Removed { config_path: PathBuf },
     /// Entry was not present — uninstall is idempotent.
     NotFound { config_path: PathBuf },
+    /// CLI-delegating handler: `command` removed the entry.
+    Unregistered { command: String },
+    /// CLI-delegating handler: `probe` (the remove command) reported
+    /// that there was no entry — nothing changed.
+    NotRegistered { probe: String },
+    /// The agent's CLI is not installed; the user must run `commands`.
+    NeedsAction {
+        reason: String,
+        commands: Vec<String>,
+    },
 }
 
 /// Handler for one agent's MCP config. Implementations are stateless;
@@ -101,8 +138,14 @@ pub trait McpAgentHandler: Send + Sync + std::fmt::Debug {
     /// Human-readable name for status output.
     fn display_name(&self) -> &'static str;
     /// Resolved path to the config file this handler reads / writes.
-    /// May not exist yet; install creates it.
+    /// May not exist yet; install creates it. CLI-delegating handlers
+    /// return the file the agent itself keeps (informational only).
     fn config_path(&self) -> Result<PathBuf>;
+    /// Where `vex mcp list` says the entries came from. Defaults to the
+    /// config file path.
+    fn list_source(&self) -> Result<String> {
+        Ok(self.config_path()?.display().to_string())
+    }
     /// Add a `vex` entry to the agent's MCP config, creating the file
     /// if absent.
     fn install(&self, ctx: &InstallContext) -> Result<InstallOutcome>;
@@ -185,8 +228,7 @@ pub(crate) fn atomic_write(dest: &Path, contents: &str) -> Result<()> {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// JSON merge primitives (shared across Claude Code / Cursor / Cline /
-// Windsurf / Zed)
+// JSON merge primitives (shared across Cursor / Cline / Windsurf / Zed)
 // ────────────────────────────────────────────────────────────────────
 
 /// Per-agent quirks for the JSON merge path. Each JSON-format handler
@@ -441,40 +483,6 @@ fn read_or_empty_toml_table(path: &Path) -> Result<toml::map::Map<String, toml::
 // Concrete handlers
 // ────────────────────────────────────────────────────────────────────
 
-/// Claude Code — `~/.claude/claude_desktop_config.json`. No special
-/// quirks; the canonical JSON profile.
-#[derive(Debug)]
-pub struct ClaudeCodeHandler;
-
-const CLAUDE_CODE_PROFILE: JsonProfile = JsonProfile {
-    root_key: "mcpServers",
-    emit_type_stdio: false,
-    emit_cline_extras: false,
-};
-
-impl McpAgentHandler for ClaudeCodeHandler {
-    fn id(&self) -> &'static str {
-        "claude-code"
-    }
-    fn display_name(&self) -> &'static str {
-        "Claude Code"
-    }
-    fn config_path(&self) -> Result<PathBuf> {
-        Ok(home_dir()?
-            .join(".claude")
-            .join("claude_desktop_config.json"))
-    }
-    fn install(&self, ctx: &InstallContext) -> Result<InstallOutcome> {
-        install_json(&CLAUDE_CODE_PROFILE, &self.config_path()?, ctx)
-    }
-    fn uninstall(&self, server_name: &str) -> Result<UninstallOutcome> {
-        uninstall_json(&CLAUDE_CODE_PROFILE, &self.config_path()?, server_name)
-    }
-    fn list_servers(&self) -> Result<Vec<String>> {
-        list_json(&CLAUDE_CODE_PROFILE, &self.config_path()?)
-    }
-}
-
 /// Cursor — `~/.cursor/mcp.json`. Requires `"type": "stdio"` per
 /// entry; otherwise same JSON shape.
 #[derive(Debug)]
@@ -507,8 +515,8 @@ impl McpAgentHandler for CursorHandler {
     }
 }
 
-/// Windsurf (Codeium) — `~/.codeium/windsurf/mcp_config.json`. Same
-/// canonical JSON profile as Claude Code; only the config path differs.
+/// Windsurf (Codeium) — `~/.codeium/windsurf/mcp_config.json`. The
+/// canonical JSON profile: `mcpServers` root, no per-entry extras.
 #[derive(Debug)]
 pub struct WindsurfHandler;
 
@@ -761,7 +769,7 @@ mod tests {
         let cfg = tmp.path().join("mcp.json");
         let ctx = make_ctx("vex", tmp.path());
 
-        let out = install_json(&CLAUDE_CODE_PROFILE, &cfg, &ctx).unwrap();
+        let out = install_json(&WINDSURF_PROFILE, &cfg, &ctx).unwrap();
         assert!(matches!(out, InstallOutcome::Installed { .. }));
         assert!(cfg.exists());
 
@@ -793,7 +801,7 @@ mod tests {
         std::fs::write(&cfg, serde_json::to_string_pretty(&initial).unwrap()).unwrap();
 
         let ctx = make_ctx("vex", tmp.path());
-        install_json(&CLAUDE_CODE_PROFILE, &cfg, &ctx).unwrap();
+        install_json(&WINDSURF_PROFILE, &cfg, &ctx).unwrap();
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -816,10 +824,10 @@ mod tests {
         let cfg = tmp.path().join("mcp.json");
         let ctx = make_ctx("vex", tmp.path());
 
-        let first = install_json(&CLAUDE_CODE_PROFILE, &cfg, &ctx).unwrap();
+        let first = install_json(&WINDSURF_PROFILE, &cfg, &ctx).unwrap();
         assert!(matches!(first, InstallOutcome::Installed { .. }));
 
-        let second = install_json(&CLAUDE_CODE_PROFILE, &cfg, &ctx).unwrap();
+        let second = install_json(&WINDSURF_PROFILE, &cfg, &ctx).unwrap();
         assert!(
             matches!(second, InstallOutcome::AlreadyExists { .. }),
             "second install must be a no-op skip, got {second:?}"
@@ -832,14 +840,14 @@ mod tests {
         let cfg = tmp.path().join("mcp.json");
         let mut ctx = make_ctx("vex", tmp.path());
 
-        install_json(&CLAUDE_CODE_PROFILE, &cfg, &ctx).unwrap();
+        install_json(&WINDSURF_PROFILE, &cfg, &ctx).unwrap();
 
         // Change the binary path; with force=true the entry must be
         // updated even though `server_name` is the same.
         ctx.binary_path = PathBuf::from("/new/vex-mcp");
         ctx.force = true;
 
-        let out = install_json(&CLAUDE_CODE_PROFILE, &cfg, &ctx).unwrap();
+        let out = install_json(&WINDSURF_PROFILE, &cfg, &ctx).unwrap();
         assert!(matches!(out, InstallOutcome::Installed { .. }));
 
         let v: serde_json::Value =
@@ -857,7 +865,7 @@ mod tests {
         let mut ctx = make_ctx("vex", tmp.path());
         ctx.dry_run = true;
 
-        let out = install_json(&CLAUDE_CODE_PROFILE, &cfg, &ctx).unwrap();
+        let out = install_json(&WINDSURF_PROFILE, &cfg, &ctx).unwrap();
         match out {
             InstallOutcome::WouldInstall { preview, .. } => {
                 assert!(preview.contains("\"vex\""));
@@ -1052,7 +1060,7 @@ key = "value"
         });
         std::fs::write(&cfg, serde_json::to_string_pretty(&initial).unwrap()).unwrap();
 
-        let out = uninstall_json(&CLAUDE_CODE_PROFILE, &cfg, "vex").unwrap();
+        let out = uninstall_json(&WINDSURF_PROFILE, &cfg, "vex").unwrap();
         assert!(matches!(out, UninstallOutcome::Removed { .. }));
 
         let v: serde_json::Value =
@@ -1069,7 +1077,7 @@ key = "value"
     fn uninstall_json_on_missing_file_is_idempotent() {
         let tmp = TempDir::new().unwrap();
         let cfg = tmp.path().join("never-existed.json");
-        let out = uninstall_json(&CLAUDE_CODE_PROFILE, &cfg, "vex").unwrap();
+        let out = uninstall_json(&WINDSURF_PROFILE, &cfg, "vex").unwrap();
         assert!(matches!(out, UninstallOutcome::NotFound { .. }));
         assert!(!cfg.exists(), "uninstall must not create the file");
     }
@@ -1078,7 +1086,7 @@ key = "value"
     fn list_json_returns_empty_when_file_absent() {
         let tmp = TempDir::new().unwrap();
         let cfg = tmp.path().join("never-existed.json");
-        assert!(list_json(&CLAUDE_CODE_PROFILE, &cfg).unwrap().is_empty());
+        assert!(list_json(&WINDSURF_PROFILE, &cfg).unwrap().is_empty());
     }
 
     #[test]

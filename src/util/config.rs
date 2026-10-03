@@ -316,7 +316,7 @@ pub const DEFAULT_CONFIG: &str = r#"# vex configuration — https://github.com/t
 
 # Use the GPU for embedding generation, if this vex build was compiled with a
 # gpu-* feature (DirectML on Windows / CoreML on macOS prebuilts; CUDA via
-# `cargo install vex --features gpu-cuda`).
+# `cargo install --git https://github.com/tenatarika/vex vex --features gpu-cuda`).
 # When this setting is OMITTED, vex picks the compile-time default — Auto on
 # a GPU build, Cpu otherwise. Setting `true` here resolves to Auto with silent
 # CPU fallback; `false` forces CPU regardless of build features.

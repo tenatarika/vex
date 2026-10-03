@@ -307,8 +307,10 @@ pub enum Commands {
         /// query (~seconds). Opt-in — adds 5-30s to cold index and ~10%
         /// to index.vex size on long-lived repos.
         ///
-        /// Phase 14.8 Step 3 scaffold — flag is parsed but the builder
-        /// lands in Step 4b. Today `--history` is a no-op.
+        /// Writes the `index.git_history` sidecar next to the index and
+        /// records the opt-in in the manifest, so later `vex update`
+        /// runs keep the history index current (drop it with
+        /// `vex update --no-history`).
         #[arg(long)]
         history: bool,
 
@@ -643,16 +645,15 @@ pub enum Commands {
         #[arg(long)]
         no_wait: bool,
 
-        /// Re-build the Phase 14.8 `git_history` section incrementally
-        /// against the new tip. Detects force-push / rebase via
-        /// `git merge-base --is-ancestor` and falls back to full rebuild
-        /// when the previous tip is unreachable. Has no effect if no
-        /// `git_history` section is present in the prior manifest
-        /// (run `vex index --history` first to enable).
+        /// Bring the persistent history index (`index.git_history`
+        /// sidecar) up to the new tip: walks only the commits added
+        /// since the last build, and falls back to a full rebuild when
+        /// the previous tip is unreachable (force-push / rebase, checked
+        /// via `git merge-base --is-ancestor`). Builds it from scratch
+        /// if no history index exists yet.
         ///
-        /// Phase 14.8 Step 3 scaffold — flag is parsed but the
-        /// incremental walker lands in Step 5. Today `--history` is a
-        /// no-op.
+        /// Usually unnecessary: once history is indexed, a plain
+        /// `vex update` keeps it current on its own (sticky opt-in).
         #[arg(long)]
         history: bool,
 
@@ -661,10 +662,9 @@ pub enum Commands {
         /// the manifest records `history_indexed_at = Some(_)`,
         /// subsequent `vex update` runs rebuild the section by default;
         /// `--no-history` is the way to drop it. Conflicts with
-        /// `--history`.
-        ///
-        /// Phase 14.8 Step 3 scaffold — flag is parsed but the drop
-        /// path lands in Step 5. Today `--no-history` is a no-op.
+        /// `--history`. Deletes the `index.git_history` sidecar and
+        /// clears the sticky opt-in; `vex history` then falls back to
+        /// the query-time `git log` walker.
         #[arg(long, conflicts_with = "history")]
         no_history: bool,
 
@@ -1521,9 +1521,10 @@ docs/GPU_SUPPORT.md §11 — heavy embedders / shared GPU only)."
     /// `uninstall` removes it; `list` shows current entries.
     /// `--agent all` fans out across every supported agent.
     ///
-    /// Supported agents: `claude-code`, `cursor`. More land in the
-    /// follow-up commits — `codex-cli`, `windsurf`, `cline`,
-    /// `continue`, `zed`.
+    /// Supported agents: `claude-code`, `cursor`, `codex-cli`,
+    /// `windsurf`, `cline`, `continue`, `zed`. Claude Code is registered
+    /// through its own CLI (`claude mcp add --scope user`); the others
+    /// get their config file edited directly.
     Mcp {
         #[command(subcommand)]
         action: McpAction,
@@ -1651,6 +1652,22 @@ docs/GPU_SUPPORT.md §11 — heavy embedders / shared GPU only)."
     },
 }
 
+/// `--server-name` validator. The name becomes a positional argument of
+/// `claude mcp add|remove`, where a leading `-` would be parsed as a
+/// flag, and a file name for Continue.dev — so reject it up front, along
+/// with empty or whitespace-only names.
+fn parse_server_name(s: &str) -> Result<String, String> {
+    if s.trim().is_empty() {
+        return Err("server name must not be empty".into());
+    }
+    if s.starts_with('-') {
+        return Err(format!(
+            "server name `{s}` must not start with `-` (it would be read as a flag)"
+        ));
+    }
+    Ok(s.to_string())
+}
+
 /// Sub-action for `vex mcp ...`. Each variant maps 1:1 to a function
 /// in [`crate::cli::cmd_mcp`].
 #[derive(Subcommand)]
@@ -1659,15 +1676,18 @@ pub enum McpAction {
     /// Idempotent: skips writes when an entry already matches the
     /// intended shape unless `--force` is set.
     Install {
-        /// Target agent. Use `all` to install into every supported
-        /// agent at once. See `vex mcp install --help` for the list.
+        /// Target agent: `claude-code`, `cursor`, `codex-cli`,
+        /// `windsurf`, `cline`, `continue`, `zed`, or `all` for every
+        /// one of them. `claude-code` runs `claude mcp add --scope user`
+        /// (needs `claude` on PATH; otherwise the command is printed for
+        /// you to run and nothing is written).
         #[arg(long, value_name = "ID")]
         agent: String,
 
         /// Name registered in the agent's MCP server table. Defaults
         /// to `vex`. Use distinct names per `VEX_ROOT` for multi-repo
-        /// setups (`vex-api` / `vex-client`).
-        #[arg(long, value_name = "NAME")]
+        /// setups (`vex-api` / `vex-client`). Must not start with `-`.
+        #[arg(long, value_name = "NAME", value_parser = parse_server_name)]
         server_name: Option<String>,
 
         /// Absolute path to the `vex-mcp` binary. Defaults to the
@@ -1681,7 +1701,8 @@ pub enum McpAction {
         #[arg(long, value_name = "PATH")]
         project_root: Option<PathBuf>,
 
-        /// Don't touch any files — print what *would* be written.
+        /// Don't touch any files — print what *would* be written (for
+        /// `claude-code`: the exact `claude mcp` commands, none run).
         #[arg(long)]
         dry_run: bool,
 
@@ -1696,16 +1717,23 @@ pub enum McpAction {
     /// Remove the named server entry from the agent's MCP config.
     /// Idempotent: no error if the entry was already absent.
     Uninstall {
+        /// Target agent: `claude-code`, `cursor`, `codex-cli`,
+        /// `windsurf`, `cline`, `continue`, `zed`, or `all`.
+        /// `claude-code` runs `claude mcp remove --scope user`.
         #[arg(long, value_name = "ID")]
         agent: String,
 
-        #[arg(long, value_name = "NAME")]
+        /// Server entry to remove. Defaults to `vex`.
+        #[arg(long, value_name = "NAME", value_parser = parse_server_name)]
         server_name: Option<String>,
     },
 
     /// Print the MCP server entries currently configured for one
     /// agent (with `--agent <id>`) or all supported agents (default).
     List {
+        /// Agent to inspect (`claude-code`, `cursor`, `codex-cli`,
+        /// `windsurf`, `cline`, `continue`, `zed`, or `all`). Omit for
+        /// all. `claude-code` reports via `claude mcp get vex`.
         #[arg(long, value_name = "ID")]
         agent: Option<String>,
     },
