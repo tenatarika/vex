@@ -16,7 +16,7 @@ vex mcp list                                 # show current entries per agent
 
 The snippets in this folder are still useful for **manual edits**, **agents the auto-installer doesn't know yet**, and **inspection** (the install command writes the same shapes you see here). To use them by hand:
 
-1. Install the `vex-mcp` binary (download from a release, or `cargo build --release -p vex-mcp`).
+1. Install the `vex-mcp` binary (download from a release, or `cargo build --release -p vex-search-mcp`).
 2. Pick your agent's folder below.
 3. Copy the contents into the listed config path.
 4. Replace `/path/to/vex-mcp` with the absolute path to the binary (or just `vex-mcp` if it's on `PATH`).

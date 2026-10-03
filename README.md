@@ -76,12 +76,24 @@ See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for the full coverage matrix, c
 brew tap tenatarika/tap
 brew install vex
 
+# crates.io (compiles from source; the crate is `vex-search`, the binary is `vex`)
+cargo install vex-search --locked        # → ~/.cargo/bin/vex
+cargo install vex-search-mcp --locked    # → ~/.cargo/bin/vex-mcp (MCP server)
+
 # From source (any platform with a Rust toolchain)
 git clone https://github.com/tenatarika/vex.git
 cd vex
 cargo build --release
 cp target/release/vex ~/.local/bin/
 ```
+
+What `cargo install vex-search` (and any source build) needs:
+
+- **Network at build time**: the build downloads a prebuilt ONNX Runtime. Prebuilts exist only for `aarch64-apple-darwin`, `x86_64`/`aarch64-unknown-linux-gnu` and `x86_64`/`aarch64-pc-windows-msvc`; on any other target (Intel macOS, musl, …) point `ORT_LIB_LOCATION` at a local ONNX Runtime build.
+- **A C/C++ toolchain** (Xcode Command Line Tools, `build-essential`, or MSVC Build Tools) for the tree-sitter grammars.
+- **Linux: `libssl-dev` and `pkg-config`** (Fedora: `openssl-devel`). The HTTP stack links OpenSSL through `native-tls`.
+- The first `vex index --semantic` downloads the ~86 MB embedding model; structural search needs no download.
+- `vex-search-mcp` only installs the MCP server. It runs the `vex` CLI, so install `vex-search` too and keep `vex` on `PATH`, or set `VEX_BIN` to its full path.
 
 ### Linux
 
@@ -393,7 +405,7 @@ Semantic indexing (`--semantic`) can run the embedding model on a GPU — a larg
 **Two layers — the binary, and the device:**
 
 - **Prebuilt binaries bake in a driver-only GPU EP:** Windows → **DirectML** (any DX12 GPU — NVIDIA/AMD/Intel; the redist `DirectML.dll` is bundled in the archive), macOS arm64 → **CoreML**. No SDK, no extra install. The Linux prebuilt is CPU-only.
-- **CUDA is a source-build opt-in** (fastest on NVIDIA — ~1.75× DirectML): `cargo install --git https://github.com/tenatarika/vex vex --features gpu-cuda`. Needs the CUDA 12 runtime + cuDNN 9 on `PATH` (the NVIDIA *driver alone* is not enough — it ships only `nvcuda.dll`, not the runtime/cuDNN). Source builds for the others: `--features gpu-coreml` / `gpu-directml`.
+- **CUDA is a source-build opt-in** (fastest on NVIDIA — ~1.75× DirectML): `cargo install --git https://github.com/tenatarika/vex vex-search --features gpu-cuda`. Needs the CUDA 12 runtime + cuDNN 9 on `PATH` (the NVIDIA *driver alone* is not enough — it ships only `nvcuda.dll`, not the runtime/cuDNN). Source builds for the others: `--features gpu-coreml` / `gpu-directml`.
 
 **Selecting the device** (`vex index` / `vex update`):
 
@@ -851,7 +863,7 @@ This runs `claude mcp add --scope user --transport stdio vex --env VEX_ROOT=<roo
 # 2. Extract and put the binary on PATH (or remember the full path).
 
 # Source build (if you prefer or are on an unsupported triple)
-cargo build --release -p vex-mcp
+cargo build --release -p vex-search-mcp
 
 # Register with Claude Code (user scope; Claude Code keeps it in ~/.claude.json)
 claude mcp add --scope user --transport stdio vex \
@@ -929,6 +941,8 @@ Copy-pasteable snippets for the most common ones live under [`integrations/`](in
 | Zed                | [`integrations/zed/settings.json`](integrations/zed/settings.json)                 | `~/.config/zed/settings.json`                                        |
 
 Per-agent caveats (auto-approve flags, timeout overrides, agent-mode requirements) are documented in [`integrations/README.md`](integrations/README.md).
+
+**MCP Registry (from v1.27.2)**: vex is listed in the official [MCP Registry](https://registry.modelcontextprotocol.io) as `io.github.tenatarika/vex`. Each release attaches one MCP Bundle per platform (`vex-mcp-<target>.mcpb`, macOS arm64 / Linux x86_64 / Windows x86_64) that holds both `vex-mcp` and `vex`; an MCPB-capable client asks for the project root once and needs nothing else on `PATH`. Bundle installs are updated by the client, not by `vex self-update` (which refuses to run inside a bundle).
 
 ### Agent Recipes & Workflows
 

@@ -33,7 +33,7 @@ cargo build
 cargo build --release
 
 # MCP server (separate crate in the workspace).
-cargo build --release -p vex-mcp
+cargo build --release -p vex-search-mcp
 ```
 
 Binaries land at `target/debug/vex` and `target/release/vex` (+ `target/release/vex-mcp`).
@@ -130,7 +130,7 @@ Three files and one snapshot update:
 2. **Schema**: `crates/vex-mcp/src/descriptors.rs` → add a tool entry in `tool_descriptors()` JSON.
 3. **Helpers**: `crates/vex-mcp/src/args.rs` → optional shared parameter helpers (reduce boilerplate).
 4. **Tests** — add inline `#[test]` cases mirroring the existing `<tool>_<flag>_pushes_flag` / `<tool>_<flag>_default_omits_flag` pattern; the `tool_descriptors_snapshot` regression guard locks the schema.
-5. **Regenerate the snapshot**: `INSTA_UPDATE=always cargo test -p vex-mcp tool_descriptors_snapshot`.
+5. **Regenerate the snapshot**: `INSTA_UPDATE=always cargo test -p vex-search-mcp tool_descriptors_snapshot`.
 
 The shared helpers (`push_scope`, `push_metadata`, `push_diff_scope`, `push_show_truncate`, `push_kind`, `push_no_stale_check`, `push_auto_update`) handle the standard flag families — reuse them rather than inlining.
 

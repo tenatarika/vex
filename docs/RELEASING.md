@@ -29,6 +29,13 @@ A push of `v<X>.<Y>.<Z>` to GitHub triggers `.github/workflows/release.yml`:
    `tenatarika/homebrew-tap` (source archive only; the binary tarballs
    are not pinned by Homebrew).
 
+Off to the side, the **`mcpb`** job builds the MCP Bundles from the build
+artifacts, **`attach-mcpb`** adds them to the release once it exists, and
+**`publish-mcp-registry`** publishes them to the MCP Registry — see
+[MCP Registry](#mcp-registry-mcpb-bundles). Neither `release` nor
+`update-homebrew` depends on these jobs, so an MCPB or registry failure
+never blocks the signed tarballs or the formula.
+
 `vex self-update` downloads from this same release, verifies the
 embedded zipsign signature against the public key compiled into the
 binary (`VEX_RELEASE_PUBKEY` in `src/cli/cmd_self_update.rs`), and
@@ -92,11 +99,12 @@ $EDITOR CHANGELOG.md
 git commit -am "docs: prepare vX.Y.Z release notes"
 
 # 2. Bump the version. It lives in ONE place: `[workspace.package] version`
-#    in the root Cargo.toml. Both `vex` and `vex-mcp` inherit it via
+#    in the root Cargo.toml. Both `vex-search` (binary `vex`) and
+#    `vex-search-mcp` (binary `vex-mcp`) inherit it via
 #    `version.workspace = true`, so they can no longer drift apart (vex-mcp
 #    sat at 0.1.0 for several releases before this).
 $EDITOR Cargo.toml
-cargo build --release  # updates the `vex` entry in Cargo.lock to match
+cargo build --release  # updates the `vex-search` entry in Cargo.lock to match
 # The ROOT Cargo.lock IS tracked (only fuzz/Cargo.lock is gitignored).
 # Stage it alongside Cargo.toml or CI's `--locked` build fails with
 # "Cargo.lock needs to be updated". `-am` covers it (lock is tracked).
@@ -106,6 +114,19 @@ git commit -am "chore: bump version to X.Y.Z"
 git tag vX.Y.Z
 git push origin main
 git push origin vX.Y.Z
+
+# 4. (optional) Publish to crates.io. The package names differ from the
+#    binary names because `vex` / `vex-mcp` are taken there: package
+#    `vex-search` installs `vex`, `vex-search-mcp` installs `vex-mcp`.
+#    Release assets (vex-<triple>.tar.gz / vex-mcp-<triple>.tar.gz) are
+#    unaffected. Dry-run first; the two crates are independent (no path
+#    dep between them), so order does not matter. Publish from a CLEAN
+#    checkout of the tag (`git status` empty, HEAD == vX.Y.Z) and never pass
+#    --allow-dirty: the uploaded .crate is immutable and must match the tag.
+cargo publish --dry-run -p vex-search
+cargo publish --dry-run -p vex-search-mcp
+cargo publish -p vex-search
+cargo publish -p vex-search-mcp
 ```
 
 `git-cliff` will read commits between the previous tag and `vX.Y.Z` to
@@ -114,6 +135,124 @@ follow the conventional-commit prefixes (`feat`, `fix`, `docs`,
 `chore`, etc.). The `chore: bump version` and `docs: prepare vX
 release notes` commits are filtered out of the auto-generated body —
 see `cliff.toml`.
+
+## MCP Registry (.mcpb bundles)
+
+From v1.27.2 every stable release is published to the official MCP Registry
+(<https://registry.modelcontextprotocol.io>) as `io.github.tenatarika/vex`.
+The registry stores metadata only; the artifacts are MCP Bundles attached
+to the GitHub release.
+
+Files:
+
+| File | Role |
+| --- | --- |
+| `packaging/mcpb/manifest.json` | MCPB manifest template (`manifest_version` 0.3, `server.type: binary`). Version, `entry_point`, command/`VEX_BIN` paths and `compatibility.platforms` are filled per target. |
+| `server.json` (repo root) | Registry `server.json` template. `__VERSION__` / `__SHA256__` placeholders; the template itself fails `mcp-publisher validate` on purpose. |
+| `packaging/mcpb/build-bundle.sh` | Renders the manifest for one target, runs `mcpb validate`, `chmod 0755` on the unix binaries, `mcpb pack` → `vex-mcp-<target>.mcpb`. |
+| `packaging/mcpb/render-server-json.sh` | Fills the version and each bundle's SHA-256 into `server.json`; fails on a missing bundle, a malformed hash, a leftover placeholder or a description over 100 chars. |
+| `packaging/mcpb/dry-run.sh` | Local dry run for the host platform (see below). |
+| `packaging/mcpb/package.json` + `package-lock.json` | Pin `@anthropic-ai/mcpb` 2.1.2 and its whole dependency tree (integrity hashes). Installed with `npm ci --ignore-scripts --prefix packaging/mcpb`; `node_modules/` is gitignored. `$MCPB` overrides the CLI for the scripts. To bump: `npm install --package-lock-only --ignore-scripts @anthropic-ai/mcpb@<v>` in that directory. |
+
+Pipeline:
+
+1. **`mcpb`** (after `build`, ubuntu, `contents: read`, checkout without
+   persisted credentials) — installs the lockfile-pinned mcpb CLI with
+   `npm ci --ignore-scripts`; for each of the three targets extracts
+   `vex-<t>.tar.gz` + `vex-mcp-<t>.tar.gz` into `stage/<t>/server` (the
+   Windows one brings `DirectML.dll`) and builds the bundle; requires
+   `vex --version` to be exactly `vex X.Y.Z` or `vex vX.Y.Z` for the tag;
+   renders `server.rendered.json`; unzips each bundle to verify the
+   manifest, the exec bits and the DLL; uploads everything as the `mcpb`
+   artifact.
+2. **`attach-mcpb`** (after `release` and `mcpb`, `contents: write`) —
+   `gh release upload`s the three `vex-mcp-*.mcpb`. An asset that is already
+   attached is compared by SHA-256: identical → skipped, different → the job
+   fails. There is deliberately no `--clobber`: once the registry lists a
+   version it pins the old hash, and replacing the bundle would make that
+   listing uninstallable. Bundles are not zipsigned (the signing loop in
+   `release` matches only `vex-*.tar.gz`; self-update never downloads them,
+   and the registry pins them by SHA-256).
+3. **`publish-mcp-registry`** (after `attach-mcpb`; skipped for tags containing
+   `-`, i.e. prereleases) — checks `server.rendered.json` names this tag,
+   downloads each LIVE release URL and compares its SHA-256 with
+   `server.json`, asks the registry whether this version already exists,
+   then installs `mcp-publisher` v1.8.1 (tarball SHA-256 pinned in the
+   workflow), runs `validate`, `login github-oidc` (job permission
+   `id-token: write`; no secret) and `publish`.
+
+Bundle naming is load-bearing: `vex-mcp-<target>.mcpb`, never
+`vex-<target>.mcpb`. `vex self-update` picks its asset with
+`name.contains("vex-<target>")`, which `vex-<target>.mcpb` would also
+satisfy. Pinned by `mcpb_bundle_never_matches_self_update_identifier` in
+`src/cli/cmd_self_update.rs`. The same file makes `vex self-update` refuse
+to run when the exe sits inside an unpacked vex bundle (a `manifest.json`
+with `name: "vex"` and `server.type: "binary"` next to the exe or one
+directory up): the host app owns that install.
+
+Local dry run (needs a release build, node/npm, jq, unzip; publishes nothing;
+runs `npm ci` into `packaging/mcpb/node_modules` on first use):
+
+```bash
+cargo build --release --workspace
+packaging/mcpb/dry-run.sh            # → target/mcpb-dry-run/vex-mcp-<host>.mcpb
+```
+
+It builds the host-platform bundle from `target/release/{vex,vex-mcp}`,
+lists its contents, checks exec bits and manifest fields, starts the
+bundled `vex-mcp` for an `initialize` + `tools/list` round trip, and prints
+the SHA-256.
+
+Failure modes:
+
+- **Publish before the assets are live.** The registry HEAD-checks every
+  package URL during `publish` and rejects the version if one 404s. That is
+  why the job runs after `attach-mcpb`. If it ran early or the release was
+  re-created, re-run the job once the assets are up.
+- **`attach-mcpb` fails with "already attached with different bytes".**
+  The `mcpb` job was re-run (zip timestamps change, so every rebuild has new
+  hashes) after the bundles were attached. If the version is NOT in the
+  registry yet, delete the three `vex-mcp-*.mcpb` assets from the release
+  (`gh release delete-asset vX.Y.Z <name>`) and re-run `attach-mcpb` +
+  `publish-mcp-registry`. If it already is, leave the assets alone.
+- **Re-publishing a version.** A version can be published exactly once.
+  The job asks `GET /v0/servers/io.github.tenatarika%2Fvex/versions/<v>`
+  first: 404 → publish; 200 with the same identifiers and hashes → success
+  without publishing, so re-running a green or half-green workflow is safe;
+  200 with different hashes → the job fails. Bundles rebuilt after
+  publishing (a re-run of `mcpb`, a re-uploaded asset) have new hashes and
+  can never be published under the same version. Cut a patch release
+  instead. Don't re-run the whole workflow for an already-published tag;
+  re-run only the failed jobs.
+- **Hash mismatch.** `Verify live release assets` fails when a release
+  asset differs from the bundle the `mcpb` job hashed (manual re-upload,
+  a release edited by hand). Clients verify `fileSha256` after download, so
+  a mismatched listing would be uninstallable. Restore the original asset or
+  cut a patch release.
+- **OIDC login fails.** The job needs `permissions: id-token: write`, and
+  the repo must sit under the `tenatarika` GitHub account the
+  `io.github.tenatarika/` namespace belongs to.
+
+Manual fallback (the job failed and re-running it doesn't help). Download
+the `mcpb` artifact from the workflow run (it holds
+`server.rendered.json`), check it against the live assets, then publish
+interactively:
+
+```bash
+gh run download <run-id> -n mcpb -D mcpb
+jq -r '.packages[] | "\(.fileSha256)  \(.identifier)"' mcpb/server.rendered.json
+# for each line: curl -fsSL <url> | sha256sum  → must match
+curl -fsSL -o mcp-publisher.tar.gz \
+  "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_$(uname -s | tr A-Z a-z)_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz"
+tar -xzf mcp-publisher.tar.gz mcp-publisher
+./mcp-publisher validate mcpb/server.rendered.json
+./mcp-publisher login github     # device flow, as the tenatarika account
+./mcp-publisher publish mcpb/server.rendered.json
+```
+
+If the artifact has expired, rebuild `server.json` from the live release
+assets: download the three `vex-mcp-*.mcpb` files into a directory and run
+`packaging/mcpb/render-server-json.sh X.Y.Z <dir> > server.rendered.json`.
 
 ## DirectML.dll pin (Windows release archive)
 

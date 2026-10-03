@@ -13,7 +13,7 @@
 via `fastembed 5.14 → ort 2.0.0-rc.12` (ONNX Runtime). The prebuilt binaries
 shipped in v1.16.0+ support GPU acceleration (CoreML on macOS, DirectML on Windows),
 while CPU is always available as a fallback.
-For source builds, specify the feature: `cargo install --git https://github.com/tenatarika/vex vex --features gpu-cuda` for NVIDIA support.
+For source builds, specify the feature: `cargo install --git https://github.com/tenatarika/vex vex-search --features gpu-cuda` for NVIDIA support.
 
 GPU is worth it **only** for cold / large-delta builds:
 
@@ -34,7 +34,7 @@ batch of misses, CPU may be faster — hence the miss-count gate (§3 principle 
 itself (a Cargo build-time feature) — *not* building an index. The index is
 runtime data produced by `vex index`; its format and vectors are identical no
 matter which device computed them, and any vex binary can read any index. A
-binary becomes GPU-capable via `cargo install --git https://github.com/tenatarika/vex vex --features <gpu-*>`, or by downloading the prebuilt Windows/macOS releases we ship with the feature on (since v1.16.0). `--gpu` / `--device` then choose, *at index
+binary becomes GPU-capable via `cargo install --git https://github.com/tenatarika/vex vex-search --features <gpu-*>`, or by downloading the prebuilt Windows/macOS releases we ship with the feature on (since v1.16.0). `--gpu` / `--device` then choose, *at index
 time*, whether that compiled-in EP is actually used.
 
 ## 3. Design principles
@@ -239,7 +239,7 @@ pub fn execution_providers(
         }
         Device::Cuda => {
             #[cfg(feature = "gpu-cuda")]      eps.push(ep::CUDA::default().build());
-            #[cfg(not(feature = "gpu-cuda"))] bail!("vex was not built with CUDA (rebuild: cargo install vex --features gpu-cuda)");
+            #[cfg(not(feature = "gpu-cuda"))] bail!("vex was not built with CUDA (rebuild: cargo install vex-search --features gpu-cuda)");
         }
         Device::DirectMl => {
             #[cfg(feature = "gpu-directml")]      eps.push(ep::DirectML::default().build());
@@ -689,7 +689,7 @@ dep. Do not pursue.
 | Windows x86_64 | built `--features gpu-directml` | Auto (DirectML, any GPU vendor) | **Yes** |
 | macOS arm64 | built `--features gpu-coreml` | Auto (CoreML) | **Yes** |
 | Linux x86_64 | CPU (unchanged) | CPU | No — `cargo install --features gpu-cuda` for NVIDIA |
-| Any (NVIDIA/CUDA) | n/a | — | Source build only: `cargo install vex --features gpu-cuda` (host CUDA 12/13 + cuDNN 9) |
+| Any (NVIDIA/CUDA) | n/a | — | Source build only: `cargo install vex-search --features gpu-cuda` (host CUDA 12/13 + cuDNN 9) |
 
 ---
 
