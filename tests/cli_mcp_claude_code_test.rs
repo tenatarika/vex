@@ -2,7 +2,7 @@
 //! `claude` CLI (`claude mcp add|remove|get`) instead of writing a config
 //! file. Claude Code keeps user-scope MCP servers in `~/.claude.json`
 //! alongside unrelated state and its docs recommend `claude mcp add`
-//! over hand-editing that file; the pre-1.27.2 handler wrote
+//! over hand-editing that file; the pre-1.27.1 handler wrote
 //! `~/.claude/claude_desktop_config.json`, which Claude Code never reads.
 //!
 //! Every test drives the real `vex` binary against a FAKE `claude`
@@ -111,7 +111,12 @@ fn shared_fake_claude() -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     let path = dir.join("fake-claude-v2");
     if std::fs::read_to_string(&path).ok().as_deref() != Some(FAKE_CLAUDE) {
-        let tmp = dir.join(format!("fake-claude-v2.{}.tmp", std::process::id()));
+        // Unique per call, not just per process: `cargo test` runs these
+        // tests as threads of one process, and two threads sharing a temp
+        // name race on the rename (the loser gets NotFound).
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = dir.join(format!("fake-claude-v2.{}.{seq}.tmp", std::process::id()));
         std::fs::write(&tmp, FAKE_CLAUDE).unwrap();
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::rename(&tmp, &path).unwrap();
