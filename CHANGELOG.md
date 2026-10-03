@@ -6,6 +6,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.27.1] - 2026-10-03
+
+### Added
+
+- **`--exclude-tests` on every command that takes `--include`/`--exclude`.**
+  It drops test files from the results, including `vex modules` members and
+  hubs, so test clusters no longer crowd the top of the list. The MCP tools
+  take the same `exclude_tests` argument. Test files are recognised by path
+  (`tests/`, `test/`, `spec/`, `__tests__/`, `*_test.go`, `test_*.py`,
+  `*.test.ts`, `*Test.java`, `tests.rs` and similar). Unit tests inside a
+  `#[cfg(test)]` module of an ordinary file cannot be excluded this way.
+  `vex tests-for` rejects the flag, since it would exclude everything.
+
+### Changed
+
+- **One definition of "test file" everywhere.** `vex tests-for`, the new flag,
+  `--kind test`, the test-file demotion in search ranking and `bundle
+  pr-impact` now share one path predicate instead of three. Effects:
+  - Files named `tests.rs` count as tests.
+  - A production file whose name starts with `test_` (or that lives under a
+    `test_*` directory) no longer counts as a test.
+  - Matching is case-sensitive, so `Tests/` or `Spec/` directories no longer
+    count.
+  - `bundle pr-impact` now recognises a root-level `tests/` directory. It
+    previously missed it.
+  - The ranking evaluation set is unchanged by this.
+- **`bundle pr-impact` applies scope filters to the whole report.**
+  `--include`, `--exclude` and `--exclude-tests` now also filter the caller and
+  test rows, not only the changed files.
+
+### Fixed
+
+- **Spurious `LEAK` reports from cargo-nextest on macOS** came from a nextest
+  bug, not from vex. `.config/nextest.toml` now recommends nextest 0.9.145 or
+  later, which fixes it.
+
 ## [1.27.0] - 2026-10-02
 
 ### Added
@@ -4009,7 +4045,8 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.27.0...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.27.1...HEAD
+[1.27.1]: https://github.com/tenatarika/vex/compare/v1.27.0...v1.27.1
 [1.27.0]: https://github.com/tenatarika/vex/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/tenatarika/vex/compare/v1.25.5...v1.26.0
 [1.25.1]: https://github.com/tenatarika/vex/compare/v1.25.0...v1.25.1
