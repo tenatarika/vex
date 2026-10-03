@@ -87,6 +87,9 @@ pub struct FilterSnapshot {
     pub include: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exclude: Vec<String>,
+    /// `--exclude-tests` — test files dropped. Omitted when off.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub exclude_tests: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -279,6 +282,17 @@ mod tests {
         assert!(s.contains(r#""threshold_applied":0.65"#));
         assert!(s.contains(r#""candidates_before_filter":12"#));
         assert!(s.contains(r#""include":["src/**"]"#));
+        assert!(!s.contains("exclude_tests"), "omitted when off: {s}");
+    }
+
+    #[test]
+    fn filter_snapshot_records_exclude_tests_when_on() {
+        let f = FilterSnapshot {
+            exclude_tests: true,
+            ..Default::default()
+        };
+        let s = serde_json::to_string(&f).unwrap();
+        assert!(s.contains(r#""exclude_tests":true"#), "{s}");
     }
 
     #[test]

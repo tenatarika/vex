@@ -20,6 +20,15 @@ use crate::callgraph::test_patterns::{
 };
 use crate::store::reader::IndexReader;
 
+/// Match against the (possibly user-supplied) `--test-pattern` set, with
+/// Windows separators normalised the same way `is_test_path` does.
+fn is_test_match(set: &globset::GlobSet, path: &str) -> bool {
+    if path.contains('\\') {
+        return set.is_match(path.replace('\\', "/"));
+    }
+    set.is_match(path)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tests_for(
     ctx: &CmdCtx<'_>,
@@ -33,7 +42,14 @@ pub(crate) fn tests_for(
     include_fixtures: bool,
     scope: ScopeArgs,
 ) -> Result<()> {
-    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    if scope.exclude_tests {
+        bail!(
+            "`--exclude-tests` contradicts `vex tests-for`: it lists test functions, so \
+             excluding test files always yields nothing. Use `--include`/`--exclude` to \
+             narrow the test files instead."
+        );
+    }
+    let path_scope = scope::PathScope::from_scope_args(&scope)?;
     let root = resolve_root(path)?.canonicalize()?;
     let index_path = ensure_index_ready(
         &root,
@@ -63,7 +79,7 @@ pub(crate) fn tests_for(
     let mut rows: Vec<TestsForRow> = raw
         .iter()
         .filter(|m| path_scope.accept(&m.path))
-        .filter(|m| test_globset.is_match(&m.path))
+        .filter(|m| is_test_match(&test_globset, &m.path))
         .filter(|m| include_fixtures || looks_like_test_name(&m.name))
         .map(|m| TestsForRow {
             framework: framework_for_path(&m.path),
@@ -103,7 +119,7 @@ pub(crate) fn tests_for(
                 if !seen.insert(c.name.clone()) {
                     continue;
                 }
-                if !path_scope.accept(&c.path) || !test_globset.is_match(&c.path) {
+                if !path_scope.accept(&c.path) || !is_test_match(&test_globset, &c.path) {
                     continue;
                 }
                 extra.push(TestsForRow {

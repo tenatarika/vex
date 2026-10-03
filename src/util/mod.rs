@@ -5,4 +5,5 @@ pub mod git_diff;
 pub mod ident;
 pub mod paths;
 pub mod sidecar;
+pub mod test_paths;
 pub mod walk;

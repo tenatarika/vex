@@ -20,9 +20,9 @@ pub enum ModulesSort {
     Cohesion,
 }
 
-/// Per-query path scope filters — `--include <glob>` and `--exclude <glob>`,
-/// both repeatable. Flatten into every search-shaped subcommand for a
-/// consistent UX.
+/// Per-query path scope filters: `--include <glob>` and `--exclude <glob>`
+/// (both repeatable), plus the `--exclude-tests` shorthand. Flatten into
+/// every search-shaped subcommand for a consistent UX.
 #[derive(Args, Clone, Debug, Default)]
 pub struct ScopeArgs {
     /// Whitelist results by path glob (repeatable, case-sensitive). Example:
@@ -34,6 +34,13 @@ pub struct ScopeArgs {
     /// Wins over `--include`. Example: `--exclude '**/*.gen.*'`.
     #[arg(long, value_name = "GLOB")]
     pub exclude: Vec<String>,
+
+    /// Drop test files (`tests/`, `*_test.*`, `test_*.py`, `*.spec.ts`,
+    /// `__tests__/`, `tests.rs`, …; same set as `vex tests-for`). Composes
+    /// with `--include`/`--exclude`. Path-based only: Rust unit tests inside
+    /// a `#[cfg(test)] mod tests` block of a non-test file are NOT excluded.
+    #[arg(long)]
+    pub exclude_tests: bool,
 }
 
 /// Diff-context filters (Phase 13.7-D3). Restrict search-shaped commands

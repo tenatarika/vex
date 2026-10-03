@@ -6,6 +6,12 @@
 //! no index format / search-channel changes are required — every command
 //! pays the same flat `O(n_results)` glob match.
 //!
+//! `--exclude-tests` rides the same type: a path is rejected when the
+//! canonical [`is_test_path`] predicate matches it, so every command that
+//! applies a `PathScope` honours the flag with identical semantics. It is
+//! path-only — Rust `#[cfg(test)] mod tests` blocks inside non-test files
+//! are not detected.
+//!
 //! Semantics:
 //!   * `--include` is a *whitelist*. With no include flag the scope
 //!     admits everything; with one or more, a path must match at least
@@ -21,6 +27,9 @@
 use anyhow::{bail, Context, Result};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
+use super::args::ScopeArgs;
+use crate::util::test_paths::is_test_path;
+
 /// Defence against CPU exhaustion when scope args arrive from untrusted
 /// MCP clients: `globset::GlobSetBuilder::build()` is O(total pattern
 /// length), so a flood of long patterns can spike CPU at command start.
@@ -32,6 +41,7 @@ const MAX_PATTERN_LEN: usize = 256;
 pub struct PathScope {
     include: Option<GlobSet>,
     exclude: Option<GlobSet>,
+    exclude_tests: bool,
 }
 
 impl PathScope {
@@ -44,12 +54,29 @@ impl PathScope {
         Ok(Self {
             include: build_set(include, "include")?,
             exclude: build_set(exclude, "exclude")?,
+            exclude_tests: false,
         })
+    }
+
+    /// Compile the full scope (`--include`, `--exclude`, `--exclude-tests`)
+    /// from the shared flattened CLI args.
+    pub fn from_scope_args(args: &ScopeArgs) -> Result<Self> {
+        Ok(Self::from_args(&args.include, &args.exclude)?.with_exclude_tests(args.exclude_tests))
+    }
+
+    /// Return a copy of this scope that additionally rejects test files.
+    #[must_use]
+    pub fn with_exclude_tests(mut self, on: bool) -> Self {
+        self.exclude_tests = on;
+        self
     }
 
     /// Returns true when the path passes both the include whitelist (if
     /// any) and the exclude blacklist (if any).
     pub fn accept(&self, path: &str) -> bool {
+        if self.exclude_tests && is_test_path(path) {
+            return false;
+        }
         if let Some(ref ex) = self.exclude {
             if ex.is_match(path) {
                 return false;
@@ -63,10 +90,10 @@ impl PathScope {
         true
     }
 
-    /// True when neither `--include` nor `--exclude` was provided —
+    /// True when none of `--include`, `--exclude`, `--exclude-tests` was provided —
     /// callers can short-circuit fetch-limit inflation in that case.
     pub fn is_empty(&self) -> bool {
-        self.include.is_none() && self.exclude.is_none()
+        self.include.is_none() && self.exclude.is_none() && !self.exclude_tests
     }
 
     /// Accept-decision for a *pair* of paths (used by `vex duplicates`).
@@ -74,6 +101,9 @@ impl PathScope {
     /// when at least one side matches the include set, and dropped when
     /// at least one side matches the exclude set.
     pub fn accept_pair(&self, a: &str, b: &str) -> bool {
+        if self.exclude_tests && (is_test_path(a) || is_test_path(b)) {
+            return false;
+        }
         if let Some(ref ex) = self.exclude {
             if ex.is_match(a) || ex.is_match(b) {
                 return false;
@@ -171,6 +201,51 @@ mod tests {
         assert!(s.accept("src/main.rs"));
         assert!(s.accept("crates/vex-mcp/src/lib.rs"));
         assert!(!s.accept("docs/README.md"));
+    }
+
+    fn scope_no_tests(include: &[&str], exclude: &[&str]) -> PathScope {
+        scope(include, exclude).with_exclude_tests(true)
+    }
+
+    #[test]
+    fn exclude_tests_drops_test_files_only() {
+        let s = scope_no_tests(&[], &[]);
+        assert!(!s.is_empty());
+        assert!(s.exclude_tests);
+        assert!(s.accept("src/main.rs"));
+        assert!(!s.accept("tests/cli_scope_test.rs"));
+        assert!(!s.accept("src/cli/tests.rs"));
+        assert!(!s.accept("web/a.test.ts"));
+    }
+
+    #[test]
+    fn exclude_tests_composes_with_include_and_exclude() {
+        let s = scope_no_tests(&["src/**"], &["**/gen/**"]);
+        assert!(s.accept("src/a.rs"));
+        assert!(!s.accept("src/tests.rs"), "test file inside include");
+        assert!(!s.accept("src/gen/a.rs"), "exclude glob still applies");
+        assert!(!s.accept("docs/a.md"), "include whitelist still applies");
+    }
+
+    #[test]
+    fn exclude_tests_pair_dropped_when_either_side_is_test() {
+        let s = scope_no_tests(&[], &[]);
+        assert!(s.accept_pair("src/a.rs", "src/b.rs"));
+        assert!(!s.accept_pair("src/a.rs", "tests/b.rs"));
+        assert!(!s.accept_pair("tests/a.rs", "src/b.rs"));
+    }
+
+    #[test]
+    fn from_scope_args_reads_the_flag() {
+        let args = ScopeArgs {
+            exclude_tests: true,
+            ..ScopeArgs::default()
+        };
+        let s = PathScope::from_scope_args(&args).unwrap();
+        assert!(!s.accept("tests/x.rs"));
+        let off = PathScope::from_scope_args(&ScopeArgs::default()).unwrap();
+        assert!(off.is_empty());
+        assert!(off.accept("tests/x.rs"));
     }
 
     #[test]

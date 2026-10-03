@@ -193,8 +193,9 @@ pub(crate) fn push_kind(extra: &mut Vec<String>, args: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Pull `include: string[]` and `exclude: string[]` off the JSON-RPC args
-/// and append them as repeated `--include` / `--exclude` flags. Mirrors
+/// Pull `include: string[]`, `exclude: string[]` and `exclude_tests: bool`
+/// off the JSON-RPC args and append them as repeated `--include` /
+/// `--exclude` flags plus `--exclude-tests`. Mirrors
 /// the CLI scope filter and shares the same gitignore-style glob syntax.
 /// Non-array or missing values are silently ignored so agents that emit
 /// the field as `null`/`""` don't fail; non-string elements inside an
@@ -203,6 +204,9 @@ pub(crate) fn push_kind(extra: &mut Vec<String>, args: &Value) -> Result<()> {
 pub(crate) fn push_scope(extra: &mut Vec<String>, args: &Value) -> Result<()> {
     push_scope_field(extra, args, "include", "--include")?;
     push_scope_field(extra, args, "exclude", "--exclude")?;
+    if opt_bool(args, "exclude_tests", false)? {
+        extra.push("--exclude-tests".into());
+    }
     Ok(())
 }
 

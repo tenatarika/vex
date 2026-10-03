@@ -14,6 +14,7 @@ use std::collections::{BTreeSet, HashSet};
 use anyhow::{Context, Result};
 
 use crate::store::reader::IndexReader;
+use crate::util::test_paths::is_test_path;
 
 use super::{
     caller_kind, global_rank_percentile, signals_fst_hit, BundleArgs, BundleCoreItem, BundleCtx,
@@ -56,8 +57,7 @@ pub fn assemble_pr_impact(
     // ref, not a git repo) — those are config problems, not empty
     // diffs. Per-query glob filter applies as a post-step so the
     // semantics match `Commands::Diff` at `cli/mod.rs:1632`.
-    let path_scope =
-        crate::cli::scope::PathScope::from_args(&ctx.scope.include, &ctx.scope.exclude)?;
+    let path_scope = crate::cli::scope::PathScope::from_scope_args(ctx.scope)?;
     let mut changes = crate::diff::diff_against_base(&ctx.root, base, ctx.excludes, usize::MAX)?;
     changes.retain(|c| path_scope.accept(&c.path));
 
@@ -150,6 +150,12 @@ pub fn assemble_pr_impact(
         }
 
         for r in reachable {
+            // Scope filters hold for the whole report, not just the changed
+            // files: drop caller/test rows outside `--include`/`--exclude`
+            // (and test files under `--exclude-tests`).
+            if !path_scope.accept(&r.path) {
+                continue;
+            }
             // Aggregate-budget gate (review H9). When the combined node
             // count exceeds the cap we stop *adding* new transitive /
             // test callers but keep processing the outer change loop so
@@ -286,21 +292,6 @@ pub fn assemble_pr_impact(
             diff_filter: Some(diff_filter_meta),
         },
     ))
-}
-
-/// Substrings that mark a file as a test home. Inline per architect-
-/// review A8 — no extraction into `util/heuristics` until 13.10 lands a
-/// concrete second caller.
-fn is_test_path(path: &str) -> bool {
-    const TEST_PATH_MARKERS: &[&str] = &[
-        "/tests/",
-        "/test/",
-        "_test.",
-        ".test.",
-        "/spec/",
-        "/__tests__/",
-    ];
-    TEST_PATH_MARKERS.iter().any(|m| path.contains(m))
 }
 
 /// Heuristic test-attribute scan over the captured signature. Catches

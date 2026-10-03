@@ -69,7 +69,7 @@ pub(crate) fn usages(
     diff: DiffFilterArgs,
     workspace: bool,
 ) -> Result<()> {
-    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    let path_scope = scope::PathScope::from_scope_args(&scope)?;
 
     if workspace {
         return usages_workspace(
@@ -140,6 +140,7 @@ pub(crate) fn usages(
                 filter: filter_path.clone(),
                 include: scope.include.clone(),
                 exclude: scope.exclude.clone(),
+                exclude_tests: scope.exclude_tests,
             },
         })
     } else {

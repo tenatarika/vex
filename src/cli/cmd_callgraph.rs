@@ -338,7 +338,7 @@ pub(crate) fn paths(
     no_stale_check: bool,
     scope: ScopeArgs,
 ) -> Result<()> {
-    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    let path_scope = scope::PathScope::from_scope_args(&scope)?;
     let root = resolve_root(path)?.canonicalize()?;
     let index_path = ensure_index_ready(
         &root,
@@ -393,7 +393,7 @@ pub(crate) fn reachable(
     scope: ScopeArgs,
     workspace: bool,
 ) -> Result<()> {
-    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    let path_scope = scope::PathScope::from_scope_args(&scope)?;
 
     if workspace {
         return reachable_workspace(

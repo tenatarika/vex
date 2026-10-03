@@ -53,7 +53,7 @@ pub(crate) fn show(
         // observable for both human and automated callers.
         eprintln!("warning: --collapsed pending language-aware implementation; emitting full body");
     }
-    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    let path_scope = scope::PathScope::from_scope_args(&scope)?;
     let metadata_filter = build_metadata_filter(&meta)?;
     let root = resolve_root(None)?.canonicalize()?;
     let index_path = ensure_index_ready(

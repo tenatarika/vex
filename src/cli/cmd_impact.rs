@@ -150,7 +150,7 @@ pub(crate) fn impact(
             "vex impact: --depth clamped to [1, {MAX_DEPTH}]"
         );
     }
-    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    let path_scope = scope::PathScope::from_scope_args(&scope)?;
 
     if workspace {
         return impact_workspace(

@@ -96,6 +96,68 @@ fn search_scope_globs_become_repeated_cli_flags() {
 }
 
 #[test]
+fn exclude_tests_true_pushes_flag_and_false_does_not() {
+    let on = args_for(
+        "search",
+        json!({ "query": "Foo", "exclude_tests": true, "include": ["src/**"] }),
+    );
+    assert!(on.iter().any(|a| a == "--exclude-tests"), "{on:?}");
+    assert!(on.iter().any(|a| a == "--include"), "composes: {on:?}");
+    for off_args in [
+        json!({ "query": "Foo", "exclude_tests": false }),
+        json!({ "query": "Foo" }),
+    ] {
+        let off = args_for("search", off_args);
+        assert!(!off.iter().any(|a| a == "--exclude-tests"), "{off:?}");
+    }
+    // Same shared helper on a graph tool and on modules.
+    let callers = args_for("callers", json!({ "symbol": "foo", "exclude_tests": true }));
+    assert!(
+        callers.iter().any(|a| a == "--exclude-tests"),
+        "{callers:?}"
+    );
+    let modules = args_for("modules", json!({ "exclude_tests": true }));
+    assert!(
+        modules.iter().any(|a| a == "--exclude-tests"),
+        "{modules:?}"
+    );
+}
+
+#[test]
+fn exclude_tests_exposed_on_exactly_the_scoped_tools() {
+    let desc = tool_descriptors();
+    let tools = desc.as_array().expect("tool_descriptors returns array");
+    let mut with_include = Vec::new();
+    let mut with_flag = Vec::new();
+    for t in tools {
+        let name = t["name"].as_str().unwrap().to_string();
+        let props = &t["inputSchema"]["properties"];
+        if props["include"].is_object() {
+            with_include.push(name.clone());
+        }
+        if props["exclude_tests"].is_object() {
+            assert_eq!(props["exclude_tests"]["type"], "boolean", "{name}");
+            with_flag.push(name);
+        }
+    }
+    // `tests_for` lists test functions, so `--exclude-tests` contradicts it
+    // and the CLI rejects the flag there; the schema must not advertise it.
+    let expected: Vec<&String> = with_include.iter().filter(|n| *n != "tests_for").collect();
+    let got: Vec<&String> = with_flag.iter().collect();
+    assert_eq!(
+        got, expected,
+        "exclude_tests must track include minus tests_for"
+    );
+    assert!(with_include.iter().any(|n| n == "tests_for"));
+    assert!(!with_flag.iter().any(|n| n == "tests_for"));
+    assert_eq!(
+        with_flag.len(),
+        19,
+        "scoped tool count changed: {with_flag:?}"
+    );
+}
+
+#[test]
 fn canonical_symbol_arg_works_on_renamed_tools() {
     // The v1.7 rename: `name` → `symbol` on the six call-graph /
     // resolution tools. Sending `symbol` is the new canonical form

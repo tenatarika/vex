@@ -161,7 +161,7 @@ struct RepoReport {
 }
 
 pub(crate) fn modules(ctx: &CmdCtx<'_>, args: ModulesArgs) -> Result<()> {
-    let path_scope = PathScope::from_args(&args.scope.include, &args.scope.exclude)?;
+    let path_scope = PathScope::from_scope_args(&args.scope)?;
     let members = args.members.unwrap_or(if args.symbol.is_some() {
         SYMBOL_MODE_MEMBERS
     } else {

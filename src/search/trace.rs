@@ -46,6 +46,9 @@ pub struct FilterSnapshot {
     pub include: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exclude: Vec<String>,
+    /// `--exclude-tests` — test files dropped. Omitted when off.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub exclude_tests: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub kind: Vec<String>,
     /// `--code-only` — prose-extension results dropped. Omitted when off, so
@@ -184,6 +187,7 @@ mod tests {
             filter: Some("tests/".into()),
             include: vec!["src/**".into()],
             exclude: vec!["**/*.gen.rs".into()],
+            exclude_tests: false,
             kind: vec!["fn".into()],
             code_only: false,
             exclude_generated: false,
@@ -206,6 +210,7 @@ mod tests {
             filter: None,
             include: vec![],
             exclude: vec![],
+            exclude_tests: false,
             kind: vec![],
             code_only: false,
             exclude_generated: false,
@@ -218,6 +223,7 @@ mod tests {
         );
 
         let on = FilterSnapshot {
+            exclude_tests: true,
             code_only: true,
             exclude_generated: true,
             generated_dropped: Some(7),
@@ -225,6 +231,7 @@ mod tests {
         };
         let json = serde_json::to_string(&on).expect("serialize");
         assert!(json.contains("\"code_only\":true"), "{json}");
+        assert!(json.contains("\"exclude_tests\":true"), "{json}");
         assert!(json.contains("\"exclude_generated\":true"), "{json}");
         assert!(json.contains("\"generated_dropped\":7"), "{json}");
     }

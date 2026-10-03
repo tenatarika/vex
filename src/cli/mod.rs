@@ -510,7 +510,7 @@ fn dispatch_inner(mut cli: Cli) -> Result<()> {
             diff,
             workspace,
         } => {
-            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+            let path_scope = scope::PathScope::from_scope_args(&scope)?;
             cmd_callgraph::cmd_callgraph(
                 &ctx,
                 &name,
@@ -536,7 +536,7 @@ fn dispatch_inner(mut cli: Cli) -> Result<()> {
             diff,
             workspace,
         } => {
-            let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+            let path_scope = scope::PathScope::from_scope_args(&scope)?;
             cmd_callgraph::cmd_callgraph(
                 &ctx,
                 &name,

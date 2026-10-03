@@ -22,7 +22,7 @@ pub(crate) fn pattern(
     scope: ScopeArgs,
     diff: DiffFilterArgs,
 ) -> Result<()> {
-    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    let path_scope = scope::PathScope::from_scope_args(&scope)?;
     let root = resolve_root(path)?;
     // Resolve diff filter against the project root. Pattern uses a
     // non-canonicalized root; that's fine for git, which accepts any

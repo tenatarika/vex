@@ -41,7 +41,7 @@ pub(crate) fn implementations(
     scope: ScopeArgs,
     diff: DiffFilterArgs,
 ) -> Result<()> {
-    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    let path_scope = scope::PathScope::from_scope_args(&scope)?;
     // Canonicalize up front (matches `cmd_check.rs`/`cmd_impact.rs`/
     // `cmd_status.rs`/`cmd_usages.rs`) — required for cache-path
     // writer/reader symmetry. `config::index_dir` hashes the raw path

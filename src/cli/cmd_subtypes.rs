@@ -62,7 +62,7 @@ pub(crate) fn subtypes(
     scope: ScopeArgs,
     diff: DiffFilterArgs,
 ) -> Result<()> {
-    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    let path_scope = scope::PathScope::from_scope_args(&scope)?;
     // Canonicalize up front (matches `cmd_check.rs`/`cmd_impact.rs`/
     // `cmd_status.rs`/`cmd_usages.rs`, and `cmd_implementations.rs` as of
     // P3) — required for cache-path writer/reader symmetry. See the

@@ -4,56 +4,7 @@
 //! [`GlobSet`] once and reuses it for the post-filter; framework
 //! labelling is a `&str -> &'static str` lookup per surviving row.
 
-use anyhow::{Context, Result};
-use globset::{Glob, GlobSet, GlobSetBuilder};
-
-/// Default test-path patterns, language-agnostic. `tests-for` uses
-/// these when `--test-pattern` is not supplied. A custom override
-/// REPLACES this set entirely (standard CLI override semantics).
-pub(crate) const DEFAULT_TEST_PATTERNS: &[&str] = &[
-    "**/tests/**",
-    "**/__tests__/**",
-    "**/test/**",
-    "**/*_test.rs",
-    "**/*_test.go",
-    "**/*_test.py",
-    "**/test_*.py",
-    "**/*.test.ts",
-    "**/*.test.tsx",
-    "**/*.test.js",
-    "**/*.test.jsx",
-    "**/*.spec.ts",
-    "**/*.spec.tsx",
-    "**/*.spec.js",
-    "**/*.spec.jsx",
-    "**/*Test.java",
-    "**/*Tests.java",
-    "**/*Test.kt",
-    "**/*Tests.kt",
-    "**/*Tests.cs",
-    "**/*.Tests/**",
-    "**/test_*.cc",
-    "**/test_*.cpp",
-    "**/*_test.cc",
-    "**/*_test.cpp",
-    "**/conftest.py",
-];
-
-/// Build a [`GlobSet`] from `--test-pattern` overrides, or from the
-/// default set when overrides is empty. The override list REPLACES
-/// defaults (it does not append).
-pub(crate) fn build_test_globset(overrides: &[String]) -> Result<GlobSet> {
-    let patterns: Vec<&str> = if overrides.is_empty() {
-        DEFAULT_TEST_PATTERNS.to_vec()
-    } else {
-        overrides.iter().map(String::as_str).collect()
-    };
-    let mut b = GlobSetBuilder::new();
-    for p in patterns {
-        b.add(Glob::new(p).with_context(|| format!("invalid --test-pattern: {p}"))?);
-    }
-    b.build().context("building test globset")
-}
+pub(crate) use crate::util::test_paths::build_test_globset;
 
 /// Infer a framework label from a relative path. The label is a
 /// short, agent-friendly token used to pick a test runner. Ordering

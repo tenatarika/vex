@@ -101,7 +101,7 @@ fn grep_in_root(
     excludes: &[String],
     text: bool,
 ) -> Result<Vec<GrepMatch>> {
-    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    let path_scope = scope::PathScope::from_scope_args(scope)?;
     let changed_paths = resolve_diff_filter(root, diff)?;
     // Over-fetch when scope filters are active so post-filter truncation
     // does not silently drop matches the user expects to see. Same

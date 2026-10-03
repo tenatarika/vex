@@ -28,7 +28,7 @@ pub(crate) fn similar(
     scope: ScopeArgs,
     diff: DiffFilterArgs,
 ) -> Result<()> {
-    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    let path_scope = scope::PathScope::from_scope_args(&scope)?;
     let root = resolve_root(path)?.canonicalize()?;
     let changed_paths = resolve_diff_filter(&root, &diff)?;
     let index_path = ensure_index_ready(
@@ -155,6 +155,7 @@ pub(crate) fn similar(
                 filter: filter_path.clone(),
                 include: scope.include.clone(),
                 exclude: scope.exclude.clone(),
+                exclude_tests: scope.exclude_tests,
             },
         };
         crate::cli::trace::emit_why_trace(&trace)?;

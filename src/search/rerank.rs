@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use crate::index::symbols::SymbolKind;
+use crate::util::test_paths::is_test_path;
 
 use super::SearchResult;
 
@@ -273,30 +274,6 @@ fn dir_of(path: &str) -> &str {
 
 fn parent_of(dir: &str) -> &str {
     dir.rfind('/').map_or("", |i| &dir[..i])
-}
-
-fn is_test_path(path: &str) -> bool {
-    // Hot path: runs once per search result during ranking. The common
-    // case (Unix) allocates once for the lowercase conversion; Windows
-    // pays a second allocation to swap separators. Indexed paths
-    // preserve the host separator, so without this normalization the
-    // tests down-rank would silently disable itself on Windows.
-    let lowered = path.to_lowercase();
-    let owned_normalized;
-    let p: &str = if lowered.contains('\\') {
-        owned_normalized = lowered.replace('\\', "/");
-        &owned_normalized
-    } else {
-        lowered.as_str()
-    };
-    p.contains("/test/")
-        || p.contains("/tests/")
-        || p.contains("/test_")
-        || p.contains("_test.")
-        || p.contains("_test_")
-        || p.contains("_spec.")
-        || p.starts_with("test/")
-        || p.starts_with("tests/")
 }
 
 #[cfg(test)]

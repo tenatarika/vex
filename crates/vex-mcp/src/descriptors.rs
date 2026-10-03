@@ -80,6 +80,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true (which already refreshes).", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (e.g. 'tests/**'); repeat for multiple globs" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob (wins over include); repeat for multiple globs" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false },
                     "visibility": { "type": "string", "enum": ["public", "private", "protected", "internal"], "description": "Keep only symbols whose signature contains this explicit visibility keyword (no inferred defaults)" },
                     "async_only": { "type": "boolean", "description": "Keep only async/suspend functions", "default": false },
                     "no_async": { "type": "boolean", "description": "Exclude async/suspend functions", "default": false },
@@ -107,7 +108,8 @@ pub(crate) fn tool_descriptors() -> Value {
                     "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false }
                 },
                 "required": ["symbol"]
             }
@@ -124,7 +126,8 @@ pub(crate) fn tool_descriptors() -> Value {
                     "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false }
                 },
                 "required": ["query"]
             }
@@ -214,7 +217,8 @@ pub(crate) fn tool_descriptors() -> Value {
                     "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false }
                 },
                 "required": ["symbols"]
             }
@@ -239,6 +243,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false },
                     "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
                     "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
                     "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
@@ -260,6 +265,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable). Applied to every channel — useful for scoping to e.g. `src/**` when assessing a library symbol." },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)." },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false },
                     "exclude_docs": { "type": "boolean", "description": "(v1.20.1, D4 parity) Opt-in: drop text-channel hits in prose-format files (`*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc`). Default off so a symbol mentioned only in CHANGELOG still yields `uncertain`; pass when you want a code-only blast radius (binder channels are unaffected).", "default": false },
                     "depth": { "type": "integer", "description": "(v1.21.0) BFS hop budget for transitive callers. `1` (default) reports direct callers only via `call_graph_callers`; `>= 2` enables the `transitive_callers` channel, walking the call graph backward up to N hops. Silently clamped to `[1, 16]`. Use to see the full upstream blast radius (`outer -> middle -> leaf` chain surfaces `outer` at depth=2).", "minimum": 1, "maximum": 16 }
                 },
@@ -323,6 +329,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false },
                     "text": { "type": "boolean", "description": "Force-read every file, bypassing the binary-file skip (extension denylist + NUL/high-control content sniff). Escape hatch for a legitimately-textual file that got misclassified as binary; a genuinely invalid-UTF-8 file is still skipped. CLI equivalent: `-a`/`--text` (ripgrep parity).", "default": false }
                 },
                 "required": ["pattern"]
@@ -343,6 +350,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false },
                     "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
                     "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
                     "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
@@ -366,6 +374,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false },
                     "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
                     "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
                     "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
@@ -386,6 +395,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "sort": { "type": "string", "enum": ["size", "cohesion"], "description": "Order clusters by in-scope size or by cohesion; ties by cluster id.", "default": "size" },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist members by path glob, gitignore syntax (repeatable). A cluster is shown iff at least one member is in scope." },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist members by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "auto_update": { "type": "boolean", "description": "Auto-update the index if stale, or bootstrap it if missing, before running (default: true)", "default": true },
                     "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
@@ -408,6 +418,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false },
                     "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
                     "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
                     "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
@@ -430,6 +441,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false },
                     "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
                     "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
                     "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false }
@@ -449,6 +461,7 @@ pub(crate) fn tool_descriptors() -> Value {
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false },
                     "since": { "type": "string", "description": "Restrict results to files changed between `<rev>..HEAD` (accepts anything `git diff` understands: `main`, `HEAD~3`, `origin/main`, SHA). Mutually exclusive with `since_branched` and `changed_only`." },
                     "since_branched": { "type": "boolean", "description": "Restrict results to files changed since this branch diverged from `origin/main` (or `main`/`master`). Mutually exclusive with `since` and `changed_only`.", "default": false },
                     "changed_only": { "type": "boolean", "description": "Restrict results to working-tree changes (staged + unstaged + untracked). Mutually exclusive with `since` and `since_branched`.", "default": false },
@@ -467,7 +480,8 @@ pub(crate) fn tool_descriptors() -> Value {
                     "limit": { "type": "integer", "description": "Max changes to return", "default": 500 },
                     "project_root": { "type": "string", "description": "Absolute path to the project root (defaults to the MCP working directory)" },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist changes by path glob, gitignore syntax (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist changes by path glob; wins over include (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist changes by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false }
                 },
                 "required": ["base"]
             }
@@ -487,7 +501,8 @@ pub(crate) fn tool_descriptors() -> Value {
                     "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist intermediate steps by path glob, gitignore syntax (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist intermediate steps by path glob; wins over include (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist intermediate steps by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false }
                 },
                 "required": ["from", "to"]
             }
@@ -506,7 +521,8 @@ pub(crate) fn tool_descriptors() -> Value {
                     "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false }
                 },
                 "required": ["target"]
             }
@@ -548,7 +564,8 @@ pub(crate) fn tool_descriptors() -> Value {
                     "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob, gitignore syntax (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false }
                 },
                 "required": ["symbol"]
             }
@@ -563,7 +580,7 @@ pub(crate) fn tool_descriptors() -> Value {
         },
         {
             "name": "bundle",
-            "description": "Multi-source bundle — replaces 4 round-trips (show → callers → callees → similar) with 1. Three modes: `symbol` (body + callers + callees + similar for a named symbol; ~10ms), `pr-impact` (changed symbols + transitive callers + tests for a git base ref; ~50ms), `project` (top-N symbols by reverse call-graph indegree; ~5ms). Prefer over chaining find_symbol/show/callers/callees when you need cross-section context on one symbol or a PR. Mode-specific args are validated server-side; only `mode` is universally required. Response shape is uniform — `{ protocol_version, capabilities, _meta, results: { mode, items[], mode_hints } }`. Each `items[i]` carries 13.11 signals plus a `role` discriminator (`body | caller | callee | similar | changed | transitive_caller | test | top`).",
+            "description": "Multi-source bundle — replaces 4 round-trips (show → callers → callees → similar) with 1. Three modes: `symbol` (body + callers + callees + similar for a named symbol; ~10ms), `pr-impact` (changed symbols + transitive callers + tests for a git base ref; ~50ms), `project` (top-N symbols by reverse call-graph indegree; ~5ms). Prefer over chaining find_symbol/show/callers/callees when you need cross-section context on one symbol or a PR. Mode-specific args are validated server-side; only `mode` is universally required. Response shape is uniform — `{ protocol_version, capabilities, _meta, results: { mode, items[], mode_hints } }`. Each `items[i]` carries 13.11 signals plus a `role` discriminator (`body | caller | callee | similar | changed | transitive_caller | test | top`). Scope filters (`include` / `exclude` / `exclude_tests`) apply only in `pr-impact` mode (changed files plus the caller and test rows); `symbol` and `project` modes ignore them.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -582,7 +599,8 @@ pub(crate) fn tool_descriptors() -> Value {
                     "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist results by path glob (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist results by path glob; wins over include (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false }
                 },
                 "required": ["mode"]
             }
@@ -607,7 +625,8 @@ pub(crate) fn tool_descriptors() -> Value {
                     "async_update": { "type": "boolean", "description": "With auto_update, refresh a stale index in the background instead of waiting for it: results come from the index already on disk and _meta.vex.dev/stale says so (default: false)", "default": false },
                     "no_stale_check": { "type": "boolean", "description": "Skip the staleness check that runs before each call; assumes the index is fresh. Redundant when `auto_update` is true.", "default": false },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Whitelist pairs by path glob — a pair is kept when at least one side matches (repeatable)" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist pairs by path glob — a pair is dropped when either side matches (repeatable)" }
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Blacklist pairs by path glob — a pair is dropped when either side matches (repeatable)" },
+                    "exclude_tests": { "type": "boolean", "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.", "default": false }
                 }
             }
         }

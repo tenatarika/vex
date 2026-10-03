@@ -170,6 +170,7 @@ pub(crate) fn search(
             filter: filter_path.clone(),
             include: scope.include.clone(),
             exclude: scope.exclude.clone(),
+            exclude_tests: scope.exclude_tests,
             kind: kind.clone(),
             code_only,
             exclude_generated,
@@ -271,7 +272,7 @@ fn produce_results(
     emit_diagnostics: bool,
 ) -> Result<SearchOutcome> {
     let semantic = req.semantic;
-    let path_scope = scope::PathScope::from_args(&req.scope.include, &req.scope.exclude)?;
+    let path_scope = scope::PathScope::from_scope_args(req.scope)?;
     let metadata_filter = build_metadata_filter(req.meta)?;
     // Resolve the diff scope per repo (a `--since*` window is relative to
     // each repo's own git history).

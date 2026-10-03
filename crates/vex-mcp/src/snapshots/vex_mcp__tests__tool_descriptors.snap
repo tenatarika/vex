@@ -48,6 +48,11 @@ expression: descriptors
           "description": "Drop machine-generated files (protobuf stubs, sqlc output, bindgen bindings, ORM schemas) from the results, recognised from the generator's header banner. Pass on repos that check in generated code, where the stubs outnumber and outrank hand-written symbols. Heuristic: a generator that writes no banner is not detected, so it under-reports rather than hiding hand-written code.",
           "type": "boolean"
         },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
+        },
         "filter_path": {
           "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns). Legacy alias: `filter`.",
           "type": "string"
@@ -167,6 +172,11 @@ expression: descriptors
           },
           "type": "array"
         },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
+        },
         "include": {
           "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
           "items": {
@@ -219,6 +229,11 @@ expression: descriptors
             "type": "string"
           },
           "type": "array"
+        },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
         },
         "include": {
           "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
@@ -410,6 +425,11 @@ expression: descriptors
           },
           "type": "array"
         },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
+        },
         "filter_path": {
           "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns). Legacy alias: `filter`.",
           "type": "string"
@@ -501,6 +521,11 @@ expression: descriptors
             "type": "string"
           },
           "type": "array"
+        },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
         },
         "filter_path": {
           "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns). Legacy alias: `filter`.",
@@ -607,6 +632,11 @@ expression: descriptors
         "exclude_docs": {
           "default": false,
           "description": "(v1.20.1, D4 parity) Opt-in: drop text-channel hits in prose-format files (`*.md`/`*.markdown`/`*.txt`/`*.rst`/`*.adoc`). Default off so a symbol mentioned only in CHANGELOG still yields `uncertain`; pass when you want a code-only blast radius (binder channels are unaffected).",
+          "type": "boolean"
+        },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
           "type": "boolean"
         },
         "include": {
@@ -799,6 +829,11 @@ expression: descriptors
           },
           "type": "array"
         },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
+        },
         "filter_path": {
           "description": "Substring path filter applied to result paths (single substring; use include/exclude for glob patterns). Legacy alias: `filter`.",
           "type": "string"
@@ -866,6 +901,11 @@ expression: descriptors
             "type": "string"
           },
           "type": "array"
+        },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
         },
         "include": {
           "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
@@ -946,6 +986,11 @@ expression: descriptors
           },
           "type": "array"
         },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
+        },
         "include": {
           "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
           "items": {
@@ -1012,6 +1057,11 @@ expression: descriptors
             "type": "string"
           },
           "type": "array"
+        },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
         },
         "include": {
           "description": "Whitelist members by path glob, gitignore syntax (repeatable). A cluster is shown iff at least one member is in scope.",
@@ -1097,6 +1147,11 @@ expression: descriptors
           },
           "type": "array"
         },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
+        },
         "include": {
           "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
           "items": {
@@ -1174,6 +1229,11 @@ expression: descriptors
           },
           "type": "array"
         },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
+        },
         "include": {
           "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
           "items": {
@@ -1241,6 +1301,11 @@ expression: descriptors
           },
           "type": "array"
         },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
+        },
         "include": {
           "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
           "items": {
@@ -1302,6 +1367,11 @@ expression: descriptors
           },
           "type": "array"
         },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
+        },
         "include": {
           "description": "Whitelist changes by path glob, gitignore syntax (repeatable)",
           "items": {
@@ -1346,6 +1416,11 @@ expression: descriptors
             "type": "string"
           },
           "type": "array"
+        },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
         },
         "from": {
           "description": "Exact name of the starting function (caller / entry point).",
@@ -1410,6 +1485,11 @@ expression: descriptors
             "type": "string"
           },
           "type": "array"
+        },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
         },
         "include": {
           "description": "Whitelist results by path glob, gitignore syntax (repeatable)",
@@ -1530,6 +1610,11 @@ expression: descriptors
           },
           "type": "array"
         },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
+        },
         "explain": {
           "default": false,
           "description": "Include reasoning per match: identifier-set Jaccard overlap + truncated unified diff between bodies",
@@ -1604,7 +1689,7 @@ expression: descriptors
     "name": "capabilities"
   },
   {
-    "description": "Multi-source bundle — replaces 4 round-trips (show → callers → callees → similar) with 1. Three modes: `symbol` (body + callers + callees + similar for a named symbol; ~10ms), `pr-impact` (changed symbols + transitive callers + tests for a git base ref; ~50ms), `project` (top-N symbols by reverse call-graph indegree; ~5ms). Prefer over chaining find_symbol/show/callers/callees when you need cross-section context on one symbol or a PR. Mode-specific args are validated server-side; only `mode` is universally required. Response shape is uniform — `{ protocol_version, capabilities, _meta, results: { mode, items[], mode_hints } }`. Each `items[i]` carries 13.11 signals plus a `role` discriminator (`body | caller | callee | similar | changed | transitive_caller | test | top`).",
+    "description": "Multi-source bundle — replaces 4 round-trips (show → callers → callees → similar) with 1. Three modes: `symbol` (body + callers + callees + similar for a named symbol; ~10ms), `pr-impact` (changed symbols + transitive callers + tests for a git base ref; ~50ms), `project` (top-N symbols by reverse call-graph indegree; ~5ms). Prefer over chaining find_symbol/show/callers/callees when you need cross-section context on one symbol or a PR. Mode-specific args are validated server-side; only `mode` is universally required. Response shape is uniform — `{ protocol_version, capabilities, _meta, results: { mode, items[], mode_hints } }`. Each `items[i]` carries 13.11 signals plus a `role` discriminator (`body | caller | callee | similar | changed | transitive_caller | test | top`). Scope filters (`include` / `exclude` / `exclude_tests`) apply only in `pr-impact` mode (changed files plus the caller and test rows); `symbol` and `project` modes ignore them.",
     "inputSchema": {
       "properties": {
         "async_update": {
@@ -1642,6 +1727,11 @@ expression: descriptors
             "type": "string"
           },
           "type": "array"
+        },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
         },
         "include": {
           "description": "Whitelist results by path glob (repeatable)",
@@ -1724,6 +1814,11 @@ expression: descriptors
             "type": "string"
           },
           "type": "array"
+        },
+        "exclude_tests": {
+          "default": false,
+          "description": "Drop test files from the results (tests/ dirs, *_test.*, test_*.py, *.spec.ts, __tests__/, tests.rs, ...; same set as tests_for). Composes with include/exclude. Path-based only: Rust unit tests inside a `#[cfg(test)] mod tests` block of a non-test file are not excluded.",
+          "type": "boolean"
         },
         "explain": {
           "default": false,

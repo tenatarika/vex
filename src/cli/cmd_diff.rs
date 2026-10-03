@@ -14,7 +14,7 @@ pub(crate) fn diff(
     limit: usize,
     scope: super::args::ScopeArgs,
 ) -> Result<()> {
-    let path_scope = scope::PathScope::from_args(&scope.include, &scope.exclude)?;
+    let path_scope = scope::PathScope::from_scope_args(&scope)?;
     let root = resolve_root(path)?
         .canonicalize()
         .context("canonicalize root")?;
