@@ -840,9 +840,9 @@ dependencies = [
 
 [[package]]
 name = "der"
-version = "0.8.0"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71fd89660b2dc699704064e59e9dba0147b903e85319429e131620d022be411b"
+checksum = "a878c850e9e421b20262e9b41f9c860e4785fa07541c266b62ff9d1ef998a80a"
 dependencies = [
  "pem-rfc7468",
  "zeroize",
@@ -4215,7 +4215,7 @@ checksum = "dea7109cdcd5864d4eeb1b58a1648dc9bf520360d7af16ec26d0a9354bafcfc0"
 dependencies = [
  "base64 0.22.1",
  "cookie_store",
- "der 0.8.0",
+ "der 0.8.2",
  "flate2",
  "log",
  "native-tls",
@@ -4326,8 +4326,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "vex"
-version = "1.27.1"
+name = "vex-search"
+version = "1.27.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -4394,8 +4394,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "vex-mcp"
-version = "1.27.1"
+name = "vex-search-mcp"
+version = "1.27.2"
 dependencies = [
  "anyhow",
  "insta",

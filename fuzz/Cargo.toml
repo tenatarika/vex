@@ -12,8 +12,11 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 tempfile = "3"
 
+# The package is `vex-search` on crates.io; the dependency key (and so the
+# `use vex::...` crate name in fuzz_targets/) stays `vex`.
 [dependencies.vex]
 path = ".."
+package = "vex-search"
 
 [[bin]]
 name = "fuzz_index_reader"

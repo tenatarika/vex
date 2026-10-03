@@ -292,7 +292,7 @@ pub fn execution_providers(
             #[cfg(not(feature = "gpu-cuda"))]
             bail!(
                 "vex was not built with CUDA support (rebuild: cargo install --git \
-                 https://github.com/tenatarika/vex vex --features gpu-cuda)"
+                 https://github.com/tenatarika/vex vex-search --features gpu-cuda)"
             );
         }
         Device::DirectMl => {

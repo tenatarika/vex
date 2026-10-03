@@ -2,6 +2,8 @@
 //! Extracted from `cli/mod.rs` in S1 Group B together with its embedded
 //! ed25519 release pubkey and the compile-time length assertion (S5).
 
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result};
 
 use super::self_update_flow;
@@ -28,15 +30,17 @@ const _: () = assert!(
     "VEX_RELEASE_PUBKEY must be exactly 32 bytes (ed25519 public key)"
 );
 
-/// The binary/package name, used for the release-asset identifier, the
-/// archive-entry match, and the final swap. `env!` rather than scattered
-/// `"vex"` literals so every site tracks the package name together; the
-/// `bin_name_matches_release_asset_contract` test pins it to the LITERAL
-/// asset naming in release.yml (which is not derived from the package
-/// name), so a crate rename fails tests instead of producing a runtime
-/// asset-lookup miss. (The GitHub `repo_name` below stays a literal — the
-/// repository is a different namespace that happens to share the name.)
-const BIN_NAME: &str = env!("CARGO_PKG_NAME");
+/// The binary name, used for the release-asset identifier, the
+/// archive-entry match, and the final swap. A literal, NOT
+/// `env!("CARGO_PKG_NAME")`: the crates.io package is `vex-search` (the
+/// `vex` name is taken there) while the binary and the release assets
+/// (`vex-<target>.tar.gz`, literals in release.yml) stay `vex`. Deriving
+/// it from the package name would make self-update look for
+/// `vex-search-<target>` and miss every asset. `CARGO_BIN_NAME` is not an
+/// option either — this module is also compiled into the lib target,
+/// where it is unset. The `bin_name_matches_release_asset_contract` test
+/// pins the value. (The GitHub `repo_name` below stays a literal too.)
+const BIN_NAME: &str = "vex";
 
 /// Update the running binary from the latest GitHub release. The
 /// self_update crate handles platform detection (target triple) and the
@@ -45,6 +49,12 @@ const BIN_NAME: &str = env!("CARGO_PKG_NAME");
 /// the bundled DirectML.dll sidecar included, which the crate's built-in
 /// `update()` silently dropped (it extracts only the named binary).
 pub(crate) fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> {
+    let bundle = current_mcpb_bundle();
+    if !check_only {
+        if let Some(bundle) = &bundle {
+            anyhow::bail!("{}", bundle.refusal());
+        }
+    }
     let current = env!("CARGO_PKG_VERSION");
     // SAFETY of the `try_into` below: the byte count is asserted at
     // compile time by the `const _: () = assert!(...)` above. The
@@ -131,6 +141,9 @@ pub(crate) fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> 
                 );
             }
         }
+        if let Some(bundle) = &bundle {
+            println!("{}", bundle.check_note());
+        }
         return Ok(());
     }
 
@@ -166,6 +179,88 @@ pub(crate) fn cmd_self_update(check_only: bool, no_confirm: bool) -> Result<()> 
         .context("apply self-update")?;
     println!("Updated to vex {latest}. Restart any open shells.");
     Ok(())
+}
+
+/// Upper bound on the `manifest.json` size [`is_vex_mcpb_manifest`] will
+/// read. Real MCPB manifests are a few KiB; anything bigger is not ours.
+const MCPB_MANIFEST_MAX_BYTES: u64 = 1024 * 1024;
+
+/// A running `vex` that ships inside an unpacked MCP Bundle (.mcpb).
+///
+/// The host app (Claude Desktop & co.) owns that install: it unpacked a
+/// bundle whose manifest and registry-pinned SHA-256 describe exactly these
+/// binaries, and it updates by replacing the whole bundle. Swapping `vex` in
+/// place would leave `vex-mcp` and the manifest on the old version and be
+/// silently undone by the host's next bundle update — so the apply path
+/// refuses, and `--check` adds a note.
+#[derive(Debug)]
+struct McpbInstall {
+    exe: PathBuf,
+    manifest: PathBuf,
+}
+
+impl McpbInstall {
+    fn refusal(&self) -> String {
+        format!(
+            "this vex ({}) is part of an MCP Bundle (manifest: {}); its host app manages \
+             updates. Update the vex bundle from the host app instead, or install the \
+             standalone CLI (brew, cargo, or the GitHub release tarball) to use `vex self-update`.",
+            self.exe.display(),
+            self.manifest.display()
+        )
+    }
+
+    fn check_note(&self) -> String {
+        format!(
+            "Note: this vex is part of an MCP Bundle (manifest: {}); updates come from \
+             the host app that installed it, not from `vex self-update`.",
+            self.manifest.display()
+        )
+    }
+}
+
+/// The MCPB install the running exe belongs to, if any. Best-effort: when
+/// the exe path can't be determined the answer is "not a bundle" — the
+/// apply path resolves `current_exe` again and fails loudly there.
+fn current_mcpb_bundle() -> Option<McpbInstall> {
+    let exe = std::env::current_exe().ok()?;
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    let manifest = mcpb_bundle_manifest(&exe)?;
+    Some(McpbInstall { exe, manifest })
+}
+
+/// The MCPB manifest that owns `exe`, if any. A vex bundle lays out
+/// `<root>/manifest.json` + `<root>/server/vex` (packaging/mcpb), so the
+/// manifest is looked for in the exe's parent's parent, and — in case a
+/// host flattens the layout — in the exe's own directory.
+fn mcpb_bundle_manifest(exe: &Path) -> Option<PathBuf> {
+    let exe_dir = exe.parent()?;
+    [Some(exe_dir), exe_dir.parent()]
+        .into_iter()
+        .flatten()
+        .map(|dir| dir.join("manifest.json"))
+        .find(|manifest| is_vex_mcpb_manifest(manifest))
+}
+
+/// True when `path` is an MCPB manifest for vex: `name == "vex"` and
+/// `server.type == "binary"`. Any read or parse problem reads as "not a
+/// bundle" — the guard must never block a plain install because of an
+/// unrelated `manifest.json` sitting nearby.
+fn is_vex_mcpb_manifest(path: &Path) -> bool {
+    let small_file = std::fs::metadata(path)
+        .map(|m| m.is_file() && m.len() <= MCPB_MANIFEST_MAX_BYTES)
+        .unwrap_or(false);
+    if !small_file {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    json.get("name").and_then(|v| v.as_str()) == Some("vex")
+        && json.pointer("/server/type").and_then(|v| v.as_str()) == Some("binary")
 }
 
 /// Outcome of the shared `--check`/apply version gate.
@@ -365,13 +460,151 @@ mod tests {
         );
     }
 
+    /// Every target the release matrix (and its MCP bundle step) ships.
+    const RELEASE_TARGETS: [&str; 3] = [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc",
+    ];
+
+    /// A v1.27.2-shaped release: CLI + MCP tarballs AND the MCP bundles
+    /// for every target, in GitHub's alphabetical listing order.
+    fn release_with_mcpb_assets() -> Release {
+        let mut names: Vec<String> = RELEASE_TARGETS
+            .iter()
+            .flat_map(|t| {
+                [
+                    format!("vex-{t}.tar.gz"),
+                    format!("vex-mcp-{t}.tar.gz"),
+                    format!("vex-mcp-{t}.mcpb"),
+                ]
+            })
+            .collect();
+        names.sort();
+        Release {
+            name: "vex 1.27.2".to_string(),
+            version: "1.27.2".to_string(),
+            date: "2026-10-03".to_string(),
+            body: None,
+            assets: names
+                .into_iter()
+                .map(|name| ReleaseAsset {
+                    download_url: format!("https://example.test/{name}"),
+                    name,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn mcpb_bundle_never_matches_self_update_identifier() {
+        // release.yml names bundles `vex-mcp-<target>.mcpb` precisely so
+        // that the `vex-<target>` identifier (a substring match) can never
+        // select one. `vex-<target>.mcpb` WOULD match — this pins the name.
+        let release = release_with_mcpb_assets();
+        for target in RELEASE_TARGETS {
+            let identifier = format!("{}-{target}", super::BIN_NAME);
+            for other in RELEASE_TARGETS {
+                let bundle = format!("vex-mcp-{other}.mcpb");
+                assert!(
+                    !bundle.contains(&identifier),
+                    "{bundle} must not match self-update identifier {identifier}"
+                );
+            }
+            let picked = release
+                .asset_for(target, Some(&identifier))
+                .expect("CLI archive must still be selectable");
+            assert_eq!(picked.name, format!("vex-{target}.tar.gz"));
+        }
+    }
+
+    fn write_manifest(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+        let path = dir.join("manifest.json");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    const VEX_MANIFEST: &str = r#"{"manifest_version":"0.3","name":"vex","version":"1.27.2",
+        "server":{"type":"binary","entry_point":"server/vex-mcp"}}"#;
+
+    /// `<root>/manifest.json` + `<root>/server/vex` — the packaging/mcpb layout.
+    fn bundle_layout(manifest: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("server")).unwrap();
+        write_manifest(root.path(), manifest);
+        let exe = root.path().join("server").join("vex");
+        std::fs::write(&exe, b"").unwrap();
+        (root, exe)
+    }
+
+    #[test]
+    fn mcpb_guard_detects_bundle_layout() {
+        let (root, exe) = bundle_layout(VEX_MANIFEST);
+        assert_eq!(
+            super::mcpb_bundle_manifest(&exe),
+            Some(root.path().join("manifest.json"))
+        );
+    }
+
+    #[test]
+    fn mcpb_guard_detects_flattened_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = write_manifest(dir.path(), VEX_MANIFEST);
+        let exe = dir.path().join("vex");
+        assert_eq!(super::mcpb_bundle_manifest(&exe), Some(manifest));
+    }
+
+    #[test]
+    fn mcpb_guard_ignores_plain_installs_and_foreign_manifests() {
+        // No manifest at all (brew / cargo / tarball install).
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(super::mcpb_bundle_manifest(&dir.path().join("vex")), None);
+
+        for foreign in [
+            // Another bundle's manifest.
+            r#"{"name":"other","server":{"type":"binary"}}"#,
+            // A vex manifest that is not a binary server.
+            r#"{"name":"vex","server":{"type":"node"}}"#,
+            // Some unrelated project manifest.
+            r#"{"name":"vex","version":"1.0.0"}"#,
+            // Not JSON.
+            "not json",
+        ] {
+            let (_root, exe) = bundle_layout(foreign);
+            assert_eq!(
+                super::mcpb_bundle_manifest(&exe),
+                None,
+                "must not treat {foreign:?} as a vex bundle"
+            );
+        }
+    }
+
+    #[test]
+    fn mcpb_messages_name_the_manifest_and_the_host() {
+        let install = super::McpbInstall {
+            exe: "/b/server/vex".into(),
+            manifest: "/b/manifest.json".into(),
+        };
+        let refusal = install.refusal();
+        assert!(refusal.contains("/b/manifest.json") && refusal.contains("host app"));
+        let note = install.check_note();
+        assert!(note.contains("/b/manifest.json") && note.contains("host app"));
+    }
+
+    #[test]
+    fn mcpb_guard_ignores_oversized_manifest() {
+        let mut big = String::from(VEX_MANIFEST);
+        big.push_str(&" ".repeat(super::MCPB_MANIFEST_MAX_BYTES as usize));
+        let (_root, exe) = bundle_layout(&big);
+        assert_eq!(super::mcpb_bundle_manifest(&exe), None);
+    }
+
     #[test]
     fn bin_name_matches_release_asset_contract() {
         // release.yml packs assets under the LITERAL name
-        // `vex-<target>.tar.gz` — it is not derived from CARGO_PKG_NAME.
-        // If the crate is ever renamed, BIN_NAME silently follows but the
-        // published assets don't; this pin fails first, forcing the
-        // release contract and the constant to be revisited together.
+        // `vex-<target>.tar.gz` — it is not derived from the package name
+        // (which is `vex-search` on crates.io). The installed binary must
+        // carry the same name (`[[bin]] name = "vex"` in Cargo.toml).
         assert_eq!(super::BIN_NAME, "vex");
     }
 }

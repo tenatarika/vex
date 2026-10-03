@@ -267,11 +267,13 @@ const VEX_GIT_URL: &str = "https://github.com/tenatarika/vex";
 fn print_install_help() {
     println!("To get GPU acceleration:");
     println!(
-        "  • NVIDIA (CUDA):    cargo install --git {VEX_GIT_URL} vex --features gpu-cuda  \
+        "  • NVIDIA (CUDA):    cargo install --git {VEX_GIT_URL} vex-search --features gpu-cuda  \
          (needs CUDA Toolkit 12 + cuDNN 9 on PATH)"
     );
     println!("  • Any Windows GPU:  use the prebuilt Windows binary (DirectML, driver-only)");
-    println!("  • Apple Silicon:    cargo install --git {VEX_GIT_URL} vex --features gpu-coreml");
+    println!(
+        "  • Apple Silicon:    cargo install --git {VEX_GIT_URL} vex-search --features gpu-coreml"
+    );
 }
 
 /// Build a MiniLM embedder on `device` with strict EP registration and run one

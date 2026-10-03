@@ -12,7 +12,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-vex = { path = "..", features = ["gpu-coreml"] }
+vex = { path = "..", package = "vex-search", features = ["gpu-coreml"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

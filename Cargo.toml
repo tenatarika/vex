@@ -7,19 +7,40 @@ members = [".", "crates/vex-mcp"]
 # `serverInfo.version`, so an agent could not tell which vex it was paired with.
 # Bump this one key at release time (see docs/RELEASING.md).
 [workspace.package]
-version = "1.27.1"
+version = "1.27.2"
 
+# crates.io package name is `vex-search` (`vex` and `vex-mcp` are taken there).
+# The installed binary stays `vex` ([[bin]] below) and the library crate stays
+# `vex` ([lib] below), so `use vex::...` in tests/benches/fuzz is unaffected and
+# release assets keep their `vex-<target>.tar.gz` names (release.yml literals).
 [package]
-name = "vex"
+name = "vex-search"
 version.workspace = true
 edition = "2021"
-description = "Fast hybrid structural + semantic code search (vector + index)"
+description = "Fast hybrid structural + semantic code search CLI (tree-sitter index, call graph, ONNX embeddings) for humans and AI agents"
 license = "MIT"
 authors = ["Furcas <tenatarika@gmail.com>"]
 repository = "https://github.com/tenatarika/vex"
 homepage = "https://github.com/tenatarika/vex"
+documentation = "https://github.com/tenatarika/vex#readme"
 readme = "README.md"
 rust-version = "1.88"
+keywords = ["code-search", "tree-sitter", "semantic-search", "mcp", "cli"]
+categories = ["command-line-utilities", "development-tools", "text-processing"]
+# Whitelist what goes into the .crate: the build needs src/, queries/*.scm
+# (include_str! from src/parse) and build.rs. Tests, fixtures, benches, fuzz,
+# docs and models/ (86 MB ONNX, gitignored, downloaded at runtime) stay out.
+# Test-only include_bytes! of fuzz/findings/* live in #[cfg(test)] modules,
+# so the packaged lib/bin build never touches them.
+include = [
+    "/src/**",
+    "/queries/*.scm",
+    "/build.rs",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+]
 
 [[bin]]
 name = "vex"
@@ -173,7 +194,7 @@ http = "1"
 default = []
 # Optional GPU execution providers for semantic embedding. All OFF by default;
 # enabled per-target in .github/workflows/release.yml (DirectML on Windows,
-# CoreML on macOS) and via `cargo install vex --features gpu-cuda` for NVIDIA.
+# CoreML on macOS) and via `cargo install vex-search --features gpu-cuda` for NVIDIA.
 # NOTE: feature tables can't be cfg(target)-gated and `ort/directml` only builds
 # on Windows / `ort/coreml` only on Apple — so these must be applied per-target,
 # never put in `default`. See docs/GPU_SUPPORT.md §5.1.

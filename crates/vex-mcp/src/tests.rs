@@ -552,7 +552,7 @@ fn capabilities_tool_is_in_tool_descriptors() {
 // wording) trips this snapshot.
 //
 // To accept an intentional reword: `cargo insta accept` after running
-// `cargo test -p vex-mcp tool_descriptors_snapshot`.
+// `cargo test -p vex-search-mcp tool_descriptors_snapshot`.
 
 #[test]
 fn tool_descriptors_snapshot() {
