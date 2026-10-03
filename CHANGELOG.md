@@ -6,6 +6,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.27.2] - 2026-10-04
+
+### Added
+
+- **Published on crates.io as `vex-search`.** `cargo install vex-search --locked`
+  installs the `vex` binary (the name `vex` was already taken on crates.io), and
+  `cargo install vex-search-mcp --locked` installs `vex-mcp`. Building from
+  source downloads a prebuilt ONNX Runtime (network needed; prebuilt only for
+  Apple Silicon macOS and x86_64/aarch64 Linux and Windows), needs a C/C++
+  toolchain, and on Linux `libssl-dev` and `pkg-config`. Binaries, release
+  assets and `vex self-update` are unchanged.
+- **Listed in the official MCP Registry** as `io.github.tenatarika/vex`. Each
+  release now also ships `vex-mcp-<target>.mcpb` bundles (vex-mcp and vex in one
+  file, plus DirectML.dll on Windows) that MCP clients can install, asking for
+  the project root to search. Publishing happens after the release itself, so
+  a registry problem never holds back the tarballs, self-update or Homebrew.
+
+### Fixed
+
+- **`vex self-update` inside an MCP bundle** refuses to replace the bundled
+  binary and says the host app manages updates; `--check` still reports what is
+  available.
+- **`vex --version` from a crates.io build** no longer picks up the version of
+  an unrelated git repository the build happens to sit in.
+- **The Homebrew formula test** expected `vex 1.27.1` while the binary prints
+  `vex v1.27.1`; it now accepts both.
+
 ## [1.27.1] - 2026-10-03
 
 ### Added
@@ -4074,7 +4101,8 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.27.1...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.27.2...HEAD
+[1.27.2]: https://github.com/tenatarika/vex/compare/v1.27.1...v1.27.2
 [1.27.1]: https://github.com/tenatarika/vex/compare/v1.27.0...v1.27.1
 [1.27.0]: https://github.com/tenatarika/vex/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/tenatarika/vex/compare/v1.25.5...v1.26.0
