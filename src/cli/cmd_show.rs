@@ -9,8 +9,35 @@ use super::index_management::ensure_index_ready;
 use super::output::print_envelope;
 use super::{scope, show_truncate};
 use crate::protocol::capabilities;
-use crate::search::structural;
+use crate::search::rerank::RerankContext;
+use crate::search::{structural, SearchResult};
 use crate::store::reader::IndexReader;
+
+/// The definitions `vex show` prints for one `symbol`: rank a candidate pool
+/// with [`structural::search_ranked`] (order-independent), filter, then cut
+/// to `limit`. Truncating before the rerank made the default `--limit 1`
+/// depend on filesystem walk order.
+fn select_definitions(
+    reader: &IndexReader,
+    symbol: &str,
+    limit: usize,
+    rerank_ctx: &RerankContext<'_>,
+    filter_path: Option<&str>,
+    path_scope: &scope::PathScope,
+    metadata_filter: &crate::search::metadata::MetadataFilter,
+) -> Vec<SearchResult> {
+    let pool = if filter_path.is_some() || !path_scope.is_empty() {
+        reader.symbol_count()
+    } else {
+        limit.max(structural::RERANK_POOL)
+    };
+    let ranked = structural::search_ranked(reader, symbol, pool, rerank_ctx);
+    apply_path_filters(ranked, filter_path, path_scope)
+        .into_iter()
+        .filter(|r| metadata_filter.matches(r.signature.as_deref()))
+        .take(limit)
+        .collect()
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn show(
@@ -66,27 +93,28 @@ pub(crate) fn show(
     )?;
 
     let reader = IndexReader::open(&index_path).context("open index")?;
-    let fetch_limit = if filter_path.is_some() || !path_scope.is_empty() {
-        reader.symbol_count()
-    } else {
-        limit
-    };
     let mut json_items: Vec<serde_json::Value> = Vec::new();
+    // `printed` counts text/compact blocks (a "No symbol found" line
+    // included) and only drives blank-line separators; `found` counts real
+    // definitions in any format and alone decides the exit code.
     let mut printed = 0usize;
+    let mut found = 0usize;
 
-    let rerank_ctx = crate::search::rerank::RerankContext {
+    let rerank_ctx = RerankContext {
         kind_hints: crate::search::rerank::KindSelector::parse_many(&kind)?,
         context_path: context_path.as_deref(),
     };
 
     for symbol in &symbols {
-        let results = structural::search_with_fuzzy(&reader, symbol, fetch_limit);
-        let results = crate::search::rerank::rerank(symbol, &rerank_ctx, results);
-        let results: Vec<_> = apply_path_filters(results, filter_path.as_deref(), &path_scope)
-            .into_iter()
-            .filter(|r| metadata_filter.matches(r.signature.as_deref()))
-            .take(limit)
-            .collect();
+        let results = select_definitions(
+            &reader,
+            symbol,
+            limit,
+            &rerank_ctx,
+            filter_path.as_deref(),
+            &path_scope,
+            &metadata_filter,
+        );
 
         if results.is_empty() {
             match ctx.format {
@@ -102,6 +130,7 @@ pub(crate) fn show(
             continue;
         }
 
+        found += results.len();
         for result in &results {
             let content = std::fs::read_to_string(&result.path)
                 .with_context(|| format!("read {}", result.path))?;
@@ -204,13 +233,101 @@ pub(crate) fn show(
             }
         }
     }
-    // v1.12.0 S8.2 — signal "no symbols found" for exit-code contract.
-    // `printed` tracks text/compact-format rows; the JSON path emits into
-    // `json_items` instead, so we have to check both — otherwise a JSON
-    // call that successfully resolves symbols would still exit 1 because
-    // `printed` was never incremented in the JSON arm.
-    if printed == 0 && json_items.is_empty() {
+    // v1.12.0 S8.2 — exit 1 when no symbol resolved, in every format. This
+    // used to test `printed`, which the per-symbol "No symbol found" line
+    // bumps, so a miss exited 0 in text/compact but 1 in JSON.
+    if found == 0 {
         crate::cli::exit_code::signal_no_results();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! `show` must pick the same definitions whatever order the files were
+    //! discovered in. Index order is `readdir` order, which differs between
+    //! NTFS (sorted) and APFS/ext4 (hash order); these tests write the index
+    //! in both orders explicitly so the guard fails on every OS.
+    use super::*;
+    use crate::index::symbols::{ParsedFile, ParsedSymbol, SymbolKind};
+    use crate::store::writer::write_index;
+
+    fn file_defining(path: &str, name: &str) -> ParsedFile {
+        ParsedFile {
+            path: path.to_string(),
+            symbols: vec![ParsedSymbol {
+                name: name.to_string(),
+                kind: SymbolKind::Function,
+                line: 1,
+                signature: Some(format!("pub fn {name}() {{}}")),
+                doc: None,
+                body_tokens: None,
+            }],
+            refs: vec![],
+            call_edges: vec![],
+            bound_refs: vec![],
+            skeletons: Vec::new(),
+            cpp_includes: Vec::new(),
+            trigram_bloom: None,
+            hierarchy_captures: Vec::new(),
+        }
+    }
+
+    /// Paths `select_definitions` returns for `shared_helper_fn` over an
+    /// index whose files were written in `order`.
+    fn selected(order: &[&str], limit: usize, scope: &scope::PathScope) -> Vec<String> {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out = tmp.path().join("index.vex");
+        let parsed: Vec<ParsedFile> = order
+            .iter()
+            .map(|p| file_defining(p, "shared_helper_fn"))
+            .collect();
+        write_index(&parsed, &out).unwrap();
+        let reader = IndexReader::open(&out).unwrap();
+        let ctx = RerankContext {
+            kind_hints: Vec::new(),
+            context_path: None,
+        };
+        let filter = crate::search::metadata::MetadataFilter::default();
+        select_definitions(
+            &reader,
+            "shared_helper_fn",
+            limit,
+            &ctx,
+            None,
+            scope,
+            &filter,
+        )
+        .into_iter()
+        .map(|r| r.path)
+        .collect()
+    }
+
+    const TEST_FIRST: [&str; 3] = ["tests/integration.rs", "src/b.rs", "src/a.rs"];
+    const PROD_FIRST: [&str; 3] = ["src/a.rs", "src/b.rs", "tests/integration.rs"];
+
+    #[test]
+    fn default_limit_is_independent_of_index_order() {
+        let none = scope::PathScope::default();
+        let a = selected(&TEST_FIRST, 1, &none);
+        let b = selected(&PROD_FIRST, 1, &none);
+        // The test file is demoted and the two equal-score production
+        // definitions tie-break by path, so `src/a.rs` wins in both orders.
+        assert_eq!(a, vec!["src/a.rs".to_string()]);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn full_listing_is_identical_across_index_orders() {
+        let none = scope::PathScope::default();
+        let a = selected(&TEST_FIRST, 10, &none);
+        assert_eq!(a, ["src/a.rs", "src/b.rs", "tests/integration.rs"]);
+        assert_eq!(a, selected(&PROD_FIRST, 10, &none));
+    }
+
+    #[test]
+    fn exclude_tests_scope_drops_the_test_definition() {
+        let scoped = scope::PathScope::default().with_exclude_tests(true);
+        assert_eq!(selected(&TEST_FIRST, 10, &scoped), ["src/a.rs", "src/b.rs"],);
+    }
 }

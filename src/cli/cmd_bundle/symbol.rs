@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use crate::parse::language::Language;
 use crate::protocol::{LexicalSignals, PostSignals, SemanticSignals, Signals, StructuralSignals};
 use crate::search::SearchResult;
+use crate::store::reader::IndexReader;
 
 use super::{
     caller_kind, global_rank_percentile, signals_fst_hit, BundleArgs, BundleCoreItem, BundleCtx,
@@ -58,6 +59,25 @@ fn probe_and_truncate<T>(mut probe: Vec<T>, max: usize) -> (Vec<T>, bool) {
     (probe, truncated)
 }
 
+/// The bundle's seed for `name`: the top definition of a ranked candidate
+/// pool. A 1-result FST lookup returned the first posting in index order,
+/// i.e. filesystem walk order, so the seed (test vs production definition)
+/// differed between NTFS and APFS/ext4.
+fn pick_seed(reader: &IndexReader, name: &str) -> Option<SearchResult> {
+    let ctx = crate::search::rerank::RerankContext {
+        kind_hints: Vec::new(),
+        context_path: None,
+    };
+    crate::search::structural::search_ranked(
+        reader,
+        name,
+        crate::search::structural::RERANK_POOL,
+        &ctx,
+    )
+    .into_iter()
+    .next()
+}
+
 /// Symbol-mode assembler. Exposed `pub` so `benches/bundle.rs` and
 /// out-of-crate integration tests can call it without going through the
 /// CLI dispatch — the production entry point is still
@@ -77,10 +97,8 @@ pub fn assemble_symbol(
     let has_call_graph = ctx.reader.has_call_graph();
     let has_vectors = ctx.reader.has_vectors();
 
-    // Step 1 — resolve the seed via FST. `search_with_fuzzy` returns up to
-    // `limit` candidates; we only want the top one.
-    let seeds = crate::search::structural::search_with_fuzzy(ctx.reader, name, 1);
-    let Some(seed) = seeds.into_iter().next() else {
+    // Step 1 — resolve the seed: the top-ranked definition (see `pick_seed`).
+    let Some(seed) = pick_seed(ctx.reader, name) else {
         return Ok((
             BundleResponse {
                 mode: args.mode.as_str(),
@@ -314,6 +332,56 @@ fn extract_body(seed: &SearchResult, root: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Seed for `shared_helper_fn` over an index whose files were written in
+    /// `order`. Writing both orders explicitly makes the guard OS-independent
+    /// (index order is `readdir` order in production).
+    fn seed_path(order: &[&str]) -> Option<String> {
+        use crate::index::symbols::{ParsedFile, ParsedSymbol, SymbolKind};
+        let parsed: Vec<ParsedFile> = order
+            .iter()
+            .map(|p| ParsedFile {
+                path: (*p).to_string(),
+                symbols: vec![ParsedSymbol {
+                    name: "shared_helper_fn".to_string(),
+                    kind: SymbolKind::Function,
+                    line: 1,
+                    signature: Some("pub fn shared_helper_fn() {}".to_string()),
+                    doc: None,
+                    body_tokens: None,
+                }],
+                refs: vec![],
+                call_edges: vec![],
+                bound_refs: vec![],
+                skeletons: Vec::new(),
+                cpp_includes: Vec::new(),
+                trigram_bloom: None,
+                hierarchy_captures: Vec::new(),
+            })
+            .collect();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out = tmp.path().join("index.vex");
+        crate::store::writer::write_index(&parsed, &out).unwrap();
+        let reader = IndexReader::open(&out).unwrap();
+        pick_seed(&reader, "shared_helper_fn").map(|r| r.path)
+    }
+
+    #[test]
+    fn seed_is_independent_of_index_order() {
+        let test_first = seed_path(&["tests/integration.rs", "src/b.rs", "src/a.rs"]);
+        let prod_first = seed_path(&["src/a.rs", "src/b.rs", "tests/integration.rs"]);
+        assert_eq!(test_first.as_deref(), Some("src/a.rs"));
+        assert_eq!(test_first, prod_first);
+    }
+
+    #[test]
+    fn seed_is_none_for_unknown_symbol() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out = tmp.path().join("index.vex");
+        crate::store::writer::write_index(&[], &out).unwrap();
+        let reader = IndexReader::open(&out).unwrap();
+        assert!(pick_seed(&reader, "nope_not_here").is_none());
+    }
 
     #[test]
     fn signals_semantic_sets_rank_and_clears_fst() {

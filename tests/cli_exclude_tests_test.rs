@@ -293,9 +293,11 @@ fn scoped_commands_drop_test_file_hits() {
             vec!["grep", "payment_processor"],
             "tests/integration.rs",
         ),
+        // `--limit 5`: the default `--limit 1` shows only the top-ranked
+        // definition, and the test-path demotion ranks src/gateway.rs first.
         (
             "show",
-            vec!["show", "shared_helper_fn"],
+            vec!["show", "shared_helper_fn", "--limit", "5"],
             "tests/integration.rs",
         ),
         (
@@ -328,6 +330,21 @@ fn scoped_commands_drop_test_file_hits() {
             "{label}: test file leaked: {after}"
         );
     }
+}
+
+/// Default `show` (`--limit 1`) picks the production definition on every OS.
+/// It used to return the first posting in index order, which is `readdir`
+/// order: the test file on APFS/ext4, the production file on NTFS.
+#[test]
+fn show_default_limit_prefers_production_definition() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    write_project(dir);
+    write_extras(dir);
+    let (out, code) = raw(dir, &["show", "shared_helper_fn"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("src/gateway.rs"), "{out}");
+    assert!(!out.contains("tests/integration.rs"), "{out}");
 }
 
 #[test]
