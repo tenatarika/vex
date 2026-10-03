@@ -46,7 +46,7 @@ description: Reference for the `vex` code-search CLI — symbol search, usages (
 
 ## Architecture (symbol clusters)
 
-- `vex modules` — de-facto modules: clusters of symbols that call/reference each other (computed by `vex index`; label = dominant path prefix, size, cohesion, hub symbols). `--min-size 3`, `--sort size|cohesion`, `--members N`, `--include`/`--exclude` (scope members and hubs; out-of-scope hubs are dropped), `--limit 50` (≥1; with a symbol it caps matches, `symbols_total` in JSON; `--min-size` is list-mode only).
+- `vex modules` — de-facto modules: clusters of symbols that call/reference each other (computed by `vex index`; label = dominant path prefix, size, cohesion, hub symbols). `--min-size 3`, `--sort size|cohesion`, `--members N`, `--include`/`--exclude`/`--exclude-tests` (scope members and hubs; out-of-scope hubs are dropped), `--limit 50` (≥1; with a symbol it caps matches, `symbols_total` in JSON; `--min-size` is list-mode only).
 - `vex modules "Symbol"` — that symbol's status (`clustered` / `unclustered` / `not_eligible` / `new_since_build`) and its cluster with up to 25 members (path, then line). Alias: `vex clusters`.
 - Exit `1` + `results.empty_reason` (`clusters_not_built`, `filtered_all`, `symbol_not_found`, `symbol_unclustered`) when empty; exit `2` if the cluster section is corrupt. `--no-clusters` at index time skips them.
 - After `vex update` clusters are frozen: JSON `stale: true` / `new_since_build: N`, text ends with a `!` line. Run `vex index` to recompute. `--workspace` groups by repo.
@@ -62,6 +62,7 @@ description: Reference for the `vex` code-search CLI — symbol search, usages (
 Apply to most search-shaped commands:
 
 - `--include '<glob>'` / `--exclude '<glob>'` — repeatable path globs (case-sensitive). Replaces older single-path `--filter`.
+- `--exclude-tests` — drop test files (`tests/`, `*_test.*`, `test_*.py`, `*.spec.ts`, `__tests__/`, `tests.rs`; same set as `tests-for`); composes with include/exclude; MCP `exclude_tests: true`. Path-only: Rust `#[cfg(test)] mod tests` inside a non-test file is NOT excluded.
 - `--kind fn,struct` — boost or restrict to result kinds (multi-value; aliases `def` / `comment` / `test`)
 - `--visibility public|private|crate` — symbol metadata post-filter
 - `--async-only` / `--no-async` / `--static-only` / `--sealed-only` — language-agnostic metadata gates

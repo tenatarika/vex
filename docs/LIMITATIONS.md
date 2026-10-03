@@ -1350,12 +1350,25 @@ navigation aid, not ground truth.
   `MAX_ITERATIONS = 4` before the partition stops changing. The output is still
   deterministic, but it is not guaranteed to be fully converged.
 - **Test files dominate the list on test-heavy repositories.** They form tight,
-  cohesive clusters. Filter them with
-  `vex modules --exclude 'tests/**' --exclude '**/tests.rs'`.
+  cohesive clusters. Filter them with `vex modules --exclude-tests` (MCP:
+  `exclude_tests: true`), which uses the same test-path set as `vex tests-for`
+  and composes with `--include`/`--exclude`. It is path-based only: Rust unit
+  tests inside a `#[cfg(test)] mod tests` block of a non-test file are not
+  excluded.
 - **It costs a little indexing time.** On this repository (~7.3k symbols) a
   full `vex index` takes about 11 ms longer with clusters (median 157 vs
   146 ms, warm). `vex index --no-clusters` skips it, and `vex update` keeps
   that choice.
+
+## 13. `--exclude-tests` is a path heuristic
+
+`--exclude-tests` (MCP `exclude_tests`) uses the same test-path set as
+`vex tests-for`. It is path-based and case-sensitive, and treats any `test/`,
+`tests/`, `spec/` or `__tests__/` directory as tests (an OpenAPI `spec/`
+directory is excluded too). It cannot see `#[cfg(test)]` modules inside
+non-test Rust files, so unit tests that live next to production code are kept.
+`vex tests-for` rejects the flag, and `bundle` `symbol`/`project` modes ignore
+every scope filter.
 
 ## Coverage matrix (one-line summary)
 

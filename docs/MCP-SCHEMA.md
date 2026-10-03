@@ -573,6 +573,7 @@ v9 index: groups of symbols that call, reference or inherit from each other
 | `members` | integer | no | Range `[0, 10000]`. Default 0 when listing, 25 with `symbol`. |
 | `sort` | `"size"` \| `"cohesion"` | no | Default `size`; ties by cluster id. |
 | `include` / `exclude` | string[] | no | Path globs applied to members; a cluster is shown iff at least one member is in scope. |
+| `exclude_tests` | boolean | no | Drop test files (same path set as `tests_for`; default `false`). Path-based only: `#[cfg(test)] mod tests` blocks inside non-test Rust files are not excluded. Every tool that takes `include`/`exclude` accepts it. |
 | `project_root` / `auto_update` / `async_update` / `no_stale_check` / `workspace` | — | no | Same role as everywhere else. |
 
 Out-of-range values return JSON-RPC `-32602`. `results` carries

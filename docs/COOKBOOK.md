@@ -126,7 +126,7 @@ This is by design — `vex search` is the **ranked-relevance** surface, not the 
 
 **Variants**:
 - For a "what tests should I run" question, the bundle's `tests_max` field caps how many test symbols come back. The response `mode_hints` includes a `tests_for` map keyed by changed symbol.
-- For a "did this change reach production code paths" gate, filter by `--include 'src/**'` `--exclude 'tests/**'` to bias the reachable walk toward non-test consumers.
+- For a "did this change reach production code paths" gate, filter by `--include 'src/**'` `--exclude-tests` (or `exclude_tests: true` over MCP) to bias the reachable walk toward non-test consumers.
 
 ## Recipe 4 — Find dead code & duplicates
 

@@ -612,6 +612,12 @@ Current flags: `signals`, `empty_reason`, `bundle_modes`, `why`,
 `symbol_clusters` (v9: the `modules` tool and `vex modules`; ungated and
 additive, so absent means false).
 
+`exclude_tests` (v1.27.1, `--exclude-tests` / MCP `exclude_tests: true`) is an
+**input-only** addition to the existing scope surface: no new capability flag,
+it rides under `scope_filters` (precedent: `exclude_generated`, `exclude_docs`).
+It is discoverable through the `tools/list` input schema, and `--why` records it
+in `filter_applied.exclude_tests` (omitted when off).
+
 Proposed additions (flip as each expand step lands):
 
 - `structured_result_kind` — §4 `def`/`neighbor` marker in
