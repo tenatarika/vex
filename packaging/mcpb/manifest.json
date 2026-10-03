@@ -1,0 +1,45 @@
+{
+  "manifest_version": "0.3",
+  "name": "vex",
+  "display_name": "vex code search",
+  "version": "0.0.0",
+  "description": "Local code search for agents: symbols, usages, call graph, AST patterns, grep and semantic search",
+  "long_description": "vex indexes a repository locally with tree-sitter and exposes exact symbol lookup, type-aware usages, call graph, AST pattern search, content grep and semantic search to the agent. Nothing leaves the machine. Set the project root to the repository you want searched; individual tool calls can still pass their own project_root.",
+  "author": {
+    "name": "tenatarika",
+    "url": "https://github.com/tenatarika"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tenatarika/vex"
+  },
+  "homepage": "https://github.com/tenatarika/vex",
+  "documentation": "https://github.com/tenatarika/vex/tree/main/integrations",
+  "support": "https://github.com/tenatarika/vex/issues",
+  "license": "MIT",
+  "keywords": ["code-search", "tree-sitter", "semantic-search", "call-graph", "mcp"],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/vex-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/server/vex-mcp",
+      "args": [],
+      "env": {
+        "VEX_BIN": "${__dirname}/server/vex",
+        "VEX_ROOT": "${user_config.project_root}"
+      }
+    }
+  },
+  "tools_generated": true,
+  "user_config": {
+    "project_root": {
+      "type": "directory",
+      "title": "Project root",
+      "description": "Repository vex should index and search.",
+      "required": true
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "linux", "win32"]
+  }
+}

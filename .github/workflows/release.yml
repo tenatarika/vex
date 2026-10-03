@@ -195,7 +195,7 @@ jobs:
         # `target/.../release/vex.exe`. v1.11.2 added the parallel
         # `vex-mcp-…tar.gz` to fix the Windows MCP install gap: before
         # this, every Windows user wanting the MCP server had to install
-        # rustup and `cargo build --release -p vex-mcp` themselves.
+        # rustup and `cargo build --release -p vex-search-mcp` themselves.
         run: |
           Push-Location target/${{ matrix.target }}/release
           # vex.exe ships with DirectML.dll (the GPU EP's runtime dep, staged
@@ -254,6 +254,101 @@ jobs:
           path: vex-mcp-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
+  # MCP Bundles (.mcpb) for the MCP Registry — one per target, built from the
+  # SAME tarballs the build matrix produced (no second compile), so a bundle
+  # can never drift from the release binaries. Each bundle holds manifest.json
+  # + server/{vex,vex-mcp} (+ DirectML.dll on Windows, which rides inside
+  # vex-<target>.tar.gz). Named `vex-mcp-<target>.mcpb`, never
+  # `vex-<target>.mcpb`: `vex self-update` picks its asset by
+  # `name.contains("vex-<target>")`. Also renders server.json with each
+  # bundle's SHA-256 for the `publish-mcp-registry` job. Packing on Linux
+  # keeps the 0755 mode build-bundle.sh sets on the unix binaries.
+  # See docs/RELEASING.md "MCP Registry".
+  #
+  # Nothing in the core release depends on this job: `release` and
+  # `update-homebrew` run whether or not it succeeds, and the bundles reach
+  # the GitHub release through `attach-mcpb`.
+  mcpb:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vex-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # The mcpb CLI comes from the committed lockfile (exact version +
+      # integrity hashes for the whole dependency tree), never a floating
+      # `npx` resolve. --ignore-scripts: no install-time code runs.
+      - name: Install mcpb CLI
+        run: npm ci --ignore-scripts --prefix packaging/mcpb
+
+      - name: Build MCP bundles and render server.json
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for t in aarch64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
+            mkdir -p "stage/${t}/server"
+            tar -xzf "dist/vex-${t}.tar.gz" -C "stage/${t}/server"
+            tar -xzf "dist/vex-mcp-${t}.tar.gz" -C "stage/${t}/server"
+            packaging/mcpb/build-bundle.sh "${t}" "${version}" "stage/${t}" bundles
+          done
+          # The tag drives the bundle/registry version; the binaries carry
+          # their own. Refuse to ship a bundle whose binary disagrees. A
+          # tag-checkout build prints the git-describe form `vex v1.2.3`; a
+          # build without .git prints Cargo's `vex 1.2.3`. Anything else
+          # (e.g. `vex v1.2.3-4-gabc`, a build off a later commit) fails.
+          got="$(stage/x86_64-unknown-linux-gnu/server/vex --version)"
+          if [ "${got}" != "vex ${version}" ] && [ "${got}" != "vex v${version}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match \`vex --version\` (${got})"
+            exit 1
+          fi
+          packaging/mcpb/render-server-json.sh "${version}" bundles > bundles/server.rendered.json
+          (cd bundles && sha256sum ./*.mcpb)
+          cat bundles/server.rendered.json
+
+      # Same idea as the tarball smoke tests in `build`: unpack what we
+      # are about to publish and check the parts a host needs.
+      - name: Verify bundles
+        run: |
+          set -euo pipefail
+          for t in aarch64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
+            dir="check/${t}"
+            mkdir -p "${dir}"
+            unzip -q "bundles/vex-mcp-${t}.mcpb" -d "${dir}"
+            jq -e '.server.type == "binary" and .name == "vex"' "${dir}/manifest.json" >/dev/null
+            case "${t}" in
+              *windows*)
+                for f in vex.exe vex-mcp.exe DirectML.dll; do
+                  [ -f "${dir}/server/${f}" ] || { echo "::error::${t}: server/${f} missing"; exit 1; }
+                done ;;
+              *)
+                for f in vex vex-mcp; do
+                  [ -x "${dir}/server/${f}" ] || { echo "::error::${t}: server/${f} missing or not executable"; exit 1; }
+                done ;;
+            esac
+            echo "OK: vex-mcp-${t}.mcpb"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcpb
+          path: |
+            bundles/*.mcpb
+            bundles/server.rendered.json
+          if-no-files-found: error
+
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -264,8 +359,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Only the build matrix's tarballs (artifacts `vex-<t>` and
+      # `vex-mcp-<t>`); the `mcpb` artifact is attached by `attach-mcpb`.
       - uses: actions/download-artifact@v4
         with:
+          pattern: vex-*
           merge-multiple: true
 
       - uses: dtolnay/rust-toolchain@stable
@@ -316,6 +414,58 @@ jobs:
         with:
           body_path: release-body.md
           files: vex-*.tar.gz
+
+  # Attach the MCP Bundles to the release `release` just created. Separate
+  # from `release` so an MCPB/registry problem can never block the signed
+  # tarballs or Homebrew. The bundles are NOT zipsigned: self-update never
+  # downloads them, and the registry pins each one by SHA-256 instead.
+  #
+  # Re-run behaviour: an asset that is already attached is compared byte for
+  # byte (SHA-256) — identical → skip, different → FAIL. No --clobber: once a
+  # version is in the registry its listing pins the old hash, so silently
+  # replacing a bundle would make that listing uninstallable. A re-run of
+  # `mcpb` (fresh zip timestamps → new hashes) therefore needs the old
+  # assets deleted by hand first, and only before the registry publish.
+  attach-mcpb:
+    needs: [release, mcpb]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcpb
+          path: mcpb
+
+      - name: Upload bundles to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          existing="$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')"
+          count=0
+          for bundle in mcpb/vex-mcp-*.mcpb; do
+            name="${bundle##*/}"
+            count=$((count + 1))
+            if grep -qxF "${name}" <<<"${existing}"; then
+              rm -rf live && mkdir live
+              gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --pattern "${name}" --dir live
+              want="$(sha256sum "${bundle}" | cut -d' ' -f1)"
+              got="$(sha256sum "live/${name}" | cut -d' ' -f1)"
+              if [ "${want}" != "${got}" ]; then
+                echo "::error::${name} is already attached with different bytes (attached ${got}, built ${want}). Delete the old asset by hand if it is not yet in the MCP Registry; see docs/RELEASING.md."
+                exit 1
+              fi
+              echo "OK: ${name} already attached, identical"
+            else
+              gh release upload "${GITHUB_REF_NAME}" "${bundle}" --repo "${GITHUB_REPOSITORY}"
+              echo "OK: ${name} uploaded"
+            fi
+          done
+          if [ "${count}" -ne 3 ]; then
+            echo "::error::expected 3 bundles in the mcpb artifact, found ${count}"
+            exit 1
+          fi
 
   # Generate a prebuilt-binary Homebrew formula so `brew install` unpacks
   # the platform-specific tarball produced by the build matrix above
@@ -413,7 +563,11 @@ jobs:
             end
 
             test do
-              assert_match "vex #{version}", shell_output("#{bin}/vex --version")
+              # The prebuilt binary is built from the tag checkout and prints
+              # the git-describe form "vex v1.27.2"; also accept the bare
+              # "vex 1.27.2" of a build without .git. (No backticks in this
+              # heredoc: it is unquoted, so the shell would run them.)
+              assert_match(/\Avex v?#{Regexp.escape(version.to_s)}\z/, shell_output("#{bin}/vex --version").strip)
             end
           end
           EOF
@@ -427,3 +581,114 @@ jobs:
           git add Formula/vex.rb
           git commit -m "bump vex to ${{ steps.version.outputs.tag }} (prebuilt)"
           git push
+
+  # Publish server.json to the official MCP Registry
+  # (registry.modelcontextprotocol.io). Runs AFTER `attach-mcpb` because the
+  # registry HEAD-checks every package URL at publish time, and a version can
+  # be published exactly ONCE — so this job is written to be safely re-run:
+  # it treats "this exact version with these exact hashes is already listed"
+  # as success, and fails loudly if the version exists with different hashes
+  # (that needs a new patch release, never a re-publish). Prerelease tags
+  # (v1.2.3-rc.1) are skipped. Auth is GitHub OIDC (namespace
+  # io.github.tenatarika/*), so no secret is involved.
+  # Manual fallback + failure modes: docs/RELEASING.md "MCP Registry".
+  publish-mcp-registry:
+    needs: attach-mcpb
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SERVER_NAME: io.github.tenatarika/vex
+      REGISTRY_URL: https://registry.modelcontextprotocol.io
+      MCP_PUBLISHER_VERSION: v1.8.1
+      # sha256 of mcp-publisher_linux_amd64.tar.gz from the v1.8.1 release
+      # (matches the digest GitHub reports for the asset).
+      MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcpb
+          path: mcpb
+
+      - name: Check server.json is for this tag
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          jq -e --arg v "${version}" --arg n "${SERVER_NAME}" \
+            '.name == $n and .version == $v and (.packages | length) == 3 and all(.packages[]; .version == $v)' \
+            mcpb/server.rendered.json >/dev/null \
+            || { echo "::error::server.rendered.json does not describe ${SERVER_NAME} ${version}"; exit 1; }
+
+      # The registry stores the hash; MCP hosts compare it to what they
+      # download. Re-hash the LIVE release assets (not the local artifact) so
+      # a re-uploaded or mangled asset fails here instead of on users.
+      - name: Verify live release assets against server.json
+        run: |
+          set -euo pipefail
+          count=0
+          while read -r want url; do
+            curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o asset.mcpb "${url}"
+            got="$(sha256sum asset.mcpb | cut -d' ' -f1)"
+            if [ "${got}" != "${want}" ]; then
+              echo "::error::sha256 mismatch for ${url}: server.json ${want}, live ${got}"
+              exit 1
+            fi
+            echo "OK: ${url##*/} ${got}"
+            count=$((count + 1))
+          done < <(jq -r '.packages[] | "\(.fileSha256) \(.identifier)"' mcpb/server.rendered.json)
+          rm -f asset.mcpb
+          # A jq failure inside the process substitution would just end the
+          # loop early; the count catches it.
+          if [ "${count}" -ne 3 ]; then
+            echo "::error::verified ${count} bundle URLs, expected 3"
+            exit 1
+          fi
+
+      - name: Check whether this version is already published
+        id: existing
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          url="${REGISTRY_URL}/v0/servers/${SERVER_NAME//\//%2F}/versions/${version}"
+          code="$(curl -sS --retry 3 --connect-timeout 10 --max-time 60 -o existing.json -w '%{http_code}' "${url}")"
+          case "${code}" in
+            404)
+              echo "published=false" >> "$GITHUB_OUTPUT" ;;
+            200)
+              want="$(jq -S '[.packages[] | {identifier, fileSha256}] | sort_by(.identifier)' mcpb/server.rendered.json)"
+              # Tolerate both the wrapped ({server, _meta}) and a bare
+              # server.json body, and a listing without packages.
+              have="$(jq -S '[((.server // .).packages // [])[] | {identifier, fileSha256}] | sort_by(.identifier)' existing.json)"
+              if [ "${want}" = "${have}" ]; then
+                echo "${SERVER_NAME} ${version} is already in the registry with identical packages — nothing to do."
+                echo "published=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "::error::${SERVER_NAME} ${version} is already in the registry with DIFFERENT packages. A version can be published only once — cut a new patch release."
+                diff <(echo "${have}") <(echo "${want}") || true
+                exit 1
+              fi ;;
+            *)
+              echo "::error::unexpected HTTP ${code} from ${url}"
+              cat existing.json || true
+              exit 1 ;;
+          esac
+
+      - name: Install mcp-publisher
+        if: steps.existing.outputs.published != 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_SHA256}  mcp-publisher.tar.gz" | sha256sum -c -
+          tar -xzf mcp-publisher.tar.gz mcp-publisher
+          ./mcp-publisher --help >/dev/null
+
+      - name: Validate and publish
+        if: steps.existing.outputs.published != 'true'
+        run: |
+          set -euo pipefail
+          ./mcp-publisher validate mcpb/server.rendered.json
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish mcpb/server.rendered.json

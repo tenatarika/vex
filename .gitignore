@@ -47,3 +47,6 @@ fuzz/target/
 # for `cargo check --workspace --locked`. Contributors regenerate it locally
 # when running `cargo fuzz run`.
 fuzz/Cargo.lock
+
+# Pinned mcpb CLI for packaging/mcpb (npm ci --ignore-scripts --prefix packaging/mcpb)
+/packaging/mcpb/node_modules/

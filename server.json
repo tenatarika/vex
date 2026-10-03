@@ -1,0 +1,35 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.tenatarika/vex",
+  "title": "vex",
+  "description": "Local code search for agents: symbols, usages, call graph, AST patterns, grep and semantic search",
+  "repository": {
+    "url": "https://github.com/tenatarika/vex",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/tenatarika/vex",
+  "version": "__VERSION__",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/tenatarika/vex/releases/download/v__VERSION__/vex-mcp-aarch64-apple-darwin.mcpb",
+      "version": "__VERSION__",
+      "fileSha256": "__SHA256__",
+      "transport": { "type": "stdio" }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/tenatarika/vex/releases/download/v__VERSION__/vex-mcp-x86_64-unknown-linux-gnu.mcpb",
+      "version": "__VERSION__",
+      "fileSha256": "__SHA256__",
+      "transport": { "type": "stdio" }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/tenatarika/vex/releases/download/v__VERSION__/vex-mcp-x86_64-pc-windows-msvc.mcpb",
+      "version": "__VERSION__",
+      "fileSha256": "__SHA256__",
+      "transport": { "type": "stdio" }
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "vex-mcpb-tooling",
+  "private": true,
+  "description": "Pinned @anthropic-ai/mcpb CLI for building vex MCP Bundles (packaging/mcpb/build-bundle.sh). Install with: npm ci --ignore-scripts",
+  "license": "MIT",
+  "devDependencies": {
+    "@anthropic-ai/mcpb": "2.1.2"
+  }
+}
