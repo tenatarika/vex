@@ -12,7 +12,11 @@ A push of `v<X>.<Y>.<Z>` to GitHub triggers `.github/workflows/release.yml`:
    if any platform breaks.
 2. **`build`** — cross-compiles release binaries for three triples:
    `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`,
-   `x86_64-pc-windows-msvc`. Archives are `.tar.gz` on every platform
+   `x86_64-pc-windows-msvc`. The Linux leg runs on **ubuntu-22.04**, not
+   ubuntu-latest: a binary needs at least the glibc of the machine it was
+   built on, and 24.04's 2.39 locked out Ubuntu 22.04 / Debian 12 (v1.27.2).
+   `scripts/check-glibc-floor.sh 2.35` fails the build if a dependency raises
+   the floor again; CI's `glibc-floor` job runs the same check on every push. Archives are `.tar.gz` on every platform
    (Windows switched from `.zip` to `.tar.gz` in v1.9.2 — the `self_update`
    crate could not strip zipsign's signed-zip prefix, leaving Windows
    self-update broken since v1.8.2); each contains a single `vex` (or
