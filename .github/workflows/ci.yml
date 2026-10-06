@@ -83,9 +83,10 @@ jobs:
       - uses: rui314/setup-mold@v1
       - run: cargo check --workspace --all-targets --locked
 
-  # Release Linux binaries are built on ubuntu-22.04 so they run on glibc
-  # 2.35+ (Ubuntu 22.04, Debian 12). Build the same way here so a dependency
-  # that needs a newer glibc is caught on a push, not on release day.
+  # Release Linux binaries are built on ubuntu-22.04 with a static libstdc++
+  # so they run on glibc 2.34+ (RHEL 9, Ubuntu 22.04, Debian 12). Build the
+  # same way here and run the result on Rocky Linux 9, so a dependency that
+  # raises the floor is caught on a push, not on release day.
   glibc-floor:
     runs-on: ubuntu-22.04
     steps:
@@ -95,8 +96,11 @@ jobs:
       - uses: rui314/setup-mold@v1
       # Same gcc-12 switch as release.yml: GCC 11 can't build numkong.
       - run: echo "CC=gcc-12" >> "$GITHUB_ENV" && echo "CXX=g++-12" >> "$GITHUB_ENV"
+      # Link libstdc++ statically (see release.yml) and prove the result on RHEL 9.
+      - run: d="$RUNNER_TEMP/static-libstdcxx" && mkdir -p "$d" && ln -sf "$(g++-12 -print-file-name=libstdc++.a)" "$d/libstdc++.a" && echo "RUSTFLAGS=-L native=$d" >> "$GITHUB_ENV"
       - run: cargo build --release --workspace --locked
-      - run: scripts/check-glibc-floor.sh 2.35 target/release/vex target/release/vex-mcp
+      - run: scripts/check-glibc-floor.sh 2.34 target/release/vex target/release/vex-mcp
+      - run: scripts/smoke-rhel9.sh target/release
       - run: target/release/vex --version
 
   # Beta gives early warning about regressions in upcoming stable.

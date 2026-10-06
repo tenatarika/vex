@@ -56,7 +56,7 @@ jobs:
             features: gpu-coreml
           # ubuntu-22.04, not ubuntu-latest: the binary inherits the runner's
           # glibc, and 24.04's 2.39 locked out Ubuntu 22.04 / Debian 12 users.
-          # The glibc floor step below keeps it at 2.35.
+          # The glibc floor step below keeps it at 2.34 (RHEL 9).
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
             features: ""
@@ -84,10 +84,16 @@ jobs:
       - uses: rui314/setup-mold@v1
         if: runner.os == 'Linux'
       # 22.04's default GCC 11 rejects numkong's (usearch) avx512fp16 target
-      # attribute; the image ships gcc-12, which still links glibc 2.35.
+      # attribute; the image ships gcc-12, which links the runner's glibc 2.35.
       - name: Use gcc-12 (Linux)
         if: runner.os == 'Linux'
         run: echo "CC=gcc-12" >> "$GITHUB_ENV" && echo "CXX=g++-12" >> "$GITHUB_ENV"
+      # ort's prebuilt onnxruntime needs GLIBCXX_3.4.30 (GCC 12); RHEL 9 ships
+      # GCC 11's libstdc++. A directory holding only libstdc++.a, searched
+      # first, makes every `-lstdc++` resolve to the static archive.
+      - name: Link libstdc++ statically (Linux)
+        if: runner.os == 'Linux'
+        run: d="$RUNNER_TEMP/static-libstdcxx" && mkdir -p "$d" && ln -sf "$(g++-12 -print-file-name=libstdc++.a)" "$d/libstdc++.a" && echo "RUSTFLAGS=-L native=$d" >> "$GITHUB_ENV"
 
       - name: Build
         # --workspace required: the root Cargo.toml is a hybrid workspace
@@ -104,7 +110,11 @@ jobs:
 
       - name: Check the Linux glibc floor
         if: runner.os == 'Linux'
-        run: scripts/check-glibc-floor.sh 2.35 target/${{ matrix.target }}/release/vex target/${{ matrix.target }}/release/vex-mcp
+        run: scripts/check-glibc-floor.sh 2.34 target/${{ matrix.target }}/release/vex target/${{ matrix.target }}/release/vex-mcp
+
+      - name: Run the Linux binaries on Rocky Linux 9
+        if: runner.os == 'Linux'
+        run: scripts/smoke-rhel9.sh target/${{ matrix.target }}/release
 
       # The DirectML EP needs the modern redistributable DirectML.dll beside the
       # exe. ORT downloads it into its binary cache during `cargo build`, but

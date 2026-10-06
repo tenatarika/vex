@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Linux binaries run on RHEL 9, Rocky Linux 9 and AlmaLinux 9.** v1.27.3's
+  `vex` and `vex-mcp` failed to start there (`version 'GLIBCXX_3.4.30' not found`):
+  the bundled ONNX Runtime needs a newer libstdc++ than RHEL 9 ships. The C++
+  runtime is now linked into the binaries, which need glibc 2.34. CI runs them
+  on Rocky Linux 9 on every push.
+
 ## [1.27.3] - 2026-10-06
 
 ### Fixed

@@ -98,7 +98,7 @@ What `cargo install vex-search` (and any source build) needs:
 
 ### Linux
 
-Pre-built `vex` ships in every GitHub Release for `x86_64-unknown-linux-gnu`. It needs glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+); on older systems build from source:
+Pre-built `vex` ships in every GitHub Release for `x86_64-unknown-linux-gnu`. It needs glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, RHEL / Rocky / AlmaLinux 9+); on older systems build from source:
 
 ```bash
 curl -L https://github.com/tenatarika/vex/releases/latest/download/vex-x86_64-unknown-linux-gnu.tar.gz | tar -xz
