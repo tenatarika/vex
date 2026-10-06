@@ -704,3 +704,47 @@ jobs:
           ./mcp-publisher validate mcpb/server.rendered.json
           ./mcp-publisher login github-oidc
           ./mcp-publisher publish mcpb/server.rendered.json
+
+  # crates.io via Trusted Publishing: the job trades GitHub's OIDC token for a
+  # short-lived crates.io token, so no API token lives in the repo secrets.
+  # Each crate's crates.io settings must list this repo, `release.yml` and the
+  # `crates-io` environment. Runs after `release` so a crates.io problem never
+  # holds back the tarballs, self-update or Homebrew; an already-published
+  # version is skipped, so re-running the job is safe.
+  publish-crates:
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Cargo.toml version matches the tag
+        run: |
+          set -euo pipefail
+          want="${GITHUB_REF_NAME#v}"
+          got="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "vex-search") | .version')"
+          [ "${got}" = "${want}" ] || { echo "::error::Cargo.toml is ${got}, tag is ${want}"; exit 1; }
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Publish vex-search and vex-search-mcp
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for crate in vex-search vex-search-mcp; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' -A 'vex-release (github.com/tenatarika/vex)' \
+              "https://crates.io/api/v1/crates/${crate}/${version}")"
+            if [ "${code}" = "200" ]; then
+              echo "${crate} ${version} is already on crates.io, skipping"
+              continue
+            fi
+            cargo publish -p "${crate}" --locked
+          done

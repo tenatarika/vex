@@ -123,18 +123,16 @@ git tag vX.Y.Z
 git push origin main
 git push origin vX.Y.Z
 
-# 4. (optional) Publish to crates.io. The package names differ from the
-#    binary names because `vex` / `vex-mcp` are taken there: package
-#    `vex-search` installs `vex`, `vex-search-mcp` installs `vex-mcp`.
-#    Release assets (vex-<triple>.tar.gz / vex-mcp-<triple>.tar.gz) are
-#    unaffected. Dry-run first; the two crates are independent (no path
-#    dep between them), so order does not matter. Publish from a CLEAN
-#    checkout of the tag (`git status` empty, HEAD == vX.Y.Z) and never pass
-#    --allow-dirty: the uploaded .crate is immutable and must match the tag.
-cargo publish --dry-run -p vex-search
-cargo publish --dry-run -p vex-search-mcp
-cargo publish -p vex-search
-cargo publish -p vex-search-mcp
+# 4. crates.io is automatic: the `publish-crates` job in release.yml
+#    publishes `vex-search` (installs `vex`) and `vex-search-mcp` (installs
+#    `vex-mcp`) through Trusted Publishing after the GitHub release is up.
+#    It skips a version that is already published, so re-running is safe.
+#    One-time setup per crate: crates.io → crate → Settings → Trusted
+#    Publishing → GitHub, owner `tenatarika`, repo `vex`, workflow
+#    `release.yml`, environment `crates-io`.
+#    Manual fallback, from a CLEAN checkout of the tag (never --allow-dirty;
+#    the uploaded .crate is immutable and must match the tag):
+#      cargo publish -p vex-search && cargo publish -p vex-search-mcp
 ```
 
 `git-cliff` will read commits between the previous tag and `vX.Y.Z` to
