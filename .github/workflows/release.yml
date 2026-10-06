@@ -83,6 +83,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: rui314/setup-mold@v1
         if: runner.os == 'Linux'
+      # 22.04's default GCC 11 rejects numkong's (usearch) avx512fp16 target
+      # attribute; the image ships gcc-12, which still links glibc 2.35.
+      - name: Use gcc-12 (Linux)
+        if: runner.os == 'Linux'
+        run: echo "CC=gcc-12" >> "$GITHUB_ENV" && echo "CXX=g++-12" >> "$GITHUB_ENV"
 
       - name: Build
         # --workspace required: the root Cargo.toml is a hybrid workspace
