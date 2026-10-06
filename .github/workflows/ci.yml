@@ -83,6 +83,20 @@ jobs:
       - uses: rui314/setup-mold@v1
       - run: cargo check --workspace --all-targets --locked
 
+  # Release Linux binaries are built on ubuntu-22.04 so they run on glibc
+  # 2.35+ (Ubuntu 22.04, Debian 12). Build the same way here so a dependency
+  # that needs a newer glibc is caught on a push, not on release day.
+  glibc-floor:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: rui314/setup-mold@v1
+      - run: cargo build --release --workspace --locked
+      - run: scripts/check-glibc-floor.sh 2.35 target/release/vex target/release/vex-mcp
+      - run: target/release/vex --version
+
   # Beta gives early warning about regressions in upcoming stable.
   # Allowed to fail — informational only.
   beta:

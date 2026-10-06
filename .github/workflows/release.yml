@@ -54,8 +54,11 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             features: gpu-coreml
+          # ubuntu-22.04, not ubuntu-latest: the binary inherits the runner's
+          # glibc, and 24.04's 2.39 locked out Ubuntu 22.04 / Debian 12 users.
+          # The glibc floor step below keeps it at 2.35.
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
             features: ""
           - target: x86_64-pc-windows-msvc
             os: windows-latest
@@ -79,7 +82,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - uses: rui314/setup-mold@v1
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
 
       - name: Build
         # --workspace required: the root Cargo.toml is a hybrid workspace
@@ -93,6 +96,10 @@ jobs:
         # ${{ }} is substituted by the runner before any shell runs, so this is
         # shell-agnostic (works on the bash and pwsh legs without pinning).
         run: cargo build --release --workspace --target ${{ matrix.target }} ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
+
+      - name: Check the Linux glibc floor
+        if: runner.os == 'Linux'
+        run: scripts/check-glibc-floor.sh 2.35 target/${{ matrix.target }}/release/vex target/${{ matrix.target }}/release/vex-mcp
 
       # The DirectML EP needs the modern redistributable DirectML.dll beside the
       # exe. ORT downloads it into its binary cache during `cargo build`, but
