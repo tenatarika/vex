@@ -945,6 +945,10 @@ Per-agent caveats (auto-approve flags, timeout overrides, agent-mode requirement
 
 **MCP Registry (from v1.27.2)**: vex is listed in the official [MCP Registry](https://registry.modelcontextprotocol.io) as `io.github.tenatarika/vex`. Each release attaches one MCP Bundle per platform (`vex-mcp-<target>.mcpb`, macOS arm64 / Linux x86_64 / Windows x86_64) that holds both `vex-mcp` and `vex`; an MCPB-capable client asks for the project root once and needs nothing else on `PATH`. Bundle installs are updated by the client, not by `vex self-update` (which refuses to run inside a bundle).
 
+**Glama**: also listed in the [Glama MCP directory](https://glama.ai/mcp/servers/tenatarika/vex), which builds the server and grades its tools.
+
+<a href="https://glama.ai/mcp/servers/tenatarika/vex"><img width="380" height="200" src="https://glama.ai/mcp/servers/tenatarika/vex/badge" alt="vex MCP server on Glama" /></a>
+
 ### Agent Recipes & Workflows
 
 Once vex-mcp is wired into your agent, the next question is *what to ask the agent so it picks the right tools in the right order*. [`docs/COOKBOOK.md`](docs/COOKBOOK.md) is a recipe collection for the common chains — code archaeology, cross-file refactor with `usages --strict` verification, PR-impact analysis via `bundle(mode="pr-impact")`, dead-code & duplicate cleanup, and multi-repo orchestration. Each recipe shows the tool sequence, the *why* of the ordering, and a phrase that reliably triggers the chain in agent prompts.
