@@ -72,9 +72,16 @@ See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for the full coverage matrix, c
 ## Installation
 
 ```bash
+# Install script (macOS arm64, Linux x86_64): vex + vex-mcp into ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/tenatarika/vex/main/install.sh | sh
+
 # Homebrew (macOS/Linux)
 brew tap tenatarika/tap
 brew install vex
+
+# cargo-binstall: prebuilt release binaries, no compiler needed
+cargo binstall vex-search                # → ~/.cargo/bin/vex
+cargo binstall vex-search-mcp            # → ~/.cargo/bin/vex-mcp (MCP server)
 
 # crates.io (compiles from source; the crate is `vex-search`, the binary is `vex`)
 cargo install vex-search --locked        # → ~/.cargo/bin/vex
@@ -86,6 +93,8 @@ cd vex
 cargo build --release
 cp target/release/vex ~/.local/bin/
 ```
+
+The install script takes `VEX_VERSION=1.27.4` to pin a release, `VEX_INSTALL_DIR` to install elsewhere and `VEX_NO_MCP=1` to skip `vex-mcp`. On other platforms, musl or glibc older than 2.34 it stops and points to a source build. `cargo binstall` uses the same release archives where they exist and builds from source elsewhere; on Windows it installs `vex.exe` without the archive's `DirectML.dll`, so GPU indexing falls back to CPU.
 
 What `cargo install vex-search` (and any source build) needs:
 
@@ -101,12 +110,14 @@ What `cargo install vex-search` (and any source build) needs:
 Pre-built `vex` ships in every GitHub Release for `x86_64-unknown-linux-gnu`. It needs glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, RHEL / Rocky / AlmaLinux 9+); on older systems build from source:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/tenatarika/vex/main/install.sh | sh
+# or by hand:
 curl -L https://github.com/tenatarika/vex/releases/latest/download/vex-x86_64-unknown-linux-gnu.tar.gz | tar -xz
 mv vex ~/.local/bin/      # or: sudo mv vex /usr/local/bin/
 vex --version
 ```
 
-Built on the `ubuntu-22.04` GitHub runner (glibc-linked). For older glibc distros, musl-based distros (Alpine, NixOS without `nix-ld`), or `aarch64` Linux (Graviton, Pi 5, Ampere) — build from source via `cargo build --release`.
+Built on the `ubuntu-22.04` GitHub runner (glibc-linked, libstdc++ linked in). For older glibc distros, musl-based distros (Alpine, NixOS without `nix-ld`), or `aarch64` Linux (Graviton, Pi 5, Ampere) — build from source via `cargo build --release`.
 
 ### Windows
 

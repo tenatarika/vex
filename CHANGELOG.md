@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`install.sh`**: `curl -fsSL https://raw.githubusercontent.com/tenatarika/vex/main/install.sh | sh`
+  installs `vex` and `vex-mcp` from the latest release into `~/.local/bin`
+  (macOS arm64, Linux x86_64; `VEX_VERSION`, `VEX_INSTALL_DIR`, `VEX_NO_MCP`).
+  It refuses musl and glibc older than 2.34 with a pointer to a source build.
+- **`cargo binstall vex-search` / `vex-search-mcp`** download the prebuilt
+  release binaries instead of compiling.
+
 ## [1.27.4] - 2026-10-06
 
 ### Fixed

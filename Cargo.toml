@@ -42,6 +42,17 @@ include = [
     "/CHANGELOG.md",
 ]
 
+# `cargo binstall vex-search` downloads the release archive instead of building
+# (prebuilt for aarch64-apple-darwin, x86_64-unknown-linux-gnu and
+# x86_64-pc-windows-msvc; other targets fall back to a source build). Only
+# `vex` is installed: on Windows the archive's DirectML.dll is not, so
+# DirectML falls back to CPU there.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/vex-{ target }{ archive-suffix }"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+disabled-strategies = ["quick-install"]
+
 [[bin]]
 name = "vex"
 path = "src/main.rs"
