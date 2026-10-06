@@ -91,6 +91,7 @@ What `cargo install vex-search` (and any source build) needs:
 
 - **Network at build time**: the build downloads a prebuilt ONNX Runtime. Prebuilts exist only for `aarch64-apple-darwin`, `x86_64`/`aarch64-unknown-linux-gnu` and `x86_64`/`aarch64-pc-windows-msvc`; on any other target (Intel macOS, musl, …) point `ORT_LIB_LOCATION` at a local ONNX Runtime build.
 - **A C/C++ toolchain** (Xcode Command Line Tools, `build-essential`, or MSVC Build Tools) for the tree-sitter grammars.
+  GCC must be 12 or newer: GCC 11 (the default on Ubuntu 22.04) can't compile the bundled numkong vector kernels. Install `gcc-12 g++-12` and build with `CC=gcc-12 CXX=g++-12 cargo install vex-search --locked`.
 - **Linux: `libssl-dev` and `pkg-config`** (Fedora: `openssl-devel`). The HTTP stack links OpenSSL through `native-tls`.
 - The first `vex index --semantic` downloads the ~86 MB embedding model; structural search needs no download.
 - `vex-search-mcp` only installs the MCP server. It runs the `vex` CLI, so install `vex-search` too and keep `vex` on `PATH`, or set `VEX_BIN` to its full path.
@@ -105,7 +106,7 @@ mv vex ~/.local/bin/      # or: sudo mv vex /usr/local/bin/
 vex --version
 ```
 
-Built on the current `ubuntu-latest` GitHub runner (glibc-linked). For older glibc distros, musl-based distros (Alpine, NixOS without `nix-ld`), or `aarch64` Linux (Graviton, Pi 5, Ampere) — build from source via `cargo build --release`.
+Built on the `ubuntu-22.04` GitHub runner (glibc-linked). For older glibc distros, musl-based distros (Alpine, NixOS without `nix-ld`), or `aarch64` Linux (Graviton, Pi 5, Ampere) — build from source via `cargo build --release`.
 
 ### Windows
 
