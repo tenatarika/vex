@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.27.3] - 2026-10-06
+
+### Fixed
+
+- **Linux release binaries run on older distributions again.** v1.27.2's
+  `vex` and `vex-mcp` for `x86_64-unknown-linux-gnu` needed glibc 2.39 (Ubuntu
+  24.04), so they failed to start on Ubuntu 22.04, Debian 12 and similar. They
+  are now built on Ubuntu 22.04 and need glibc 2.35. This covers the tarballs,
+  the Linux MCP bundle and Homebrew on Linux. CI checks the floor on every push.
+
 ## [1.27.2] - 2026-10-04
 
 ### Added
@@ -4101,7 +4111,8 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.27.2...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.27.3...HEAD
+[1.27.3]: https://github.com/tenatarika/vex/compare/v1.27.2...v1.27.3
 [1.27.2]: https://github.com/tenatarika/vex/compare/v1.27.1...v1.27.2
 [1.27.1]: https://github.com/tenatarika/vex/compare/v1.27.0...v1.27.1
 [1.27.0]: https://github.com/tenatarika/vex/compare/v1.26.0...v1.27.0
