@@ -3,7 +3,7 @@
 # in seconds. The Linux release binaries need glibc 2.34 or newer.
 FROM ubuntu:24.04
 
-ARG VEX_VERSION=1.27.3
+ARG VEX_VERSION=1.27.4
 ARG BASE=https://github.com/tenatarika/vex/releases/download/v${VEX_VERSION}
 
 RUN apt-get update \

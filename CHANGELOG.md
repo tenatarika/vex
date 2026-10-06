@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.27.4] - 2026-10-06
+
 ### Fixed
 
 - **Linux binaries run on RHEL 9, Rocky Linux 9 and AlmaLinux 9.** v1.27.3's
@@ -4119,7 +4121,8 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.27.3...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.27.4...HEAD
+[1.27.4]: https://github.com/tenatarika/vex/compare/v1.27.3...v1.27.4
 [1.27.3]: https://github.com/tenatarika/vex/compare/v1.27.2...v1.27.3
 [1.27.2]: https://github.com/tenatarika/vex/compare/v1.27.1...v1.27.2
 [1.27.1]: https://github.com/tenatarika/vex/compare/v1.27.0...v1.27.1
