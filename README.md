@@ -1070,7 +1070,7 @@ cargo clippy -- -D warnings            # zero warnings policy
 (nextest ≥ 0.9.145 is recommended — older versions report spurious `LEAK`s on macOS; update with `cargo nextest self update`.)
 
 Test coverage includes:
-- **Per-language grammar regression** (NEW): `tests/<lang>_query_test.rs` for all 19 supported languages — catches ABI mismatches and AST node renames when a tree-sitter grammar crate is upgraded
+- **Per-language grammar regression** (NEW): `tests/<lang>_query_test.rs` for all 20 supported languages — catches ABI mismatches and AST node renames when a tree-sitter grammar crate is upgraded
 - **Binary format**: roundtrip, corrupted/truncated/wrong-version rejection, out-of-bounds access, string pool dedup, empty index
 - **Adversarial format**: 20 crafted index tests — overflow offsets, bad magic/version, alignment attacks, truncated records
 - **Vectors**: write/read roundtrip for 384-dim f32 embeddings

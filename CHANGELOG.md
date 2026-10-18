@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-10-18
+
 ### Changed
 
 - The public Rust library API `vex::search::semantic::search_with_embedder` is
@@ -13,8 +15,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Dart support** (`.dart`, language 20) via the pinned
+  `tree-sitter-dart-orchard` 0.7.0 grammar, offline and without the Dart SDK:
+  classes, enums, mixins, extensions, extension types, functions, methods,
+  constructors, type aliases, imports, call edges and `extends` /
+  `implements` / `with` hierarchy edges. Static methods and unnamed
+  constructors use bare names like the other languages (`computeTotal`,
+  `Foo`); named constructors stay qualified (`Foo.named`). Known gap:
+  null-asserted calls (`onTap!()`) and calls on a call result (`f()()`) are
+  not recorded as call edges. See [docs/DART_SUPPORT.md](docs/DART_SUPPORT.md).
 - **Incremental parser-revision migration** retains semantic vectors only when model, dimension and exact context identity are validated. Files containing symbols with doc comments are re-embedded.
-- Add Dart indexing with the pinned Orchard grammar; supported syntax is limited to the constructs covered by extraction fixtures.
 - Repeated identical one-shot CLI MiniLM semantic queries reuse bounded,
   integrity-gated raw vectors across processes; MCP keeps its model warm.
 - **`install.sh`**: `curl -fsSL https://raw.githubusercontent.com/tenatarika/vex/main/install.sh | sh`
@@ -45,6 +55,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Semantic HNSW results** preserve aliases and validate ordered symbol identity with v2 hash sidecars. Existing v1 sidecars remain usable with graph/key checks and per-result vector checks; they cannot detect equal-vector symbol reassociation. A stale v1 mapping can also omit symbols outside the graph's top-k without detecting a mismatch. `vex index --semantic` rebuilds with v2 binding.
 - **Malformed semantic HNSW files** fall back to brute force when the complete serialized extent, including node payload, is truncated or inconsistent. USearch is pinned to 2.25.3 because this check mirrors its private layout.
 - **HNSW publication** requires a readable sibling `index.vex` and always writes a bound v2 sidecar.
+- **`usages` keeps real references on lines that declare a similarly named
+  symbol.** Definition-site exclusion now requires the full name, so a
+  `class DerivedService extends Service` line is no longer hidden from
+  `usages Service`.
+- **Source builds report the right version** after Git refs change, instead
+  of a stale embedded version.
 - **`usages --strict` matches the complete symbol name.** `Service` no longer
   picks up references to `DerivedService` (the match is case-insensitive).
 - **Hierarchy edges resolve only to types** (struct, class, interface, trait,
@@ -4174,7 +4190,8 @@ Initial release.
 - Compact output format (`--format compact`) for LLM token efficiency
 - JSON output (`--format json`) for tool integration
 
-[Unreleased]: https://github.com/tenatarika/vex/compare/v1.27.4...HEAD
+[Unreleased]: https://github.com/tenatarika/vex/compare/v1.28.0...HEAD
+[1.28.0]: https://github.com/tenatarika/vex/compare/v1.27.4...v1.28.0
 [1.27.4]: https://github.com/tenatarika/vex/compare/v1.27.3...v1.27.4
 [1.27.3]: https://github.com/tenatarika/vex/compare/v1.27.2...v1.27.3
 [1.27.2]: https://github.com/tenatarika/vex/compare/v1.27.1...v1.27.2
