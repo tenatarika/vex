@@ -97,7 +97,7 @@ cargo build --release
 cp target/release/vex ~/.local/bin/
 ```
 
-The install script takes `VEX_VERSION=1.27.4` to pin a release, `VEX_INSTALL_DIR` to install elsewhere and `VEX_NO_MCP=1` to skip `vex-mcp`. On other platforms, musl or glibc older than 2.34 it stops and points to a source build. `cargo binstall` uses the same release archives where they exist and builds from source elsewhere; on Windows it installs `vex.exe` without the archive's `DirectML.dll`, so GPU indexing falls back to CPU.
+The install script takes `VEX_VERSION=1.28.0` to pin a release, `VEX_INSTALL_DIR` to install elsewhere and `VEX_NO_MCP=1` to skip `vex-mcp`. On other platforms, musl or glibc older than 2.34 it stops and points to a source build. `cargo binstall` uses the same release archives where they exist and builds from source elsewhere; on Windows it installs `vex.exe` without the archive's `DirectML.dll`, so GPU indexing falls back to CPU.
 
 What `cargo install vex-search` (and any source build) needs:
 

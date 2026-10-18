@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/tenatarika/vex/main/install.sh | sh
 #
 # Environment:
-#   VEX_VERSION      release to install, e.g. 1.27.4 (default: latest)
+#   VEX_VERSION      release to install, e.g. 1.28.0 (default: latest)
 #   VEX_INSTALL_DIR  where the binaries go (default: ~/.local/bin)
 #   VEX_NO_MCP=1     skip vex-mcp (the MCP server)
 set -eu

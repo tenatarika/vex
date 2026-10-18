@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const PRODUCTION_BUILD_RS: &str = include_str!("../build.rs");
-const PACKAGE_VERSION: &str = "1.27.4";
+const PACKAGE_VERSION: &str = "1.28.0";
 
 struct Fixture {
     root: tempfile::TempDir,

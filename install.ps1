@@ -3,7 +3,7 @@
 #   irm https://raw.githubusercontent.com/tenatarika/vex/main/install.ps1 | iex
 #
 # Environment:
-#   VEX_VERSION      release to install, e.g. 1.27.4 (default: latest)
+#   VEX_VERSION      release to install, e.g. 1.28.0 (default: latest)
 #   VEX_INSTALL_DIR  where the binaries go (default: %LOCALAPPDATA%\Programs\vex)
 #   VEX_NO_MCP=1     skip vex-mcp (the MCP server)
 #
