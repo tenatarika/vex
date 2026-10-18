@@ -44,7 +44,7 @@
 //! ```text
 //! offset  size  field
 //!      0     4  magic = b"VXBC"
-//!      4     2  CACHE_FORMAT_VERSION: u16 (little-endian; 5 since hierarchy-edges P2)
+//!      4     2  CACHE_FORMAT_VERSION: u16 (little-endian; 6 since language-aware doc extraction)
 //!      6     4  grammar_fingerprint: u32 (little-endian)
 //!     10     1  trigram_bloom_present: u8
 //!     11   256  trigram_bloom slot
@@ -84,9 +84,9 @@ use vex::store::pattern_skeletons::grammar_fingerprint_for_lang;
 // updating this const silently turns the corrupt-payload test into a
 // version-mismatch test (the version gate fires before payload decode).
 const MAGIC: &[u8; 4] = b"VXBC";
-// Bumped 4 -> 5 alongside `parse_cache::CACHE_FORMAT_VERSION` for the
-// hierarchy-edges P2 `ParsedFile.hierarchy_captures` field addition.
-const CACHE_FORMAT_VERSION: u16 = 5;
+// Bumped 5 -> 6 alongside `parse_cache::CACHE_FORMAT_VERSION` (language-aware
+// `extract_doc_above`; earlier 4 -> 5 added `ParsedFile.hierarchy_captures`).
+const CACHE_FORMAT_VERSION: u16 = 6;
 /// Width of the trigram-bloom slot that follows the 1-byte `present` flag.
 const BLOOM_SLOT_LEN: usize = 256;
 

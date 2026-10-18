@@ -94,7 +94,7 @@ fn target_refs_at(path: &Path) -> Vec<(String, u32)> {
 }
 
 fn current_marker() -> [u8; 6] {
-    [b'V', b'E', b'X', b'R', 1, 0]
+    [b'V', b'E', b'X', b'R', 6, 0]
 }
 
 fn usages_with_source_context(root: &Path) -> (serde_json::Value, Vec<String>) {

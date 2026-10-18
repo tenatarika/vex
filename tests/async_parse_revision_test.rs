@@ -150,7 +150,7 @@ fn current_revision_async_refresh_runs_exactly_once() {
 
     assert_eq!(
         fs::read(index_dir.join("index.parse-revision")).unwrap(),
-        [b'V', b'E', b'X', b'R', 1, 0],
+        [b'V', b'E', b'X', b'R', 6, 0],
         "the child refresh must publish the current private revision marker"
     );
     let manifest = Manifest::load(&index_dir.join("manifest.json")).unwrap();
@@ -304,7 +304,7 @@ fn marker_only_async_refresh_runs_exactly_once() {
 
     assert_eq!(
         fs::read(&revision_path).unwrap(),
-        [b'V', b'E', b'X', b'R', 1, 0],
+        [b'V', b'E', b'X', b'R', 6, 0],
         "the child refresh must publish the current private revision marker"
     );
     let manifest = Manifest::load(&index_dir.join("manifest.json")).unwrap();

@@ -672,7 +672,11 @@ fn update_inner(
     if config::index_path(&root).exists()
         && !parse_revision::is_current(&config::index_dir(&root), required_revision)
     {
-        if required_revision == parse_revision::DART {
+        // Only a marker that is already current for native files can narrow the
+        // migration to Dart; an older or missing one reparses everything.
+        if required_revision == parse_revision::DART
+            && parse_revision::is_current(&config::index_dir(&root), parse_revision::BASELINE)
+        {
             for (path, _) in &hashed.hashes {
                 if std::path::Path::new(path)
                     .extension()

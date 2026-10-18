@@ -151,7 +151,7 @@ pub(crate) fn extract_symbols_and_imports_with_tree(
             let doc = if kind == SymbolKind::Heading {
                 None
             } else {
-                extract_doc_above(&line_slices, line)
+                extract_doc_above(&line_slices, line, lang)
             };
             let body_tokens = parent.and_then(|def| extract_body_tokens(def, content, lang));
 
@@ -227,6 +227,37 @@ fn strip_import_quotes(name: &str) -> &str {
     name
 }
 
+/// `true` for languages where `#` starts a line comment. Elsewhere a `#` line
+/// is a preprocessor directive (C/C++/C#) or a Rust/PHP attribute and must not
+/// become doc text.
+fn hash_is_comment(lang: Language) -> bool {
+    matches!(
+        lang,
+        Language::Python
+            | Language::Ruby
+            | Language::Bash
+            | Language::Yaml
+            | Language::Toml
+            | Language::Php
+    )
+}
+
+/// `true` when `trimmed` looks like an attribute/annotation/decorator line for
+/// `lang` (single-line form only; conservative on purpose).
+fn is_attribute_line(lang: Language, trimmed: &str) -> bool {
+    match lang {
+        Language::Rust => trimmed.starts_with("#[") || trimmed.starts_with("#!["),
+        Language::Php => trimmed.starts_with("#["),
+        Language::Java
+        | Language::Kotlin
+        | Language::TypeScript
+        | Language::Swift
+        | Language::Python => trimmed.starts_with('@'),
+        Language::CSharp => trimmed.starts_with('[') && trimmed.ends_with(']'),
+        _ => false,
+    }
+}
+
 /// Extract doc comment or docstring from lines immediately above a symbol.
 /// Returns up to ~200 chars of cleaned comment text, or None.
 ///
@@ -234,7 +265,11 @@ fn strip_import_quotes(name: &str) -> &str {
 /// so the caller's `line_slices` (v1.12.0 P4 — built once per file) is
 /// reused; the older `let lines: Vec<&str> = content.lines().collect()`
 /// inside this fn was an O(line_count) allocation per symbol.
-fn extract_doc_above(lines: &[&str], symbol_line: usize) -> Option<String> {
+pub(super) fn extract_doc_above(
+    lines: &[&str],
+    symbol_line: usize,
+    lang: Language,
+) -> Option<String> {
     if symbol_line <= 1 {
         return None;
     }
@@ -247,24 +282,32 @@ fn extract_doc_above(lines: &[&str], symbol_line: usize) -> Option<String> {
         }
         let trimmed = lines[idx].trim();
 
-        if trimmed.starts_with("///")
+        if is_attribute_line(lang, trimmed) {
+            // Attributes / annotations / decorators sit between the doc
+            // comment and the symbol; neither doc text nor a walk stopper.
+        } else if trimmed.starts_with("///")
             || trimmed.starts_with("//!")
             || trimmed.starts_with("//")
-            || trimmed.starts_with('#')
+            || (trimmed.starts_with('#') && hash_is_comment(lang))
             || trimmed.starts_with("/**")
             || trimmed.starts_with('*')
             || trimmed.starts_with("\"\"\"")
             || trimmed.starts_with("'''")
         {
-            let cleaned = trimmed
+            let mut cleaned = trimmed
                 .trim_start_matches("///")
                 .trim_start_matches("//!")
                 .trim_start_matches("//")
                 .trim_start_matches("/**")
                 .trim_start_matches("*/")
                 .trim_start_matches('*')
-                .trim_start_matches('#')
-                .trim();
+                .trim_start_matches('#');
+            // Only a block-comment line can close with `*/`; a `//` line
+            // like `// glob src/**/` keeps its text.
+            if trimmed.starts_with("/**") || trimmed.starts_with('*') {
+                cleaned = cleaned.trim_end_matches("*/");
+            }
+            let cleaned = cleaned.trim();
             if !cleaned.is_empty() {
                 doc_lines.push(cleaned);
             }

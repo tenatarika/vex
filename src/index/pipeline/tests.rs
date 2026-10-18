@@ -621,7 +621,7 @@ fn dart_revision_one_migrates_once_then_unchanged_update_skips() {
 
     let index_dir = config::index_dir(&root);
     let revision_path = index_dir.join(parse_revision::FILE_NAME);
-    std::fs::write(&revision_path, b"VEXR\x01\x00").unwrap();
+    std::fs::write(&revision_path, b"VEXR\x06\x00").unwrap();
     assert!(!parse_revision::is_current(
         &index_dir,
         parse_revision::DART
@@ -909,7 +909,7 @@ fn mixed_dart_rust_revision_migration_retains_vectors_and_marker_after_dart_remo
     super::run(&root, opts, "minilm-l6-v2", &[]).unwrap();
     let expected = seed_fixture_vectors(&root, "minilm-l6-v2");
     let revision_path = config::index_dir(&root).join(parse_revision::FILE_NAME);
-    std::fs::write(&revision_path, b"VEXR\x01\x00").unwrap();
+    std::fs::write(&revision_path, b"VEXR\x06\x00").unwrap();
 
     super::update(&root, opts, "different-configured-model", &[]).unwrap();
     assert!(parse_revision::is_current(
@@ -991,13 +991,48 @@ fn rust_only_revision_one_update_skips_and_keeps_prebaked_vectors() {
     super::run(&root, opts, "minilm-l6-v2", &[]).unwrap();
     let expected = seed_fixture_vectors(&root, "minilm-l6-v2");
     let revision_path = config::index_dir(&root).join(parse_revision::FILE_NAME);
-    std::fs::write(&revision_path, b"VEXR\x01\x00").unwrap();
+    std::fs::write(&revision_path, b"VEXR\x06\x00").unwrap();
 
     let (_, changed, deleted) =
         super::update(&root, opts, "different-configured-model", &[]).unwrap();
     assert_eq!((changed, deleted), (0, 0));
-    assert_eq!(std::fs::read(&revision_path).unwrap(), b"VEXR\x01\x00");
+    assert_eq!(std::fs::read(&revision_path).unwrap(), b"VEXR\x06\x00");
     assert_fixture_vectors(&root, &expected);
+}
+
+#[test]
+fn mixed_repo_marker_below_baseline_reparses_native_files_too() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    std::fs::write(root.join("lib.rs"), "pub fn rust_target() {}\n").unwrap();
+    std::fs::write(
+        root.join("lib.dart"),
+        "class DartTarget { DartTarget(); }\n",
+    )
+    .unwrap();
+    let opts = IndexOptions {
+        with_embeddings: false,
+        with_clusters: false,
+        with_pattern_index: false,
+        ..IndexOptions::default()
+    };
+    super::run(&root, opts, "minilm-l6-v2", &[]).unwrap();
+    let revision_path = config::index_dir(&root).join(parse_revision::FILE_NAME);
+
+    // A pre-BASELINE marker (here the old Dart revision 5) predates a parser
+    // change for every language, so the Rust file must be reparsed as well.
+    std::fs::write(&revision_path, b"VEXR\x05\x00").unwrap();
+    let (_, changed, _) = super::update(&root, opts, "minilm-l6-v2", &[]).unwrap();
+    assert_eq!(changed, 2, "old marker must reparse native and Dart files");
+    assert!(parse_revision::is_current(
+        &config::index_dir(&root),
+        parse_revision::DART
+    ));
+
+    // A BASELINE marker only lags on Dart, so only the Dart file is reparsed.
+    std::fs::write(&revision_path, b"VEXR\x06\x00").unwrap();
+    let (_, changed, _) = super::update(&root, opts, "minilm-l6-v2", &[]).unwrap();
+    assert_eq!(changed, 1, "BASELINE marker must reparse only Dart files");
 }
 
 /// Corrupt only the version byte to simulate "older than build" without

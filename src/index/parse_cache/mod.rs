@@ -84,11 +84,15 @@ pub const MAGIC: &[u8; 4] = b"VXBC";
 ///   fields on a struct-shape change like this. Treating v4 as a miss
 ///   forces a one-time re-parse, after which v5 entries carry
 ///   `hierarchy_captures` for free on every hit.
+/// - `6`: same shape, different content — `ParsedSymbol.doc` is now derived
+///   per language (attributes and preprocessor lines no longer leak in, docs
+///   above annotations are kept). v5 entries carry the old doc strings, so
+///   they must miss even though they still decode.
 ///
 /// The private `index.parse-revision` marker versions index carry behavior,
 /// not this serialized payload. Revisions that only change carry semantics
 /// reuse valid cache entries and do not bump this value.
-pub const CACHE_FORMAT_VERSION: u16 = 5;
+pub const CACHE_FORMAT_VERSION: u16 = 6;
 
 fn cache_fingerprint_for_lang(lang: Language) -> u32 {
     let grammar_fingerprint = grammar_fingerprint_for_lang(lang);

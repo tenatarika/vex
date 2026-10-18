@@ -8,8 +8,11 @@ const MAGIC: &[u8; 4] = b"VEXR";
 // Bump when parser carry/reconstruction behavior changes the output of an
 // existing index; a missing or old marker forces one migration update.
 // Serialized `ParsedFile` shape changes instead bump `CACHE_FORMAT_VERSION`.
-pub(super) const BASELINE: u16 = 1;
-pub(super) const DART: u16 = 5;
+// Revisions 1-5 predate language-aware symbol docs and are all stale now:
+// native files need one full reparse, so BASELINE moves past every old value
+// (old Dart markers included) and DART stays above it.
+pub(super) const BASELINE: u16 = 6;
+pub(super) const DART: u16 = 7;
 pub(super) const CURRENT: u16 = DART;
 pub(super) const FILE_NAME: &str = "index.parse-revision";
 
@@ -104,7 +107,7 @@ mod tests {
         save(tmp.path(), BASELINE).unwrap();
         assert_eq!(
             fs::read(tmp.path().join(FILE_NAME)).unwrap(),
-            b"VEXR\x01\x00"
+            b"VEXR\x06\x00"
         );
         assert!(is_current(tmp.path(), BASELINE));
         invalidate(tmp.path()).unwrap();
@@ -180,7 +183,7 @@ mod tests {
         save(tmp.path(), DART).unwrap();
         assert_eq!(
             fs::read(tmp.path().join(FILE_NAME)).unwrap(),
-            b"VEXR\x05\x00"
+            b"VEXR\x07\x00"
         );
         assert!(is_current(tmp.path(), DART));
         assert!(is_current(tmp.path(), BASELINE));
@@ -200,20 +203,13 @@ mod tests {
     }
 
     #[test]
-    fn previous_dart_revision_requires_refresh_but_stays_known_for_native_paths() {
+    fn markers_before_language_aware_docs_are_stale_for_every_path() {
         let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join(FILE_NAME), b"VEXR\x02\x00").unwrap();
-        assert!(is_current(tmp.path(), BASELINE));
-        assert!(!is_current(tmp.path(), DART));
-        save(tmp.path(), BASELINE).unwrap();
-        assert_eq!(
-            fs::read(tmp.path().join(FILE_NAME)).unwrap(),
-            b"VEXR\x02\x00"
-        );
-        save(tmp.path(), DART).unwrap();
-        assert_eq!(
-            fs::read(tmp.path().join(FILE_NAME)).unwrap(),
-            b"VEXR\x05\x00"
-        );
+        for old in 1..BASELINE {
+            fs::write(tmp.path().join(FILE_NAME), marker_bytes(old)).unwrap();
+            assert!(!is_current(tmp.path(), BASELINE), "revision {old}");
+            assert!(!is_current(tmp.path(), DART), "revision {old}");
+            assert_eq!(preserve_known_revision(tmp.path(), BASELINE), BASELINE);
+        }
     }
 }

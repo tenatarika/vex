@@ -324,8 +324,20 @@ struct.
   cache treats a version mismatch as a miss and overwrites lazily,
   so missing a bump only costs cache invalidation work on the next
   user run, not a correctness incident — but the bump is still
-  cheap insurance. (Bumped to `5` for the hierarchy-edges P2
-  `ParsedFile.hierarchy_captures` field.)
+  cheap insurance. Also bump it when the *content* a parse produces
+  changes without a shape change, or cached entries keep serving the
+  old output. (Currently `6`: `5` added `ParsedFile.hierarchy_captures`;
+  `6` changed how `ParsedSymbol.doc` is derived.)
+- `parse_revision::BASELINE` / `DART` (`src/index/parse_revision.rs`,
+  u16) — stored in the private `index.parse-revision` marker. A repo
+  with `.dart` files requires `DART`, any other repo `BASELINE`. A
+  marker below `BASELINE` makes the next `vex update` reparse every
+  file once; one at `BASELINE` but below `DART` reparses only the Dart
+  files. For a parser change that affects every language, move
+  `BASELINE` past the old `DART` and keep `DART` above it, so every
+  older marker reparses fully. A parser-output change usually bumps
+  both this and `CACHE_FORMAT_VERSION`. (Currently `BASELINE = 6`,
+  `DART = 7`.)
 
 The binary index, by contrast, carries grammar fingerprints inline
 and self-invalidates without a manual bump — see

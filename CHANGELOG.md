@@ -13,7 +13,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **Incremental parser-revision migration** retains semantic vectors only when model, dimension and exact context identity are validated. Files containing symbols with doc comments or Rust attributes are re-embedded.
+- **Incremental parser-revision migration** retains semantic vectors only when model, dimension and exact context identity are validated. Files containing symbols with doc comments are re-embedded.
 - Add Dart indexing with the pinned Orchard grammar; supported syntax is limited to the constructs covered by extraction fixtures.
 - Repeated identical one-shot CLI MiniLM semantic queries reuse bounded,
   integrity-gated raw vectors across processes; MCP keeps its model warm.
@@ -31,6 +31,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Symbol docs are extracted per language.** Rust and PHP attributes
+  (`#[derive]`, `#[test]`) and C/C++/C# preprocessor lines (`#define`,
+  `#ifdef`, `#region`) no longer become doc text, and a doc comment above an
+  annotation, attribute or decorator (Java/Kotlin/TypeScript/Swift/Python `@`,
+  Rust/PHP `#[..]`, C# `[..]`) is kept. `/** Doc */` no longer keeps its
+  trailing `*/`. Docs feed BM25 and the semantic context, so the first
+  `vex update` after upgrading reparses every file once (and re-embeds with
+  `--semantic`).
 - Incremental updates preserve ordinary references from unchanged files,
   including files without symbols; older indexes are refreshed before they
   can be reported as current.

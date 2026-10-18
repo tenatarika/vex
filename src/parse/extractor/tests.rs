@@ -587,3 +587,155 @@ fn v1_11_hotfix_python_string_tokens_come_from_string_content_not_bare_string() 
     // body_tokens MUST contain the docstring words.
     assert_body_tokens_contain(src, Language::Python, &["hello", "searchable", "world"]);
 }
+
+// ── extract_doc_above is language-aware ──────────────────────────────────────
+
+fn doc_of(src: &str, lang: Language, name: &str) -> Option<String> {
+    symbols(src, lang)
+        .into_iter()
+        .find(|s| s.name == name)
+        .unwrap_or_else(|| panic!("symbol {name} not extracted"))
+        .doc
+}
+
+#[test]
+fn doc_rust_attribute_only_is_not_doc() {
+    assert_eq!(
+        doc_of("#[test]\nfn only_attr() {}\n", Language::Rust, "only_attr"),
+        None
+    );
+    assert_eq!(
+        doc_of("#![allow(x)]\nfn first() {}\n", Language::Rust, "first"),
+        None
+    );
+}
+
+#[test]
+fn doc_rust_skips_attributes_between_doc_and_symbol() {
+    assert_eq!(
+        doc_of(
+            "/// Docs here\n#[derive(Debug)]\nstruct S;\n",
+            Language::Rust,
+            "S"
+        )
+        .as_deref(),
+        Some("Docs here")
+    );
+    assert_eq!(
+        doc_of(
+            "/// A\n#[cfg(test)]\n#[allow(dead_code)]\nfn f() {}\n",
+            Language::Rust,
+            "f"
+        )
+        .as_deref(),
+        Some("A")
+    );
+}
+
+#[test]
+fn doc_java_and_kotlin_skip_annotations() {
+    let java = "class K {\n    /** Doc */\n    @Override\n    public void m() {}\n}\n";
+    assert_eq!(doc_of(java, Language::Java, "m").as_deref(), Some("Doc"));
+    let kt = "class K {\n    /** Doc */\n    @JvmStatic\n    fun m() {}\n}\n";
+    assert_eq!(doc_of(kt, Language::Kotlin, "m").as_deref(), Some("Doc"));
+}
+
+#[test]
+fn doc_typescript_skips_decorators() {
+    let ts = "class C {\n  /** Doc */\n  @Input()\n  foo() {}\n}\n";
+    assert_eq!(
+        doc_of(ts, Language::TypeScript, "foo").as_deref(),
+        Some("Doc")
+    );
+}
+
+#[test]
+fn doc_cpp_preprocessor_is_not_doc() {
+    assert_eq!(
+        doc_of("#ifdef X\nint f(void) { return 0; }\n", Language::Cpp, "f"),
+        None
+    );
+}
+
+#[test]
+fn doc_cpp_line_comment_still_works() {
+    assert_eq!(
+        doc_of("// c doc\nint g(void) { return 0; }\n", Language::Cpp, "g").as_deref(),
+        Some("c doc")
+    );
+}
+
+#[test]
+fn doc_csharp_skips_attributes_and_ignores_region() {
+    let cs =
+        "class A {\n    /// <summary>Doc</summary>\n    [HttpGet]\n    public void M() {}\n}\n";
+    assert!(doc_of(cs, Language::CSharp, "M").unwrap().contains("Doc"));
+    let region = "class A {\n#region R\n    public void N() {}\n}\n";
+    assert_eq!(doc_of(region, Language::CSharp, "N"), None);
+}
+
+#[test]
+fn doc_python_skips_decorators_and_keeps_hash_comments() {
+    assert_eq!(
+        doc_of(
+            "# comment\n@decorator\ndef f(): pass\n",
+            Language::Python,
+            "f"
+        )
+        .as_deref(),
+        Some("comment")
+    );
+    assert_eq!(
+        doc_of("# plain\ndef g(): pass\n", Language::Python, "g").as_deref(),
+        Some("plain")
+    );
+}
+
+#[test]
+fn doc_ruby_and_bash_hash_comments_still_work() {
+    assert_eq!(
+        doc_of("# says hi\ndef hi\nend\n", Language::Ruby, "hi").as_deref(),
+        Some("says hi")
+    );
+    assert_eq!(
+        doc_of("# runs it\nrun() {\n  echo\n}\n", Language::Bash, "run").as_deref(),
+        Some("runs it")
+    );
+}
+
+#[test]
+fn doc_php_attribute_skipped_hash_comment_kept() {
+    let php = "<?php\n/** Doc */\n#[Route('/x')]\nfunction a() {}\n";
+    assert_eq!(doc_of(php, Language::Php, "a").as_deref(), Some("Doc"));
+    let php2 = "<?php\n# note\nfunction b() {}\n";
+    assert_eq!(doc_of(php2, Language::Php, "b").as_deref(), Some("note"));
+}
+
+#[test]
+fn doc_above_helper_is_safe_on_edge_lines() {
+    assert_eq!(
+        super::symbols::extract_doc_above(&[], 0, Language::Rust),
+        None
+    );
+    assert_eq!(
+        super::symbols::extract_doc_above(&["//x"], 99, Language::Rust),
+        None
+    );
+    assert_eq!(
+        super::symbols::extract_doc_above(&["@A(", "fn"], 2, Language::Java),
+        None
+    );
+}
+
+#[test]
+fn doc_closing_marker_stripped_only_from_block_comments() {
+    use super::symbols::extract_doc_above;
+    assert_eq!(
+        extract_doc_above(&["/** Single line */", "fn f() {}"], 2, Language::Rust).as_deref(),
+        Some("Single line")
+    );
+    assert_eq!(
+        extract_doc_above(&["// glob src/**/", "fn f() {}"], 2, Language::Rust).as_deref(),
+        Some("glob src/**/")
+    );
+}
