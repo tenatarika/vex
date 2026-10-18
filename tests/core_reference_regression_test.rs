@@ -75,7 +75,6 @@ fn without_cluster_stale_flag(bytes: &[u8]) -> Vec<u8> {
         .copy_from_slice(&(flags & !ClusterHeader::FLAG_STALE).to_le_bytes());
     normalized
 }
-
 fn target_refs(root: &Path) -> Vec<(String, u32)> {
     target_refs_at(&index_path(root))
 }

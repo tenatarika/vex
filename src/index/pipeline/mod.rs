@@ -10,6 +10,7 @@ use crate::util::config;
 mod lock;
 mod output;
 mod parse_files;
+mod semantic_migration;
 
 use lock::IndexLock;
 use output::{
@@ -628,6 +629,10 @@ fn update_inner(
         let diff = manifest::diff_files(&hashed.hashes, &current_manifest);
         (diff, current_manifest)
     };
+    // Keep the source-level diff distinct from parser-revision invalidation:
+    // migration can only reuse vectors for files whose bytes are unchanged.
+    let content_changed_paths: HashSet<String> =
+        diff.changed.iter().chain(&diff.deleted).cloned().collect();
     if config::index_path(&root).exists() && !parse_revision::is_current(&config::index_dir(&root))
     {
         diff.changed = hashed.hashes.iter().map(|(path, _)| path.clone()).collect();
@@ -838,6 +843,7 @@ fn update_inner(
             None
         }
     };
+    let mut migration_vectors = None;
     let (
         unchanged_parsed,
         unchanged_vectors,
@@ -847,6 +853,16 @@ fn update_inner(
     ) = if index_path.exists() {
         let reader = crate::store::reader::IndexReader::open(&index_path)
             .context("open existing index for incremental merge")?;
+        if !parse_revision::is_current(&config::index_dir(&root)) && !opts.with_embeddings {
+            let changed: HashSet<&str> = content_changed_paths.iter().map(String::as_str).collect();
+            migration_vectors = semantic_migration::collect_migration_vectors(
+                &reader,
+                &current_manifest,
+                &changed,
+                body_tokens_sidecar.as_deref(),
+                &config::hash_index_path(&root),
+            );
+        }
         // P4b (`docs/V9-FORMAT.md` §13 R11) — built from THIS `reader`,
         // the same one handed to `reconstruct_unchanged` two lines below
         // and to the old-symbols-by-path / old-table extraction further
@@ -1038,7 +1054,6 @@ fn update_inner(
         unchanged_vectors.len() <= unchanged_sym_count,
         "reconstructed vector prefix exceeds unchanged symbol count"
     );
-    let unchanged_vector_count = unchanged_vectors.len();
 
     // Generate embeddings for symbols in changed files. The E2b
     // embedding cache (`<index_dir>/embed_cache_<embedder_id>.bin`)
@@ -1074,10 +1089,40 @@ fn update_inner(
 
     let mut all_parsed = unchanged_parsed;
     all_parsed.extend(newly_parsed);
+
+    let mut unchanged_count = unchanged_vectors.len();
     let mut all_vectors = unchanged_vectors;
     all_vectors.extend(new_vectors);
+    let mut retained_embedder = None;
+    if let Some((id, old_files)) = migration_vectors {
+        artefacts.cluster_carry = None;
+        let migrated = semantic_migration::reuse_migration_vectors(all_parsed, &id, old_files);
+        all_parsed = migrated.files;
+        all_vectors = migrated.vectors;
+        unchanged_count = all_vectors.len();
+        vector_source_symbols = (0..all_vectors.len()).collect();
+        if !all_vectors.is_empty() {
+            retained_embedder = Some(id);
+        }
+    }
+    let semantic_embedder_id = if opts.with_embeddings {
+        embedder_id
+    } else {
+        retained_embedder
+            .as_deref()
+            .or(current_manifest.embedder_id.as_deref())
+            .unwrap_or(embedder_id)
+    };
+    // v1.13 P5: normalize the merged set so the result is always
+    // L2-normalized regardless of legacy state. Key subtlety: when the
+    // existing index is ALREADY normalized (v1.13+), re-normalizing
+    // unit vectors is a no-op mathematically but accumulates
+    // floating-point drift over many `vex update` cycles (watch mode).
+    // So skip the unchanged slice when the manifest confirms it's
+    // already normalized; otherwise normalize everything (legacy
+    // pre-1.13 lazy-promotion path).
     if existing_normalized {
-        for vector in all_vectors.iter_mut().skip(unchanged_vector_count) {
+        for vector in all_vectors.iter_mut().skip(unchanged_count) {
             crate::search::semantic::normalize_in_place(vector);
         }
     } else {
@@ -1106,10 +1151,16 @@ fn update_inner(
         && all_vectors.len() == symbol_count
     {
         Some(embedder_id.to_string())
+    } else if retained_embedder.is_some()
+        && unchanged_mapping_valid
+        && combined_mapping_valid
+        && !all_vectors.is_empty()
+    {
+        Some(semantic_embedder_id.to_string())
     } else {
         None
     };
-    let vector_dim = vector_dim_for(embedder_id, &all_vectors);
+    let vector_dim = vector_dim_for(semantic_embedder_id, &all_vectors);
     parse_revision::invalidate(&config::index_dir(&root))?;
     write_output_locked(
         &root,
@@ -1124,7 +1175,7 @@ fn update_inner(
     )?;
 
     if !all_vectors.is_empty() && all_vectors.len() == symbol_count {
-        let all_hashes = compute_hashes_for(&all_parsed, embedder_id)?;
+        let all_hashes = compute_hashes_for(&all_parsed, semantic_embedder_id)?;
         // v1.15.0 B1.2: try the incremental HNSW path first.
         //   Ok(true)  — incremental applied; HNSW + hash-index sidecar
         //               on disk in post-update state. SKIP full rebuild.
@@ -1148,8 +1199,8 @@ fn update_inner(
         // `unchanged + newly_parsed`, NOT just `_new_hashes` from
         // generate_embeddings (that would evict every unchanged
         // symbol's cache entry and defeat the cache on the next run).
-        let dim = vector_dim_for(embedder_id, &all_vectors);
-        let _ = prune_embed_cache(&root, embedder_id, dim, &all_hashes);
+        let dim = vector_dim_for(semantic_embedder_id, &all_vectors);
+        let _ = prune_embed_cache(&root, semantic_embedder_id, dim, &all_hashes);
     } else {
         // Same paired cleanup as the full-rebuild path — drop both
         // sidecars together so the next `vex search --semantic` gets
