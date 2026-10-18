@@ -49,6 +49,7 @@ pub(crate) fn pattern(
             "html" | "htm" => Some(crate::parse::language::Language::Html),
             "yaml" | "yml" => Some(crate::parse::language::Language::Yaml),
             "toml" => Some(crate::parse::language::Language::Toml),
+            "dart" => Some(crate::parse::language::Language::Dart),
             _ => None,
         })
         .with_context(|| format!("unknown language: {lang}"))?;

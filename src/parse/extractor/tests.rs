@@ -37,6 +37,7 @@ fn with_tree_matches_the_self_parsing_entry_point_for_every_language() {
         (Language::Lua, "lua"),
         (Language::Yaml, "yaml"),
         (Language::Toml, "toml"),
+        (Language::Dart, "dart"),
     ];
     assert_eq!(
         fixtures.len(),

@@ -133,6 +133,39 @@ fn strict_bails_when_index_has_no_ref_edges() {
 }
 
 #[test]
+fn strict_explains_dart_only_symbol_without_binder_edges() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::write(tmp.path().join("sample.dart"), "class DartWidget {}\n").unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let assert = vex_in(tmp.path())
+        .args(["usages", "DartWidget", "--strict"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(stderr.contains("no strict binder for Dart yet"), "{stderr}");
+    assert!(stderr.contains("default `usages`"), "{stderr}");
+}
+
+#[test]
+fn strict_keeps_generic_unavailable_message_for_mixed_language_symbol() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".vex.toml"), "local_cache = true\n").unwrap();
+    std::fs::write(tmp.path().join("sample.dart"), "class SharedType {}\n").unwrap();
+    std::fs::write(tmp.path().join("sample.rs"), "pub struct SharedType;\n").unwrap();
+    vex_in(tmp.path()).args(["index"]).assert().success();
+
+    let assert = vex_in(tmp.path())
+        .args(["usages", "SharedType", "--strict"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(stderr.contains("Re-run `vex index`"), "{stderr}");
+    assert!(!stderr.contains("indexed only in Dart files"), "{stderr}");
+}
+
+#[test]
 fn strict_prints_no_usages_when_symbol_has_zero_refs() {
     // Two top-level symbols; only one is referenced from a call site.
     // The unreferenced one should produce "No usages found" under

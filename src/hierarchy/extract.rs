@@ -16,16 +16,9 @@ use crate::store::format::EdgeKind;
 
 use super::queries::{compiled_inheritance_query, relation_label};
 
-/// Map a `relation_label` string onto an [`EdgeKind`] discriminant.
-///
-/// **P2 scope decision (locked):** `relation_label` does not currently
-/// distinguish interface `implements` from class `extends` — it lumps
-/// Java/TS/C#/Kotlin `implements` under the `"extends"` label (see
-/// `queries.rs::relation_label`). So `EdgeKind::Implements` (1) is never
-/// produced here in P2; refining the queries to split interface clauses is
-/// a documented follow-up (`docs/HIERARCHY-EDGES.md` §4), out of scope now.
 fn relation_to_edge_kind(relation: &str) -> u8 {
     match relation {
+        "implements" => EdgeKind::Implements as u8,
         "uses" | "include" => EdgeKind::Uses as u8,
         // "extends" | "inherits" | "impl" and any other/future label from
         // relation_label fall back to Extends — matches today's exhaustive
@@ -68,6 +61,14 @@ pub(crate) fn capture_hierarchy_edges(
         Some(i) => i,
         None => return Vec::new(),
     };
+    let relation_indices = [
+        (query.capture_index_for_name("relation.extends"), "extends"),
+        (
+            query.capture_index_for_name("relation.implements"),
+            "implements",
+        ),
+        (query.capture_index_for_name("relation.uses"), "uses"),
+    ];
 
     let source = content.as_bytes();
     let mut cursor = QueryCursor::new();
@@ -78,6 +79,7 @@ pub(crate) fn capture_hierarchy_edges(
         let mut parent_name = None;
         let mut child_name = None;
         let mut child_line: u32 = 0;
+        let mut relation = None;
 
         for capture in m.captures {
             if capture.index == base_idx {
@@ -92,11 +94,18 @@ pub(crate) fn capture_hierarchy_edges(
                     // tree) can't wrap rather than clamp.
                     child_line = (capture.node.start_position().row as u32).saturating_add(1);
                 }
+            } else if let Some((_, label)) = relation_indices
+                .iter()
+                .find(|(index, _)| *index == Some(capture.index))
+            {
+                relation = Some(*label);
             }
         }
 
         if let (Some(child_name), Some(parent_name)) = (child_name, parent_name) {
-            let kind = relation_to_edge_kind(relation_label(lang, m.pattern_index));
+            let kind = relation_to_edge_kind(
+                relation.unwrap_or_else(|| relation_label(lang, m.pattern_index)),
+            );
             captures.push(HierarchyCapture {
                 child_name,
                 parent_name,
@@ -206,6 +215,13 @@ mod tests {
         // A future/unknown label falls back to Extends by design — documented,
         // not a silent bug. When `relation_label` gains a new string, add it
         // above with its intended kind (this is the tripwire).
-        assert_eq!(relation_to_edge_kind("implements"), EdgeKind::Extends as u8);
+        assert_eq!(
+            relation_to_edge_kind("implements"),
+            EdgeKind::Implements as u8
+        );
+        assert_eq!(
+            relation_to_edge_kind("future_relation"),
+            EdgeKind::Extends as u8
+        );
     }
 }

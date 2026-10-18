@@ -1,0 +1,28 @@
+(class_definition name: (identifier) @class.name)
+(enum_declaration name: (identifier) @enum.name)
+(mixin_declaration (identifier) @class.name)
+(extension_declaration name: (identifier) @class.name)
+(extension_type_declaration name: (identifier) @class.name)
+
+(function_declaration (function_signature name: (identifier) @fn.name))
+(function_declaration (getter_signature name: (identifier) @fn.name))
+(function_declaration (setter_signature name: (identifier) @fn.name))
+
+(method_declaration (method_signature (function_signature name: (identifier) @impl.method)))
+(method_declaration (method_signature (getter_signature name: (identifier) @impl.method)))
+(method_declaration (method_signature (setter_signature name: (identifier) @impl.method)))
+(method_declaration (method_signature (constructor_signature name: (identifier) @impl.method . (formal_parameter_list))))
+(method_declaration (method_signature (factory_constructor_signature (identifier) @impl.method . (formal_parameter_list))))
+
+(declaration (function_signature name: (identifier) @impl.method))
+(declaration (getter_signature name: (identifier) @impl.method))
+(declaration (setter_signature name: (identifier) @impl.method))
+(declaration (constructor_signature name: (identifier) @impl.method . (formal_parameter_list)))
+(declaration (constant_constructor_signature (identifier) @impl.method . (formal_parameter_list)))
+(declaration (factory_constructor_signature (identifier) @impl.method . (formal_parameter_list)))
+(redirecting_factory_constructor_signature (identifier) @impl.method . (formal_parameter_list))
+
+(type_alias (type_identifier) @type.name . (type_parameters)? "=")
+(type_alias (type_identifier) @type.name . (type_parameters)? . (formal_parameter_list))
+(enum_constant name: (identifier) @const.name)
+(import_specification (configurable_uri (uri (string_literal) @import.name)))

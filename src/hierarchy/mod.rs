@@ -88,6 +88,14 @@ fn find_in_source(content: &str, lang: Language, path: &str, base_name: &str) ->
         Some(i) => i,
         None => return Vec::new(),
     };
+    let relation_indices = [
+        (query.capture_index_for_name("relation.extends"), "extends"),
+        (
+            query.capture_index_for_name("relation.implements"),
+            "implements",
+        ),
+        (query.capture_index_for_name("relation.uses"), "uses"),
+    ];
 
     let mut cursor = QueryCursor::new();
     let mut query_matches = cursor.matches(query, tree.root_node(), content.as_bytes());
@@ -97,6 +105,7 @@ fn find_in_source(content: &str, lang: Language, path: &str, base_name: &str) ->
         let mut base_text = None;
         let mut child_text = None;
         let mut child_line = 0;
+        let mut relation = None;
 
         for capture in m.captures {
             let text = &content[capture.node.byte_range()];
@@ -105,6 +114,11 @@ fn find_in_source(content: &str, lang: Language, path: &str, base_name: &str) ->
             } else if capture.index == child_idx {
                 child_text = Some(text);
                 child_line = capture.node.start_position().row + 1;
+            } else if let Some((_, label)) = relation_indices
+                .iter()
+                .find(|(index, _)| *index == Some(capture.index))
+            {
+                relation = Some(*label);
             }
         }
 
@@ -115,7 +129,7 @@ fn find_in_source(content: &str, lang: Language, path: &str, base_name: &str) ->
                     line: child_line,
                     name: child.to_string(),
                     base: base.to_string(),
-                    relation: relation_label(lang, m.pattern_index),
+                    relation: relation.unwrap_or_else(|| relation_label(lang, m.pattern_index)),
                 });
             }
         }

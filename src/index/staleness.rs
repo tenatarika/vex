@@ -23,8 +23,10 @@ pub enum Freshness {
 /// ls-files) to count changed files. When false, only compares HEAD — a single
 /// subprocess call.
 pub fn check(root: &Path, manifest: &Manifest, deep: bool) -> Freshness {
+    let required_revision =
+        parse_revision::required_for_paths(manifest.files.keys().map(String::as_str));
     if crate::util::config::index_path(root).exists()
-        && !parse_revision::is_current(&crate::util::config::index_dir(root))
+        && !parse_revision::is_current(&crate::util::config::index_dir(root), required_revision)
     {
         return Freshness::Stale {
             changed_count: None,

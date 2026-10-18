@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::parse::language::Language;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 
@@ -12,7 +13,7 @@ mod extractor;
 mod queries;
 
 // `extract_call_edges` is the self-parsing public entry point (index time uses
-// `extract_call_edges_with_tree`); `callers_in_source` / `callees_in_source` are
+// `extract_call_edges_with_tree`); `callers_in_source_with_facts` / `callees_in_source_with_facts` are
 // internal call-site helpers used by `find_callers` / `find_callees` below. `callgraph_query` is reused here as the
 // language-filter predicate (we only walk files the engine has a
 // query for) — `extractor.rs` imports it independently for query
@@ -28,8 +29,26 @@ pub use extractor::extract_call_edges;
 // tree it already parsed. `pub(crate)`: no external consumer, and exporting it
 // would put `tree_sitter::Tree` in the public API.
 pub(crate) use extractor::extract_call_edges_with_tree;
-use extractor::{callees_in_source, callers_in_source};
+pub(crate) use extractor::extract_call_edges_with_tree_raw;
+use extractor::{callees_in_source_with_facts, callers_in_source_with_facts};
 use queries::callgraph_query;
+
+fn dart_project_facts(
+    files: &[(std::path::PathBuf, Language)],
+) -> Result<crate::parse::extractor::dart::ProjectFacts> {
+    let mut facts = crate::parse::extractor::dart::ProjectFacts::default();
+    for (path, lang) in files {
+        if *lang != Language::Dart {
+            continue;
+        }
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("read Dart source {}", path.display()))?;
+        facts.merge(crate::parse::extractor::dart::ProjectFacts::from_source(
+            &content,
+        )?);
+    }
+    Ok(facts)
+}
 
 /// Per-step cap when binding `find_callers_fast` as the BFS
 /// `callers_of` closure. Far above any realistic fan-in but bounded
@@ -59,6 +78,7 @@ pub fn find_callers(
         .into_iter()
         .filter(|(_, lang)| callgraph_query(*lang).is_some())
         .collect();
+    let dart_facts = dart_project_facts(&files)?;
 
     let matches: Vec<CallMatch> = files
         .par_iter()
@@ -73,7 +93,13 @@ pub fn find_callers(
                 .to_string_lossy()
                 .to_string();
 
-            callers_in_source(&content, *lang, &rel, target_name)
+            callers_in_source_with_facts(
+                &content,
+                *lang,
+                &rel,
+                target_name,
+                (*lang == Language::Dart).then_some(&dart_facts),
+            )
         })
         .collect();
 
@@ -92,6 +118,7 @@ pub fn find_callees(
         .into_iter()
         .filter(|(_, lang)| callgraph_query(*lang).is_some())
         .collect();
+    let dart_facts = dart_project_facts(&files)?;
 
     let matches: Vec<CallMatch> = files
         .par_iter()
@@ -106,7 +133,13 @@ pub fn find_callees(
                 .to_string_lossy()
                 .to_string();
 
-            callees_in_source(&content, *lang, &rel, target_name)
+            callees_in_source_with_facts(
+                &content,
+                *lang,
+                &rel,
+                target_name,
+                (*lang == Language::Dart).then_some(&dart_facts),
+            )
         })
         .collect();
 

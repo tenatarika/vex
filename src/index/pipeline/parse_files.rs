@@ -1138,7 +1138,10 @@ pub(super) fn parse_files(
     files: &[std::path::PathBuf],
     blob_map: &HashMap<std::path::PathBuf, String>,
     cache: &crate::index::parse_cache::BlobCache,
-) -> Result<Vec<ParsedFile>> {
+) -> Result<(
+    Vec<ParsedFile>,
+    HashMap<String, crate::index::dart_records::DartRecord>,
+)> {
     let counter = AtomicUsize::new(0);
     let total = files.len();
     let mut all_parsed = Vec::new();
@@ -1180,17 +1183,18 @@ pub(super) fn parse_files(
     type CacheJob = (String, Vec<u8>);
     let (tx, rx) = std::sync::mpsc::channel::<CacheJob>();
 
-    let parsed_files = std::thread::scope(|s| -> Result<Vec<ParsedFile>> {
-        let drain_handle = s.spawn(move || {
-            while let Ok((sha, buf)) = rx.recv() {
-                if let Err(e) = cache.write_entry_bytes(&sha, &buf) {
-                    tracing::warn!(sha = %sha, error = %e, "blob cache write failed");
+    let parsed_with_metadata = std::thread::scope(
+        |s| -> Result<Vec<(ParsedFile, Option<crate::index::dart_records::DartRecord>)>> {
+            let drain_handle = s.spawn(move || {
+                while let Ok((sha, buf)) = rx.recv() {
+                    if let Err(e) = cache.write_entry_bytes(&sha, &buf) {
+                        tracing::warn!(sha = %sha, error = %e, "blob cache write failed");
+                    }
                 }
-            }
-        });
+            });
 
-        for chunk in files.chunks(CHUNK_SIZE) {
-            let parsed: Vec<ParsedFile> = chunk
+            for chunk in files.chunks(CHUNK_SIZE) {
+                let parsed: Vec<(ParsedFile, Option<crate::index::dart_records::DartRecord>)> = chunk
                 .par_iter()
                 .filter_map(|path| {
                     let ext = path.extension()?.to_str()?;
@@ -1205,13 +1209,16 @@ pub(super) fn parse_files(
                     // both the file read and the tree-sitter parse.
                     let blob_sha = blob_map.get(path);
                     if let Some(sha) = blob_sha {
-                        if let Some(mut cached) = cache.lookup(sha, lang) {
+                        if let Some((mut cached, metadata)) = cache
+                            .lookup_with_dart_metadata(sha, lang)
+                            .filter(|(_, metadata)| lang != Language::Dart || metadata.is_some())
+                        {
                             cached.path = rel.clone();
                             let done = counter.fetch_add(1, Ordering::Relaxed);
                             if done.is_multiple_of(500) && done > 0 {
                                 tracing::info!("{done}/{total} files parsed");
                             }
-                            return Some(cached);
+                            return Some((cached, metadata));
                         }
                     }
 
@@ -1234,11 +1241,11 @@ pub(super) fn parse_files(
                     // `unsafe` involved, just a UnwindSafe assertion).
                     let parsed_result =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            parse::parse_file(&rel, &content, lang)
+                            parse::parse_file_with_dart_metadata(&rel, &content, lang)
                         }));
 
                     match parsed_result {
-                        Ok(Ok(mut parsed)) => {
+                        Ok(Ok((mut parsed, metadata))) => {
                             // grep trigram skip-index (STORAGE-RESEARCH §2):
                             // build the per-file presence bloom from the raw
                             // bytes we just read. Attaching it here means it
@@ -1262,7 +1269,7 @@ pub(super) fn parse_files(
                             // any failure here is unreachable. Encoding
                             // failures are warn-and-continue.
                             if let Some(sha) = blob_sha {
-                                match crate::index::parse_cache::encode_entry(lang, &parsed) {
+                                match crate::index::parse_cache::encode_entry_with_dart_metadata(lang, &parsed, metadata.as_ref()) {
                                     Ok(buf) => {
                                         // `send` only fails if the drain thread
                                         // is gone. The thread is dropped at scope
@@ -1287,7 +1294,7 @@ pub(super) fn parse_files(
                                     }
                                 }
                             }
-                            Some(parsed)
+                            Some((parsed, metadata))
                         }
                         Ok(Err(e)) => {
                             if let Some(g) = e.downcast_ref::<parse::extractor::GrammarLoadError>()
@@ -1311,21 +1318,22 @@ pub(super) fn parse_files(
                 })
                 .collect();
 
-            all_parsed.extend(parsed);
-        }
+                all_parsed.extend(parsed);
+            }
 
-        // Close the channel and wait for the drain thread to finish so all
-        // accepted writes are durable before `parse_files` returns. This
-        // preserves the mtime-stable rerun semantics asserted by the Step 4b
-        // integration test — without the join, a fast subsequent
-        // `pipeline::run` could observe an incomplete cache.
-        drop(tx);
-        if let Err(panic) = drain_handle.join() {
-            tracing::warn!("blob cache drain thread panicked: {panic:?}");
-        }
+            // Close the channel and wait for the drain thread to finish so all
+            // accepted writes are durable before `parse_files` returns. This
+            // preserves the mtime-stable rerun semantics asserted by the Step 4b
+            // integration test — without the join, a fast subsequent
+            // `pipeline::run` could observe an incomplete cache.
+            drop(tx);
+            if let Err(panic) = drain_handle.join() {
+                tracing::warn!("blob cache drain thread panicked: {panic:?}");
+            }
 
-        Ok(all_parsed)
-    })?;
+            Ok(all_parsed)
+        },
+    )?;
 
     let failures = grammar_failures
         .into_inner()
@@ -1342,9 +1350,16 @@ pub(super) fn parse_files(
         );
     }
 
-    let mut parsed_files = parsed_files;
+    let mut metadata_by_path = HashMap::new();
+    let mut parsed_files = Vec::with_capacity(parsed_with_metadata.len());
+    for (parsed, metadata) in parsed_with_metadata {
+        if let Some(metadata) = metadata {
+            metadata_by_path.insert(parsed.path.clone(), metadata);
+        }
+        parsed_files.push(parsed);
+    }
     canonicalize_parsed_files(&mut parsed_files);
-    Ok(parsed_files)
+    Ok((parsed_files, metadata_by_path))
 }
 
 /// Read a file as UTF-8, refusing to allocate more than `MAX_FILE_BYTES`.

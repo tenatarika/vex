@@ -4,11 +4,11 @@ use super::*;
 use crate::parse::language::Language;
 
 fn callers(src: &str, lang: Language, target: &str) -> Vec<CallMatch> {
-    callers_in_source(src, lang, "test", target)
+    callers_in_source_with_facts(src, lang, "test", target, None)
 }
 
 fn callees(src: &str, lang: Language, target: &str) -> Vec<CallMatch> {
-    callees_in_source(src, lang, "test", target)
+    callees_in_source_with_facts(src, lang, "test", target, None)
 }
 
 /// Shared-tree equivalence for call-edge extraction
@@ -17,7 +17,7 @@ fn callees(src: &str, lang: Language, target: &str) -> Vec<CallMatch> {
 /// `parse_file` calls `extract_call_edges_with_tree` with a tree it parsed for
 /// every language, including the 11 with no callgraph query at all. The split
 /// happens at the private `extract_callgraph`, so the two live-scan entry points
-/// (`callers_in_source` / `callees_in_source`) keep their self-parsing path —
+/// (`callers_in_source_with_facts` / `callees_in_source_with_facts`) keep their self-parsing path —
 /// this diffs the index-time core against the public self-parsing one.
 #[test]
 fn with_tree_matches_the_self_parsing_entry_point_for_every_language() {
@@ -41,6 +41,7 @@ fn with_tree_matches_the_self_parsing_entry_point_for_every_language() {
         (Language::Lua, "lua"),
         (Language::Yaml, "yaml"),
         (Language::Toml, "toml"),
+        (Language::Dart, "dart"),
     ];
     assert_eq!(
         fixtures.len(),
@@ -485,7 +486,7 @@ class Worker {
 
 // ---- Phase 14.2 decorator edges — back to Python -----------------------
 
-/// Phase 14.2 review regression: `callees_in_source` MUST use the
+/// Phase 14.2 review regression: `callees_in_source_with_facts` MUST use the
 /// LARGEST FnDef range when the same name has multiple entries
 /// (the Double FnDef invariant). With min/find-first selection,
 /// the inner `function_definition` span would be picked — but its
@@ -1173,7 +1174,7 @@ class Controller {
 /// Persistent-index path equivalence: `extract_call_edges` must
 /// produce a `("handler", _, "Get", _)` tuple for a TS decorated
 /// method, NOT a `("", 0, ...)` sentinel. Pins parity between live
-/// `callers_in_source` and the indexed `extract_call_edges` path.
+/// `callers_in_source_with_facts` and the indexed `extract_call_edges` path.
 #[test]
 fn typescript_decorator_via_extract_call_edges() {
     let src = "class C {\n    @Get(\"/items\")\n    handler() {}\n}\n";

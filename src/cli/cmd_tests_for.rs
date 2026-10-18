@@ -2,7 +2,7 @@
 //! from `<TARGET>` (same BFS as `vex reachable`), then post-filter the
 //! result set down to test functions:
 //!   1. path matches the test-glob set (default OR `--test-pattern`),
-//!   2. (unless `--include-fixtures`) name passes Signal-B heuristic,
+//!   2. (unless `--include-fixtures`) name matches the test-entry policy for its language,
 //!   3. stamp `framework` label from the path bucket.
 //!
 //! Empty result set → exit 1 (mirrors `vex reachable`).
@@ -15,9 +15,8 @@ use super::common::{resolve_root, CmdCtx};
 use super::index_management::ensure_index_ready;
 use super::output::{self, TestsForRow};
 use super::scope;
-use crate::callgraph::test_patterns::{
-    build_test_globset, framework_for_path, looks_like_test_name,
-};
+use crate::callgraph::test_patterns::{build_test_globset, framework_for_path, is_test_entry_name};
+use crate::parse::language::Language;
 use crate::store::reader::IndexReader;
 
 /// Match against the (possibly user-supplied) `--test-pattern` set, with
@@ -80,7 +79,16 @@ pub(crate) fn tests_for(
         .iter()
         .filter(|m| path_scope.accept(&m.path))
         .filter(|m| is_test_match(&test_globset, &m.path))
-        .filter(|m| include_fixtures || looks_like_test_name(&m.name))
+        .filter(|m| {
+            include_fixtures
+                || is_test_entry_name(
+                    std::path::Path::new(&m.path)
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .and_then(Language::from_extension),
+                    &m.name,
+                )
+        })
         .map(|m| TestsForRow {
             framework: framework_for_path(&m.path),
             name: m.name.clone(),

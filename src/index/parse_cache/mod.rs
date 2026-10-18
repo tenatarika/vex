@@ -90,6 +90,17 @@ pub const MAGIC: &[u8; 4] = b"VXBC";
 /// reuse valid cache entries and do not bump this value.
 pub const CACHE_FORMAT_VERSION: u16 = 5;
 
+fn cache_fingerprint_for_lang(lang: Language) -> u32 {
+    let grammar_fingerprint = grammar_fingerprint_for_lang(lang);
+    if lang != Language::Dart {
+        return grammar_fingerprint;
+    }
+    let mut input = [0; 6];
+    input[..4].copy_from_slice(&grammar_fingerprint.to_le_bytes());
+    input[4..].copy_from_slice(&crate::index::parse_revision::DART.to_le_bytes());
+    xxhash_rust::xxh3::xxh3_64(&input) as u32
+}
+
 /// On-disk header size: 4 (magic) + 2 (version) + 4 (fingerprint).
 const HEADER_SIZE: usize = 10;
 
@@ -113,8 +124,20 @@ const PAYLOAD_OFFSET: usize = HEADER_SIZE + 1 + BLOOM_SLOT;
 /// continues to be the canonical "serialize + write" entry point for tests
 /// and any future callers.
 pub(crate) fn encode_entry(lang: Language, pf: &ParsedFile) -> bincode::Result<Vec<u8>> {
-    let payload = bincode::serialize(pf)?;
-    let fingerprint = grammar_fingerprint_for_lang(lang);
+    encode_entry_with_dart_metadata(lang, pf, None)
+}
+
+pub(crate) fn encode_entry_with_dart_metadata(
+    lang: Language,
+    pf: &ParsedFile,
+    metadata: Option<&crate::index::dart_records::DartRecord>,
+) -> bincode::Result<Vec<u8>> {
+    let payload = if lang == Language::Dart {
+        bincode::serialize(&(pf, metadata))?
+    } else {
+        bincode::serialize(pf)?
+    };
+    let fingerprint = cache_fingerprint_for_lang(lang);
     let mut buf = Vec::with_capacity(PAYLOAD_OFFSET + payload.len());
     buf.extend_from_slice(MAGIC);
     buf.extend_from_slice(&CACHE_FORMAT_VERSION.to_le_bytes());
@@ -157,6 +180,15 @@ impl BlobCache {
     /// failure (missing file, bad magic, wrong version, wrong fingerprint,
     /// decode error). Never deletes or modifies files.
     pub fn lookup(&self, sha: &str, lang: Language) -> Option<ParsedFile> {
+        self.lookup_with_dart_metadata(sha, lang)
+            .map(|(parsed, _)| parsed)
+    }
+
+    pub(crate) fn lookup_with_dart_metadata(
+        &self,
+        sha: &str,
+        lang: Language,
+    ) -> Option<(ParsedFile, Option<crate::index::dart_records::DartRecord>)> {
         let path = self.entry_path(sha);
         let data = fs::read(&path).ok()?;
 
@@ -177,7 +209,7 @@ impl BlobCache {
 
         // Validate grammar fingerprint.
         let stored_fp = u32::from_le_bytes([data[6], data[7], data[8], data[9]]);
-        let expected_fp = grammar_fingerprint_for_lang(lang);
+        let expected_fp = cache_fingerprint_for_lang(lang);
         if stored_fp != expected_fp {
             return None;
         }
@@ -197,9 +229,18 @@ impl BlobCache {
         };
 
         // Decode payload and re-attach the transient (serde-skipped) bloom.
-        let mut pf = bincode::deserialize::<ParsedFile>(&data[PAYLOAD_OFFSET..]).ok()?;
+        let (mut pf, metadata) = if lang == Language::Dart {
+            let (parsed, metadata): (ParsedFile, Option<crate::index::dart_records::DartRecord>) =
+                bincode::deserialize(&data[PAYLOAD_OFFSET..]).ok()?;
+            (parsed, metadata)
+        } else {
+            (
+                bincode::deserialize::<ParsedFile>(&data[PAYLOAD_OFFSET..]).ok()?,
+                None,
+            )
+        };
         pf.trigram_bloom = trigram_bloom;
-        Some(pf)
+        Some((pf, metadata))
     }
 
     /// Serialize `pf` and write it to the cache entry for `sha` / `lang`.
@@ -367,5 +408,105 @@ impl BlobCache {
         );
         let shard = &sha[..2.min(sha.len())];
         self.root.join(shard).join(format!("{sha}.bin"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn parsed_file() -> ParsedFile {
+        ParsedFile {
+            path: "src/lib.rs".into(),
+            symbols: Vec::new(),
+            refs: Vec::new(),
+            call_edges: Vec::new(),
+            bound_refs: Vec::new(),
+            skeletons: Vec::new(),
+            cpp_includes: Vec::new(),
+            trigram_bloom: None,
+            hierarchy_captures: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn native_cache_payload_is_the_existing_parsed_file_encoding() {
+        let parsed = parsed_file();
+        let bytes = encode_entry(Language::Rust, &parsed).unwrap();
+        assert_eq!(
+            &bytes[PAYLOAD_OFFSET..],
+            &bincode::serialize(&parsed).unwrap()
+        );
+    }
+
+    #[test]
+    fn dart_cache_round_trips_raw_metadata() {
+        let dir = TempDir::new().unwrap();
+        let cache = BlobCache::new(dir.path().join("blobs"));
+        let sha = "dabcde0123456789abcdef0123456789abcdef01";
+        let mut parsed = parsed_file();
+        parsed.path = "lib/source.dart".into();
+        let metadata = crate::index::dart_records::DartRecord {
+            source_fingerprint: 17,
+            declarations: vec![crate::index::dart_records::DartDeclaration {
+                owner: "Owner".into(),
+                member: "member".into(),
+                kind: crate::index::dart_records::DartDeclarationKind::StaticMethod,
+            }],
+            raw_refs: vec![crate::index::symbols::ParsedRef {
+                name: "Owner.member".into(),
+                line: 8,
+                context: Some("Owner.member()".into()),
+            }],
+            raw_calls: vec![crate::index::symbols::RawCallEdge {
+                caller_fn_name: "caller".into(),
+                caller_fn_line: 4,
+                callee_name: "Owner.member".into(),
+                line: 8,
+            }],
+        };
+        let encoded =
+            encode_entry_with_dart_metadata(Language::Dart, &parsed, Some(&metadata)).unwrap();
+        cache.write_entry_bytes(sha, &encoded).unwrap();
+        assert_eq!(
+            cache
+                .lookup_with_dart_metadata(sha, Language::Dart)
+                .unwrap()
+                .1
+                .unwrap()
+                .raw_calls[0]
+                .callee_name,
+            "Owner.member"
+        );
+    }
+
+    #[test]
+    fn old_dart_fingerprint_misses_and_non_dart_fingerprint_remains_valid() {
+        let dir = TempDir::new().unwrap();
+        let cache = BlobCache::new(dir.path().join("blobs"));
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+
+        let rust_path = cache.entry_path(sha);
+        fs::create_dir_all(rust_path.parent().unwrap()).unwrap();
+        fs::write(
+            &rust_path,
+            encode_entry(Language::Rust, &parsed_file()).unwrap(),
+        )
+        .unwrap();
+        let rust_bytes = fs::read(&rust_path).unwrap();
+        assert!(cache.lookup(sha, Language::Rust).is_some());
+
+        let dart_sha = "abcdef0123456789abcdef0123456789abcdef01";
+        let dart_path = cache.entry_path(dart_sha);
+        fs::create_dir_all(dart_path.parent().unwrap()).unwrap();
+        let mut old_entry = encode_entry(Language::Dart, &parsed_file()).unwrap();
+        old_entry[6..10]
+            .copy_from_slice(&grammar_fingerprint_for_lang(Language::Dart).to_le_bytes());
+        fs::write(&dart_path, old_entry).unwrap();
+        let old_dart_bytes = fs::read(&dart_path).unwrap();
+        assert!(cache.lookup(dart_sha, Language::Dart).is_none());
+        assert_eq!(fs::read(&rust_path).unwrap(), rust_bytes);
+        assert_eq!(fs::read(&dart_path).unwrap(), old_dart_bytes);
     }
 }

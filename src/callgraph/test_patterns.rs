@@ -71,6 +71,21 @@ pub(crate) fn looks_like_test_name(name: &str) -> bool {
         || name.ends_with("Tests")
 }
 
+const LANGUAGE_ENTRY_NAMES: &[(crate::parse::language::Language, &[&str])] =
+    &[(crate::parse::language::Language::Dart, &["main"])];
+
+pub(crate) fn is_test_entry_name(
+    lang: Option<crate::parse::language::Language>,
+    name: &str,
+) -> bool {
+    looks_like_test_name(name)
+        || lang.is_some_and(|language| {
+            LANGUAGE_ENTRY_NAMES
+                .iter()
+                .any(|(entry_lang, names)| *entry_lang == language && names.contains(&name))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +200,14 @@ mod tests {
         assert!(looks_like_test_name("FooTests"));
         assert!(!looks_like_test_name("fixture_helper"));
         assert!(!looks_like_test_name("helper"));
+    }
+
+    #[test]
+    fn dart_entry_name_preserves_native_and_utility_filters() {
+        use crate::parse::language::Language;
+        assert!(is_test_entry_name(Some(Language::Dart), "main"));
+        assert!(!is_test_entry_name(Some(Language::Dart), "setupFixture"));
+        assert!(!is_test_entry_name(Some(Language::Rust), "main"));
+        assert!(is_test_entry_name(Some(Language::Rust), "test_foo"));
     }
 }

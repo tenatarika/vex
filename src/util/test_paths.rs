@@ -21,6 +21,8 @@ pub const DEFAULT_TEST_PATTERNS: &[&str] = &[
     "**/*_test.rs",
     "**/*_tests.rs",
     "**/*_test.go",
+    "**/*_test.dart",
+    "**/integration_test/**/*.dart",
     "**/*_test.py",
     "**/test_*.py",
     "**/*.test.ts",
@@ -89,6 +91,34 @@ pub fn is_test_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dart_test_paths_share_the_default_globset() {
+        let defaults = build_test_globset(&[]).unwrap();
+        for path in [
+            "sample_test.dart",
+            "lib/sample_test.dart",
+            "integration_test/app.dart",
+            "app/integration_test/flow.dart",
+        ] {
+            assert!(
+                is_test_path(path),
+                "missing canonical Dart test path: {path}"
+            );
+            assert!(defaults.is_match(path), "missing default glob: {path}");
+            assert!(is_test_path(&path.replace('/', "\\")));
+        }
+        for path in [
+            "lib/sample.dart",
+            "lib/sample_test.dart/production.dart",
+            "lib/integration_testing/app.dart",
+        ] {
+            assert!(
+                !is_test_path(path),
+                "production path classified as test: {path}"
+            );
+        }
+    }
 
     #[test]
     fn matches_test_files_across_languages() {

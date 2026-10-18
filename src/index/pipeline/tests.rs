@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::*;
 use crate::parse::language::Language;
@@ -426,7 +426,14 @@ fn update_skip_ignores_clusters_full_entirely() {
     };
     let no_index_root = std::path::Path::new("/nonexistent-vex-update-clusters-skip-test-root");
     assert_eq!(
-        try_skip_update(&m, opts, "minilm-l6-v2", no_index_root).unwrap(),
+        try_skip_update(
+            &m,
+            opts,
+            "minilm-l6-v2",
+            no_index_root,
+            parse_revision::BASELINE
+        )
+        .unwrap(),
         Some(0),
         "manifest_options_cover (and try_skip_update) must ignore clusters_full"
     );
@@ -487,14 +494,28 @@ fn update_skip_is_strictly_options_cover() {
     // 0" (matches pre-R5 behaviour for this options-only check).
     let no_index_root = std::path::Path::new("/nonexistent-vex-update-skip-test-root");
     assert_eq!(
-        try_skip_update(&m, opts, "minilm-l6-v2", no_index_root).unwrap(),
+        try_skip_update(
+            &m,
+            opts,
+            "minilm-l6-v2",
+            no_index_root,
+            parse_revision::BASELINE
+        )
+        .unwrap(),
         Some(0)
     );
 
     // But embedder mismatch still blocks skip.
     let wrong_embedder = manifest_with_embedder(Some("bge-small"));
     assert_eq!(
-        try_skip_update(&wrong_embedder, opts, "minilm-l6-v2", no_index_root).unwrap(),
+        try_skip_update(
+            &wrong_embedder,
+            opts,
+            "minilm-l6-v2",
+            no_index_root,
+            parse_revision::BASELINE
+        )
+        .unwrap(),
         None
     );
 }
@@ -512,7 +533,7 @@ fn update_skip_surfaces_an_error_on_a_corrupt_index_rather_than_skipping() {
 
     let opts = IndexOptions::default();
     let m = manifest_with_embedder(None);
-    let err = try_skip_update(&m, opts, "minilm-l6-v2", &root)
+    let err = try_skip_update(&m, opts, "minilm-l6-v2", &root, parse_revision::BASELINE)
         .expect_err("a corrupt index must surface an error, not Ok(Some(_)) or Ok(None)");
     assert!(
         err.to_string().contains("open existing index"),
@@ -585,10 +606,398 @@ fn update_skip_refuses_when_on_disk_version_is_older_than_build() {
     let opts = IndexOptions::default();
     let m = manifest_with_embedder(None);
     assert_eq!(
-        try_skip_update(&m, opts, "minilm-l6-v2", &root).unwrap(),
+        try_skip_update(&m, opts, "minilm-l6-v2", &root, parse_revision::BASELINE).unwrap(),
         None,
         "a v8 on-disk index must never skip, regardless of manifest option coverage"
     );
+}
+
+#[test]
+fn dart_revision_one_migrates_once_then_unchanged_update_skips() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    std::fs::write(root.join("sample.dart"), "class Repo { Repo(); }\n").unwrap();
+    super::run(&root, IndexOptions::default(), "minilm-l6-v2", &[]).unwrap();
+
+    let index_dir = config::index_dir(&root);
+    let revision_path = index_dir.join(parse_revision::FILE_NAME);
+    std::fs::write(&revision_path, b"VEXR\x01\x00").unwrap();
+    assert!(!parse_revision::is_current(
+        &index_dir,
+        parse_revision::DART
+    ));
+
+    super::update(&root, IndexOptions::default(), "minilm-l6-v2", &[]).unwrap();
+    assert!(parse_revision::is_current(&index_dir, parse_revision::DART));
+    let index_path = config::index_path(&root);
+    let migrated_time = std::fs::metadata(&index_path).unwrap().modified().unwrap();
+
+    super::update(&root, IndexOptions::default(), "minilm-l6-v2", &[]).unwrap();
+    let second_time = std::fs::metadata(index_path).unwrap().modified().unwrap();
+    assert_eq!(
+        migrated_time, second_time,
+        "second unchanged update must skip"
+    );
+}
+
+#[test]
+fn index_and_update_repair_missing_partial_corrupt_and_stale_dart_sidecars() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    std::fs::write(root.join("sample.dart"), "class Repo { Repo(); }\n").unwrap();
+    let opts = IndexOptions {
+        with_embeddings: false,
+        with_clusters: false,
+        with_pattern_index: false,
+        ..IndexOptions::default()
+    };
+    super::run(&root, opts, "minilm-l6-v2", &[]).unwrap();
+    let index_dir = config::index_dir(&root);
+    let sidecar = crate::index::dart_records::sidecar_path(&index_dir);
+    for full_index in [false, true] {
+        for corruption in 0..4 {
+            match corruption {
+                0 => std::fs::remove_file(&sidecar).unwrap(),
+                1 => std::fs::write(&sidecar, b"VXDR").unwrap(),
+                2 => {
+                    let mut partial = crate::index::dart_records::DartRecords::new();
+                    let mut records = crate::index::dart_records::decode(&sidecar).unwrap();
+                    records.remove("sample.dart");
+                    partial.append(&mut records);
+                    crate::index::dart_records::write_atomic(&sidecar, &partial).unwrap();
+                }
+                _ => {
+                    let mut records = crate::index::dart_records::decode(&sidecar).unwrap();
+                    records.get_mut("sample.dart").unwrap().source_fingerprint ^= 1;
+                    crate::index::dart_records::write_atomic(&sidecar, &records).unwrap();
+                }
+            }
+            if full_index {
+                let (_, rebuilt) = super::run(&root, opts, "minilm-l6-v2", &[]).unwrap();
+                assert!(rebuilt, "invalid sidecar must trigger Dart rebuild");
+            } else {
+                let (_, changed, deleted) =
+                    super::update(&root, opts, "minilm-l6-v2", &[]).unwrap();
+                assert_eq!(
+                    (changed, deleted),
+                    (1, 0),
+                    "invalid sidecar must trigger Dart reparse"
+                );
+            }
+            let manifest = Manifest::load(&config::manifest_path(&root)).unwrap();
+            assert!(crate::index::dart_records::covers_manifest(
+                &config::index_path(&root),
+                &manifest.files
+            ));
+            assert!(parse_revision::is_current(&index_dir, parse_revision::DART));
+            assert_eq!(
+                crate::index::dart_records::decode(&sidecar).unwrap()["sample.dart"]
+                    .source_fingerprint,
+                manifest.files["sample.dart"]
+            );
+        }
+    }
+    let before_noop = std::fs::read(config::index_path(&root)).unwrap();
+    let (_, changed, deleted) = super::update(&root, opts, "minilm-l6-v2", &[]).unwrap();
+    assert_eq!((changed, deleted), (0, 0));
+    assert_eq!(
+        std::fs::read(config::index_path(&root)).unwrap(),
+        before_noop
+    );
+}
+
+#[test]
+fn dart_rename_and_last_file_deletion_remove_stale_sidecar_records() {
+    use crate::store::reader::IndexReader;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    std::fs::write(
+        root.join("sample.dart"),
+        "class Repo { Repo(); static void run() {} }\nvoid invoke() { Repo.run(); }\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("native.rs"), "pub fn native() {}\n").unwrap();
+    let opts = IndexOptions {
+        with_embeddings: false,
+        with_clusters: false,
+        with_pattern_index: false,
+        ..IndexOptions::default()
+    };
+    super::run(&root, opts, "minilm-l6-v2", &[]).unwrap();
+    let index_dir = config::index_dir(&root);
+    let sidecar = crate::index::dart_records::sidecar_path(&index_dir);
+
+    let raw_sidecar_before_native_update = std::fs::read(&sidecar).unwrap();
+    std::fs::write(
+        root.join("native.rs"),
+        "pub fn native() {}\npub fn changed() {}\n",
+    )
+    .unwrap();
+    super::update(&root, opts, "minilm-l6-v2", &[]).unwrap();
+    assert_eq!(
+        std::fs::read(&sidecar).unwrap(),
+        raw_sidecar_before_native_update,
+        "native-only update must preserve unchanged Dart raw metadata"
+    );
+    {
+        let reader = IndexReader::open(&config::index_path(&root)).unwrap();
+        assert!(
+            !reader.ref_reader().unwrap().find("Repo").is_empty(),
+            "Dart refs survive native update"
+        );
+        assert!(
+            reader.call_edge_count() > 0,
+            "Dart calls survive native update"
+        );
+    }
+
+    std::fs::rename(root.join("sample.dart"), root.join("renamed.dart")).unwrap();
+    super::update(&root, opts, "minilm-l6-v2", &[]).unwrap();
+    let records = crate::index::dart_records::decode(&sidecar).unwrap();
+    assert!(!records.contains_key("sample.dart"));
+    assert!(records.contains_key("renamed.dart"));
+    {
+        let reader = IndexReader::open(&config::index_path(&root)).unwrap();
+        assert!(!reader.file_paths().iter().any(|path| path == "sample.dart"));
+        assert!(reader
+            .file_paths()
+            .iter()
+            .any(|path| path == "renamed.dart"));
+        assert!(reader.file_paths().iter().any(|path| path == "native.rs"));
+    }
+
+    std::fs::remove_file(root.join("renamed.dart")).unwrap();
+    std::fs::write(
+        root.join("native.rs"),
+        "pub fn native() {}\npub fn changed() {}\n",
+    )
+    .unwrap();
+    super::update(&root, opts, "minilm-l6-v2", &[]).unwrap();
+    assert!(!sidecar.exists());
+    let reader = IndexReader::open(&config::index_path(&root)).unwrap();
+    assert_eq!(reader.file_paths(), vec!["native.rs".to_string()]);
+    assert_eq!(reader.symbol_count(), 2);
+}
+
+type FixtureVectorKey = (String, String, crate::index::symbols::SymbolKind, usize);
+
+fn seed_fixture_vectors(
+    root: &std::path::Path,
+    embedder_id: &str,
+) -> HashMap<FixtureVectorKey, Vec<u32>> {
+    use crate::embed::{build_context, cache::context_hash, embedder_char_budget, embedder_dim};
+    use crate::index::manifest::Manifest;
+    use crate::index::symbols::ParsedFile;
+    use crate::store::{body_tokens, reader::IndexReader, writer::write_index_full};
+
+    let index_path = config::index_path(root);
+    let reader = IndexReader::open(&index_path).unwrap();
+    let bodies = body_tokens::load(&config::body_tokens_path(root)).unwrap();
+    let dimension = embedder_dim(embedder_id).unwrap() as usize;
+    let mut parsed = Vec::<ParsedFile>::new();
+    let mut file_indices = HashMap::<String, usize>::new();
+    let mut vectors = Vec::new();
+    let mut hashes = Vec::new();
+    let mut expected = HashMap::new();
+
+    for index in 0..reader.symbol_count() {
+        let record = reader.symbol(index).unwrap();
+        let path = reader.read_string(record.file_offset).to_string();
+        let signature = reader.read_string(record.signature_offset).to_string();
+        let symbol = crate::index::symbols::ParsedSymbol {
+            name: reader.read_string(record.name_offset).to_string(),
+            kind: crate::index::symbols::SymbolKind::try_from(record.kind).unwrap(),
+            line: record.line as usize,
+            signature: (!signature.is_empty()).then_some(signature),
+            doc: None,
+            body_tokens: bodies[index].clone(),
+        };
+        let context = build_context(
+            symbol.kind.as_str(),
+            &symbol.name,
+            &path,
+            symbol.signature.as_deref(),
+            None,
+            symbol.body_tokens.as_deref(),
+            embedder_char_budget(embedder_id).unwrap(),
+        );
+        hashes.push(context_hash(embedder_id, &context));
+        let mut vector: Vec<f32> = vec![0.0; dimension];
+        vector[index] = 1.0;
+        let key = (path.clone(), symbol.name.clone(), symbol.kind, symbol.line);
+        assert!(
+            expected
+                .insert(key.clone(), vector.iter().map(|v| v.to_bits()).collect())
+                .is_none(),
+            "fixture vector identity must be unique: {key:?}"
+        );
+        vectors.push(vector);
+        let file_index = *file_indices.entry(path.clone()).or_insert_with(|| {
+            parsed.push(ParsedFile {
+                path,
+                symbols: Vec::new(),
+                refs: Vec::new(),
+                call_edges: Vec::new(),
+                bound_refs: Vec::new(),
+                skeletons: Vec::new(),
+                cpp_includes: Vec::new(),
+                trigram_bloom: None,
+                hierarchy_captures: Vec::new(),
+            });
+            parsed.len() - 1
+        });
+        parsed[file_index].symbols.push(symbol);
+    }
+    drop(reader);
+    write_index_full(&parsed, &vectors, dimension as u32, &index_path).unwrap();
+    crate::search::hash_index::save(&config::hash_index_path(root), &hashes).unwrap();
+    let mut manifest = Manifest::load(&config::manifest_path(root)).unwrap();
+    manifest.embedder_id = Some(embedder_id.to_string());
+    manifest.vectors_normalized = Some(true);
+    manifest.save(&config::manifest_path(root)).unwrap();
+    expected
+}
+
+fn assert_fixture_vectors(root: &std::path::Path, expected: &HashMap<FixtureVectorKey, Vec<u32>>) {
+    let reader = crate::store::reader::IndexReader::open(&config::index_path(root)).unwrap();
+    let mut observed = HashSet::new();
+    for index in 0..reader.symbol_count() {
+        let record = reader.symbol(index).unwrap();
+        let path = reader.read_string(record.file_offset).to_string();
+        let name = reader.read_string(record.name_offset);
+        let kind = crate::index::symbols::SymbolKind::try_from(record.kind).unwrap();
+        let key = (path, name.to_string(), kind, record.line as usize);
+        let Some(want) = expected.get(&key) else {
+            continue;
+        };
+        assert!(
+            observed.insert(key.clone()),
+            "duplicate retained vector identity: {key:?}"
+        );
+        let got = reader
+            .vector(record.vector_index)
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect::<Vec<_>>();
+        assert_eq!(got, *want, "stored vector bits changed for {key:?}");
+    }
+    assert_eq!(
+        observed,
+        expected.keys().cloned().collect(),
+        "not all seeded vectors were retained"
+    );
+}
+
+#[test]
+fn mixed_dart_rust_revision_migration_retains_vectors_and_marker_after_dart_removal() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    std::fs::write(root.join("lib.rs"), "pub fn rustTarget() {}\n").unwrap();
+    std::fs::write(
+        root.join("lib.dart"),
+        "class DartTarget { DartTarget(); }\n",
+    )
+    .unwrap();
+    let opts = IndexOptions {
+        with_embeddings: false,
+        with_clusters: false,
+        with_pattern_index: false,
+        ..IndexOptions::default()
+    };
+    super::run(&root, opts, "minilm-l6-v2", &[]).unwrap();
+    let expected = seed_fixture_vectors(&root, "minilm-l6-v2");
+    let revision_path = config::index_dir(&root).join(parse_revision::FILE_NAME);
+    std::fs::write(&revision_path, b"VEXR\x01\x00").unwrap();
+
+    super::update(&root, opts, "different-configured-model", &[]).unwrap();
+    assert!(parse_revision::is_current(
+        &config::index_dir(&root),
+        parse_revision::DART
+    ));
+    assert_fixture_vectors(&root, &expected);
+    let migrated_index = std::fs::read(config::index_path(&root)).unwrap();
+    assert_eq!(
+        super::update(&root, opts, "different-configured-model", &[])
+            .unwrap()
+            .1,
+        0
+    );
+    assert_eq!(
+        std::fs::read(config::index_path(&root)).unwrap(),
+        migrated_index
+    );
+
+    std::fs::remove_file(root.join("lib.dart")).unwrap();
+    let (_, changed, deleted) =
+        super::update(&root, opts, "different-configured-model", &[]).unwrap();
+    assert_eq!((changed, deleted), (0, 1));
+    assert!(parse_revision::is_current(
+        &config::index_dir(&root),
+        parse_revision::BASELINE
+    ));
+    assert!(parse_revision::is_current(
+        &config::index_dir(&root),
+        parse_revision::DART
+    ));
+    assert_eq!(
+        super::update(&root, opts, "different-configured-model", &[]).unwrap(),
+        (1, 0, 0)
+    );
+    assert!(parse_revision::is_current(
+        &config::index_dir(&root),
+        parse_revision::DART
+    ));
+}
+
+#[test]
+fn shared_locked_rebuild_keeps_revision_two_after_last_dart_file_is_gone() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    std::fs::write(root.join("lib.rs"), "pub fn before() {}\n").unwrap();
+    let opts = IndexOptions {
+        with_embeddings: false,
+        with_clusters: false,
+        with_pattern_index: false,
+        ..IndexOptions::default()
+    };
+    super::run(&root, opts, "minilm-l6-v2", &[]).unwrap();
+
+    let index_dir = config::index_dir(&root);
+    parse_revision::save(&index_dir, parse_revision::DART).unwrap();
+    std::fs::write(root.join("lib.rs"), "pub fn after() {}\n").unwrap();
+
+    // Semantic fallback branches transfer their already-held lock into this
+    // shared body. Exercise the same body without downloading an embedding model.
+    let (canonical_root, files, hashed) = super::run_setup(&root, &[]).unwrap();
+    let lock = IndexLock::acquire(&canonical_root).unwrap();
+    super::run_with_lock(&canonical_root, opts, "minilm-l6-v2", files, hashed, lock).unwrap();
+
+    assert!(parse_revision::is_current(&index_dir, parse_revision::DART));
+}
+
+#[test]
+fn rust_only_revision_one_update_skips_and_keeps_prebaked_vectors() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    std::fs::write(root.join("lib.rs"), "pub fn rustTarget() {}\n").unwrap();
+    let opts = IndexOptions {
+        with_embeddings: false,
+        with_clusters: false,
+        with_pattern_index: false,
+        ..IndexOptions::default()
+    };
+    super::run(&root, opts, "minilm-l6-v2", &[]).unwrap();
+    let expected = seed_fixture_vectors(&root, "minilm-l6-v2");
+    let revision_path = config::index_dir(&root).join(parse_revision::FILE_NAME);
+    std::fs::write(&revision_path, b"VEXR\x01\x00").unwrap();
+
+    let (_, changed, deleted) =
+        super::update(&root, opts, "different-configured-model", &[]).unwrap();
+    assert_eq!((changed, deleted), (0, 0));
+    assert_eq!(std::fs::read(&revision_path).unwrap(), b"VEXR\x01\x00");
+    assert_fixture_vectors(&root, &expected);
 }
 
 /// Corrupt only the version byte to simulate "older than build" without

@@ -3983,6 +3983,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-dart-orchard"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1a1fa2972c59e6f9c9529220baef8ec7c08246df12226d6a2562708a302cd59"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-go"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4373,6 +4383,7 @@ dependencies = [
  "tree-sitter-c-sharp",
  "tree-sitter-cpp",
  "tree-sitter-css",
+ "tree-sitter-dart-orchard",
  "tree-sitter-go",
  "tree-sitter-html",
  "tree-sitter-java",

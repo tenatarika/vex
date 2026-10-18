@@ -4,6 +4,31 @@ fn find(source: &str, lang: Language, base_name: &str) -> Vec<ImplMatch> {
     find_in_source(source, lang, "test", base_name)
 }
 
+#[test]
+fn dart_hierarchy_relations_come_from_named_query_captures() {
+    let src = "class Base {} class Mixin {} class Contract {} class Child extends Base with Mixin implements Contract {}";
+    for (base, relation) in [
+        ("Base", "extends"),
+        ("Mixin", "uses"),
+        ("Contract", "implements"),
+    ] {
+        let matches = find(src, Language::Dart, base);
+        assert_eq!(matches.len(), 1, "{base}: {matches:?}");
+        assert_eq!(matches[0].relation, relation, "{base}: {matches:?}");
+    }
+
+    let tree = crate::parse::parser_pool::parse_text(Language::Dart, src).unwrap();
+    let captures = super::extract::capture_hierarchy_edges(&tree, src, Language::Dart);
+    assert_eq!(captures.len(), 3, "{captures:?}");
+    assert!(captures.iter().any(|edge| edge.parent_name == "Base"));
+    assert!(captures.iter().any(|edge| edge.parent_name == "Mixin"
+        && edge.kind == crate::store::format::EdgeKind::Uses as u8));
+    assert!(captures.iter().any(|edge| {
+        edge.parent_name == "Contract"
+            && edge.kind == crate::store::format::EdgeKind::Implements as u8
+    }));
+}
+
 /// `vex implementations` live-scans arbitrary repository files, so its parse
 /// must be the guarded one. This is the artifact that took tree-sitter-kotlin-ng
 /// 334 s and multi-GB before the v1.23.0 callback budget existed; the live-scan

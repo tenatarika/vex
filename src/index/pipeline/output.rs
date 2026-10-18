@@ -20,6 +20,7 @@ use anyhow::{Context, Result};
 use crate::embed;
 use crate::index::manifest::Manifest;
 use crate::index::symbols::ParsedFile;
+use crate::parse::extractor::dart::ProjectFacts;
 use crate::parse::language::Language;
 use crate::store;
 use crate::util::config;
@@ -175,6 +176,168 @@ pub(super) fn resolve_call_edges(
         }
     }
     out
+}
+
+pub(super) fn refresh_dart_derived_records(
+    root: &Path,
+    parsed: &mut [ParsedFile],
+    hashes: &[(String, u64)],
+    fresh_metadata: &mut HashMap<String, crate::index::dart_records::DartRecord>,
+) -> Result<crate::index::dart_records::DartRecords> {
+    let dart_paths: std::collections::BTreeSet<String> = parsed
+        .iter()
+        .filter_map(|file| {
+            Path::new(&file.path)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .and_then(Language::from_extension)
+                .filter(|language| *language == Language::Dart)
+                .map(|_| file.path.clone())
+        })
+        .collect();
+    if dart_paths.is_empty() {
+        return Ok(Default::default());
+    }
+    let index_dir = crate::util::config::index_dir(root);
+    let prior =
+        crate::index::dart_records::decode(&crate::index::dart_records::sidecar_path(&index_dir))
+            .unwrap_or_default();
+    let mut records: crate::index::dart_records::DartRecords = prior
+        .into_iter()
+        .filter(|(path, _)| dart_paths.contains(path))
+        .collect();
+    let fingerprints: std::collections::HashMap<&str, u64> = hashes
+        .iter()
+        .map(|(path, hash)| (path.as_str(), *hash))
+        .collect();
+    for file in parsed
+        .iter_mut()
+        .filter(|file| dart_paths.contains(&file.path))
+    {
+        let is_fresh = fresh_metadata.contains_key(&file.path);
+        if let Some(record) = fresh_metadata.remove(&file.path) {
+            records.insert(file.path.clone(), record);
+        }
+        anyhow::ensure!(
+            records.contains_key(&file.path),
+            "Dart metadata missing for indexed file {}",
+            file.path
+        );
+        let fingerprint = fingerprints
+            .get(file.path.as_str())
+            .copied()
+            .context("Dart path missing from manifest hashes")?;
+        if is_fresh {
+            records
+                .get_mut(&file.path)
+                .expect("record was just inserted")
+                .source_fingerprint = fingerprint;
+        } else {
+            anyhow::ensure!(
+                records[&file.path].source_fingerprint == fingerprint,
+                "Dart sidecar fingerprint mismatch for {}",
+                file.path
+            );
+        }
+    }
+    anyhow::ensure!(
+        records.len() == dart_paths.len(),
+        "Dart metadata coverage mismatch"
+    );
+    let mut facts = ProjectFacts::default();
+    for record in records.values() {
+        facts.merge(ProjectFacts::from_declarations(&record.declarations));
+    }
+    for file in parsed
+        .iter_mut()
+        .filter(|file| dart_paths.contains(&file.path))
+    {
+        let record = &records[&file.path];
+        file.refs = record
+            .raw_refs
+            .iter()
+            .cloned()
+            .filter_map(|mut reference| {
+                reference.name = facts.normalize_ref(&reference.name);
+                crate::parse::extractor::is_meaningful_identifier(&reference.name)
+                    .then_some(reference)
+            })
+            .collect();
+        file.call_edges = record
+            .raw_calls
+            .iter()
+            .cloned()
+            .map(|mut edge| {
+                edge.callee_name = facts.normalize_call(&edge.callee_name);
+                edge
+            })
+            .collect();
+    }
+    Ok(records)
+}
+
+#[cfg(test)]
+#[test]
+fn dart_refresh_uses_cached_records_without_reparsing() {
+    use crate::parse::parser_pool::{parse_call_count, reset_parse_call_count};
+
+    let temporary = tempfile::TempDir::new().unwrap();
+    let root = temporary.path();
+    let declaration =
+        "class Foo { Foo.named(); }\nclass Util { static int computeTotal(int x) => x; }\n";
+    let caller = "import 'a.dart';\nvoid run() { Foo.named(); Util.computeTotal(1); }\n";
+    std::fs::write(root.join("a.dart"), declaration).unwrap();
+    std::fs::write(root.join("b.dart"), caller).unwrap();
+    let (a, a_metadata) =
+        crate::parse::parse_file_with_dart_metadata("a.dart", declaration, Language::Dart).unwrap();
+    let (b, b_metadata) =
+        crate::parse::parse_file_with_dart_metadata("b.dart", caller, Language::Dart).unwrap();
+    let mut metadata = HashMap::from([
+        ("a.dart".to_string(), a_metadata.unwrap()),
+        ("b.dart".to_string(), b_metadata.unwrap()),
+    ]);
+    let mut parsed = vec![
+        a,
+        b,
+        crate::parse::parse_file(
+            "native.rs",
+            "fn nativeTarget() {}\n// edited Rust file\n",
+            Language::Rust,
+        )
+        .unwrap(),
+    ];
+    let native_before = serde_json::to_value(&parsed[2]).unwrap();
+
+    reset_parse_call_count();
+    refresh_dart_derived_records(
+        root,
+        &mut parsed,
+        &[("a.dart".into(), 1), ("b.dart".into(), 2)],
+        &mut metadata,
+    )
+    .unwrap();
+    assert_eq!(
+        parse_call_count(),
+        0,
+        "cached Dart records must not be parsed again"
+    );
+    assert_eq!(serde_json::to_value(&parsed[2]).unwrap(), native_before);
+    assert!(parsed[1]
+        .call_edges
+        .iter()
+        .any(|edge| edge.callee_name == "computeTotal"));
+    assert!(parsed[1]
+        .call_edges
+        .iter()
+        .any(|edge| edge.callee_name == "Foo.named"));
+    assert!(parsed[1]
+        .refs
+        .iter()
+        .any(|reference| reference.name == "computeTotal"));
+    assert!(parsed[1]
+        .refs
+        .iter()
+        .any(|reference| reference.name == "Foo.named"));
 }
 
 /// Output of [`collect_pattern_skeletons`] — the flattened skeleton tuples

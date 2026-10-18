@@ -1,0 +1,292 @@
+{
+  "docs": [
+    {
+      "doc": null,
+      "line": 3,
+      "name": "Repository"
+    },
+    {
+      "doc": null,
+      "line": 4,
+      "name": "save"
+    },
+    {
+      "doc": null,
+      "line": 7,
+      "name": "Logging"
+    },
+    {
+      "doc": null,
+      "line": 8,
+      "name": "log"
+    },
+    {
+      "doc": null,
+      "line": 11,
+      "name": "Service"
+    },
+    {
+      "doc": null,
+      "line": 12,
+      "name": "Service"
+    },
+    {
+      "doc": null,
+      "line": 14,
+      "name": "save"
+    },
+    {
+      "doc": null,
+      "line": 18,
+      "name": "refresh"
+    },
+    {
+      "doc": null,
+      "line": 21,
+      "name": "helper"
+    },
+    {
+      "doc": null,
+      "line": 23,
+      "name": "run"
+    }
+  ],
+  "parsed": {
+    "bound_refs": [],
+    "call_edges": [
+      {
+        "callee_name": "helper",
+        "caller_fn_line": 14,
+        "caller_fn_name": "save",
+        "line": 15
+      },
+      {
+        "callee_name": "log",
+        "caller_fn_line": 14,
+        "caller_fn_name": "save",
+        "line": 16
+      },
+      {
+        "callee_name": "helper",
+        "caller_fn_line": 18,
+        "caller_fn_name": "refresh",
+        "line": 18
+      },
+      {
+        "callee_name": "Service",
+        "caller_fn_line": 23,
+        "caller_fn_name": "run",
+        "line": 24
+      },
+      {
+        "callee_name": "save",
+        "caller_fn_line": 23,
+        "caller_fn_name": "run",
+        "line": 25
+      },
+      {
+        "callee_name": "save",
+        "caller_fn_line": 23,
+        "caller_fn_name": "run",
+        "line": 26
+      },
+      {
+        "callee_name": "refresh",
+        "caller_fn_line": 23,
+        "caller_fn_name": "run",
+        "line": 26
+      }
+    ],
+    "cpp_includes": [],
+    "hierarchy_captures": [
+      {
+        "child_name": "Service",
+        "kind": 0,
+        "line": 11,
+        "parent_name": "Repository"
+      },
+      {
+        "child_name": "Service",
+        "kind": 2,
+        "line": 11,
+        "parent_name": "Logging"
+      }
+    ],
+    "path": "tests/fixtures/sample.dart",
+    "refs": [
+      {
+        "context": "abstract class Repository {",
+        "line": 3,
+        "name": "Repository"
+      },
+      {
+        "context": "mixin Logging {",
+        "line": 7,
+        "name": "Logging"
+      },
+      {
+        "context": "class Service extends Repository with Logging {",
+        "line": 11,
+        "name": "Service"
+      },
+      {
+        "context": "class Service extends Repository with Logging {",
+        "line": 11,
+        "name": "Repository"
+      },
+      {
+        "context": "class Service extends Repository with Logging {",
+        "line": 11,
+        "name": "Logging"
+      },
+      {
+        "context": "final service = Service();",
+        "line": 24,
+        "name": "Service"
+      },
+      {
+        "context": "import 'dart:async';",
+        "line": 1,
+        "name": "dart:async"
+      }
+    ],
+    "skeletons": [
+      {
+        "end_row": 4,
+        "has_block": true,
+        "ident": "Repository",
+        "kind": "class_definition",
+        "parent_kind": null,
+        "start_row": 2
+      },
+      {
+        "end_row": 8,
+        "has_block": true,
+        "ident": null,
+        "kind": "mixin_declaration",
+        "parent_kind": null,
+        "start_row": 6
+      },
+      {
+        "end_row": 7,
+        "has_block": true,
+        "ident": null,
+        "kind": "method_declaration",
+        "parent_kind": "class_body",
+        "start_row": 7
+      },
+      {
+        "end_row": 18,
+        "has_block": true,
+        "ident": "Service",
+        "kind": "class_definition",
+        "parent_kind": null,
+        "start_row": 10
+      },
+      {
+        "end_row": 16,
+        "has_block": true,
+        "ident": null,
+        "kind": "method_declaration",
+        "parent_kind": "class_body",
+        "start_row": 13
+      },
+      {
+        "end_row": 17,
+        "has_block": true,
+        "ident": null,
+        "kind": "method_declaration",
+        "parent_kind": "class_body",
+        "start_row": 17
+      },
+      {
+        "end_row": 20,
+        "has_block": true,
+        "ident": null,
+        "kind": "function_declaration",
+        "parent_kind": null,
+        "start_row": 20
+      },
+      {
+        "end_row": 26,
+        "has_block": true,
+        "ident": null,
+        "kind": "function_declaration",
+        "parent_kind": null,
+        "start_row": 22
+      }
+    ],
+    "symbols": [
+      {
+        "body_tokens": "save Repository",
+        "kind": "Class",
+        "line": 3,
+        "name": "Repository",
+        "signature": "abstract class Repository {"
+      },
+      {
+        "body_tokens": "save",
+        "kind": "Method",
+        "line": 4,
+        "name": "save",
+        "signature": "void save();"
+      },
+      {
+        "body_tokens": "log Logging",
+        "kind": "Class",
+        "line": 7,
+        "name": "Logging",
+        "signature": "mixin Logging {"
+      },
+      {
+        "body_tokens": "log",
+        "kind": "Method",
+        "line": 8,
+        "name": "log",
+        "signature": "void log() {}"
+      },
+      {
+        "body_tokens": "helper refresh log save Service Logging Repository",
+        "kind": "Class",
+        "line": 11,
+        "name": "Service",
+        "signature": "class Service extends Repository with Logging {"
+      },
+      {
+        "body_tokens": "Service",
+        "kind": "Method",
+        "line": 12,
+        "name": "Service",
+        "signature": "Service();"
+      },
+      {
+        "body_tokens": "log helper save",
+        "kind": "Method",
+        "line": 14,
+        "name": "save",
+        "signature": "void save() {"
+      },
+      {
+        "body_tokens": "helper refresh",
+        "kind": "Method",
+        "line": 18,
+        "name": "refresh",
+        "signature": "void refresh() => helper();"
+      },
+      {
+        "body_tokens": "helper",
+        "kind": "Function",
+        "line": 21,
+        "name": "helper",
+        "signature": "void helper() {}"
+      },
+      {
+        "body_tokens": "refresh save service Service run",
+        "kind": "Function",
+        "line": 23,
+        "name": "run",
+        "signature": "void run() {"
+      }
+    ]
+  }
+}

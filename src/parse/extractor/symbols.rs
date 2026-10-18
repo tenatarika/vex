@@ -97,8 +97,8 @@ pub(crate) fn extract_symbols_and_imports_with_tree(
         for capture in m.captures {
             let capture_name = &query.capture_names()[capture.index as usize];
             let node = capture.node;
-            let name = node.node_text(content.as_bytes());
-            if name.is_empty() {
+            let raw_name = node.node_text(content.as_bytes());
+            if raw_name.is_empty() {
                 continue;
             }
             let line = node.start_position().row + 1;
@@ -106,7 +106,7 @@ pub(crate) fn extract_symbols_and_imports_with_tree(
             if *capture_name == "import.name" {
                 let context = line_slices.get(line - 1).map(|l| l.trim().to_string());
                 imports.push(ParsedRef {
-                    name: strip_import_quotes(name).to_string(),
+                    name: strip_import_quotes(raw_name).to_string(),
                     line,
                     context,
                 });
@@ -129,7 +129,14 @@ pub(crate) fn extract_symbols_and_imports_with_tree(
                 _ => continue,
             };
 
-            let parent = node.parent();
+            let name = if lang == Language::Dart && kind == SymbolKind::Method {
+                super::dart::declaration_identity(node, content.as_bytes())
+                    .unwrap_or_else(|| raw_name.to_string())
+            } else {
+                raw_name.to_string()
+            };
+
+            let parent = definition_node(node, lang, kind);
             let signature = parent.map(|p| {
                 let start = p.start_byte();
                 let mut end = (start + 200).min(content.len());
@@ -149,7 +156,7 @@ pub(crate) fn extract_symbols_and_imports_with_tree(
             let body_tokens = parent.and_then(|def| extract_body_tokens(def, content, lang));
 
             symbols.push(ParsedSymbol {
-                name: name.to_string(),
+                name,
                 kind,
                 line,
                 signature,
@@ -160,6 +167,36 @@ pub(crate) fn extract_symbols_and_imports_with_tree(
     }
 
     Ok((symbols, imports))
+}
+
+fn definition_node(
+    node: tree_sitter::Node<'_>,
+    lang: Language,
+    kind: SymbolKind,
+) -> Option<tree_sitter::Node<'_>> {
+    let parent = node.parent();
+    if lang != Language::Dart || !matches!(kind, SymbolKind::Function | SymbolKind::Method) {
+        return parent;
+    }
+    let mut current = parent;
+    while let Some(ancestor) = current {
+        match ancestor.kind() {
+            "function_declaration"
+            | "method_declaration"
+            | "class_definition"
+            | "enum_declaration"
+            | "mixin_declaration"
+            | "extension_declaration"
+            | "extension_type_declaration"
+            | "type_alias"
+            | "declaration" => {
+                return Some(ancestor);
+            }
+            "program" | "class_body" => break,
+            _ => current = ancestor.parent(),
+        }
+    }
+    parent
 }
 
 /// Strip a single layer of matching surrounding quote-pair delimiters from

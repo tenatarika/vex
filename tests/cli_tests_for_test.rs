@@ -500,3 +500,44 @@ fn same_named_test_sites_remain_distinct() {
         );
     }
 }
+
+#[test]
+fn dart_main_is_a_test_entry_in_each_canonical_path() {
+    for test_path in ["sample_test.dart", "integration_test/flow.dart"] {
+        let tmp = TempDir::new().unwrap();
+        init_project(tmp.path());
+        std::fs::create_dir_all(tmp.path().join("integration_test")).unwrap();
+        std::fs::write(tmp.path().join("sample.dart"), "void helper() {}\n").unwrap();
+        std::fs::write(
+            tmp.path().join(test_path),
+            "void fixtureHelper() { helper(); }\nvoid main() { fixtureHelper(); }\n",
+        )
+        .unwrap();
+        vex_in(tmp.path())
+            .args(["index", "--no-semantic", "--no-clusters"])
+            .assert()
+            .success();
+        let output = vex_in(tmp.path())
+            .args(["tests-for", "helper", "--max-hops", "2", "--format", "json"])
+            .output()
+            .unwrap();
+        let rows = results_from(&String::from_utf8_lossy(&output.stdout));
+        assert!(output.status.success(), "Dart main omitted: {rows:?}");
+        assert_eq!(rows.len(), 1, "utility admitted: {rows:?}");
+        assert_eq!(rows[0]["name"], "main");
+        assert_eq!(rows[0]["path"], test_path);
+        let overridden = vex_in(tmp.path())
+            .args([
+                "tests-for",
+                "helper",
+                "--test-pattern",
+                "**/spec/**",
+                "--format",
+                "json",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(overridden.status.code(), Some(1));
+        assert!(results_from(&String::from_utf8_lossy(&overridden.stdout)).is_empty());
+    }
+}

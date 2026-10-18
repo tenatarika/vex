@@ -20,6 +20,7 @@ pub enum Language {
     Html,
     Yaml,
     Toml,
+    Dart,
 }
 
 impl Language {
@@ -41,7 +42,7 @@ impl Language {
     /// // `CG_QUERY_CELLS` and pattern-skeleton fingerprinting so a
     /// // new language additions don't need per-consumer registration.
     /// for &lang in Language::ALL {
-    ///     assert!(lang.lang_id() >= 1 && lang.lang_id() <= 19);
+    ///     assert!(lang.lang_id() >= 1 && lang.lang_id() <= 20);
     /// }
     /// ```
     pub const ALL: &'static [Language] = &[
@@ -64,6 +65,7 @@ impl Language {
         Self::Html,
         Self::Yaml,
         Self::Toml,
+        Self::Dart,
     ];
 
     /// Detect language from file extension.
@@ -103,6 +105,7 @@ impl Language {
             "html" | "htm" => Some(Self::Html),
             "yaml" | "yml" => Some(Self::Yaml),
             "toml" => Some(Self::Toml),
+            "dart" => Some(Self::Dart),
             _ => None,
         }
     }
@@ -133,6 +136,7 @@ impl Language {
             Self::Html => tree_sitter_html::LANGUAGE.into(),
             Self::Yaml => tree_sitter_yaml::LANGUAGE.into(),
             Self::Toml => tree_sitter_toml_ng::LANGUAGE.into(),
+            Self::Dart => tree_sitter_dart_orchard::LANGUAGE.into(),
         }
     }
 
@@ -157,6 +161,7 @@ impl Language {
                 | Self::Go
                 | Self::Java
                 | Self::Kotlin
+                | Self::Dart
         )
     }
 
@@ -189,6 +194,7 @@ impl Language {
             Self::Html => 17,
             Self::Yaml => 18,
             Self::Toml => 19,
+            Self::Dart => 20,
         }
     }
 
@@ -213,6 +219,7 @@ impl Language {
             Self::Html => "html",
             Self::Yaml => "yaml",
             Self::Toml => "toml",
+            Self::Dart => "dart",
         }
     }
 }
@@ -227,9 +234,7 @@ mod tests {
     /// pattern-skeleton grammar fingerprints, …).
     #[test]
     fn all_slice_covers_every_variant() {
-        // Every `lang_id` is in `1..=19` (slot 0 reserved for "not
-        // fingerprinted"), so the slice must have the same count.
-        assert_eq!(Language::ALL.len(), 19);
+        assert_eq!(Language::ALL.len(), 20);
         // `lang_id` is also our canonical ordinal; the slice must list
         // each one exactly once.
         let mut ids: Vec<u8> = Language::ALL.iter().map(|l| l.lang_id()).collect();
@@ -237,7 +242,7 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), Language::ALL.len(), "duplicate variant in ALL");
         assert_eq!(*ids.first().unwrap(), 1, "lang_id starts at 1");
-        assert_eq!(*ids.last().unwrap(), 19, "lang_id ends at 19");
+        assert_eq!(*ids.last().unwrap(), 20, "lang_id ends at 20");
     }
 
     /// All JavaScript flavours — classic, JSX, ESM (`.mjs`), CommonJS

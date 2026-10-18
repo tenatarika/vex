@@ -83,18 +83,40 @@ pub(crate) fn extract_references_ast_with_tree(
     content: &str,
     lang: Language,
 ) -> Vec<ParsedRef> {
+    extract_references_ast_with_tree_and_raw(tree, content, lang).0
+}
+
+pub(crate) fn extract_references_ast_with_tree_and_raw(
+    tree: &tree_sitter::Tree,
+    content: &str,
+    lang: Language,
+) -> (Vec<ParsedRef>, Vec<ParsedRef>) {
     if !lang.has_ast_ref_filter() {
-        return extract_references(content);
+        return (extract_references(content), Vec::new());
     }
 
     let mut refs = Vec::new();
+    let mut dart_raw_refs = Vec::new();
     // v1.12.0 P4 — collect line slices once, then pass an O(1)-indexable
     // view to the recursive walker. The old code did
     // `content.lines().nth(n)` per identifier node; on identifier-dense
     // files that compounded to O(line_count × ident_count).
     let line_slices: Vec<&str> = content.lines().collect();
-    walk_for_refs(tree.root_node(), content, &line_slices, lang, &mut refs);
-    refs
+    let dart_facts = if lang == Language::Dart {
+        super::dart::ProjectFacts::from_tree(tree, content.as_bytes())
+    } else {
+        super::dart::ProjectFacts::default()
+    };
+    walk_for_refs(
+        tree.root_node(),
+        content,
+        &line_slices,
+        lang,
+        &dart_facts,
+        &mut refs,
+        &mut dart_raw_refs,
+    );
+    (refs, dart_raw_refs)
 }
 
 fn walk_for_refs(
@@ -102,9 +124,74 @@ fn walk_for_refs(
     content: &str,
     lines: &[&str],
     lang: Language,
+    dart_facts: &super::dart::ProjectFacts,
     refs: &mut Vec<ParsedRef>,
+    dart_raw_refs: &mut Vec<ParsedRef>,
 ) {
     let kind = node.kind();
+
+    if lang == Language::Dart {
+        if let Some((owner, suffix, qualified_name)) =
+            super::dart::call_identity(node, content.as_bytes(), dart_facts)
+        {
+            let line = owner.start_position().row + 1;
+            let context = lines.get(line - 1).map(|l| l.trim().to_string());
+            let owner_name = owner.node_text(content.as_bytes());
+            if is_meaningful_identifier(owner_name) {
+                let unnamed_constructor = qualified_name == owner_name;
+                if !unnamed_constructor {
+                    let owner_ref = ParsedRef {
+                        name: owner_name.to_string(),
+                        line,
+                        context: context.clone(),
+                    };
+                    refs.push(owner_ref.clone());
+                    dart_raw_refs.push(owner_ref);
+                }
+                let normalized_name = dart_facts.normalize_ref(&qualified_name);
+                dart_raw_refs.push(ParsedRef {
+                    name: qualified_name.clone(),
+                    line,
+                    context: context.clone(),
+                });
+                if is_meaningful_identifier(&normalized_name) {
+                    refs.push(ParsedRef {
+                        name: normalized_name,
+                        line,
+                        context: context.clone(),
+                    });
+                }
+            }
+            let mut cursor = node.walk();
+            if node.kind() == "method_invocation" {
+                let function = node.child_by_field_name("function");
+                for child in node.children(&mut cursor) {
+                    if function.is_some_and(|function| function.id() == child.id()) {
+                        walk_type_arguments(
+                            child,
+                            content,
+                            lines,
+                            lang,
+                            dart_facts,
+                            refs,
+                            dart_raw_refs,
+                        );
+                    } else {
+                        walk_for_refs(child, content, lines, lang, dart_facts, refs, dart_raw_refs);
+                    }
+                }
+            } else {
+                for child in node.children(&mut cursor) {
+                    if !contains_node(child, owner)
+                        && suffix.is_none_or(|suffix| !contains_node(child, suffix))
+                    {
+                        walk_for_refs(child, content, lines, lang, dart_facts, refs, dart_raw_refs);
+                    }
+                }
+            }
+            return;
+        }
+    }
 
     // Comments — drop the whole subtree.
     if is_comment_kind(kind, lang) {
@@ -125,13 +212,19 @@ fn walk_for_refs(
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == interp_kind {
-                walk_for_refs(child, content, lines, lang, refs);
+                walk_for_refs(child, content, lines, lang, dart_facts, refs, dart_raw_refs);
             }
         }
         return;
     }
 
-    if is_identifier_kind(kind) {
+    if is_identifier_kind(kind) || (lang == Language::Dart && kind == "identifier_dollar_escaped") {
+        if lang == Language::Dart
+            && (super::dart::is_constructor_declaration_identifier(node)
+                || super::dart::declaration_identity(node, content.as_bytes()).is_some())
+        {
+            return;
+        }
         let text = node.node_text(content.as_bytes());
         if is_meaningful_identifier(text) {
             let line = node.start_position().row + 1;
@@ -139,15 +232,45 @@ fn walk_for_refs(
             refs.push(ParsedRef {
                 name: text.to_string(),
                 line,
-                context,
+                context: context.clone(),
             });
+            if lang == Language::Dart {
+                dart_raw_refs.push(ParsedRef {
+                    name: text.to_string(),
+                    line,
+                    context,
+                });
+            }
         }
         return;
     }
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_for_refs(child, content, lines, lang, refs);
+        walk_for_refs(child, content, lines, lang, dart_facts, refs, dart_raw_refs);
+    }
+}
+
+fn contains_node(parent: tree_sitter::Node<'_>, target: tree_sitter::Node<'_>) -> bool {
+    parent.start_byte() <= target.start_byte() && parent.end_byte() >= target.end_byte()
+}
+
+fn walk_type_arguments(
+    node: tree_sitter::Node,
+    content: &str,
+    lines: &[&str],
+    lang: Language,
+    dart_facts: &super::dart::ProjectFacts,
+    refs: &mut Vec<ParsedRef>,
+    dart_raw_refs: &mut Vec<ParsedRef>,
+) {
+    if node.kind() == "type_arguments" {
+        walk_for_refs(node, content, lines, lang, dart_facts, refs, dart_raw_refs);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        walk_type_arguments(child, content, lines, lang, dart_facts, refs, dart_raw_refs);
     }
 }
 
@@ -160,6 +283,7 @@ fn is_comment_kind(kind: &str, lang: Language) -> bool {
         Language::Go => kind == "comment",
         Language::Java => matches!(kind, "line_comment" | "block_comment"),
         Language::Kotlin => matches!(kind, "line_comment" | "block_comment"),
+        Language::Dart => matches!(kind, "comment" | "line_comment" | "block_comment"),
         _ => false,
     }
 }
@@ -212,6 +336,7 @@ fn interpolation_child_kind(kind: &str, lang: Language) -> Option<&'static str> 
         (Language::Python, "string") => Some("interpolation"),
         (Language::CSharp, "interpolated_string_expression") => Some("interpolation"),
         (Language::Kotlin, "string_literal") => Some("interpolation"),
+        (Language::Dart, "string_literal") => Some("template_substitution"),
         _ => None,
     }
 }
@@ -308,6 +433,7 @@ mod tests {
             (Language::Lua, "lua"),
             (Language::Yaml, "yaml"),
             (Language::Toml, "toml"),
+            (Language::Dart, "dart"),
         ];
         assert_eq!(
             fixtures.len(),

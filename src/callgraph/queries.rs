@@ -415,6 +415,49 @@ pub(super) fn callgraph_query(lang: Language) -> Option<&'static str> {
                 name: (identifier) @module_call.name))))
             "#,
         ),
+        Language::Dart => Some(
+            r#"
+            (function_declaration
+              signature: (function_signature name: (identifier) @fn.name)) @fn.decl
+            (function_declaration
+              signature: (getter_signature name: (identifier) @fn.name)) @fn.decl
+            (function_declaration
+              signature: (setter_signature name: (identifier) @fn.name)) @fn.decl
+            (method_declaration
+              signature: (method_signature
+                (function_signature name: (identifier) @fn.name))) @fn.decl
+            (method_declaration
+              signature: (method_signature
+                (getter_signature name: (identifier) @fn.name))) @fn.decl
+            (method_declaration
+              signature: (method_signature
+                (setter_signature name: (identifier) @fn.name))) @fn.decl
+            (method_declaration
+              signature: (method_signature
+                (constructor_signature name: (identifier) @fn.name . (formal_parameter_list)))) @fn.decl
+            (method_declaration
+              signature: (method_signature
+                (factory_constructor_signature (identifier) @fn.name . (formal_parameter_list)))) @fn.decl
+            (declaration
+              (constructor_signature name: (identifier) @fn.name . (formal_parameter_list))) @fn.decl
+            (declaration
+              (constant_constructor_signature (identifier) @fn.name . (formal_parameter_list))) @fn.decl
+
+            (method_invocation function: (identifier) @call.name)
+            (method_invocation
+              function: (unconditional_assignable_selector (identifier) @call.name .))
+            (method_invocation
+              function: (conditional_assignable_selector (identifier) @call.name .))
+            (method_invocation
+              function: (cascade_selector (identifier) @call.name .))
+            (constructor_invocation (identifier) @call.name . (type_arguments)? . (arguments))
+            (constructor_invocation (type_identifier) @call.name . (type_arguments)? . (arguments))
+            (new_expression (identifier) @call.name . (type_arguments)? . (arguments))
+            (new_expression (type_identifier) @call.name . (type_arguments)? . (arguments))
+            (const_object_expression (identifier) @call.name . (type_arguments)? . (arguments))
+            (const_object_expression (type_identifier) @call.name . (type_arguments)? . (arguments))
+            "#,
+        ),
         _ => None,
     }
 }

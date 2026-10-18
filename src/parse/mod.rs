@@ -64,6 +64,14 @@ impl NodeTextExt for tree_sitter::Node<'_> {
 ///
 /// `parse_count_tests` below pins the parse count at 1 for every language.
 pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFile> {
+    parse_file_with_dart_metadata(path, content, lang).map(|(parsed, _)| parsed)
+}
+
+pub(crate) fn parse_file_with_dart_metadata(
+    path: &str,
+    content: &str,
+    lang: Language,
+) -> Result<(ParsedFile, Option<crate::index::dart_records::DartRecord>)> {
     // Probe the symbol query BEFORE parsing, so a grammar/query-load failure
     // surfaces as `GrammarLoadError` — the pipeline downcasts on that type and
     // aggregates it per language instead of logging a per-file "parse failed"
@@ -80,22 +88,45 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
         extractor::extract_symbols_and_imports_with_tree(&tree, content, lang)?;
     // Reads the shared tree. Languages without `has_ast_ref_filter` still get
     // the line-based scanner — the core keeps that short-circuit, see its docs.
-    let mut refs = extractor::extract_references_ast_with_tree(&tree, content, lang);
+    let (mut refs, mut dart_raw_refs) =
+        extractor::extract_references_ast_with_tree_and_raw(&tree, content, lang);
+    if lang == Language::Dart {
+        dart_raw_refs.extend(imports.iter().cloned());
+    }
     refs.extend(imports);
     // Call edges off the shared tree — one extra query pass, no extra parse.
     // Languages without a call-graph query return an empty vec.
-    let call_edges: Vec<RawCallEdge> =
+    let extracted_edges = if lang == Language::Dart {
+        crate::callgraph::extract_call_edges_with_tree_raw(&tree, content, lang)
+    } else {
         crate::callgraph::extract_call_edges_with_tree(&tree, content, lang)
-            .into_iter()
-            .map(
-                |(caller_fn_name, caller_fn_line, callee_name, line)| RawCallEdge {
-                    caller_fn_name,
-                    caller_fn_line,
-                    callee_name,
-                    line,
-                },
-            )
-            .collect();
+    };
+    let mut call_edges: Vec<RawCallEdge> = extracted_edges
+        .into_iter()
+        .map(
+            |(caller_fn_name, caller_fn_line, callee_name, line)| RawCallEdge {
+                caller_fn_name,
+                caller_fn_line,
+                callee_name,
+                line,
+            },
+        )
+        .collect();
+    let dart_metadata = if lang == Language::Dart {
+        let facts = extractor::dart::ProjectFacts::from_tree(&tree, content.as_bytes());
+        let raw_calls = call_edges.clone();
+        for edge in &mut call_edges {
+            edge.callee_name = facts.normalize_call(&edge.callee_name);
+        }
+        Some(crate::index::dart_records::DartRecord {
+            source_fingerprint: 0,
+            declarations: facts.declarations(),
+            raw_refs: dart_raw_refs,
+            raw_calls,
+        })
+    } else {
+        None
+    };
     // Bind refs BEFORE injecting the synthetic Module symbol — binders
     // treat their `file_symbols` arg as legitimate local definitions, and
     // `<module:path>` is not a real definition. Languages without a binder get
@@ -146,21 +177,24 @@ pub fn parse_file(path: &str, content: &str, lang: Language) -> Result<ParsedFil
             },
         );
     }
-    Ok(ParsedFile {
-        path: path.to_string(),
-        symbols,
-        refs,
-        call_edges,
-        bound_refs,
-        skeletons,
-        cpp_includes,
-        // Built by the pipeline (`parse_files`) from the file bytes, not
-        // here — `parse_file` is language-layer and doesn't own the
-        // read/cache decision. Left `None` for the parse layer's own
-        // callers (tests, direct parses).
-        trigram_bloom: None,
-        hierarchy_captures,
-    })
+    Ok((
+        ParsedFile {
+            path: path.to_string(),
+            symbols,
+            refs,
+            call_edges,
+            bound_refs,
+            skeletons,
+            cpp_includes,
+            // Built by the pipeline (`parse_files`) from the file bytes, not
+            // here — `parse_file` is language-layer and doesn't own the
+            // read/cache decision. Left `None` for the parse layer's own
+            // callers (tests, direct parses).
+            trigram_bloom: None,
+            hierarchy_captures,
+        },
+        dart_metadata,
+    ))
 }
 
 /// Tripwire for the shared-tree refactor
@@ -214,6 +248,7 @@ mod parse_count_tests {
         (Language::Lua, "lua", 1),
         (Language::Yaml, "yaml", 1),
         (Language::Toml, "toml", 1),
+        (Language::Dart, "dart", 1),
     ];
 
     fn parse_count_for(rel: &str, lang: Language) -> u64 {
@@ -249,6 +284,37 @@ mod parse_count_tests {
                  migration cannot regress it silently"
             );
         }
+    }
+
+    #[test]
+    fn dart_parse_keeps_normalized_api_and_raw_rebind_metadata() {
+        let source = "class Owner { static void member() {} }\nvoid caller() { Owner.member(); }\n";
+        let (parsed, metadata) =
+            parse_file_with_dart_metadata("lib/a.dart", source, Language::Dart).unwrap();
+        assert!(parsed
+            .call_edges
+            .iter()
+            .any(|edge| edge.callee_name == "member"));
+        let metadata = metadata.as_ref().unwrap();
+        assert!(metadata.declarations.iter().any(|declaration| {
+            declaration.owner == "Owner"
+                && declaration.member == "member"
+                && declaration.kind == crate::index::dart_records::DartDeclarationKind::StaticMethod
+        }));
+        assert!(metadata
+            .raw_calls
+            .iter()
+            .any(|edge| edge.callee_name == "Owner.member"));
+        assert!(metadata
+            .raw_refs
+            .iter()
+            .any(|reference| reference.name == "Owner.member"));
+        let (second, _) =
+            parse_file_with_dart_metadata("lib/a.dart", source, Language::Dart).unwrap();
+        assert_eq!(
+            crate::index::parse_cache::encode_entry(Language::Dart, &parsed).unwrap(),
+            crate::index::parse_cache::encode_entry(Language::Dart, &second).unwrap()
+        );
     }
 }
 

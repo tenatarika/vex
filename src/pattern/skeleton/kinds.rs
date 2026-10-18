@@ -12,6 +12,17 @@ use crate::parse::language::Language;
 /// T1 allowlist. T2/T3 languages return an empty slice — see module docs.
 pub(super) fn pattern_targetable_kinds(lang: Language) -> &'static [&'static str] {
     match lang {
+        Language::Dart => &[
+            "class_definition",
+            "enum_declaration",
+            "mixin_declaration",
+            "extension_declaration",
+            "extension_type_declaration",
+            "function_declaration",
+            "method_declaration",
+            "function_expression",
+            "type_alias",
+        ],
         Language::Rust => &[
             "function_item",
             "struct_item",

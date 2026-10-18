@@ -354,6 +354,7 @@ mod tests {
             (Language::Lua, "lua"),
             (Language::Yaml, "yaml"),
             (Language::Toml, "toml"),
+            (Language::Dart, "dart"),
         ];
         assert_eq!(
             fixtures.len(),

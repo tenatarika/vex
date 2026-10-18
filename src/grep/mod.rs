@@ -587,7 +587,7 @@ mod tests {
         for ext in [
             "rs", "kt", "kts", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "cs",
             "rb", "swift", "sql", "md", "markdown", "cpp", "cc", "cxx", "hpp", "hxx", "h", "php",
-            "phtml", "sh", "bash", "lua", "css", "html", "htm", "yaml", "yml", "toml",
+            "phtml", "sh", "bash", "lua", "css", "html", "htm", "yaml", "yml", "toml", "dart",
         ] {
             assert!(
                 crate::parse::language::Language::from_extension(ext).is_some(),

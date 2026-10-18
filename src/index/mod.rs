@@ -1,3 +1,4 @@
+pub(crate) mod dart_records;
 pub mod hasher;
 pub mod history_builder;
 pub mod incremental_state;

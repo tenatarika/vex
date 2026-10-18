@@ -174,6 +174,14 @@ static TOML_QUERY: LazyLock<Result<Query, String>> = LazyLock::new(|| {
     )
 });
 
+static DART_QUERY: LazyLock<Result<Query, String>> = LazyLock::new(|| {
+    compile(
+        "dart",
+        tree_sitter_dart_orchard::LANGUAGE.into(),
+        include_str!("../../queries/dart.scm"),
+    )
+});
+
 fn lookup(lang: Language) -> &'static Result<Query, String> {
     match lang {
         Language::Rust => &RUST_QUERY,
@@ -195,6 +203,7 @@ fn lookup(lang: Language) -> &'static Result<Query, String> {
         Language::Html => &HTML_QUERY,
         Language::Yaml => &YAML_QUERY,
         Language::Toml => &TOML_QUERY,
+        Language::Dart => &DART_QUERY,
     }
 }
 

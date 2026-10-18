@@ -5,7 +5,7 @@
 //! index time to populate the persistent call-graph sections, off the single
 //! tree that function parses. `extract_call_edges` is the same logic with its own
 //! parse, kept as the public API for callers without a tree.
-//! `callers_in_source` / `callees_in_source` are the live-scan helpers
+//! `callers_in_source_with_facts` / `callees_in_source_with_facts` are the live-scan helpers
 //! invoked by the public `find_callers` / `find_callees` query API in
 //! `super`. The compiled-`Query` cache (`CG_QUERY_CELLS`) compiles each
 //! language's query lazily on the first file of that language and reuses it
@@ -18,6 +18,7 @@
 //! kinds; isolated from the public query API in `super` so external
 //! callers cross a single module boundary.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, OnceLock};
 
@@ -42,12 +43,12 @@ struct Call {
     byte_offset: usize,
 }
 
-/// Find callers of `target` in a single source file.
-pub(super) fn callers_in_source(
+pub(super) fn callers_in_source_with_facts(
     content: &str,
     lang: Language,
     path: &str,
     target: &str,
+    dart_facts: Option<&crate::parse::extractor::dart::ProjectFacts>,
 ) -> Vec<CallMatch> {
     let (fns, calls) = match extract_callgraph(content, lang) {
         Some(r) => r,
@@ -55,7 +56,14 @@ pub(super) fn callers_in_source(
     };
 
     // Find all calls to target
-    let target_calls: Vec<&Call> = calls.iter().filter(|c| c.callee == target).collect();
+    let target_calls: Vec<&Call> = calls
+        .iter()
+        .filter(|call| {
+            dart_facts.map_or(call.callee == target, |facts| {
+                facts.normalize_call(&call.callee) == target
+            })
+        })
+        .collect();
 
     if target_calls.is_empty() {
         return Vec::new();
@@ -84,12 +92,12 @@ pub(super) fn callers_in_source(
     results
 }
 
-/// Find callees of `target` in a single source file.
-pub(super) fn callees_in_source(
+pub(super) fn callees_in_source_with_facts(
     content: &str,
     lang: Language,
     path: &str,
     target: &str,
+    dart_facts: Option<&crate::parse::extractor::dart::ProjectFacts>,
 ) -> Vec<CallMatch> {
     let (fns, calls) = match extract_callgraph(content, lang) {
         Some(r) => r,
@@ -106,7 +114,7 @@ pub(super) fn callees_in_source(
     // would drop decorator edges because the decorator's byte_offset
     // sits outside the inner function_definition.
     //
-    // Note: this is the OPPOSITE of `callers_in_source` / `extract_call_edges`,
+    // Note: this is the OPPOSITE of `callers_in_source_with_facts` / `extract_call_edges`,
     // which use `min_by_key` because there we ask "which fn contains
     // this call site?" — innermost enclosing scope wins. Here we ask
     // "which range covers all my callees?" — outermost FnDef for the
@@ -125,13 +133,15 @@ pub(super) fn callees_in_source(
     let mut seen = HashSet::new();
 
     for call in &calls {
-        if call.byte_offset >= target_fn.start_byte
-            && call.byte_offset < target_fn.end_byte
-            && call.callee != target
-            && seen.insert(call.callee.as_str())
-        {
+        if call.byte_offset < target_fn.start_byte || call.byte_offset >= target_fn.end_byte {
+            continue;
+        }
+        let name = dart_facts.map_or(Cow::Borrowed(call.callee.as_str()), |facts| {
+            Cow::Owned(facts.normalize_call(&call.callee))
+        });
+        if name != target && seen.insert(name.clone()) {
             results.push(CallMatch {
-                name: call.callee.clone(),
+                name: name.into_owned(),
                 path: path.to_string(),
                 line: call.line,
             });
@@ -190,7 +200,25 @@ pub(crate) fn extract_call_edges_with_tree(
     content: &str,
     lang: Language,
 ) -> Vec<(String, usize, String, usize)> {
-    let Some((fns, calls)) = extract_callgraph_with_tree(tree, content, lang) else {
+    extract_call_edges_with_tree_mode(tree, content, lang, true)
+}
+
+pub(crate) fn extract_call_edges_with_tree_raw(
+    tree: &tree_sitter::Tree,
+    content: &str,
+    lang: Language,
+) -> Vec<(String, usize, String, usize)> {
+    extract_call_edges_with_tree_mode(tree, content, lang, false)
+}
+
+fn extract_call_edges_with_tree_mode(
+    tree: &tree_sitter::Tree,
+    content: &str,
+    lang: Language,
+    normalize_dart: bool,
+) -> Vec<(String, usize, String, usize)> {
+    let Some((fns, calls)) = extract_callgraph_with_tree(tree, content, lang, normalize_dart)
+    else {
         return Vec::new();
     };
     edges_from(fns, calls)
@@ -288,7 +316,7 @@ const MODULE_CALL_CAPTURE: &str = "module_call.name";
 /// Extract function definitions and call expressions from source.
 ///
 /// Self-parsing entry point, used by the live-scan paths in this module
-/// (`callers_in_source` / `callees_in_source`). Index-time extraction goes
+/// (`callers_in_source_with_facts` / `callees_in_source_with_facts`). Index-time extraction goes
 /// through [`extract_call_edges_with_tree`] instead.
 fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<Call>)> {
     // The query probe stays BEFORE the parse: a language with no callgraph
@@ -301,7 +329,7 @@ fn extract_callgraph(content: &str, lang: Language) -> Option<(Vec<FnDef>, Vec<C
     // v1.12.0 P3 — pooled per-thread parser; v1.23.0 — guarded by the
     // shared `parse_text` budget.
     let tree = crate::parse::parser_pool::parse_text(lang, content).ok()?;
-    extract_callgraph_with_tree(&tree, content, lang)
+    extract_callgraph_with_tree(&tree, content, lang, true)
 }
 
 /// [`extract_callgraph`] over a tree the caller already parsed.
@@ -309,8 +337,11 @@ fn extract_callgraph_with_tree(
     tree: &tree_sitter::Tree,
     content: &str,
     lang: Language,
+    normalize_dart: bool,
 ) -> Option<(Vec<FnDef>, Vec<Call>)> {
     let query = compiled_query(lang)?;
+    let dart_facts = (lang == Language::Dart)
+        .then(|| crate::parse::extractor::dart::ProjectFacts::from_tree(tree, content.as_bytes()));
 
     let fn_name_idx = query.capture_index_for_name("fn.name")?;
     let fn_body_idx = query.capture_index_for_name("fn.decl")?;
@@ -355,8 +386,8 @@ fn extract_callgraph_with_tree(
     // `@Inject @Named("svc") fun foo()` → 3 matches with identical
     // ranges; Python `@a @b @c def f()` → 3 matches with identical
     // outer `decorated_definition` ranges). Same-range duplicates would
-    // make `max_by_key` / `min_by_key` in `callers_in_source` /
-    // `callees_in_source` iteration-order-dependent if a future grammar
+    // make `max_by_key` / `min_by_key` in `callers_in_source_with_facts` /
+    // `callees_in_source_with_facts` iteration-order-dependent if a future grammar
     // tweak ever makes the ranges drift apart; collapse them up front.
     // The Python "Double FnDef" invariant (different ranges for the
     // inner `function_definition` and the outer `decorated_definition`)
@@ -376,7 +407,15 @@ fn extract_callgraph_with_tree(
         for capture in m.captures {
             let text = &content[capture.node.byte_range()];
             if capture.index == fn_name_idx {
-                fn_name = Some(text);
+                fn_name = Some(if lang == Language::Dart {
+                    crate::parse::extractor::dart::declaration_identity(
+                        capture.node,
+                        content.as_bytes(),
+                    )
+                    .unwrap_or_else(|| text.to_string())
+                } else {
+                    text.to_string()
+                });
                 fn_line = capture.node.start_position().row + 1;
             } else if capture.index == fn_body_idx {
                 fn_body_range = Some((capture.node.start_byte(), capture.node.end_byte()));
@@ -397,7 +436,28 @@ fn extract_callgraph_with_tree(
                 if has_sibling_host && call_capture_inside_sibling_host(capture.node, lang) {
                     continue;
                 }
-                call_name = Some(text);
+                call_name = Some(if lang == Language::Dart {
+                    let raw = dart_facts
+                        .as_ref()
+                        .and_then(|facts| {
+                            crate::parse::extractor::dart::call_identity_for_capture(
+                                capture.node,
+                                content.as_bytes(),
+                                facts,
+                            )
+                        })
+                        .unwrap_or_else(|| text.to_string());
+                    if normalize_dart {
+                        dart_facts
+                            .as_ref()
+                            .map(|facts| facts.normalize_call(&raw))
+                            .unwrap_or(raw)
+                    } else {
+                        raw
+                    }
+                } else {
+                    text.to_string()
+                });
                 call_line = capture.node.start_position().row + 1;
                 call_offset = capture.node.start_byte();
             } else if Some(capture.index) == sibling_target_idx {
@@ -411,7 +471,7 @@ fn extract_callgraph_with_tree(
                 // sentinel (`<module:path>` caller). Bypasses the
                 // sibling-host filter intentionally — see capture's
                 // declaration above.
-                call_name = Some(text);
+                call_name = Some(text.to_string());
                 call_line = capture.node.start_position().row + 1;
                 call_offset = capture.node.start_byte();
             }

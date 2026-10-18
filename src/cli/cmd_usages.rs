@@ -24,6 +24,7 @@ use super::scope;
 use crate::channel::{
     build_def_sites, Channel, ChannelContext, FstRefsChannel, HitLocation, StrictRefsChannel,
 };
+use crate::parse::language::Language;
 use crate::protocol::capabilities;
 use crate::store::reader::IndexReader;
 use crate::util::config::VexConfig;
@@ -307,7 +308,11 @@ fn usages_from_reader(
     };
 
     if !output.available {
-        let reason = if strict {
+        let reason = if strict && has_dart_only_definition(reader, name) {
+            format!(
+                "no strict binder for Dart yet; use default `usages` for syntactic references to `{name}`."
+            )
+        } else if strict {
             format!(
                 "--strict needs a v5 index with reference_edges (this index is v{} or has no resolved refs). Re-run `vex index` to rebuild.",
                 reader.header().version
@@ -386,6 +391,28 @@ fn usages_from_reader(
         changed_paths,
         prefix_suggestions,
     })
+}
+
+fn has_dart_only_definition(reader: &IndexReader, name: &str) -> bool {
+    let Some(fst) = reader.symbol_fst_reader() else {
+        return false;
+    };
+    let (mut dart, mut other) = (false, false);
+    for idx in fst.find(name) {
+        let Some(symbol) = reader.symbol(idx as usize) else {
+            continue;
+        };
+        let language = Path::new(reader.read_string(symbol.file_offset))
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .and_then(Language::from_extension);
+        if language == Some(Language::Dart) {
+            dart = true;
+        } else {
+            other = true;
+        }
+    }
+    dart && !other
 }
 
 /// Whether `reader`'s index defines a symbol named exactly `name`

@@ -54,6 +54,7 @@ fn fixture_ext(lang: Language) -> &'static str {
         Language::Html => "html",
         Language::Yaml => "yaml",
         Language::Toml => "toml",
+        Language::Dart => "dart",
     }
 }
 

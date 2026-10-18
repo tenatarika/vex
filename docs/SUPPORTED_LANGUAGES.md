@@ -32,10 +32,17 @@ Last verified: **2026-10-03** (vex 1.27.1).
 | HTML       | `.html`, `.htm`                         | `tree-sitter-html`        | 0.23 | `id` attribute values (as constants), custom-element tag names (hyphenated) | — |
 | YAML       | `.yaml`, `.yml`                         | `tree-sitter-yaml`        | 0.7  | document-root mapping keys (top-level only) | — |
 | TOML       | `.toml`                                 | `tree-sitter-toml-ng`     | 0.7  | table headers (`[name]`, `[[name]]`), key/value pairs | — |
+| Dart       | `.dart`                                 | `tree-sitter-dart-orchard` | =0.7.0 | class, enum, mixin, named extension, extension type, function, method, constructor, type alias, enum constant, import URI | ✅ `extends`, `implements`, `with` |
 
 Tree-sitter core itself is currently pinned at `0.26`. The grammar version
 column lists the crate's caret range from `Cargo.toml`; the locked patch
 version is in `Cargo.lock`.
+
+Dart references use the shared identifier filter; call edges use syntactic
+callee names. Neither resolves receiver types or imported library identities.
+The pinned grammar may recover with partial trees on unsupported syntax, and
+fixtures do not establish complete Dart 3 compatibility. See
+[Dart indexing](DART_SUPPORT.md) for tested constructs and limits.
 
 ## How extension → language mapping works
 

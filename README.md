@@ -4,7 +4,7 @@
 [![CI](https://github.com/tenatarika/vex/actions/workflows/ci.yml/badge.svg)](https://github.com/tenatarika/vex/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
 [![Commands](https://img.shields.io/badge/commands-32-blue.svg)]()
-[![Languages](https://img.shields.io/badge/languages-19-blueviolet.svg)]()
+[![Languages](https://img.shields.io/badge/languages-20-blueviolet.svg)]()
 [![Tests](https://img.shields.io/badge/tests-4000%2B-green.svg)]()
 
 Fast hybrid structural + semantic code search. **V**ector + ind**ex**.
@@ -34,7 +34,7 @@ $ vex bundle --mode symbol --symbol Foo    # body + callers + callees + similar 
 - **Persistent call graph** — `vex callers`/`vex callees` read from a persistent index built at index time (~4ms), not a live tree-sitter scan (seconds): `callers` is a name-keyed FST, `callees` is a dense CSR index (v9+). Module-scope expressions are reported via synthetic `<module:path>` callers (Phase 14.1); Python + Java function/method decorators (Phase 14.2), Kotlin annotations + C# method/constructor attributes (Phase 14.2.2), and TypeScript method decorators + Rust outer attributes (Phase 14.2.1) emit forward edges to their targets. Class-level decorators remain invisible — see [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)
 - **Pluggable embedder** — `Embedder` trait + registry; swap MiniLM-L6-v2 for future code-specific models (BGE, CodeBERT) without touching call sites
 - **Token-efficient** — compact output saves typically 6x fewer tokens than grep on average lookups (up to 217x on minified JS/CSS); `vex show` extracts just the symbol body instead of the whole file
-- **19 languages** indexed via tree-sitter, with three coverage tiers: **type-aware `--strict usages`** on 8 binder languages (Rust / TypeScript / Python / C# / C++ / Go / Java / Kotlin); **indexed pattern prefilter** on 15 T1+T2a languages; baseline structural + semantic search on all 19 (see [Supported Languages](#supported-languages) for the matrix)
+- **20 languages** indexed via tree-sitter, with three coverage tiers: **type-aware `--strict usages`** on 8 binder languages (Rust / TypeScript / Python / C# / C++ / Go / Java / Kotlin); **indexed pattern prefilter** on 16 T1+T2a languages; baseline structural + semantic search on all 20 (see [Supported Languages](#supported-languages) for the matrix)
 - **Single binary, zero config** — no LSP servers, no databases, no Docker. Just `vex index && vex check Foo`
 
 ## What Vex isn't
@@ -722,7 +722,7 @@ For an agent making 10-20 code lookups per task, vex saves **5,000-20,000 tokens
 
 ## Supported Languages
 
-19 languages indexed via tree-sitter. The capability columns:
+20 languages indexed via tree-sitter. The capability columns:
 
 - **Binder** — does `vex usages --strict` resolve refs through an
   LSP-style scope chain (Phase 11.1)? `cross-file` includes
@@ -732,9 +732,9 @@ For an agent making 10-20 code lookups per task, vex saves **5,000-20,000 tokens
 - **Patterns** — does `vex pattern` get the v6 indexed prefilter
   (Phase 11.4)? `indexed` means a persisted skeleton section narrows
   candidate files at query time; `live-scan` means tree-sitter walks
-  every lang-matching file on each query. All 19 languages work with
+  every lang-matching file on each query. All 20 languages work with
   `vex pattern` syntax (`$NAME`, `$$$BODY`, `&&` / `||`); the
-  prefilter just speeds up discovery for the 15 languages that emit a
+  prefilter just speeds up discovery for the 16 languages that emit a
   skeleton section (every language except Bash, Lua, YAML, and TOML).
 
 | Language | Extensions | Symbols | Imports | Binder | Patterns |
@@ -758,6 +758,7 @@ For an agent making 10-20 code lookups per task, vex saves **5,000-20,000 tokens
 | HTML | `.html`, `.htm` | custom elements (hyphenated tag names) | — | — | indexed |
 | YAML | `.yaml`, `.yml` | top-level keys | — | — | live-scan |
 | TOML | `.toml` | bare keys, dotted keys, tables | — | — | live-scan |
+| Dart ([indexing](docs/DART_SUPPORT.md)) | `.dart` | classes, enums, mixins, extensions, functions, methods, constructors, aliases | import URIs | — (name-based refs) | indexed |
 
 See [docs/SUPPORTED_LANGUAGES.md](docs/SUPPORTED_LANGUAGES.md) for grammar
 versions, ABI level, and the runbook for adding a language or upgrading a
